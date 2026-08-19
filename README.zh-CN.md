@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-为 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)（dsh）agent 提供持久化的项目记忆。将文档（PDF / Markdown / txt）与代码符号索引进每个工作区独立的存储库，自动维护更新，召回时附源文件引用——文档自动交叉链接到其提及的代码符号。
+为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）agent 提供持久化的项目记忆。将文档（PDF / Markdown / txt）与代码符号索引进每个工作区独立的存储库，自动维护更新，召回时附源文件引用——文档自动交叉链接到其提及的代码符号。
 
 > 插件在磁盘上维护一份精简的项目索引，每条记录指向具体的文件与行号；agent 需要快速了解项目时先查索引，无需重读整个项目。
 
@@ -15,7 +15,7 @@
 - **文档 ↔ 代码交叉链接** — 文档提及某符号时记录为 `reference`；查询符号时同时带出描述该符号的文档。
 - **BM25 检索** — 对文档、符号与经验笔记进行排序召回，可选 LLM 查询扩展以应对表述不一致。
 - **经验笔记** — 记录问题 → 方案；相似问题覆盖而非重复；笔记仅在检索命中时返回。
-- **零运行时依赖** — 纯 JavaScript，可在 dsh 支持的任意环境运行。
+- **依赖极简** — 纯 JavaScript；唯一运行时依赖是 `pdfjs-dist`（PDF 文本提取），无需原生构建。
 
 ## 工作原理
 

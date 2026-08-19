@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/dsh)(dsh) agents. Indexes documents (PDF / Markdown / txt) and code symbols into a per-workspace store, refreshes them automatically, and recalls them with source citations — documents are cross-linked to the code symbols they reference.
+Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(dsh) agents. Indexes documents (PDF / Markdown / txt) and code symbols into a per-workspace store, refreshes them automatically, and recalls them with source citations — documents are cross-linked to the code symbols they reference.
 
 > The plugin keeps a compact project index on disk, with every entry pointing to a concrete file and line — the agent can reorient quickly instead of re-reading the whole project.
 
@@ -15,7 +15,7 @@ Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/
 - **Doc ↔ code cross-linking** — when a document mentions a symbol, the match is recorded as a `reference`; querying a symbol also surfaces the documents that describe it.
 - **BM25 retrieval** — ranked search over documents, symbols, and experience notes, with optional LLM query expansion to handle vocabulary mismatch.
 - **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches.
-- **Zero runtime dependencies** — pure JavaScript, compatible with any environment where dsh runs.
+- **Minimal dependencies** — pure JavaScript; the only runtime dependency is `pdfjs-dist` (PDF text extraction), no native builds required.
 
 ## How it works
 
