@@ -13,6 +13,18 @@ function textOf(message) {
     .join('\n')
 }
 
+const MAX_SUMMARY = 300
+
+export function summarizeText(text, max = MAX_SUMMARY) {
+  const flat = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!flat) return ''
+  if (flat.length <= max) return flat
+  const clip = max - 1
+  const clipped = flat.slice(0, clip)
+  const lastBreak = Math.max(clipped.lastIndexOf('。'), clipped.lastIndexOf('.'), clipped.lastIndexOf(';'))
+  return lastBreak > clip * 0.4 ? clipped.slice(0, lastBreak + 1) : clipped + '…'
+}
+
 export async function chatText(llm, system, user, { timeoutMs = 120000 } = {}) {
   const assembler = new BlockAssembler()
   const controller = new AbortController()
@@ -95,7 +107,7 @@ export async function extractDocEntry(llm, chunk, sourcePath) {
 
   const fallback = () => ({
     title: chunk.title || sourcePath,
-    summary: chunk.text.replace(/\s+/g, ' ').slice(0, 400),
+    summary: summarizeText(chunk.text),
     keywords: tokenize(chunk.title).slice(0, 5),
   })
 
@@ -105,12 +117,11 @@ export async function extractDocEntry(llm, chunk, sourcePath) {
     const raw = await chatText(llm, system, user)
     const parsed = parseStructuredJson(raw)
     if (!parsed || typeof parsed.summary !== 'string' || !parsed.summary.trim()) return fallback()
+    const kw = Array.isArray(parsed.keywords) ? parsed.keywords.map(String).filter((k) => k).slice(0, 8) : []
     return {
       title: typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title.trim() : chunk.title || sourcePath,
-      summary: parsed.summary.trim(),
-      keywords: Array.isArray(parsed.keywords)
-        ? parsed.keywords.map(String).filter((k) => k).slice(0, 8)
-        : tokenize(chunk.title).slice(0, 5),
+      summary: summarizeText(parsed.summary),
+      keywords: kw.length ? kw : tokenize(chunk.title).slice(0, 5),
     }
   } catch {
     return fallback()

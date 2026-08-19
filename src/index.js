@@ -36,7 +36,7 @@ export function apply(ctx, config) {
   }
 
   if (config.lazyIndexing) {
-    setupLazyIndexing(ctx, config)
+    setupLazyIndexing(ctx, config, watchManager)
   }
 
   ctx.tools.register(indexDocTool(ctx, config))

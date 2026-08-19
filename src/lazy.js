@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfFile } from './util/fs.js'
 import { buildDocEntries } from './doc-pipeline.js'
 import { scanSymbols } from './symbols.js'
@@ -21,20 +21,45 @@ const PROJECT_MARKERS = [
 
 const MAX_ASCENT = 8
 
+const SOURCE_DIR_NAMES = new Set([
+  'src', 'app', 'lib', 'libs', 'tools', 'include', 'core', 'modules',
+  'scripts', 'components', 'assets', 'utils', 'shared', 'common', 'server', 'client',
+])
+
+function looksLikeProjectRoot(dir) {
+  let hasReadmeFile = false
+  let sourceDirs = 0
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const name = entry.name.toLowerCase()
+      if (entry.isDirectory()) {
+        if (SOURCE_DIR_NAMES.has(name)) sourceDirs++
+      } else if (name.startsWith('readme')) {
+        hasReadmeFile = true
+      }
+    }
+  } catch {
+    return false
+  }
+  return sourceDirs >= 2 || (hasReadmeFile && sourceDirs >= 1)
+}
+
 export function findProjectRoot(filePath) {
   let dir = path.dirname(filePath)
+  let best = null
   for (let i = 0; i < MAX_ASCENT; i++) {
     for (const marker of PROJECT_MARKERS) {
       if (existsSync(path.join(dir, marker))) return dir
     }
+    if (looksLikeProjectRoot(dir)) best = dir
     const parent = path.dirname(dir)
     if (parent === dir) break
     dir = parent
   }
-  return null
+  return best || path.dirname(filePath)
 }
 
-export async function indexFile(ctx, config, filePath) {
+export async function indexFile(ctx, config, filePath, watchManager = null) {
   const root = findProjectRoot(filePath)
   if (!root) return false
   const ext = path.extname(filePath).toLowerCase()
@@ -45,6 +70,8 @@ export async function indexFile(ctx, config, filePath) {
   const existing = store.fileRecord(rel)
   const { hash, size } = await sha256OfFile(filePath)
   if (existing && existing.sha256 === hash) return false
+
+  if (watchManager) watchManager.addRoot(root)
 
   let entries
   if (isSupportedCode(ext)) {
@@ -65,7 +92,7 @@ export async function indexFile(ctx, config, filePath) {
   return true
 }
 
-export function setupLazyIndexing(ctx, config) {
+export function setupLazyIndexing(ctx, config, watchManager = null) {
   const pending = new Map()
   let timer = null
 
@@ -75,7 +102,7 @@ export function setupLazyIndexing(ctx, config) {
     pending.clear()
     for (const filePath of batch) {
       try {
-        await indexFile(ctx, config, filePath)
+        await indexFile(ctx, config, filePath, watchManager)
       } catch (err) {
         console.error(`[dsh-project-memory] lazy index failed for ${filePath}: ${err.message}`)
       }

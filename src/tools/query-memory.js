@@ -1,9 +1,8 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import path from 'node:path'
-import { memoryRootFor } from '../util/fs.js'
+import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { expandQuery } from '../llm.js'
-import { rankEntriesMerged, rankExperience } from '../util/search.js'
+import { rankEntriesMergedScored, rankExperienceScored } from '../util/search.js'
 import { truncate } from '../util/text.js'
 
 export function queryMemoryTool(ctx, config) {
@@ -38,13 +37,13 @@ export function queryMemoryTool(ctx, config) {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
-    async execute(args) {
-      const root = path.resolve(args.root && args.root.trim() ? args.root : process.cwd())
+    async execute(args, exec) {
+      const root = resolveIndexRoot(exec, args.root)
       const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
       const type = args.type || 'all'
       const limit = Math.max(1, Math.min(Number(args.limit) || 8, 20))
 
-      const queries = config.llmQueryExpansion
+      const queries = config.llmQueryExpansion || /[\u3400-\u9fff]/.test(args.query)
         ? await expandQuery(ctx.llm, args.query, config.expansionCount)
         : [args.query]
       const symbolById = new Map()
@@ -54,12 +53,15 @@ export function queryMemoryTool(ctx, config) {
 
       const lines = []
       if (type === 'all' || type === 'doc' || type === 'symbol') {
-        const entries = rankEntriesMerged(store.allEntries(), queries, limit)
-        if (entries.length) {
+        const pool = type === 'all' ? store.allEntries() : store.allEntries().filter((e) => e.type === type)
+        const scored = rankEntriesMergedScored(pool, queries, limit)
+        if (scored.length) {
+          const top = scored[0].score || 1
           lines.push(`## Memory (${type === 'all' ? 'docs + symbols' : type})`)
-          for (const e of entries) {
+          for (const { entry: e, score } of scored) {
             const source = e.sourceLine ? `${e.sourcePath}:${e.sourceLine}` : e.sourcePath
-            lines.push(`### ${e.title}\n- source: ${source}\n- ${e.summary}`)
+            const rel = Math.round((score / top) * 100)
+            lines.push(`### ${e.title} (score: ${rel})\n- source: ${source}\n- ${e.summary}`)
             if (e.type === 'doc' && Array.isArray(e.linkedSymbols) && e.linkedSymbols.length) {
               const refs = e.linkedSymbols.slice(0, 5).map((id) => {
                 const s = symbolById.get(id)
@@ -71,12 +73,15 @@ export function queryMemoryTool(ctx, config) {
         }
       }
       if (type === 'all' || type === 'experience') {
-        const experience = rankExperience(store.experience, args.query, 5)
-        if (experience.length) {
+        const scoredExp = rankExperienceScored(store.experience, queries, limit)
+        if (scoredExp.length) {
+          const expTop = scoredExp[0].score || 1
           lines.push(`## Experience (past problems -> solutions)`)
-          for (const e of experience) {
+          for (const { item: e, score } of scoredExp) {
             const source = e.sourceFile ? ` (source: ${e.sourceFile})` : ''
-            lines.push(`### Problem: ${e.problem}\n- solution: ${e.solution}${source}\n- updated: ${e.updatedAt}`)
+            lines.push(
+              `### Problem: ${e.problem} (score: ${Math.round((score / expTop) * 100)})\n- solution: ${e.solution}${source}\n- updated: ${e.updatedAt}`,
+            )
           }
         }
       }

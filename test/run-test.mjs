@@ -4,7 +4,7 @@ import path from 'node:path'
 import { chunkText } from '../src/chunker.js'
 import { scanSymbols } from '../src/symbols.js'
 import { ProjectMemoryStore } from '../src/store.js'
-import { memoryRootFor } from '../src/util/fs.js'
+import { memoryRootFor, resolveIndexRoot } from '../src/util/fs.js'
 import { indexDocTool } from '../src/tools/index-doc.js'
 import { indexRepoTool } from '../src/tools/index-repo.js'
 import { queryMemoryTool } from '../src/tools/query-memory.js'
@@ -82,6 +82,28 @@ check('scans python class + functions', symbols.length === 3)
 check('symbol has source line', symbols.every((s) => typeof s.sourceLine === 'number'))
 check('symbol keywords include name', symbols.some((s) => s.keywords.includes('refund')))
 
+const csSource = `using System;
+using System.IO;
+class Program {
+    private static void Main() {
+        if (!File.Exists("x")) return;
+        var p = Path.Combine("a", "b");
+        Process.Start(p);
+    }
+    public string GetName(int id) {
+        return id.ToString();
+    }
+    private void DumpType(Type t) {
+        // no-op
+    }
+    public static (long dx, long dy) ReadMoveDir(int dir) {
+        return (0, 0);
+    }
+}`
+const csSymbols = scanSymbols('Program.cs', csSource)
+check('C# only captures declarations (no method-call noise)', csSymbols.length === 5)
+check('C# captures class + functions', csSymbols.every((s) => ['Program', 'Main', 'GetName', 'DumpType', 'ReadMoveDir'].includes(s.title.split(' ')[0])))
+
 console.log('\n== store ==')
 const storeDir = memoryRootFor(root, config.memoryDir)
 const store = new ProjectMemoryStore(storeDir).load()
@@ -101,10 +123,45 @@ check('indexes md', out.startsWith('Indexed:') && out.includes('Entries: 3'))
 out = await docTool.execute({ file_path: mdPath })
 check('skips unchanged on re-run', out.startsWith('Skipped (unchanged)'))
 
+console.log('\n== LLM summary safety ==')
+const { summarizeText } = await import('../src/llm.js')
+const huge = 'oops the model echoed the whole chunk back '.repeat(200)
+check('caps LLM-summary length', summarizeText(huge).length <= 300)
+const { extractDocEntry } = await import('../src/llm.js')
+const padStart = ctx
+const entryNoKw = await extractDocEntry(
+  {
+    async *stream() {
+      const body = JSON.stringify({ title: 'T', summary: 'S'.repeat(900), keywords: [] })
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: body }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: body } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  },
+  { title: 'Payment', text: 'x' },
+  'spec.md',
+)
+check('truncates overlong LLM summary', entryNoKw.summary.length <= 300)
+check('falls back to title keywords when LLM returns empty list', entryNoKw.keywords.includes('payment'))
+
 console.log('\n== index_repo ==')
 const repoTool = indexRepoTool(ctx, config)
 out = await repoTool.execute({ root })
 check('indexes repo (doc + code symbols)', out.includes('docs indexed: 1') && out.includes('code symbols updated: 1'))
+
+console.log('\n== index_repo skips dumps ==')
+const dumpDir = mkdtempSync(path.join(tmpdir(), 'pm-dump-'))
+const dumpFile = path.join(dumpDir, 'dump_cmdhist.txt')
+writeFileSync(
+  dumpFile,
+  '=== Assembly-CSharp loaded: Assembly-CSharp, Version=1.0.0.0\n\n== TYPE Foo : base=Object\n  M Int32 Bar()',
+)
+const dumpRepoTool = indexRepoTool(ctx, config)
+out = await dumpRepoTool.execute({ root: dumpDir })
+check('dump file counted as skipped, not indexed', out.includes('docs indexed: 0') && out.includes('unchanged skipped: 1'))
+const dumpStore = new ProjectMemoryStore(memoryRootFor(dumpDir, config.memoryDir)).load()
+check('dump file leaves no memory entries', dumpStore.stats().entries === 0)
 
 console.log('\n== query_memory ==')
 const queryTool = queryMemoryTool(ctx, config)
@@ -177,12 +234,68 @@ check('query expansion off by default', defaults.llmQueryExpansion === false)
 check('lazy indexing on by default', defaults.lazyIndexing === true)
 check('full auto-index off by default', defaults.autoIndexOnFirstUse === false)
 
+console.log('\n== dump detection ==')
+const { looksLikeDump } = await import('../src/util/fs.js')
+check(
+  'detects IL2CPP reflection dump',
+  looksLikeDump('=== Assembly-CSharp loaded: Assembly-CSharp, Version=1.0.0.0\n\n== TYPE Foo : base=Object'),
+)
+check(
+  'does not flag a plain text banner',
+  !looksLikeDump('============================================\nES 桌宠 · 苍翼混沌效应 (BlazBlue Entropy Effect)'),
+)
+check('does not flag markdown', !looksLikeDump('# 使用步骤\n\n把游戏内每个动作'))
+check('empty input is not a dump', !looksLikeDump(''))
+
 console.log('\n== lazy read-time indexing (fs/observed) ==')
 const lazyRoot = mkdtempSync(path.join(tmpdir(), 'lazy-'))
 mkdirSync(path.join(lazyRoot, 'sub'), { recursive: true })
 writeFileSync(path.join(lazyRoot, 'package.json'), '{}')
 writeFileSync(path.join(lazyRoot, 'sub', 'utils.js'), 'export function parse() {}\n')
 check('finds project root via marker', findProjectRoot(path.join(lazyRoot, 'sub', 'utils.js')) === lazyRoot)
+
+const fallbackRoot = mkdtempSync(path.join(tmpdir(), 'pm-fb-'))
+mkdirSync(path.join(fallbackRoot, 'app'), { recursive: true })
+writeFileSync(path.join(fallbackRoot, 'README.txt'), 'demo')
+writeFileSync(path.join(fallbackRoot, 'app', 'main.js'), 'export function run() {}\n')
+check(
+  'falls back to readme/source-dir root without markers',
+  findProjectRoot(path.join(fallbackRoot, 'app', 'main.js')) === fallbackRoot,
+)
+const bareDir = mkdtempSync(path.join(tmpdir(), 'pm-bare-'))
+writeFileSync(path.join(bareDir, 'note.txt'), 'x')
+check(
+  'falls back to own dir when nothing looks like a project',
+  findProjectRoot(path.join(bareDir, 'note.txt')) === bareDir,
+)
+const nestedRoot = mkdtempSync(path.join(tmpdir(), 'pm-nested-'))
+mkdirSync(path.join(nestedRoot, 'app'), { recursive: true })
+mkdirSync(path.join(nestedRoot, 'tools', 'plugin'), { recursive: true })
+writeFileSync(path.join(nestedRoot, 'README.md'), 'root doc')
+writeFileSync(path.join(nestedRoot, 'app', 'main.js'), 'export function run() {}\n')
+writeFileSync(path.join(nestedRoot, 'tools', 'plugin', 'README.md'), 'sub readme')
+writeFileSync(path.join(nestedRoot, 'tools', 'plugin', 'Plugin.cs'), 'class P {}\n')
+check(
+  'sub-folder readme does not hijack the project root',
+  findProjectRoot(path.join(nestedRoot, 'tools', 'plugin', 'Plugin.cs')) === nestedRoot,
+)
+
+const sessionCwdRoot = mkdtempSync(path.join(tmpdir(), 'pm-cwd-'))
+const procCwdSpy = process.cwd
+process.cwd = () => bareDir
+check(
+  'root defaults to session cwd when process cwd differs',
+  resolveIndexRoot({ agent: { session: { header: { cwd: sessionCwdRoot } } } }, undefined) === sessionCwdRoot,
+)
+check(
+  'explicit root wins over session cwd',
+  resolveIndexRoot({ agent: { session: { header: { cwd: sessionCwdRoot } } } }, fallbackRoot) === fallbackRoot,
+)
+check(
+  'falls back to process cwd without a session',
+  resolveIndexRoot(undefined, undefined) === bareDir,
+)
+process.cwd = procCwdSpy
 
 const listeners = {}
 const lazyCtx = {
@@ -192,7 +305,8 @@ const lazyCtx = {
   },
   effect() {},
 }
-setupLazyIndexing(lazyCtx, config)
+const lazyWatch = new WatchManager(lazyCtx, config)
+setupLazyIndexing(lazyCtx, config, lazyWatch)
 await new Promise((r) => setTimeout(r, 400))
 writeFileSync(path.join(lazyRoot, 'sub', 'utils.js'), 'export function parse() {}\nexport function serialize() {}\n')
 listeners['fs/observed']({ displayPath: path.join(lazyRoot, 'sub', 'utils.js') }, { kind: 'present', version: 'v1' })
@@ -203,6 +317,10 @@ check(
   lazyStore.fileRecord('sub/utils.js') && (lazyStore.entries['sub/utils.js'] || []).length >= 1,
 )
 check('does not re-extract an unchanged re-read', (await lazyStore.fileRecord('sub/utils.js')) !== undefined)
+check(
+  'lazy index auto-registers the project root with the watch manager',
+  lazyWatch.roots.has(lazyRoot),
+)
 
 console.log('\n== query expansion disabled skips the LLM ==')
 const boomLLM = {

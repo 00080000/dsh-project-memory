@@ -1,7 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
 import { readFileSync } from 'node:fs'
-import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfFile, walkDir } from '../util/fs.js'
+import { isSupportedCode, isSupportedDoc, looksLikeDump, memoryRootFor, relativePath, sha256OfFile, walkDir } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { scanSymbols } from '../symbols.js'
 import { linkEntries } from '../link.js'
@@ -16,6 +16,7 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
   let updated = 0
   let skipped = 0
   let removed = 0
+  const failures = []
 
   for (const filePath of files) {
     const rel = relativePath(root, filePath)
@@ -41,6 +42,12 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
         store.markFile(rel, { sha256: hash, size, type: 'code', indexedAt: new Date().toISOString() })
         updated++
       } else {
+        const content = readFileSync(filePath, 'utf8')
+        if (looksLikeDump(content)) {
+          store.removeFile(rel)
+          skipped++
+          continue
+        }
         entries = await buildDocEntries(ctx.llm, filePath, {
           chunkChars: config.chunkChars,
           maxChunks: config.maxChunksPerFile,
@@ -52,7 +59,7 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
       store.setEntries(rel, entries)
     } catch (err) {
       store.removeFile(rel)
-      throw new Error(`Failed to index ${rel}: ${err.message}`)
+      failures.push(rel)
     }
   }
 
@@ -67,12 +74,15 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
   const links = linkEntries(store)
   if (links) store.save()
   const stats = store.stats()
-  return (
+  let report =
     `Indexed project: ${root}\n` +
     `docs indexed: ${indexed}, code symbols updated: ${updated}, unchanged skipped: ${skipped}, removed: ${removed}\n` +
     `memory store: ${stats.files} files, ${stats.entries} entries, ${stats.experience} experience notes` +
     (links ? `, ${links} doc<->symbol links` : '')
-  )
+  if (failures.length) {
+    report += `\nfailed to index ${failures.length} file(s): ${failures.join(', ')}`
+  }
+  return report
 }
 
 export function indexRepoTool(ctx, config) {

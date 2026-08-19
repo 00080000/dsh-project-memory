@@ -18,7 +18,9 @@ export function linkEntries(store) {
     const linked = new Set()
     const haystack = `${doc.title || ''} ${doc.summary || ''} ${doc.keywords ? doc.keywords.join(' ') : ''}`.toLowerCase()
     for (const [name, syms] of symbolByName) {
-      if (haystack.includes(name.toLowerCase())) {
+      const lower = name.toLowerCase()
+      if (name.length < 3) continue
+      if (haystack.includes(lower)) {
         for (const s of syms) {
           if (linked.add(s.id)) links++
         }

@@ -74,6 +74,15 @@ export function isSupportedDoc(ext) {
   return ['.pdf', '.md', '.markdown', '.txt'].includes(ext)
 }
 
+const DUMP_REFLECTION = /(?:==\s*TYPE\s|\bVersion=\d+\.\d+\.\d+\.\d+|loaded:\s*\S+,\s*Version=)/
+
+export function looksLikeDump(text, maxBytes = 4096) {
+  if (!text) return false
+  const head = String(text).slice(0, maxBytes)
+  if (!/^(\uFEFF)?\s*={3,}/.test(head)) return false
+  return DUMP_REFLECTION.test(head)
+}
+
 export function isSupportedCode(ext) {
   return [
     '.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx', '.py', '.java', '.go',
@@ -88,4 +97,11 @@ export function relativePath(root, filePath) {
 
 export function memoryRootFor(indexRoot, memoryDir) {
   return path.join(indexRoot, memoryDir)
+}
+
+export function resolveIndexRoot(exec, explicitRoot) {
+  if (explicitRoot && explicitRoot.trim()) return path.resolve(explicitRoot)
+  const sessionCwd = exec?.agent?.session?.header?.cwd
+  if (sessionCwd) return path.resolve(sessionCwd)
+  return path.resolve(process.cwd())
 }

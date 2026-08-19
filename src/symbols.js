@@ -7,7 +7,7 @@ const RUST = new Set(['.rs'])
 const C_FAMILY = new Set(['.c', '.cpp', '.cc', '.h', '.hpp', '.cs', '.java'])
 const SHELL = new Set(['.sh', '.zsh'])
 
-const CONTROL = new Set(['if', 'for', 'while', 'switch', 'catch', 'function'])
+const CONTROL = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'foreach', 'using', 'lock', 'var', 'function'])
 
 function matchJsLike(line) {
   let m = line.match(/^export\s+(?:default\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)|class\s+([A-Za-z_$][\w$]*))/)
@@ -52,12 +52,12 @@ function matchRust(line) {
 }
 
 function matchCFamily(line) {
-  const m = line.match(/^(?:public|private|protected|static|final|const|virtual|inline|async|synchronized|abstract|\s)*\bclass\s+(\w+)/)
-  if (m) return { name: m[1], kind: 'class' }
-  const fn = line.match(/^[^\n=;]*\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*\{?\s*$/)
-  if (fn && !CONTROL.has(fn[1]) && !/^(?:public|private|protected)\s+class/.test(line)) {
-    return { name: fn[1], kind: 'function' }
-  }
+  const type = line.match(/^(?:public|private|protected|internal|static|abstract|sealed|partial|\s)*\b(?:class|interface|struct|enum|record)\s+(\w+)/)
+  if (type) return { name: type[1], kind: 'class' }
+  const fn = line.match(
+    /^(?:public|private|protected|internal|static|abstract|virtual|override|sealed|async|unsafe|extern|readonly|ref|partial|\s)*(\b[A-Za-z_]\w*(?:<[^<>]*>)?(?:\s*\[\s*\])?|\([^(){};]*\))\s+([A-Za-z_]\w*)\s*\([^(){};]*\)\s*(?:where\s+[^{;]*?)?\s*(?:;|\{)?\s*$/,
+  )
+  if (fn && !CONTROL.has(fn[1])) return { name: fn[2], kind: 'function' }
   return null
 }
 

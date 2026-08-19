@@ -136,8 +136,10 @@ export class ProjectMemoryStore {
       this.experience = this.experience.filter((item) => item.id !== idOrQuery)
     } else {
       const tokens = tokenize(idOrQuery)
+      if (!tokens.length) return 0
       this.experience = this.experience.filter((item) => {
         const itemTokens = tokenize(`${item.problem} ${item.solution}`)
+        if (!itemTokens.length) return true
         const overlap = itemTokens.filter((t) => tokens.includes(t)).length
         return overlap / Math.min(tokens.length, itemTokens.length) < 0.5
       })

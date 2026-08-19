@@ -11,7 +11,7 @@
 - **文档索引** — PDF、Markdown、纯文本按块切分并由 LLM 生成摘要，每条索引携带 `路径:行号` 引用回源文件。
 - **代码符号表** — 通过轻量正则扫描提取函数与类名，不消耗 token。
 - **自动刷新** — `watch_repo` 后台轮询，按内容哈希识别新增或变更文件，仅重抽这些文件。
-- **读到即索引** — 文件在模型**实际读取的瞬间**被索引（监听 `fs/observed`），索引是正常工作的副产品，而非额外的一次全量扫描。从未读过的文件不会被索引。
+- **读到即索引** — 文件在模型**实际读取的瞬间**被索引（监听 `fs/observed`），索引是正常工作的副产品，而非额外的一次全量扫描。从未读过的文件不会被索引。项目根通过标记（`.git`、`package.json` 等）、README 加源码目录、或兜底到文件所在目录逐级识别。
 - **文档 ↔ 代码交叉链接** — 文档提及某符号时记录为 `reference`；查询符号时同时带出描述该符号的文档。
 - **BM25 检索** — 对文档、符号与经验笔记进行排序召回，可选 LLM 查询扩展以应对表述不一致。
 - **经验笔记** — 记录问题 → 方案；相似问题覆盖而非重复；笔记仅在检索命中时返回。
@@ -50,7 +50,7 @@ dsh plugin --profile web add . -w
 | `index_doc file_path` | 索引单个文档（PDF/MD/txt）：分块 → LLM 摘要 → 带 `路径:行号` 入库。未变更文件自动跳过。 |
 | `index_repo root` | 索引整个项目：文档由 LLM 生成摘要，代码文件生成零 token 符号表。增量更新、清理已删除文件、文档与符号交叉链接。 |
 | `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件（mtime + 内容哈希），仅重抽这些文件。 |
-| `query_memory query` | 对文档、符号、经验执行 BM25 检索，可选 LLM 查询扩展。返回带引用与文档→符号链接的排序结果。 |
+| `query_memory query` | 对文档、符号、经验执行 BM25 检索，可选 LLM 查询扩展。返回带相对分数（0-100）、引用与文档→符号链接的排序结果。 |
 | `remember problem solution` | 保存经验笔记。相似问题覆盖而非重复。 |
 | `forget id_or_query` | 删除过期经验笔记。 |
 
@@ -66,7 +66,7 @@ dsh plugin --profile web add . -w
 
 - **增量** — 按文件内容哈希，仅重新抽取变更文件。
 - **交叉链接** — 索引后将文档摘要与符号名匹配，命中符号以 `references` 挂载到文档条目，由 `query_memory` 带出。
-- **查询扩展** — `query_memory` 可让 `ctx.llm` 将查询改写为多个变体（同义词、中英、符号名猜测），再跨变体合并 BM25 分数。由配置控制（`llmQueryExpansion`，默认开启）。
+- **查询扩展** — `query_memory` 可让 `ctx.llm` 将查询改写为多个变体（同义词、中英、符号名猜测），再跨变体合并 BM25 分数。中文/日文/韩文查询自动开启（让中文问题能命中英文符号名），否则由配置控制（`llmQueryExpansion`，默认关闭）。
 - **一致性** — 事实层跟随代码库（哈希重抽 / 删除即移除）；经验层仅检索，配合覆盖与 `forget` 机制。
 
 ## 配置
@@ -85,7 +85,7 @@ dsh plugin --profile web add . -w
 
 ### 功能开关
 
-两个最常用的开关是 `lazyIndexing`（模型读取文件的瞬间即索引；默认开启）和 `autoIndexOnFirstUse`（插件加载时对当前工作目录做全量扫描；默认关闭）。
+两个最常用的开关是 `lazyIndexing`（模型读取文件的瞬间即索引；默认开启）和 `autoIndexOnFirstUse`（插件加载时对当前工作目录做全量扫描；默认关闭）。懒加载建立的索引根会自动注册到 watcher，文件变更无需手动 `watch_repo` 也能保持新鲜。
 
 配置存放在插件的 config 对象中。修改方式：在 profile 的 `cordis.patch.yml` 里加一条覆盖项——web profile 对应 `~/.dsh/profiles/web/cordis.patch.yml`：
 
@@ -115,7 +115,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test          # 32 项检查：chunker / symbols / store / tools / BM25 / links / watch / lazy / config
+npm test          # 50 项检查：chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump
 ```
 
 ## 许可证

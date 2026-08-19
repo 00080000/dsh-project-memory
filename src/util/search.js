@@ -86,7 +86,11 @@ export function rankEntries(entries, query, limit = 8) {
 }
 
 export function rankEntriesMerged(entries, queries, limit = 8) {
-  if (!queries.length) return entries.slice(0, limit)
+  return rankEntriesMergedScored(entries, queries, limit).map((r) => r.entry)
+}
+
+export function rankEntriesMergedScored(entries, queries, limit = 8) {
+  if (!queries.length) return entries.slice(0, limit).map((entry) => ({ entry, score: 0 }))
   const bm25 = buildBm25(entries, weightedFieldText)
   const merged = new Map()
   for (const query of queries) {
@@ -95,20 +99,35 @@ export function rankEntriesMerged(entries, queries, limit = 8) {
       if (merged.has(id)) {
         if (r.score > merged.get(id).score) merged.get(id).score = r.score
       } else {
-        merged.set(id, { doc: r.doc, score: r.score })
+        merged.set(id, { entry: r.doc, score: r.score })
       }
     }
   }
   return [...merged.values()]
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
-    .map((r) => r.doc)
 }
 
-export function rankExperience(items, query, limit = 5) {
+export function rankExperience(items, queryOrQueries, limit = 5) {
+  return rankExperienceScored(items, queryOrQueries, limit).map((r) => r.item)
+}
+
+export function rankExperienceScored(items, queryOrQueries, limit = 5) {
   const bm25 = buildBm25(items, (item) =>
     `${item.problem} ${item.problem} ${item.problem} ${item.solution} ${item.sourceFile || ''}`,
   )
-  const scored = bm25.score(query)
-  return scored.slice(0, limit).map((r) => r.doc)
+  const queries = Array.isArray(queryOrQueries) ? queryOrQueries : [queryOrQueries]
+  const merged = new Map()
+  for (const query of queries) {
+    for (const r of bm25.score(query)) {
+      if (merged.has(r.doc.id)) {
+        if (r.score > merged.get(r.doc.id).score) merged.get(r.doc.id).score = r.score
+      } else {
+        merged.set(r.doc.id, { item: r.doc, score: r.score })
+      }
+    }
+  }
+  return [...merged.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
 }

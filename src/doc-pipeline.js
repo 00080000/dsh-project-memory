@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { readTextFile } from './util/fs.js'
+import { looksLikeDump, readTextFile } from './util/fs.js'
 import { parsePdf } from './parsers/pdfjs-parser.js'
 import { chunkText } from './chunker.js'
 import { extractDocEntry } from './llm.js'
@@ -15,6 +15,7 @@ export async function extractTextFromFile(filePath, { maxFileSizeMb = 50, maxPdf
 
 export async function buildDocEntries(llm, filePath, { chunkChars = 3000, maxChunks = 40, maxFileSizeMb = 50 } = {}) {
   const text = await extractTextFromFile(filePath, { maxFileSizeMb, maxPdfPages: Math.min(maxChunks * 3, 1000) })
+  if (looksLikeDump(text)) return []
   const chunks = chunkText(text, chunkChars, maxChunks)
   const entries = []
   for (let i = 0; i < chunks.length; i++) {
@@ -28,7 +29,6 @@ export async function buildDocEntries(llm, filePath, { chunkChars = 3000, maxChu
       title: meta.title,
       summary: meta.summary,
       keywords: meta.keywords,
-      text: chunk.text.replace(/\s+/g, ' ').slice(0, 1500),
     })
   }
   return entries

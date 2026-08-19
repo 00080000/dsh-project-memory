@@ -11,7 +11,7 @@ Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/
 - **Document indexing** — PDF, Markdown, and plain text files are chunked and summarized by the LLM; each entry carries a `path:line` citation back to the source.
 - **Code symbol table** — function and class names are extracted with a lightweight regex scanner, incurring no token cost.
 - **Automatic refresh** — a background poll (`watch_repo`) detects new or changed files by content hash and re-indexes only those.
-- **Read-time indexing** — files are indexed the moment the model actually reads them (`fs/observed`), so the index is a byproduct of normal work, not a separate upfront scan. Files that are never read are never indexed.
+- **Read-time indexing** — files are indexed the moment the model actually reads them (`fs/observed`), so the index is a byproduct of normal work, not a separate upfront scan. Files that are never read are never indexed. The project root is detected by markers (`.git`, `package.json`, …), a README plus source directories, or the file's own directory as a last resort.
 - **Doc ↔ code cross-linking** — when a document mentions a symbol, the match is recorded as a `reference`; querying a symbol also surfaces the documents that describe it.
 - **BM25 retrieval** — ranked search over documents, symbols, and experience notes, with optional LLM query expansion to handle vocabulary mismatch.
 - **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches.
@@ -50,7 +50,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | `index_doc file_path` | Index one document (PDF/MD/txt): chunk → LLM summary → store with `path:line`. Unchanged files are skipped. |
 | `index_repo root` | Index a whole project: docs get LLM summaries, code files get a zero-token symbol table. Incremental, cleans up deleted files, cross-links docs to symbols. |
 | `watch_repo root` | Enable automatic refresh: a background poll detects new/changed files (mtime + content hash) and re-indexes only those. |
-| `query_memory query` | BM25 search over docs + symbols + experience, optionally query-expanded by the LLM. Returns ranked hits with sources and doc→symbol references. |
+| `query_memory query` | BM25 search over docs + symbols + experience, optionally query-expanded by the LLM. Returns ranked hits with relative scores, sources, and doc→symbol references. |
 | `remember problem solution` | Save an experience note. Similar problems supersede instead of duplicating. |
 | `forget id_or_query` | Delete stale experience notes. |
 
@@ -66,7 +66,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 
 - **Incremental** — content hash per file; only changed files are re-extracted.
 - **Cross-linking** — after indexing, doc summaries are matched against symbol names; matches are attached to the doc entry as `references` and surfaced by `query_memory`.
-- **Query expansion** — `query_memory` may ask `ctx.llm` to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and then merges BM25 scores across variants. Config-gated (`llmQueryExpansion`, default off).
+- **Query expansion** — `query_memory` may ask `ctx.llm` to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and then merges BM25 scores across variants. Auto-enabled for CJK queries (Chinese/Japanese/Korean) so Chinese questions can match English symbol names; config-gated otherwise (`llmQueryExpansion`, default off).
 - **Consistency** — the fact layer follows the codebase (hash re-extract / remove-on-delete); the experience layer is retrieval-only with supersede and `forget`.
 
 ## Configuration
@@ -85,7 +85,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 
 ### Toggling features
 
-The two most relevant switches are `lazyIndexing` (index a file the moment the model reads it; default on) and `autoIndexOnFirstUse` (full scan of the current working directory on plugin load; default off).
+The two most relevant switches are `lazyIndexing` (index a file the moment the model reads it; default on) and `autoIndexOnFirstUse` (full scan of the current working directory on plugin load; default off). Lazily indexed project roots are automatically registered with the watcher, so changed files stay fresh without an explicit `watch_repo`.
 
 Settings live in the plugin's config object. To change them, add an override entry to your profile's `cordis.patch.yml` — for the web profile that is `~/.dsh/profiles/web/cordis.patch.yml`:
 
@@ -115,7 +115,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test          # 32 checks: chunker / symbols / store / tools / BM25 / links / watch / lazy / config
+npm test          # 50 checks: chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump
 ```
 
 ## License

@@ -1,6 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import path from 'node:path'
-import { memoryRootFor } from '../util/fs.js'
+import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 
 export function rememberTool(config) {
@@ -34,8 +33,8 @@ export function rememberTool(config) {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
-    async execute(args) {
-      const root = path.resolve(args.root && args.root.trim() ? args.root : process.cwd())
+    async execute(args, exec) {
+      const root = resolveIndexRoot(exec, args.root)
       const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
       const result = store.addExperience({
         problem: args.problem,
