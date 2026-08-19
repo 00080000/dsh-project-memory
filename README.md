@@ -115,7 +115,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test          # 50 checks: chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump
+npm test          # 58 checks: chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency
 ```
 
 ## License

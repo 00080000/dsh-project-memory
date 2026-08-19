@@ -115,7 +115,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test          # 50 项检查：chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump
+npm test          # 58 项检查：chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency
 ```
 
 ## 许可证
