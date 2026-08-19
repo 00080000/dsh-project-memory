@@ -33,8 +33,11 @@ The store is per-project and follows the codebase: changed files are re-extracte
 ## Installation
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-project-memory
+cd dsh-project-memory
+dsh plugin --profile web add . -w
 ```
+
+The `-w` (workspace-root) flag is required: the profile directory is a pnpm workspace root, and pnpm rejects `add` there without it. From any other directory, the path form works the same: `dsh plugin --profile web add /path/to/dsh-project-memory -w`.
 
 Each indexed project has its own store at `<root>/.dsh-project-memory/`. Add it to `.gitignore` if it should not be committed.
 
