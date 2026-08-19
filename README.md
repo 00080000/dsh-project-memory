@@ -67,7 +67,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 - **Incremental** — content hash per file; only changed files are re-extracted.
 - **Cross-linking** — after indexing, doc summaries are matched against symbol names; matches are attached to the doc entry as `references` and surfaced by `query_memory`.
 - **Query expansion** — `query_memory` may ask `ctx.llm` to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and then merges BM25 scores across variants. Auto-enabled for CJK queries (Chinese/Japanese/Korean) so Chinese questions can match English symbol names; config-gated otherwise (`llmQueryExpansion`, default off).
-- **Consistency** — the fact layer follows the codebase (hash re-extract / remove-on-delete); the experience layer is retrieval-only with supersede and `forget`.
+- **Consistency** — the fact layer follows the codebase (hash re-extract / remove-on-delete); the experience layer is retrieval-only with supersede and `forget`. Store writes are serialized per memory directory; the lock is in-process, so avoid running multiple dsh instances against the same project store concurrently.
 
 ## Configuration
 

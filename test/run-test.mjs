@@ -180,6 +180,26 @@ const forgetToolInst = forgetTool(config)
 out = await forgetToolInst.execute({ root, id_or_query: 'OPS import breaks' })
 check('forget removes', out.includes('Removed'))
 
+console.log('\n== concurrent store writes are serialized ==')
+const { withStoreLock } = await import('../src/store.js')
+const lockDir = mkdtempSync(path.join(tmpdir(), 'pm-lock-'))
+const mkStore = () => new ProjectMemoryStore(memoryRootFor(lockDir, config.memoryDir))
+await Promise.all([
+  withStoreLock(memoryRootFor(lockDir, config.memoryDir), async () => {
+    const s = mkStore().load()
+    s.addExperience({ problem: 'p1', solution: 's1' })
+    await new Promise((r) => setTimeout(r, 50))
+    s.save()
+  }),
+  withStoreLock(memoryRootFor(lockDir, config.memoryDir), async () => {
+    const s = mkStore().load()
+    s.addExperience({ problem: 'p2', solution: 's2' })
+    s.save()
+  }),
+])
+const lockStore = mkStore().load()
+check('no lost writes under contention', lockStore.experience.length === 2)
+
 console.log('\n== incremental cleanup ==')
 writeFileSync(pyPath, 'class PaymentService:\n    def charge(self, amount):\n        pass\n')
 out = await repoTool.execute({ root })
@@ -212,6 +232,12 @@ await wm.poll()
 const watched = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
 check('watch indexes new code file silently', watched.fileRecord('src/auth.js') && (watched.entries['src/auth.js'] || []).length >= 1)
 check('watch indexes new doc file silently', !!watched.fileRecord('docs/auth-spec.md'))
+const watchDump = path.join(docsDir, 'watch-dump.txt')
+writeFileSync(watchDump, '=== Assembly-CSharp loaded: Assembly-CSharp, Version=1.0.0.0\n\n== TYPE Foo : base=Object\n')
+await wm.poll()
+await wm.poll()
+const afterDump = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+check('watch dump file leaves no shell record', !afterDump.fileRecord('docs/watch-dump.txt'))
 wm.stop()
 
 console.log('\n== watch_repo tool ==')
@@ -247,12 +273,31 @@ check(
 check('does not flag markdown', !looksLikeDump('# 使用步骤\n\n把游戏内每个动作'))
 check('empty input is not a dump', !looksLikeDump(''))
 
+console.log('\n== CJK auto expansion coverage ==')
+const { isCjkText } = await import('../src/util/search.js')
+check('hiragana triggers expansion', isCjkText('こんにちは の設定'))
+check('katakana triggers expansion', isCjkText('セーブデータ 確認'))
+check('hangul triggers expansion', isCjkText('결제 모듈 修正'))
+check('latin does not trigger expansion', !isCjkText('payment module fees'))
+
+const { buildDocEntries } = await import('../src/doc-pipeline.js')
+const docDumpFile = path.join(docsDir, 'dump.txt')
+writeFileSync(docDumpFile, '=== Assembly-CSharp loaded: Assembly-CSharp, Version=1.0.0.0\n\n== TYPE Foo : base=Object\n')
+check('buildDocEntries returns null for a dump', (await buildDocEntries(fakeLLM, docDumpFile, {})) === null)
+
 console.log('\n== lazy read-time indexing (fs/observed) ==')
 const lazyRoot = mkdtempSync(path.join(tmpdir(), 'lazy-'))
 mkdirSync(path.join(lazyRoot, 'sub'), { recursive: true })
 writeFileSync(path.join(lazyRoot, 'package.json'), '{}')
 writeFileSync(path.join(lazyRoot, 'sub', 'utils.js'), 'export function parse() {}\n')
 check('finds project root via marker', findProjectRoot(path.join(lazyRoot, 'sub', 'utils.js')) === lazyRoot)
+
+const { indexFile } = await import('../src/lazy.js')
+const dumpLazy = path.join(lazyRoot, 'sub', 'dump.txt')
+writeFileSync(dumpLazy, '=== Assembly-CSharp loaded: Assembly-CSharp, Version=1.0.0.0\n\n== TYPE Foo : base=Object\n')
+await indexFile(ctx, config, dumpLazy)
+const lazyDumpStore = new ProjectMemoryStore(memoryRootFor(lazyRoot, config.memoryDir)).load()
+check('lazy dump file leaves no shell record', !lazyDumpStore.fileRecord('sub/dump.txt'))
 
 const fallbackRoot = mkdtempSync(path.join(tmpdir(), 'pm-fb-'))
 mkdirSync(path.join(fallbackRoot, 'app'), { recursive: true })

@@ -8,6 +8,26 @@ const ENTRIES_FILE = 'entries.json'
 const EXPERIENCE_FILE = 'experience.json'
 const WATCH_FILE = 'watch.json'
 
+const dirLocks = new Map()
+
+export async function withStoreLock(memoryDir, fn) {
+  const key = path.resolve(memoryDir)
+  const prev = dirLocks.get(key) || Promise.resolve()
+  let release
+  const cur = new Promise((resolve) => {
+    release = resolve
+  })
+  const chain = prev.then(() => cur)
+  dirLocks.set(key, chain)
+  await prev
+  try {
+    return await fn()
+  } finally {
+    release()
+    if (dirLocks.get(key) === chain) dirLocks.delete(key)
+  }
+}
+
 function loadJson(filePath, fallback) {
   try {
     return JSON.parse(readFileSync(filePath, 'utf8'))

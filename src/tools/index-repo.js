@@ -5,84 +5,91 @@ import { isSupportedCode, isSupportedDoc, looksLikeDump, memoryRootFor, relative
 import { buildDocEntries } from '../doc-pipeline.js'
 import { scanSymbols } from '../symbols.js'
 import { linkEntries } from '../link.js'
-import { ProjectMemoryStore } from '../store.js'
+import { ProjectMemoryStore, withStoreLock } from '../store.js'
 
 export async function indexRepository(ctx, config, root, { reindex = false } = {}) {
-  const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+  return withStoreLock(memoryRootFor(root, config.memoryDir), async () => {
+    const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
 
-  const files = walkDir(root)
-  const seen = new Set()
-  let indexed = 0
-  let updated = 0
-  let skipped = 0
-  let removed = 0
-  const failures = []
+    const files = walkDir(root)
+    const seen = new Set()
+    let indexed = 0
+    let updated = 0
+    let skipped = 0
+    let removed = 0
+    const failures = []
 
-  for (const filePath of files) {
-    const rel = relativePath(root, filePath)
-    seen.add(rel)
-    const ext = path.extname(filePath).toLowerCase()
-    if (!isSupportedDoc(ext) && !isSupportedCode(ext)) continue
+    for (const filePath of files) {
+      const rel = relativePath(root, filePath)
+      seen.add(rel)
+      const ext = path.extname(filePath).toLowerCase()
+      if (!isSupportedDoc(ext) && !isSupportedCode(ext)) continue
 
-    const existing = store.fileRecord(rel)
-    if (!reindex && existing) {
-      const { hash } = await sha256OfFile(filePath)
-      if (existing.sha256 === hash) {
-        skipped++
-        continue
-      }
-    }
-
-    const { hash, size } = await sha256OfFile(filePath)
-    try {
-      let entries
-      if (isSupportedCode(ext)) {
-        const content = readFileSync(filePath, 'utf8')
-        entries = scanSymbols(filePath, content)
-        store.markFile(rel, { sha256: hash, size, type: 'code', indexedAt: new Date().toISOString() })
-        updated++
-      } else {
-        const content = readFileSync(filePath, 'utf8')
-        if (looksLikeDump(content)) {
-          store.removeFile(rel)
+      const existing = store.fileRecord(rel)
+      if (!reindex && existing) {
+        const { hash } = await sha256OfFile(filePath)
+        if (existing.sha256 === hash) {
           skipped++
           continue
         }
-        entries = await buildDocEntries(ctx.llm, filePath, {
-          chunkChars: config.chunkChars,
-          maxChunks: config.maxChunksPerFile,
-          maxFileSizeMb: config.maxFileSizeMb,
-        })
-        store.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
-        indexed++
       }
-      store.setEntries(rel, entries)
-    } catch (err) {
-      store.removeFile(rel)
-      failures.push(rel)
-    }
-  }
 
-  for (const rel of Object.keys(store.files)) {
-    if (!seen.has(rel)) {
-      store.removeFile(rel)
-      removed++
+      const { hash, size } = await sha256OfFile(filePath)
+      try {
+        let entries
+        if (isSupportedCode(ext)) {
+          const content = readFileSync(filePath, 'utf8')
+          entries = scanSymbols(filePath, content)
+          store.markFile(rel, { sha256: hash, size, type: 'code', indexedAt: new Date().toISOString() })
+          updated++
+        } else {
+          const content = readFileSync(filePath, 'utf8')
+          if (looksLikeDump(content)) {
+            store.removeFile(rel)
+            skipped++
+            continue
+          }
+          entries = await buildDocEntries(ctx.llm, filePath, {
+            chunkChars: config.chunkChars,
+            maxChunks: config.maxChunksPerFile,
+            maxFileSizeMb: config.maxFileSizeMb,
+          })
+          if (entries === null) {
+            store.removeFile(rel)
+            skipped++
+            continue
+          }
+          store.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
+          indexed++
+        }
+        store.setEntries(rel, entries)
+      } catch (err) {
+        store.removeFile(rel)
+        failures.push(rel)
+      }
     }
-  }
 
-  store.save()
-  const links = linkEntries(store)
-  if (links) store.save()
-  const stats = store.stats()
-  let report =
-    `Indexed project: ${root}\n` +
-    `docs indexed: ${indexed}, code symbols updated: ${updated}, unchanged skipped: ${skipped}, removed: ${removed}\n` +
-    `memory store: ${stats.files} files, ${stats.entries} entries, ${stats.experience} experience notes` +
-    (links ? `, ${links} doc<->symbol links` : '')
-  if (failures.length) {
-    report += `\nfailed to index ${failures.length} file(s): ${failures.join(', ')}`
-  }
-  return report
+    for (const rel of Object.keys(store.files)) {
+      if (!seen.has(rel)) {
+        store.removeFile(rel)
+        removed++
+      }
+    }
+
+    store.save()
+    const links = linkEntries(store)
+    if (links) store.save()
+    const stats = store.stats()
+    let report =
+      `Indexed project: ${root}\n` +
+      `docs indexed: ${indexed}, code symbols updated: ${updated}, unchanged skipped: ${skipped}, removed: ${removed}\n` +
+      `memory store: ${stats.files} files, ${stats.entries} entries, ${stats.experience} experience notes` +
+      (links ? `, ${links} doc<->symbol links` : '')
+    if (failures.length) {
+      report += `\nfailed to index ${failures.length} file(s): ${failures.join(', ')}`
+    }
+    return report
+  })
 }
 
 export function indexRepoTool(ctx, config) {

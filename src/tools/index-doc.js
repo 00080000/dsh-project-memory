@@ -3,7 +3,7 @@ import path from 'node:path'
 import { assertReadableFile, memoryRootFor, sha256OfFile } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { linkEntries } from '../link.js'
-import { ProjectMemoryStore } from '../store.js'
+import { ProjectMemoryStore, withStoreLock } from '../store.js'
 
 export function indexDocTool(ctx, config) {
   return defineTool({
@@ -30,30 +30,39 @@ export function indexDocTool(ctx, config) {
     async execute(args) {
       const filePath = assertReadableFile(args.file_path, config.maxFileSizeMb)
       const root = path.resolve(args.root && args.root.trim() ? args.root : path.dirname(filePath))
-      const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+      const memoryDir = memoryRootFor(root, config.memoryDir)
 
-      const rel = path.relative(root, filePath).split(path.sep).join('/')
-      const { hash, size } = await sha256OfFile(filePath)
-      const existing = store.fileRecord(rel)
-      if (existing && existing.sha256 === hash) {
-        return `Skipped (unchanged): ${rel}\nAlready indexed with ${(store.entries[rel] || []).length} entry/entries.`
-      }
+      return withStoreLock(memoryDir, async () => {
+        const store = new ProjectMemoryStore(memoryDir).load()
 
-      const entries = await buildDocEntries(ctx.llm, filePath, {
-        chunkChars: config.chunkChars,
-        maxChunks: config.maxChunksPerFile,
-        maxFileSizeMb: config.maxFileSizeMb,
+        const rel = path.relative(root, filePath).split(path.sep).join('/')
+        const { hash, size } = await sha256OfFile(filePath)
+        const existing = store.fileRecord(rel)
+        if (existing && existing.sha256 === hash) {
+          return `Skipped (unchanged): ${rel}\nAlready indexed with ${(store.entries[rel] || []).length} entry/entries.`
+        }
+
+        const entries = await buildDocEntries(ctx.llm, filePath, {
+          chunkChars: config.chunkChars,
+          maxChunks: config.maxChunksPerFile,
+          maxFileSizeMb: config.maxFileSizeMb,
+        })
+        if (entries === null) {
+          store.removeFile(rel)
+          store.save()
+          return `Skipped: ${rel} looks like a reflection dump, not a document.`
+        }
+        store.setEntries(rel, entries)
+        store.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
+        store.save()
+        const links = linkEntries(store)
+        if (links) store.save()
+
+        const preview = entries
+          .map((e) => `  - ${e.title} @ ${rel}:${e.sourceLine}`)
+          .join('\n')
+        return `Indexed: ${rel}\nEntries: ${entries.length}\n${preview}`
       })
-      store.setEntries(rel, entries)
-      store.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
-      store.save()
-      const links = linkEntries(store)
-      if (links) store.save()
-
-      const preview = entries
-        .map((e) => `  - ${e.title} @ ${rel}:${e.sourceLine}`)
-        .join('\n')
-      return `Indexed: ${rel}\nEntries: ${entries.length}\n${preview}`
     },
   })
 }

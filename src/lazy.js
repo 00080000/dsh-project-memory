@@ -4,7 +4,7 @@ import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfF
 import { buildDocEntries } from './doc-pipeline.js'
 import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
-import { ProjectMemoryStore } from './store.js'
+import { ProjectMemoryStore, withStoreLock } from './store.js'
 
 const PROJECT_MARKERS = [
   '.dsh-project-memory',
@@ -65,31 +65,39 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
   const ext = path.extname(filePath).toLowerCase()
   if (!isSupportedDoc(ext) && !isSupportedCode(ext)) return false
 
-  const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
-  const rel = relativePath(root, filePath)
-  const existing = store.fileRecord(rel)
-  const { hash, size } = await sha256OfFile(filePath)
-  if (existing && existing.sha256 === hash) return false
+  const memoryDir = memoryRootFor(root, config.memoryDir)
+  return withStoreLock(memoryDir, async () => {
+    const store = new ProjectMemoryStore(memoryDir).load()
+    const rel = relativePath(root, filePath)
+    const existing = store.fileRecord(rel)
+    const { hash, size } = await sha256OfFile(filePath)
+    if (existing && existing.sha256 === hash) return false
 
-  if (watchManager) watchManager.addRoot(root)
+    if (watchManager) watchManager.addRoot(root)
 
-  let entries
-  if (isSupportedCode(ext)) {
-    entries = scanSymbols(filePath, readFileSync(filePath, 'utf8'))
-    store.markFile(rel, { sha256: hash, size, type: 'code', indexedAt: new Date().toISOString() })
-  } else {
-    entries = await buildDocEntries(ctx.llm, filePath, {
-      chunkChars: config.chunkChars,
-      maxChunks: config.maxChunksPerFile,
-      maxFileSizeMb: config.maxFileSizeMb,
-    })
-    store.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
-  }
-  store.setEntries(rel, entries)
-  store.save()
-  const links = linkEntries(store)
-  if (links) store.save()
-  return true
+    let entries
+    if (isSupportedCode(ext)) {
+      entries = scanSymbols(filePath, readFileSync(filePath, 'utf8'))
+      store.markFile(rel, { sha256: hash, size, type: 'code', indexedAt: new Date().toISOString() })
+    } else {
+      entries = await buildDocEntries(ctx.llm, filePath, {
+        chunkChars: config.chunkChars,
+        maxChunks: config.maxChunksPerFile,
+        maxFileSizeMb: config.maxFileSizeMb,
+      })
+      if (entries === null) {
+        store.removeFile(rel)
+        store.save()
+        return false
+      }
+      store.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
+    }
+    store.setEntries(rel, entries)
+    store.save()
+    const links = linkEntries(store)
+    if (links) store.save()
+    return true
+  })
 }
 
 export function setupLazyIndexing(ctx, config, watchManager = null) {

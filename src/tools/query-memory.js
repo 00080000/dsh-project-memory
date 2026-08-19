@@ -2,7 +2,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { expandQuery } from '../llm.js'
-import { rankEntriesMergedScored, rankExperienceScored } from '../util/search.js'
+import { rankEntriesMergedScored, rankExperienceScored, isCjkText } from '../util/search.js'
 import { truncate } from '../util/text.js'
 
 export function queryMemoryTool(ctx, config) {
@@ -43,7 +43,7 @@ export function queryMemoryTool(ctx, config) {
       const type = args.type || 'all'
       const limit = Math.max(1, Math.min(Number(args.limit) || 8, 20))
 
-      const queries = config.llmQueryExpansion || /[\u3400-\u9fff]/.test(args.query)
+      const queries = config.llmQueryExpansion || isCjkText(args.query)
         ? await expandQuery(ctx.llm, args.query, config.expansionCount)
         : [args.query]
       const symbolById = new Map()
