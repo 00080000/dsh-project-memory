@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-为 [DeepSeek Harness](https://opencode.ai)（dsh）agent 提供持久化的项目记忆。将文档（PDF / Markdown / txt）与代码符号索引进每个工作区独立的存储库，自动维护更新，召回时附源文件引用——文档自动交叉链接到其提及的代码符号。
+为 [DeepSeek Harness]（dsh）agent 提供持久化的项目记忆。将文档（PDF / Markdown / txt）与代码符号索引进每个工作区独立的存储库，自动维护更新，召回时附源文件引用——文档自动交叉链接到其提及的代码符号。
 
 > 插件在磁盘上维护一份精简的项目索引，每条记录指向具体的文件与行号；agent 需要快速了解项目时先查索引，无需重读整个项目。
 
