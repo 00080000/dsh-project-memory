@@ -1,0 +1,120 @@
+# dsh-project-memory
+
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+为 [DeepSeek Harness](https://opencode.ai)（dsh）agent 提供持久化的项目记忆。将文档（PDF / Markdown / txt）与代码符号索引进每个工作区独立的存储库，自动维护更新，召回时附源文件引用——文档自动交叉链接到其提及的代码符号。
+
+> 插件在磁盘上维护一份精简的项目索引，每条记录指向具体的文件与行号；agent 需要快速了解项目时先查索引，无需重读整个项目。
+
+## 特性
+
+- **文档索引** — PDF、Markdown、纯文本按块切分并由 LLM 生成摘要，每条索引携带 `路径:行号` 引用回源文件。
+- **代码符号表** — 通过轻量正则扫描提取函数与类名，不消耗 token。
+- **自动刷新** — `watch_repo` 后台轮询，按内容哈希识别新增或变更文件，仅重抽这些文件。
+- **读到即索引** — 文件在模型**实际读取的瞬间**被索引（监听 `fs/observed`），索引是正常工作的副产品，而非额外的一次全量扫描。从未读过的文件不会被索引。
+- **文档 ↔ 代码交叉链接** — 文档提及某符号时记录为 `reference`；查询符号时同时带出描述该符号的文档。
+- **BM25 检索** — 对文档、符号与经验笔记进行排序召回，可选 LLM 查询扩展以应对表述不一致。
+- **经验笔记** — 记录问题 → 方案；相似问题覆盖而非重复；笔记仅在检索命中时返回。
+- **零运行时依赖** — 纯 JavaScript，可在 dsh 支持的任意环境运行。
+
+## 工作原理
+
+设计遵循四个原则：
+
+- **易失性** — 上下文是临时的，会话压缩即丢失。
+- **持久性** — 索引存于磁盘，跨压缩与会话保留。
+- **紧凑性** — 仅存摘要，以每文件几 KB 的索引替代反复通读整个项目。
+- **可核验性** — 每条命中携带 `路径:行号` 引用，agent 可对照源文件核实。
+
+构建索引无需预先全量扫描：文件在模型读取时被索引，索引恰好覆盖实际处理过的内容。未变更的文件重读是空操作（内容哈希），因此索引的持续维护成本基本为零。
+
+存储按项目独立存放，并跟随代码库变化：文件变更按内容哈希重新抽取，文件删除则同步移除。经验层仅检索，累积不影响上下文。
+
+## 安装
+
+```bash
+dsh plugin --profile web add /path/to/dsh-project-memory
+```
+
+每个被索引的项目在 `<root>/.dsh-project-memory/` 下有独立存储。如无需入库，可加入 `.gitignore`。
+
+## 用法
+
+以下工具由 **agent 自动调用**，无需用户手动输入。在对话中直接说自然语言即可——例如「给这个项目建个索引」或「auth 模块是干嘛的」——agent 会自动调用对应工具。默认开启「读到即索引」（`lazyIndexing`）：模型读哪个文件，就顺便索引哪个文件，记忆在你干活的过程中自然积累。`watch_repo` 让显式监听的根目录在后台保持新鲜；`index_repo` 强制对项目做一次全量回填（未变更文件自动跳过）。
+
+| 工具 | 用途 |
+|---|---|
+| `index_doc file_path` | 索引单个文档（PDF/MD/txt）：分块 → LLM 摘要 → 带 `路径:行号` 入库。未变更文件自动跳过。 |
+| `index_repo root` | 索引整个项目：文档由 LLM 生成摘要，代码文件生成零 token 符号表。增量更新、清理已删除文件、文档与符号交叉链接。 |
+| `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件（mtime + 内容哈希），仅重抽这些文件。 |
+| `query_memory query` | 对文档、符号、经验执行 BM25 检索，可选 LLM 查询扩展。返回带引用与文档→符号链接的排序结果。 |
+| `remember problem solution` | 保存经验笔记。相似问题覆盖而非重复。 |
+| `forget id_or_query` | 删除过期经验笔记。 |
+
+## 设计
+
+```
+.dsh-project-memory/
+  index.json       文件级内容哈希表（增量）
+  entries.json     文档摘要 + 符号表条目，按文件
+  experience.json  问题 → 方案笔记（仅检索）
+  watch.json       被监听根目录
+```
+
+- **增量** — 按文件内容哈希，仅重新抽取变更文件。
+- **交叉链接** — 索引后将文档摘要与符号名匹配，命中符号以 `references` 挂载到文档条目，由 `query_memory` 带出。
+- **查询扩展** — `query_memory` 可让 `ctx.llm` 将查询改写为多个变体（同义词、中英、符号名猜测），再跨变体合并 BM25 分数。由配置控制（`llmQueryExpansion`，默认开启）。
+- **一致性** — 事实层跟随代码库（哈希重抽 / 删除即移除）；经验层仅检索，配合覆盖与 `forget` 机制。
+
+## 配置
+
+| 键 | 默认值 | 含义 |
+|---|---|---|
+| `memoryDir` | `.dsh-project-memory` | 每个被索引根目录内的存储目录 |
+| `chunkChars` | 3000 | 每个文档块最大字符数 |
+| `maxChunksPerFile` | 40 | 每文档最大块数 |
+| `llmQueryExpansion` | false | BM25 检索前通过 `ctx.llm` 扩展查询（默认关闭，节省 token） |
+| `expansionCount` | 6 | 扩展变体上限 |
+| `lazyIndexing` | true | 模型读取文件的瞬间即索引（`fs/observed`） |
+| `autoIndexOnFirstUse` | false | 插件加载时对当前工作目录做全量扫描（可选） |
+| `watch` | true | 启用后台刷新 |
+| `watchInterval` | 15 | 轮询间隔（秒） |
+
+### 功能开关
+
+两个最常用的开关是 `lazyIndexing`（模型读取文件的瞬间即索引；默认开启）和 `autoIndexOnFirstUse`（插件加载时对当前工作目录做全量扫描；默认关闭）。
+
+配置存放在插件的 config 对象中。修改方式：在 profile 的 `cordis.patch.yml` 里加一条覆盖项——web profile 对应 `~/.dsh/profiles/web/cordis.patch.yml`：
+
+```yaml
+- id: project-memory
+  config:
+    lazyIndexing: true          # 开启：模型读到哪个文件就索引哪个（默认）
+    autoIndexOnFirstUse: false  # 关闭：不做加载时的全量扫描（默认）
+    llmQueryExpansion: false    # 关闭：不用 LLM 扩展查询，节省 token（默认）
+    watch: true                 # 开启：被监听根目录后台保持新鲜（默认）
+    watchInterval: 15           # 轮询间隔（秒）
+```
+
+只需列出要改的键，其余键回落到插件默认值。用 `dsh --profile web --dump-config` 验证生效。
+
+不想改 profile 文件、只想临时试一次，可用 CLI 补丁覆盖：
+
+```bash
+dsh web --patch ./config.yml
+```
+
+其中 `config.yml` 内容就是上面的覆盖块。
+
+## 开发（面向贡献者）
+
+以下命令用于**维护插件源码**，普通用户无需执行。安装插件只需使用[安装](#安装)一节中的命令。
+
+```bash
+npm install
+npm test          # 32 项检查：chunker / symbols / store / tools / BM25 / links / watch / lazy / config
+```
+
+## 许可证
+
+MIT

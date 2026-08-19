@@ -1,0 +1,120 @@
+# dsh-project-memory
+
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+Persistent project memory for [DeepSeek Harness](https://opencode.ai) (dsh) agents. Indexes documents (PDF / Markdown / txt) and code symbols into a per-workspace store, refreshes them automatically, and recalls them with source citations — documents are cross-linked to the code symbols they reference.
+
+> The plugin keeps a compact project index on disk, with every entry pointing to a concrete file and line — the agent can reorient quickly instead of re-reading the whole project.
+
+## Features
+
+- **Document indexing** — PDF, Markdown, and plain text files are chunked and summarized by the LLM; each entry carries a `path:line` citation back to the source.
+- **Code symbol table** — function and class names are extracted with a lightweight regex scanner, incurring no token cost.
+- **Automatic refresh** — a background poll (`watch_repo`) detects new or changed files by content hash and re-indexes only those.
+- **Read-time indexing** — files are indexed the moment the model actually reads them (`fs/observed`), so the index is a byproduct of normal work, not a separate upfront scan. Files that are never read are never indexed.
+- **Doc ↔ code cross-linking** — when a document mentions a symbol, the match is recorded as a `reference`; querying a symbol also surfaces the documents that describe it.
+- **BM25 retrieval** — ranked search over documents, symbols, and experience notes, with optional LLM query expansion to handle vocabulary mismatch.
+- **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches.
+- **Zero runtime dependencies** — pure JavaScript, compatible with any environment where dsh runs.
+
+## How it works
+
+The design follows four principles:
+
+- **Volatility** — context is ephemeral; it is lost when a session is compacted.
+- **Persistence** — the index is stored on disk and survives compaction and new sessions.
+- **Compactness** — only summaries are stored, replacing repeated full-project reads with a few KB per file.
+- **Verifiability** — every hit carries a `path:line` citation, so the agent can confirm details against the source.
+
+Building the index does not require an upfront scan: files are indexed as the model reads them, so the index grows to cover exactly what has been worked with. Re-reading a file that has not changed is a no-op (content hash), so the index stays fresh at roughly zero ongoing cost.
+
+The store is per-project and follows the codebase: changed files are re-extracted by content hash, deleted files are removed. Experience notes are retrieval-only, so accumulation does not affect context.
+
+## Installation
+
+```bash
+dsh plugin --profile web add /path/to/dsh-project-memory
+```
+
+Each indexed project has its own store at `<root>/.dsh-project-memory/`. Add it to `.gitignore` if it should not be committed.
+
+## Usage
+
+The tools below are **invoked by the agent**, not typed by the user. In the chat, just ask naturally — e.g. "index this project" or "what does the auth module do?" — and the agent calls the matching tool automatically. By default (`lazyIndexing`) files are indexed the moment the model reads them, so memory fills in while you work. `watch_repo` keeps explicitly-watched roots fresh in the background; `index_repo` forces a full backfill of a project (unchanged files are skipped).
+
+| Tool | Purpose |
+|---|---|
+| `index_doc file_path` | Index one document (PDF/MD/txt): chunk → LLM summary → store with `path:line`. Unchanged files are skipped. |
+| `index_repo root` | Index a whole project: docs get LLM summaries, code files get a zero-token symbol table. Incremental, cleans up deleted files, cross-links docs to symbols. |
+| `watch_repo root` | Enable automatic refresh: a background poll detects new/changed files (mtime + content hash) and re-indexes only those. |
+| `query_memory query` | BM25 search over docs + symbols + experience, optionally query-expanded by the LLM. Returns ranked hits with sources and doc→symbol references. |
+| `remember problem solution` | Save an experience note. Similar problems supersede instead of duplicating. |
+| `forget id_or_query` | Delete stale experience notes. |
+
+## Design
+
+```
+.dsh-project-memory/
+  index.json       file-level content-hash map (incremental)
+  entries.json     doc summaries + symbol table entries, keyed by file
+  experience.json  problem → solution notes (retrieval-only)
+  watch.json       watched roots
+```
+
+- **Incremental** — content hash per file; only changed files are re-extracted.
+- **Cross-linking** — after indexing, doc summaries are matched against symbol names; matches are attached to the doc entry as `references` and surfaced by `query_memory`.
+- **Query expansion** — `query_memory` may ask `ctx.llm` to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and then merges BM25 scores across variants. Config-gated (`llmQueryExpansion`, default off).
+- **Consistency** — the fact layer follows the codebase (hash re-extract / remove-on-delete); the experience layer is retrieval-only with supersede and `forget`.
+
+## Configuration
+
+| Key | Default | Meaning |
+|---|---|---|
+| `memoryDir` | `.dsh-project-memory` | store directory inside each indexed root |
+| `chunkChars` | 3000 | max chars per document chunk |
+| `maxChunksPerFile` | 40 | max chunks per document |
+| `llmQueryExpansion` | false | expand queries via `ctx.llm` before BM25 (off by default to save tokens) |
+| `expansionCount` | 6 | max expansion variants |
+| `lazyIndexing` | true | index files the moment the model reads them (`fs/observed`) |
+| `autoIndexOnFirstUse` | false | full scan of the current working directory on plugin load (opt-in) |
+| `watch` | true | enable the background refresh |
+| `watchInterval` | 15 | poll interval (seconds) |
+
+### Toggling features
+
+The two most relevant switches are `lazyIndexing` (index a file the moment the model reads it; default on) and `autoIndexOnFirstUse` (full scan of the current working directory on plugin load; default off).
+
+Settings live in the plugin's config object. To change them, add an override entry to your profile's `cordis.patch.yml` — for the web profile that is `~/.dsh/profiles/web/cordis.patch.yml`:
+
+```yaml
+- id: project-memory
+  config:
+    lazyIndexing: true          # on: index files as the model reads them (default)
+    autoIndexOnFirstUse: false  # off: no upfront full scan (default)
+    llmQueryExpansion: false    # off: do not spend tokens on LLM query expansion (default)
+    watch: true                 # on: background refresh for watched roots (default)
+    watchInterval: 15           # poll interval in seconds
+```
+
+Only list the keys you want to change; the rest fall back to the plugin defaults. Verify the result with `dsh --profile web --dump-config`.
+
+For a one-off run without editing the profile, pass the override as a CLI patch overlay:
+
+```bash
+dsh web --patch ./config.yml
+```
+
+where `config.yml` contains the same override block.
+
+## Development (for contributors)
+
+These commands are for **maintaining the plugin code** — regular users do not need them. Installing the plugin only requires the command in [Installation](#installation).
+
+```bash
+npm install
+npm test          # 32 checks: chunker / symbols / store / tools / BM25 / links / watch / lazy / config
+```
+
+## License
+
+MIT

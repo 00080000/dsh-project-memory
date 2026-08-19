@@ -1,0 +1,13 @@
+- insert:
+    - id: project-memory
+      name: dsh-project-memory
+      config:
+        memoryDir: .dsh-project-memory
+        chunkChars: 3000
+        maxChunksPerFile: 40
+        llmQueryExpansion: false
+        expansionCount: 6
+        lazyIndexing: true
+        autoIndexOnFirstUse: false
+        watch: true
+        watchInterval: 15

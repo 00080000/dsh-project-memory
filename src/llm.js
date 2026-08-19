@@ -1,0 +1,118 @@
+import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { tokenize } from './util/search.js'
+
+function systemMessage(text) {
+  return { role: 'system', content: [{ type: 'text', text }] }
+}
+
+function textOf(message) {
+  const blocks = message.content || []
+  return blocks
+    .filter((b) => b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text)
+    .join('\n')
+}
+
+export async function chatText(llm, system, user, { timeoutMs = 120000 } = {}) {
+  const assembler = new BlockAssembler()
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    for await (const chunk of llm.stream({
+      messages: [systemMessage(system), createUserMessage({ content: [{ type: 'text', text: user }] })],
+      signal: controller.signal,
+    })) {
+      assembler.push(chunk)
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+  return textOf(assembler.message())
+}
+
+export function parseStructuredJson(text) {
+  return parseJson(text, (parsed) => parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+}
+
+export function parseJsonArray(text) {
+  return parseJson(text, (parsed) => Array.isArray(parsed))
+}
+
+function parseJson(text, validate) {
+  if (!text) return null
+  let candidate = text.trim()
+  const fence = candidate.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fence) candidate = fence[1].trim()
+  const first = candidate.indexOf('[')
+  const firstObj = candidate.indexOf('{')
+  let start = firstObj
+  if (first >= 0 && (firstObj < 0 || first < firstObj)) start = first
+  const end = candidate.lastIndexOf(start === first ? ']' : '}')
+  if (start >= 0 && end > start) {
+    candidate = candidate.slice(start, end + 1)
+  }
+  try {
+    const parsed = JSON.parse(candidate)
+    if (validate(parsed)) return parsed
+  } catch {
+    // fall through
+  }
+  return null
+}
+
+export async function expandQuery(llm, query, count = 6) {
+  if (!llm) return [query]
+  const system =
+    'You are a search-query expander for a codebase/document memory search engine. ' +
+    'Given a user query, return a STRICT JSON array of alternative search queries that ' +
+    'capture the same intent with different words: synonyms, English/Chinese equivalents, ' +
+    'code identifier guesses, and narrower/longer phrasings. Include the original query first. ' +
+    'Output only the JSON array of strings, no fences, no commentary.'
+  try {
+    const raw = await chatText(llm, system, `Query: "${query}"\n\nReturn the JSON array.`)
+    const parsed = parseJsonArray(raw)
+    if (Array.isArray(parsed) && parsed.length) {
+      const variants = parsed.map(String).filter((s) => s.trim()).slice(0, count)
+      if (variants.length) return variants
+    }
+  } catch {
+    // fall through to the raw query
+  }
+  return [query]
+}
+
+export async function extractDocEntry(llm, chunk, sourcePath) {
+  const system =
+    'You are a project-documentation indexer. Given a chunk of a project document, ' +
+    'return a STRICT JSON object with exactly three fields: ' +
+    '"title" (short section title, string), "summary" (2-4 sentence dense summary of what this section covers, ' +
+    'mentioning concrete names, decisions and constraints), "keywords" (array of 3-8 searchable strings). ' +
+    'Do not include markdown fences, do not add commentary, output only the JSON object.'
+
+  const user =
+    `Document: ${sourcePath}\nSection: ${chunk.title || '(untitled)'}\n\n` +
+    `Content:\n${chunk.text.slice(0, 6000)}\n\nReturn the JSON object.`
+
+  const fallback = () => ({
+    title: chunk.title || sourcePath,
+    summary: chunk.text.replace(/\s+/g, ' ').slice(0, 400),
+    keywords: tokenize(chunk.title).slice(0, 5),
+  })
+
+  if (!llm) return fallback()
+
+  try {
+    const raw = await chatText(llm, system, user)
+    const parsed = parseStructuredJson(raw)
+    if (!parsed || typeof parsed.summary !== 'string' || !parsed.summary.trim()) return fallback()
+    return {
+      title: typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title.trim() : chunk.title || sourcePath,
+      summary: parsed.summary.trim(),
+      keywords: Array.isArray(parsed.keywords)
+        ? parsed.keywords.map(String).filter((k) => k).slice(0, 8)
+        : tokenize(chunk.title).slice(0, 5),
+    }
+  } catch {
+    return fallback()
+  }
+}

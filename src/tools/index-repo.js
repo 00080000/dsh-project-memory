@@ -1,0 +1,105 @@
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import path from 'node:path'
+import { readFileSync } from 'node:fs'
+import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfFile, walkDir } from '../util/fs.js'
+import { buildDocEntries } from '../doc-pipeline.js'
+import { scanSymbols } from '../symbols.js'
+import { linkEntries } from '../link.js'
+import { ProjectMemoryStore } from '../store.js'
+
+export async function indexRepository(ctx, config, root, { reindex = false } = {}) {
+  const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+
+  const files = walkDir(root)
+  const seen = new Set()
+  let indexed = 0
+  let updated = 0
+  let skipped = 0
+  let removed = 0
+
+  for (const filePath of files) {
+    const rel = relativePath(root, filePath)
+    seen.add(rel)
+    const ext = path.extname(filePath).toLowerCase()
+    if (!isSupportedDoc(ext) && !isSupportedCode(ext)) continue
+
+    const existing = store.fileRecord(rel)
+    if (!reindex && existing) {
+      const { hash } = await sha256OfFile(filePath)
+      if (existing.sha256 === hash) {
+        skipped++
+        continue
+      }
+    }
+
+    const { hash, size } = await sha256OfFile(filePath)
+    try {
+      let entries
+      if (isSupportedCode(ext)) {
+        const content = readFileSync(filePath, 'utf8')
+        entries = scanSymbols(filePath, content)
+        store.markFile(rel, { sha256: hash, size, type: 'code', indexedAt: new Date().toISOString() })
+        updated++
+      } else {
+        entries = await buildDocEntries(ctx.llm, filePath, {
+          chunkChars: config.chunkChars,
+          maxChunks: config.maxChunksPerFile,
+          maxFileSizeMb: config.maxFileSizeMb,
+        })
+        store.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
+        indexed++
+      }
+      store.setEntries(rel, entries)
+    } catch (err) {
+      store.removeFile(rel)
+      throw new Error(`Failed to index ${rel}: ${err.message}`)
+    }
+  }
+
+  for (const rel of Object.keys(store.files)) {
+    if (!seen.has(rel)) {
+      store.removeFile(rel)
+      removed++
+    }
+  }
+
+  store.save()
+  const links = linkEntries(store)
+  if (links) store.save()
+  const stats = store.stats()
+  return (
+    `Indexed project: ${root}\n` +
+    `docs indexed: ${indexed}, code symbols updated: ${updated}, unchanged skipped: ${skipped}, removed: ${removed}\n` +
+    `memory store: ${stats.files} files, ${stats.entries} entries, ${stats.experience} experience notes` +
+    (links ? `, ${links} doc<->symbol links` : '')
+  )
+}
+
+export function indexRepoTool(ctx, config) {
+  return defineTool({
+    name: 'index_repo',
+    description:
+      'Index a whole project into persistent memory. Documents (PDF/Markdown/txt) are summarized by the LLM; ' +
+      'code files get a zero-token symbol table (function/class names with line numbers). Incremental: only changed ' +
+      'files are re-extracted (content-hash), deleted files are removed from memory. Call once per project, then query_memory.',
+    parameters: {
+      root: {
+        type: 'string',
+        required: true,
+        description: 'Absolute path to the project root to index.',
+      },
+      reindex: {
+        type: 'boolean',
+        description: 'Force full re-index, ignoring content-hash skips. Default false.',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      const root = path.resolve(args.root)
+      return indexRepository(ctx, config, root, { reindex: Boolean(args.reindex) })
+    },
+  })
+}
