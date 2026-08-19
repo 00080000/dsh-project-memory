@@ -23,7 +23,7 @@ The design follows four principles:
 
 - **Volatility** — context is ephemeral; it is lost when a session is compacted.
 - **Persistence** — the index is stored on disk and survives compaction and new sessions.
-- **Compactness** — only summaries are stored, replacing repeated full-project reads with a few KB per file.
+- **Compactness** — only summaries are stored; the index runs around 0.5% the size of the source it covers (8.8 MB of source → 49 KB of index in the example project), so retrieval replaces re-reading the full file.
 - **Verifiability** — every hit carries a `path:line` citation, so the agent can confirm details against the source.
 
 Building the index does not require an upfront scan: files are indexed as the model reads them, so the index grows to cover exactly what has been worked with. Re-reading a file that has not changed is a no-op (content hash), so the index stays fresh at roughly zero ongoing cost.
