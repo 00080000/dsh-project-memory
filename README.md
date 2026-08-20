@@ -9,7 +9,7 @@ Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/
 ## Features
 
 - **Document indexing** — PDF, Markdown, and plain text files are chunked and summarized by the LLM; each entry carries a `path:line` citation back to the source.
-- **Code symbol table** — function and class names are extracted with a lightweight regex scanner, incurring no token cost.
+- **Code symbol table** — function and class names are extracted with a lightweight regex scanner, without LLM token usage.
 - **Automatic refresh** — a background poll (`watch_repo`) detects new or changed files by content hash and re-indexes only those.
 - **Read-time indexing** — files are indexed the moment the model actually reads them (`fs/observed`), so the index is a byproduct of normal work, not a separate upfront scan. Files that are never read are never indexed. The project root is detected by markers (`.git`, `package.json`, …), a README plus source directories, or the file's own directory as a last resort.
 - **Doc ↔ code cross-linking** — when a document mentions a symbol, the match is recorded as a `reference`; querying a symbol also surfaces the documents that describe it.
@@ -24,9 +24,9 @@ The design follows four principles:
 - **Volatility** — context is ephemeral; it is lost when a session is compacted.
 - **Persistence** — the index is stored on disk and survives compaction and new sessions.
 - **Compactness** — only summaries are stored; the index runs around 0.5% the size of the source it covers (8.8 MB of source → 49 KB of index in the example project), so retrieval replaces re-reading the full file.
-- **Verifiability** — every hit carries a `path:line` citation, so the agent can confirm details against the source.
+- **Verifiability** — hits carry a `path:line` citation where applicable, so the agent can confirm details against the source.
 
-Building the index does not require an upfront scan: files are indexed as the model reads them, so the index grows to cover exactly what has been worked with. Re-reading a file that has not changed is a no-op (content hash), so the index stays fresh at roughly zero ongoing cost.
+Building the index does not require an upfront scan: files are indexed as the model reads them, so the index grows to cover exactly what has been worked with. Re-reading a file that has not changed is a no-op (content hash), so the index stays fresh with minimal ongoing overhead.
 
 The store is per-project and follows the codebase: changed files are re-extracted by content hash, deleted files are removed. Experience notes are retrieval-only, so accumulation does not affect context.
 
@@ -43,7 +43,7 @@ Each indexed project has its own store at `<root>/.dsh-project-memory/`. Add it 
 
 ## Usage
 
-The tools below are **invoked by the agent**, not typed by the user. In the chat, just ask naturally — e.g. "index this project" or "what does the auth module do?" — and the agent calls the matching tool automatically. By default (`lazyIndexing`) files are indexed the moment the model reads them, so memory fills in while you work. `watch_repo` keeps explicitly-watched roots fresh in the background; `index_repo` forces a full backfill of a project (unchanged files are skipped).
+The tools below are **invoked by the agent**, not typed by the user. In the chat, just ask naturally — e.g. "index this project" or "what does the auth module do?" — or simply keep working, and the agent calls the matching tool automatically. By default (`lazyIndexing`) files are indexed the moment the model reads them, so memory fills in while you work. `watch_repo` keeps explicitly-watched roots fresh in the background; `index_repo` forces a full backfill of a project (unchanged files are skipped).
 
 | Tool | Purpose |
 |---|---|
@@ -76,6 +76,9 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | `memoryDir` | `.dsh-project-memory` | store directory inside each indexed root |
 | `chunkChars` | 3000 | max chars per document chunk |
 | `maxChunksPerFile` | 40 | max chunks per document |
+| `maxFileSizeMb` | 50 | skip text files larger than this (MB) |
+| `maxOutputChars` | 8000 | cap for LLM-generated summary output (chars) |
+| `maxPdfPages` | 1000 | PDF page cap when pages are not otherwise limited |
 | `llmQueryExpansion` | false | expand queries via `ctx.llm` before BM25 (off by default to save tokens) |
 | `expansionCount` | 6 | max expansion variants |
 | `lazyIndexing` | true | index files the moment the model reads them (`fs/observed`) |
