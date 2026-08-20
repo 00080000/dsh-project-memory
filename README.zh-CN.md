@@ -39,6 +39,12 @@ dsh plugin --profile web add . -w
 
 `-w`（workspace-root）标志是必需的：profile 目录是 pnpm 工作区根目录，不带该标志 pnpm 会拒绝 add。其他目录下同样可用路径形式：`dsh plugin --profile web add /path/to/dsh-project-memory -w`。
 
+每个版本会附带预构建 tarball，无需构建步骤即可安装：
+
+```bash
+dsh plugin --profile web add /path/to/dsh-project-memory-0.1.0.tgz
+```
+
 每个被索引的项目在 `<root>/.dsh-project-memory/` 下有独立存储。如无需入库，可加入 `.gitignore`。
 
 ## 用法

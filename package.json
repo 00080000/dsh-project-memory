@@ -6,8 +6,15 @@
   "main": "src/index.js",
   "files": [
     "src",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/00080000/dsh-project-memory.git"
+  },
   "scripts": {
     "test": "node test/run-test.mjs"
   },
