@@ -83,7 +83,7 @@ dsh plugin --profile web add /path/to/dsh-project-memory-0.1.0.tgz
 | `chunkChars` | 3000 | 每个文档块最大字符数 |
 | `maxChunksPerFile` | 40 | 每文档最大块数 |
 | `maxFileSizeMb` | 50 | 大于该值（MB）的文本/代码文件跳过 |
-| `maxOutputChars` | 8000 | LLM 摘要输出上限（字符） |
+| `maxOutputChars` | 8000 | `query_memory` 返回文本上限（字符） |
 | `maxPdfPages` | 1000 | 未另行限制时 PDF 的页数上限 |
 | `llmQueryExpansion` | false | BM25 检索前通过 `ctx.llm` 扩展查询（默认关闭，节省 token） |
 | `expansionCount` | 6 | 扩展变体上限 |

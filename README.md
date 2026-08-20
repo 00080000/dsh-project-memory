@@ -83,7 +83,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | `chunkChars` | 3000 | max chars per document chunk |
 | `maxChunksPerFile` | 40 | max chunks per document |
 | `maxFileSizeMb` | 50 | skip text and code files larger than this (MB) |
-| `maxOutputChars` | 8000 | cap for LLM-generated summary output (chars) |
+| `maxOutputChars` | 8000 | cap for `query_memory` result text (chars) |
 | `maxPdfPages` | 1000 | PDF page cap when pages are not otherwise limited |
 | `llmQueryExpansion` | false | expand queries via `ctx.llm` before BM25 (off by default to save tokens) |
 | `expansionCount` | 6 | max expansion variants |
