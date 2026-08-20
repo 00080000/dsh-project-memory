@@ -46,6 +46,7 @@ export function indexDocTool(ctx, config) {
           chunkChars: config.chunkChars,
           maxChunks: config.maxChunksPerFile,
           maxFileSizeMb: config.maxFileSizeMb,
+          maxPdfPages: config.maxPdfPages,
         })
         if (entries === null) {
           store.removeFile(rel)

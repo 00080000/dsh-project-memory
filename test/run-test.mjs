@@ -14,7 +14,7 @@ import { watchRepoTool } from '../src/tools/watch-repo.js'
 import { WatchManager } from '../src/watch.js'
 import { linkEntries } from '../src/link.js'
 import { rankEntriesMerged } from '../src/util/search.js'
-import { findProjectRoot, setupLazyIndexing } from '../src/lazy.js'
+import { findProjectRoot, indexFile, setupLazyIndexing } from '../src/lazy.js'
 
 let passed = 0
 let failed = 0
@@ -247,6 +247,31 @@ check('watch_repo starts watching', out.includes('Watching'))
 out = await watchTool.execute({ root, watch: false })
 check('watch_repo stops watching', out.includes('Stopped watching'))
 
+console.log('\n== watch restore (persisted roots) ==')
+const restoreRoot = mkdtempSync(path.join(tmpdir(), 'pm-restore-'))
+const restoreStore = new ProjectMemoryStore(memoryRootFor(restoreRoot, config.memoryDir))
+restoreStore.addWatch(restoreRoot)
+restoreStore.save()
+const restoreCwd = process.cwd
+process.cwd = () => restoreRoot
+const restoreWm = new WatchManager(ctx, config)
+restoreWm.restorePersisted()
+process.cwd = restoreCwd
+check('restorePersisted resumes a persisted watch root', restoreWm.roots.has(restoreRoot))
+restoreWm.stop()
+
+console.log('\n== code size limit ==')
+const sizeRoot = mkdtempSync(path.join(tmpdir(), 'pm-size-'))
+const bigCs = path.join(sizeRoot, 'huge.cs')
+writeFileSync(bigCs, `public class Huge {\n  public static string S = "${'x'.repeat(1024 * 1024)}";\n}\n`)
+const sizeLimited = { ...config, maxFileSizeMb: 0.001 }
+const lazyLimited = await indexFile(ctx, sizeLimited, bigCs)
+check('oversized code file skipped by lazy index', lazyLimited === false)
+check(
+  'oversized code file leaves no record',
+  !new ProjectMemoryStore(memoryRootFor(sizeRoot, config.memoryDir)).load().fileRecord('huge.cs'),
+)
+
 console.log('\n== config defaults ==')
 const { Config } = await import('../src/index.js')
 const configJson = JSON.parse(JSON.stringify(Config))
@@ -292,7 +317,6 @@ writeFileSync(path.join(lazyRoot, 'package.json'), '{}')
 writeFileSync(path.join(lazyRoot, 'sub', 'utils.js'), 'export function parse() {}\n')
 check('finds project root via marker', findProjectRoot(path.join(lazyRoot, 'sub', 'utils.js')) === lazyRoot)
 
-const { indexFile } = await import('../src/lazy.js')
 const dumpLazy = path.join(lazyRoot, 'sub', 'dump.txt')
 writeFileSync(dumpLazy, '=== Assembly-CSharp loaded: Assembly-CSharp, Version=1.0.0.0\n\n== TYPE Foo : base=Object\n')
 await indexFile(ctx, config, dumpLazy)
@@ -365,6 +389,10 @@ check('does not re-extract an unchanged re-read', (await lazyStore.fileRecord('s
 check(
   'lazy index auto-registers the project root with the watch manager',
   lazyWatch.roots.has(lazyRoot),
+)
+check(
+  'lazy-registered root is persisted for restart recovery',
+  new ProjectMemoryStore(memoryRootFor(lazyRoot, config.memoryDir)).load().watchlist.includes(lazyRoot),
 )
 
 console.log('\n== query expansion disabled skips the LLM ==')

@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfFile } from './util/fs.js'
 import { buildDocEntries } from './doc-pipeline.js'
 import { scanSymbols } from './symbols.js'
@@ -70,10 +70,16 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
     const store = new ProjectMemoryStore(memoryDir).load()
     const rel = relativePath(root, filePath)
     const existing = store.fileRecord(rel)
+    if (isSupportedCode(ext) && config.maxFileSizeMb && statSync(filePath).size > config.maxFileSizeMb * 1024 * 1024) {
+      return false
+    }
     const { hash, size } = await sha256OfFile(filePath)
     if (existing && existing.sha256 === hash) return false
 
-    if (watchManager) watchManager.addRoot(root)
+    if (watchManager) {
+      watchManager.addRoot(root)
+      store.addWatch(root)
+    }
 
     let entries
     if (isSupportedCode(ext)) {
@@ -84,6 +90,7 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
         chunkChars: config.chunkChars,
         maxChunks: config.maxChunksPerFile,
         maxFileSizeMb: config.maxFileSizeMb,
+        maxPdfPages: config.maxPdfPages,
       })
       if (entries === null) {
         store.removeFile(rel)

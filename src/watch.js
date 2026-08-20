@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfFile, walkDir } from './util/fs.js'
 import { buildDocEntries } from './doc-pipeline.js'
@@ -12,6 +12,17 @@ export class WatchManager {
     this.config = config
     this.roots = new Map()
     this.timer = null
+  }
+
+  restorePersisted() {
+    const cwd = process.cwd()
+    const store = new ProjectMemoryStore(memoryRootFor(cwd, this.config.memoryDir))
+    if (existsSync(store.dir)) {
+      store.load()
+      for (const root of store.watchlist) {
+        if (typeof root === 'string' && root) this.addRoot(root)
+      }
+    }
   }
 
   addRoot(root) {
@@ -73,6 +84,10 @@ export class WatchManager {
         if (state.snapshot[rel] === sig) continue
         state.snapshot[rel] = sig
 
+        if (isSupportedCode(ext) && this.config.maxFileSizeMb && stats.size > this.config.maxFileSizeMb * 1024 * 1024) {
+          continue
+        }
+
         const { hash } = await sha256OfFile(filePath)
         const existing = state.store.fileRecord(rel)
         if (existing && existing.sha256 === hash) continue
@@ -87,6 +102,7 @@ export class WatchManager {
               chunkChars: this.config.chunkChars,
               maxChunks: this.config.maxChunksPerFile,
               maxFileSizeMb: this.config.maxFileSizeMb,
+              maxPdfPages: this.config.maxPdfPages,
             })
             if (entries === null) {
               state.store.removeFile(rel)

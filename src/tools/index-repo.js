@@ -1,6 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { isSupportedCode, isSupportedDoc, looksLikeDump, memoryRootFor, relativePath, sha256OfFile, walkDir } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { scanSymbols } from '../symbols.js'
@@ -25,17 +25,24 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
       const ext = path.extname(filePath).toLowerCase()
       if (!isSupportedDoc(ext) && !isSupportedCode(ext)) continue
 
-      const existing = store.fileRecord(rel)
-      if (!reindex && existing) {
-        const { hash } = await sha256OfFile(filePath)
-        if (existing.sha256 === hash) {
+      try {
+        const size = statSync(filePath).size
+        if (isSupportedCode(ext) && config.maxFileSizeMb && size > config.maxFileSizeMb * 1024 * 1024) {
+          store.removeFile(rel)
           skipped++
           continue
         }
-      }
 
-      const { hash, size } = await sha256OfFile(filePath)
-      try {
+        const existing = store.fileRecord(rel)
+        if (!reindex && existing) {
+          const { hash } = await sha256OfFile(filePath)
+          if (existing.sha256 === hash) {
+            skipped++
+            continue
+          }
+        }
+
+        const { hash } = await sha256OfFile(filePath)
         let entries
         if (isSupportedCode(ext)) {
           const content = readFileSync(filePath, 'utf8')
@@ -53,6 +60,7 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
             chunkChars: config.chunkChars,
             maxChunks: config.maxChunksPerFile,
             maxFileSizeMb: config.maxFileSizeMb,
+            maxPdfPages: config.maxPdfPages,
           })
           if (entries === null) {
             store.removeFile(rel)

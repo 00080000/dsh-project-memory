@@ -55,7 +55,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 |---|---|
 | `index_doc file_path` | Index one document (PDF/MD/txt): chunk → LLM summary → store with `path:line`. Unchanged files are skipped. |
 | `index_repo root` | Index a whole project: docs get LLM summaries, code files get a zero-token symbol table. Incremental, cleans up deleted files, cross-links docs to symbols. |
-| `watch_repo root` | Enable automatic refresh: a background poll detects new/changed files (mtime + content hash) and re-indexes only those. |
+| `watch_repo root` | Enable automatic refresh: a background poll detects new/changed files (mtime + content hash) and re-indexes only those. Watched roots persist across plugin restarts. |
 | `query_memory query` | BM25 search over docs + symbols + experience, optionally query-expanded by the LLM. Returns ranked hits with relative scores, sources, and doc→symbol references. |
 | `remember problem solution` | Save an experience note. Similar problems supersede instead of duplicating. |
 | `forget id_or_query` | Delete stale experience notes. |
@@ -82,7 +82,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | `memoryDir` | `.dsh-project-memory` | store directory inside each indexed root |
 | `chunkChars` | 3000 | max chars per document chunk |
 | `maxChunksPerFile` | 40 | max chunks per document |
-| `maxFileSizeMb` | 50 | skip text files larger than this (MB) |
+| `maxFileSizeMb` | 50 | skip text and code files larger than this (MB) |
 | `maxOutputChars` | 8000 | cap for LLM-generated summary output (chars) |
 | `maxPdfPages` | 1000 | PDF page cap when pages are not otherwise limited |
 | `llmQueryExpansion` | false | expand queries via `ctx.llm` before BM25 (off by default to save tokens) |
@@ -124,7 +124,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test          # 58 checks: chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency
+npm test          # 62 checks: chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency / restore / size limit
 ```
 
 ## License

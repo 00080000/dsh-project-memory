@@ -55,7 +55,7 @@ dsh plugin --profile web add /path/to/dsh-project-memory-0.1.0.tgz
 |---|---|
 | `index_doc file_path` | 索引单个文档（PDF/MD/txt）：分块 → LLM 摘要 → 带 `路径:行号` 入库。未变更文件自动跳过。 |
 | `index_repo root` | 索引整个项目：文档由 LLM 生成摘要，代码文件生成零 token 符号表。增量更新、清理已删除文件、文档与符号交叉链接。 |
-| `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件（mtime + 内容哈希），仅重抽这些文件。 |
+| `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件（mtime + 内容哈希），仅重抽这些文件。监听的项目在插件重启后自动恢复。 |
 | `query_memory query` | 对文档、符号、经验执行 BM25 检索，可选 LLM 查询扩展。返回带相对分数（0-100）、引用与文档→符号链接的排序结果。 |
 | `remember problem solution` | 保存经验笔记。相似问题覆盖而非重复。 |
 | `forget id_or_query` | 删除过期经验笔记。 |
@@ -82,7 +82,7 @@ dsh plugin --profile web add /path/to/dsh-project-memory-0.1.0.tgz
 | `memoryDir` | `.dsh-project-memory` | 每个被索引根目录内的存储目录 |
 | `chunkChars` | 3000 | 每个文档块最大字符数 |
 | `maxChunksPerFile` | 40 | 每文档最大块数 |
-| `maxFileSizeMb` | 50 | 大于该值（MB）的文本文件跳过 |
+| `maxFileSizeMb` | 50 | 大于该值（MB）的文本/代码文件跳过 |
 | `maxOutputChars` | 8000 | LLM 摘要输出上限（字符） |
 | `maxPdfPages` | 1000 | 未另行限制时 PDF 的页数上限 |
 | `llmQueryExpansion` | false | BM25 检索前通过 `ctx.llm` 扩展查询（默认关闭，节省 token） |
@@ -124,7 +124,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test          # 58 项检查：chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency
+npm test          # 62 项检查：chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency / restore / size limit
 ```
 
 ## 许可证

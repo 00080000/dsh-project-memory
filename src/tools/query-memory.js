@@ -80,7 +80,7 @@ export function queryMemoryTool(ctx, config) {
           for (const { item: e, score } of scoredExp) {
             const source = e.sourceFile ? ` (source: ${e.sourceFile})` : ''
             lines.push(
-              `### Problem: ${e.problem} (score: ${Math.round((score / expTop) * 100)})\n- solution: ${e.solution}${source}\n- updated: ${e.updatedAt}`,
+              `### Problem: ${e.problem} (score: ${Math.round((score / expTop) * 100)}, id: ${e.id})\n- solution: ${e.solution}${source}\n- updated: ${e.updatedAt}`,
             )
           }
         }

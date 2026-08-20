@@ -29,6 +29,7 @@ export const Config = Schema.object({
 export function apply(ctx, config) {
   const watchManager = new WatchManager(ctx, config)
   if (config.watch) {
+    watchManager.restorePersisted()
     ctx.effect(() => {
       watchManager.start(config.watchInterval * 1000)
       return () => watchManager.stop()
