@@ -33,10 +33,10 @@
     "pdfjs-dist": "^4.10.38"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/schemastery": "*",
-    "@deepseek-ai/dsh-llm": "*"
+    "@deepseek-ai/cordis": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0",
+    "@deepseek-ai/schemastery": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0"
   },
   "dsh": {
     "bundle": {
