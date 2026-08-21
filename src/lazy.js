@@ -70,10 +70,16 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
     const store = new ProjectMemoryStore(memoryDir).load()
     const rel = relativePath(root, filePath)
     const existing = store.fileRecord(rel)
-    if (isSupportedCode(ext) && config.maxFileSizeMb && statSync(filePath).size > config.maxFileSizeMb * 1024 * 1024) {
+    let hash
+    let size
+    try {
+      if (isSupportedCode(ext) && config.maxFileSizeMb && statSync(filePath).size > config.maxFileSizeMb * 1024 * 1024) {
+        return false
+      }
+      ;({ hash, size } = await sha256OfFile(filePath))
+    } catch {
       return false
     }
-    const { hash, size } = await sha256OfFile(filePath)
     if (existing && existing.sha256 === hash) return false
 
     if (watchManager) {

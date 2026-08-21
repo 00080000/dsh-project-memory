@@ -114,6 +114,7 @@ export class WatchManager {
           state.store.setEntries(rel, entries)
           changed++
         } catch (err) {
+          delete state.snapshot[rel]
           console.error(`[dsh-project-memory] re-index failed for ${rel}: ${err.message}`)
         }
       }

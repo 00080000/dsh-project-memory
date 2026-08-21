@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { stat } from 'node:fs/promises'
 import { looksLikeDump, readTextFile } from './util/fs.js'
 import { parsePdf } from './parsers/pdfjs-parser.js'
 import { chunkText } from './chunker.js'
@@ -7,6 +8,12 @@ import { extractDocEntry } from './llm.js'
 export async function extractTextFromFile(filePath, { maxFileSizeMb = 50, maxPdfPages = 1000 } = {}) {
   const ext = path.extname(filePath).toLowerCase()
   if (ext === '.pdf') {
+    if (maxFileSizeMb) {
+      const stats = await stat(filePath)
+      if (stats.size > maxFileSizeMb * 1024 * 1024) {
+        throw new Error(`File too large to index (${(stats.size / 1024 / 1024).toFixed(1)} MB), limit is ${maxFileSizeMb} MB`)
+      }
+    }
     const result = await parsePdf(filePath, { maxPages: maxPdfPages })
     return result.markdown
   }

@@ -44,7 +44,7 @@ function matchGo(line) {
 }
 
 function matchRust(line) {
-  let m = line.match(/^fn\s+(\w+)\s*\(/)
+  let m = line.match(/^(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*\(/)
   if (m) return { name: m[1], kind: 'function' }
   m = line.match(/^(?:pub\s+)?(?:struct|enum|trait|impl)\s+(\w+)/)
   if (m) return { name: m[1], kind: line.includes('impl') ? 'impl' : 'type' }

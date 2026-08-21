@@ -5,7 +5,7 @@ export function isCjkText(text) {
   return CJK_RANGE.test(text || '')
 }
 
-export function tokenize(text) {
+export function tokenizeRaw(text) {
   if (!text) return []
   const lower = text.toLowerCase()
   const tokens = []
@@ -25,7 +25,11 @@ export function tokenize(text) {
     else flushCjk()
   }
   flushCjk()
-  return [...new Set(tokens)]
+  return tokens
+}
+
+export function tokenize(text) {
+  return [...new Set(tokenizeRaw(text))]
 }
 
 const K1 = 1.5
@@ -40,7 +44,7 @@ function avgDocLen(docs) {
 export function buildBm25(docs, getFieldText) {
   const documents = docs.map((doc) => {
     const text = getFieldText(doc)
-    const terms = tokenize(text)
+    const terms = tokenizeRaw(text)
     const tf = {}
     for (const t of terms) tf[t] = (tf[t] || 0) + 1
     return { doc, length: terms.length, tf }

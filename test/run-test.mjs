@@ -13,7 +13,7 @@ import { forgetTool } from '../src/tools/forget.js'
 import { watchRepoTool } from '../src/tools/watch-repo.js'
 import { WatchManager } from '../src/watch.js'
 import { linkEntries } from '../src/link.js'
-import { rankEntriesMerged } from '../src/util/search.js'
+import { rankEntriesMerged, rankEntries } from '../src/util/search.js'
 import { findProjectRoot, indexFile, setupLazyIndexing } from '../src/lazy.js'
 
 let passed = 0
@@ -104,6 +104,13 @@ const csSymbols = scanSymbols('Program.cs', csSource)
 check('C# only captures declarations (no method-call noise)', csSymbols.length === 5)
 check('C# captures class + functions', csSymbols.every((s) => ['Program', 'Main', 'GetName', 'DumpType', 'ReadMoveDir'].includes(s.title.split(' ')[0])))
 
+const rustSymbols = scanSymbols('lib.rs', 'pub fn visible() {}\npub(crate) async fn scoped() {}\nfn hidden() {}\npub struct Thing {}\n')
+check(
+  'rust captures pub fn / pub(crate) async fn / private fn',
+  ['visible', 'scoped', 'hidden'].every((n) => rustSymbols.some((s) => s.keywords.includes(n))),
+)
+check('rust struct still detected', rustSymbols.some((s) => s.title.startsWith('Thing')))
+
 console.log('\n== store ==')
 const storeDir = memoryRootFor(root, config.memoryDir)
 const store = new ProjectMemoryStore(storeDir).load()
@@ -134,6 +141,17 @@ console.log('\n== experience capacity ==')
   check('cap: addExperience keeps store at max', capStore.experience.length === 120 && added === 150)
   check('cap: clamps at 2000 on huge projects', Math.max(100, Math.min(2000, 5000 * 2)) === 2000)
   check('cap: floors at 100 on empty projects', Math.max(100, Math.min(2000, 0 * 2)) === 100)
+}
+
+console.log('\n== supersede boundary (regression) ==')
+{
+  const ngxStore = new ProjectMemoryStore(path.join(mkdtempSync(path.join(tmpdir(), 'pm-ngx-')), 'mem')).load()
+  ngxStore.addExperience({ problem: '如何配置 nginx 反向代理', solution: 'proxy_pass to upstream' })
+  const ngxSecond = ngxStore.addExperience({ problem: '如何配置 nginx 负载均衡', solution: 'upstream round-robin' })
+  check(
+    'distinct problems with shared prefix do not supersede',
+    ngxSecond.superseded === false && ngxStore.experience.length === 2,
+  )
 }
 
 console.log('\n== index_doc ==')
@@ -235,6 +253,20 @@ const merged = rankEntriesMerged(
 )
 check('merged search ranks by max score', merged.length === 1 && merged[0].id === '1')
 
+console.log('\n== BM25 term frequency & field weighting ==')
+{
+  const tfDocs = [
+    { id: 'low', title: 'Alpha notes', summary: 'fees y z w', keywords: [], sourcePath: 'a.md' },
+    { id: 'high', title: 'Beta notes', summary: 'fees fees fees x', keywords: [], sourcePath: 'b.md' },
+  ]
+  check('higher term frequency ranks first', rankEntries(tfDocs, 'fees')[0]?.id === 'high')
+  const fieldDocs = [
+    { id: 'body', title: 'Other title', summary: 'about zephyr stuff', keywords: [], sourcePath: 'c.md' },
+    { id: 'head', title: 'Zephyr spec', summary: 'nothing relevant here', keywords: [], sourcePath: 'd.md' },
+  ]
+  check('title hit outweighs body hit', rankEntries(fieldDocs, 'zephyr')[0]?.id === 'head')
+}
+
 console.log('\n== doc <-> symbol cross-linking ==')
 const linked = linkEntries(new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load())
 check('links doc entries to mentioned symbols', linked > 0)
@@ -259,6 +291,27 @@ await wm.poll()
 const afterDump = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
 check('watch dump file leaves no shell record', !afterDump.fileRecord('docs/watch-dump.txt'))
 wm.stop()
+
+console.log('\n== watch failure retries ==')
+{
+  const failRoot = mkdtempSync(path.join(tmpdir(), 'pm-watchfail-'))
+  writeFileSync(path.join(failRoot, 'broken.pdf'), 'definitely not a pdf payload')
+  const failWm = new WatchManager(ctx, config)
+  failWm.addRoot(failRoot)
+  await failWm.poll()
+  check(
+    'failed index rolls back snapshot so next poll retries',
+    !('broken.pdf' in failWm.roots.get(failRoot).snapshot),
+  )
+  writeFileSync(
+    path.join(failRoot, 'skip.txt'),
+    '=== Assembly-CSharp loaded: Assembly-CSharp, Version=1.0.0.0\n\n== TYPE Foo : base=Object\n',
+  )
+  await failWm.poll()
+  const snap = failWm.roots.get(failRoot).snapshot
+  check('dump-skip path keeps snapshot (no re-hash churn)', snap['skip.txt'] !== undefined && !('broken.pdf' in snap))
+  failWm.stop()
+}
 
 console.log('\n== watch_repo tool ==')
 const watchTool = watchRepoTool(wm, config)
@@ -291,6 +344,7 @@ check(
   'oversized code file leaves no record',
   !new ProjectMemoryStore(memoryRootFor(sizeRoot, config.memoryDir)).load().fileRecord('huge.cs'),
 )
+check('missing file is skipped silently by lazy index', (await indexFile(ctx, config, path.join(sizeRoot, 'gone.js'))) === false)
 
 console.log('\n== config defaults ==')
 const { Config } = await import('../src/index.js')
@@ -329,6 +383,16 @@ const { buildDocEntries } = await import('../src/doc-pipeline.js')
 const docDumpFile = path.join(docsDir, 'dump.txt')
 writeFileSync(docDumpFile, '=== Assembly-CSharp loaded: Assembly-CSharp, Version=1.0.0.0\n\n== TYPE Foo : base=Object\n')
 check('buildDocEntries returns null for a dump', (await buildDocEntries(fakeLLM, docDumpFile, {})) === null)
+
+const bigPdf = path.join(mkdtempSync(path.join(tmpdir(), 'pm-pdf-')), 'big.pdf')
+writeFileSync(bigPdf, Buffer.alloc(2048, 0x41))
+let pdfErr = null
+try {
+  await buildDocEntries(fakeLLM, bigPdf, { maxFileSizeMb: 0.001 })
+} catch (err) {
+  pdfErr = err
+}
+check('oversized PDF rejected by byte limit', pdfErr !== null && /too large/i.test(pdfErr.message))
 
 console.log('\n== lazy read-time indexing (fs/observed) ==')
 const lazyRoot = mkdtempSync(path.join(tmpdir(), 'lazy-'))
