@@ -42,7 +42,7 @@ export class WatchManager {
 
   start(intervalMs = 15000) {
     if (this.timer) return
-    this.timer = setInterval(() => this.poll(), intervalMs)
+    this.timer = setInterval(() => this.poll(), Math.max(intervalMs, 1000))
     if (this.timer.unref) this.timer.unref()
   }
 

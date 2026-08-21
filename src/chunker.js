@@ -1,4 +1,6 @@
 export function chunkText(text, chunkChars = 3000, maxChunks = 40) {
+  if (!Number.isFinite(chunkChars) || chunkChars < 1) chunkChars = 3000
+  if (!Number.isFinite(maxChunks) || maxChunks < 1) maxChunks = 40
   const lines = text.split(/\r?\n/)
   const sections = []
   let current = { title: '', lines: [], line: 1 }

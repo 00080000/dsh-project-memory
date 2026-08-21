@@ -1,7 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
 import { memoryRootFor } from '../util/fs.js'
-import { ProjectMemoryStore } from '../store.js'
+import { ProjectMemoryStore, withStoreLock } from '../store.js'
 
 export function watchRepoTool(watchManager, config) {
   return defineTool({
@@ -27,18 +27,21 @@ export function watchRepoTool(watchManager, config) {
     },
     async execute(args) {
       const root = path.resolve(args.root)
-      const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
-      if (args.watch === false) {
-        watchManager.removeRoot(root)
-        store.watchlist = store.watchlist.filter((r) => r !== root)
+      const memoryDir = memoryRootFor(root, config.memoryDir)
+      return withStoreLock(memoryDir, () => {
+        const store = new ProjectMemoryStore(memoryDir).load()
+        if (args.watch === false) {
+          watchManager.removeRoot(root)
+          store.watchlist = store.watchlist.filter((r) => r !== root)
+          store.save()
+          return `Stopped watching: ${root}`
+        }
+        store.addWatch(root)
         store.save()
-        return `Stopped watching: ${root}`
-      }
-      store.addWatch(root)
-      store.save()
-      watchManager.addRoot(root)
-      watchManager.start(config.watchInterval * 1000)
-      return `Watching ${root} (interval ${config.watchInterval}s). Docs/code changes will be re-indexed silently.`
+        watchManager.addRoot(root)
+        watchManager.start(config.watchInterval * 1000)
+        return `Watching ${root} (interval ${config.watchInterval}s). Docs/code changes will be re-indexed silently.`
+      })
     },
   })
 }
