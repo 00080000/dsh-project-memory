@@ -529,5 +529,31 @@ const noExpandTool = queryMemoryTool({ llm: boomLLM }, { ...config, llmQueryExpa
 out = await noExpandTool.execute({ root, query: 'payment' })
 check('query works without any LLM call', out.includes('PaymentService') || out.includes('Payment Module'))
 
+console.log('\n== CJK query respects llmQueryExpansion off ==')
+await remTool.execute({ root, problem: '构建脚本在 Windows 下路径分隔符报错', solution: '统一使用 path.join 拼接' })
+out = await noExpandTool.execute({ root, query: '构建脚本 路径分隔符报错' })
+check('chinese query hits chinese note without any llm call', out.includes('path.join'))
+
+console.log('\n== bilingual keyword instruction ==')
+{
+  let systemText = ''
+  const captureLLM = {
+    async *stream({ messages }) {
+      systemText = messages[0].content.map((b) => b.text).join('\n')
+      const body = JSON.stringify({ title: 'T', summary: 'S', keywords: ['payment', '支付'] })
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: body }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: body } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  const entryBi = await extractDocEntry(captureLLM, { title: 'Payment', text: 'x' }, 'spec.md')
+  check(
+    'index prompt requires own-language and English keywords',
+    /english/i.test(systemText) && /own language/i.test(systemText),
+  )
+  check('bilingual keywords pass through', entryBi.keywords.includes('payment') && entryBi.keywords.includes('支付'))
+}
+
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECKS FAILED`} (${passed} passed)`)
 process.exit(failed === 0 ? 0 : 1)

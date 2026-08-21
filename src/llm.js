@@ -98,7 +98,8 @@ export async function extractDocEntry(llm, chunk, sourcePath) {
     'You are a project-documentation indexer. Given a chunk of a project document, ' +
     'return a STRICT JSON object with exactly three fields: ' +
     '"title" (short section title, string), "summary" (2-4 sentence dense summary of what this section covers, ' +
-    'mentioning concrete names, decisions and constraints), "keywords" (array of 3-8 searchable strings). ' +
+    'mentioning concrete names, decisions and constraints), "keywords" (array of 5-10 searchable strings: ' +
+    'cover the document\'s own language AND English equivalents, so a query in either language can match). ' +
     'Do not include markdown fences, do not add commentary, output only the JSON object.'
 
   const user =

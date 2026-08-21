@@ -74,7 +74,7 @@ dsh plugin --profile web add /path/to/dsh-project-memory-0.1.1.tgz
 
 - **增量** — 按文件内容哈希，仅重新抽取变更文件。
 - **交叉链接** — 索引后将文档摘要与符号名匹配，命中符号以 `references` 挂载到文档条目，由 `query_memory` 带出。
-- **查询扩展** — `query_memory` 可让 `ctx.llm` 将查询改写为多个变体（同义词、中英、符号名猜测），再跨变体合并 BM25 分数。中文/日文/韩文查询自动开启（让中文问题能命中英文符号名），否则由配置控制（`llmQueryExpansion`，默认关闭）。
+- **查询扩展** — `llmQueryExpansion` 开启时，`query_memory` 让 `ctx.llm` 将查询改写为多个变体（同义词、中英、符号名猜测），再跨变体合并 BM25 分数；关闭时查询完全不碰 LLM。跨语种召回（中文问题命中英文内容）改由索引时承担：文档 keywords 要求同时覆盖文档语言与英文，doc↔symbol 链接也会从中文命中带出英文符号名。
 - **一致性** — 事实层跟随代码库（哈希重抽 / 删除即移除）；经验层仅检索，配合覆盖与 `forget` 机制。每个记忆目录的写入按进程内互斥锁串行化；请避免多个 dsh 实例同时写同一项目存储。
 
 ## 已知限制
@@ -84,7 +84,7 @@ dsh plugin --profile web add /path/to/dsh-project-memory-0.1.1.tgz
 - **损坏静默重建** — 存储 JSON 损坏时静默回落为空并在下次写入时重建，无告警。
 - **绝对路径引用** — 条目引用绝对路径；项目搬家后引用失效，重建索引即恢复。
 - **`forget` 按关键词删除偏激进** — 关键词删除按 ≥0.5 token 重叠匹配，可能一次删掉多条；追求精确请用 id 删除。
-- **CJK 查询可能花费 token** — 中/日/韩查询即使 `llmQueryExpansion` 关闭也会触发 LLM 查询扩展；这正是中文问题能命中英文符号名的原因。
+- **跨语种召回依赖索引时** — `llmQueryExpansion` 关闭时，纯中文查询靠索引时捕获的双语 keywords 和 doc↔symbol 链接触达英文内容。v0.1.1 之前建立的索引随文件变更逐步获得双语关键词，或用 `index_repo` 的 `reindex: true` 立即重建。
 
 ## 配置
 

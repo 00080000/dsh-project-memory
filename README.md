@@ -74,7 +74,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 
 - **Incremental** — content hash per file; only changed files are re-extracted.
 - **Cross-linking** — after indexing, doc summaries are matched against symbol names; matches are attached to the doc entry as `references` and surfaced by `query_memory`.
-- **Query expansion** — `query_memory` may ask `ctx.llm` to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and then merges BM25 scores across variants. Auto-enabled for CJK queries (Chinese/Japanese/Korean) so Chinese questions can match English symbol names; config-gated otherwise (`llmQueryExpansion`, default off).
+- **Query expansion** — when `llmQueryExpansion` is on, `query_memory` asks `ctx.llm` to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and merges BM25 scores across variants; when off, queries never touch the LLM. Cross-language recall (a Chinese question hitting English content) comes from index time instead: doc keywords are required to cover the document's own language AND English, and doc↔symbol links surface English symbol names from Chinese hits.
 - **Consistency** — the fact layer follows the codebase (hash re-extract / remove-on-delete); the experience layer is retrieval-only with supersede and `forget`. Store writes are serialized per memory directory; the lock is in-process, so avoid running multiple dsh instances against the same project store concurrently.
 
 ## Known limitations
@@ -84,7 +84,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 - **Silent corruption recovery** — a corrupt store JSON silently falls back to empty and is rebuilt on the next write; there is no warning.
 - **Absolute source paths** — entries cite absolute paths; moving a project invalidates citations until the next re-index.
 - **`forget` by query is eager** — keyword deletion matches at ≥0.5 token overlap and may remove several notes at once; prefer deleting by id for precision.
-- **CJK queries may spend tokens** — Chinese/Japanese/Korean queries trigger LLM query expansion even when `llmQueryExpansion` is off; that is what lets 中文 questions hit English symbol names.
+- **Cross-language recall depends on index time** — with `llmQueryExpansion` off, a Chinese-only query reaches English content through bilingual keywords captured when docs are indexed, plus doc↔symbol links. Stores indexed before v0.1.1 gain bilingual keywords as files change, or immediately via `index_repo` with `reindex: true`.
 
 ## Configuration
 
