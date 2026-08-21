@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfFile, walkDir } from './util/fs.js'
+import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfFile, storeKey, walkDir } from './util/fs.js'
 import { buildDocEntries } from './doc-pipeline.js'
 import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
@@ -69,7 +69,7 @@ export class WatchManager {
       let changed = 0
 
       for (const filePath of files) {
-        const rel = relativePath(root, filePath)
+        const rel = storeKey(relativePath(root, filePath))
         seen.add(rel)
         const ext = path.extname(filePath).toLowerCase()
         if (!isSupportedDoc(ext) && !isSupportedCode(ext)) continue

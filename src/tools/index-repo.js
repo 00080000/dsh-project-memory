@@ -1,7 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
 import { readFileSync, statSync } from 'node:fs'
-import { isSupportedCode, isSupportedDoc, looksLikeDump, memoryRootFor, relativePath, sha256OfFile, walkDir } from '../util/fs.js'
+import { isSupportedCode, isSupportedDoc, looksLikeDump, memoryRootFor, relativePath, sha256OfFile, storeKey, walkDir } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { scanSymbols } from '../symbols.js'
 import { linkEntries } from '../link.js'
@@ -20,7 +20,7 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
     const failures = []
 
     for (const filePath of files) {
-      const rel = relativePath(root, filePath)
+      const rel = storeKey(relativePath(root, filePath))
       seen.add(rel)
       const ext = path.extname(filePath).toLowerCase()
       if (!isSupportedDoc(ext) && !isSupportedCode(ext)) continue
@@ -34,15 +34,12 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
         }
 
         const existing = store.fileRecord(rel)
-        if (!reindex && existing) {
-          const { hash } = await sha256OfFile(filePath)
-          if (existing.sha256 === hash) {
-            skipped++
-            continue
-          }
+        const { hash } = await sha256OfFile(filePath)
+        if (!reindex && existing && existing.sha256 === hash) {
+          skipped++
+          continue
         }
 
-        const { hash } = await sha256OfFile(filePath)
         let entries
         if (isSupportedCode(ext)) {
           const content = readFileSync(filePath, 'utf8')

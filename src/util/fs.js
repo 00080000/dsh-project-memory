@@ -95,6 +95,12 @@ export function relativePath(root, filePath) {
   return path.relative(root, filePath).split(path.sep).join('/')
 }
 
+export const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin'
+
+export function storeKey(rel, platform = process.platform) {
+  return platform === 'win32' || platform === 'darwin' ? rel.toLowerCase() : rel
+}
+
 export function memoryRootFor(indexRoot, memoryDir) {
   return path.join(indexRoot, memoryDir)
 }

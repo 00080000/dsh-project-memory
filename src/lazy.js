@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfFile } from './util/fs.js'
+import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfFile, storeKey } from './util/fs.js'
 import { buildDocEntries } from './doc-pipeline.js'
 import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
@@ -68,7 +68,7 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
   const memoryDir = memoryRootFor(root, config.memoryDir)
   return withStoreLock(memoryDir, async () => {
     const store = new ProjectMemoryStore(memoryDir).load()
-    const rel = relativePath(root, filePath)
+    const rel = storeKey(relativePath(root, filePath))
     const existing = store.fileRecord(rel)
     let hash
     let size

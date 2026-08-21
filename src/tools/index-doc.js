@@ -1,9 +1,10 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
-import { assertReadableFile, memoryRootFor, sha256OfFile } from '../util/fs.js'
+import { assertReadableFile, memoryRootFor, sha256OfFile, storeKey } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { linkEntries } from '../link.js'
 import { ProjectMemoryStore, withStoreLock } from '../store.js'
+import { findProjectRoot } from '../lazy.js'
 
 export function indexDocTool(ctx, config) {
   return defineTool({
@@ -29,13 +30,13 @@ export function indexDocTool(ctx, config) {
     },
     async execute(args) {
       const filePath = assertReadableFile(args.file_path, config.maxFileSizeMb)
-      const root = path.resolve(args.root && args.root.trim() ? args.root : path.dirname(filePath))
+      const root = path.resolve(args.root && args.root.trim() ? args.root : findProjectRoot(filePath))
       const memoryDir = memoryRootFor(root, config.memoryDir)
 
       return withStoreLock(memoryDir, async () => {
         const store = new ProjectMemoryStore(memoryDir).load()
 
-        const rel = path.relative(root, filePath).split(path.sep).join('/')
+        const rel = storeKey(path.relative(root, filePath).split(path.sep).join('/'))
         const { hash, size } = await sha256OfFile(filePath)
         const existing = store.fileRecord(rel)
         if (existing && existing.sha256 === hash) {

@@ -169,6 +169,21 @@ check('indexes md', out.startsWith('Indexed:') && out.includes('Entries: 3'))
 out = await docTool.execute({ file_path: mdPath })
 check('skips unchanged on re-run', out.startsWith('Skipped (unchanged)'))
 
+console.log('\n== index_doc defaults to the project-root store ==')
+{
+  const fragRoot = mkdtempSync(path.join(tmpdir(), 'pm-frag-'))
+  mkdirSync(path.join(fragRoot, 'docs'), { recursive: true })
+  writeFileSync(path.join(fragRoot, 'package.json'), '{"name":"frag"}')
+  const specPath = path.join(fragRoot, 'docs', 'spec.txt')
+  writeFileSync(specPath, '# Spec\n\ncontent here.')
+  await docTool.execute({ file_path: specPath })
+  check(
+    'index_doc without root lands in the project-root store',
+    existsSync(path.join(fragRoot, '.dsh-project-memory', 'index.json')) &&
+      !existsSync(path.join(fragRoot, 'docs', '.dsh-project-memory')),
+  )
+}
+
 console.log('\n== LLM summary safety ==')
 const { summarizeText } = await import('../src/llm.js')
 const huge = 'oops the model echoed the whole chunk back '.repeat(200)
@@ -194,7 +209,7 @@ check('falls back to title keywords when LLM returns empty list', entryNoKw.keyw
 console.log('\n== index_repo ==')
 const repoTool = indexRepoTool(ctx, config)
 out = await repoTool.execute({ root })
-check('indexes repo (doc + code symbols)', out.includes('docs indexed: 1') && out.includes('code symbols updated: 1'))
+check('indexes repo picks up code symbols, skips unchanged doc', out.includes('docs indexed: 0') && out.includes('code symbols updated: 1'))
 
 console.log('\n== index_repo skips dumps ==')
 const dumpDir = mkdtempSync(path.join(tmpdir(), 'pm-dump-'))
@@ -416,6 +431,14 @@ check('hiragana bigram-tokenized', tokenizeRaw('こんにちは の設定').incl
 check('katakana bigram-tokenized', tokenizeRaw('セーブデータ 確認').includes('セー'))
 check('hangul bigram-tokenized', tokenizeRaw('결제 모듈 修正').includes('결제'))
 check('latin word tokenized', tokenizeRaw('payment module fees').includes('payment'))
+
+console.log('\n== store key normalization ==')
+const { storeKey } = await import('../src/util/fs.js')
+check(
+  'keys lowercased on case-insensitive platforms',
+  storeKey('Docs\\Readme.MD', 'win32') === 'docs\\readme.md' && storeKey('Docs/Readme.MD', 'darwin') === 'docs/readme.md',
+)
+check('keys untouched on case-sensitive platforms', storeKey('Docs/Readme.MD', 'linux') === 'Docs/Readme.MD')
 
 const { buildDocEntries } = await import('../src/doc-pipeline.js')
 const docDumpFile = path.join(docsDir, 'dump.txt')
