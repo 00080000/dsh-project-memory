@@ -32,6 +32,8 @@
 
 ## 安装
 
+实测环境为 dsh **0.1.0-rc.7**。更高的 rc 版本预期可用——插件只使用稳定接口（`defineTool`、`llm.stream`、`Schema`）——但未经逐一验证。宿主需提供 `@deepseek-ai/cordis` ^4.0.1 与 `@deepseek-ai/schemastery` ^3.18.1，已通过 peerDependencies 声明。
+
 ```bash
 cd dsh-project-memory
 dsh plugin --profile web add . -w
