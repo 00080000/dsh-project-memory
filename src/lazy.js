@@ -6,11 +6,10 @@ import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
 import { ProjectMemoryStore, withStoreLock } from './store.js'
 
-const PROJECT_MARKERS = [
+const STRONG_MARKERS = ['.git', '.hg', '.svn']
+
+const WEAK_MARKERS = [
   '.dsh-project-memory',
-  '.git',
-  '.hg',
-  '.svn',
   'package.json',
   'go.mod',
   'Cargo.toml',
@@ -46,9 +45,19 @@ function looksLikeProjectRoot(dir) {
 
 export function findProjectRoot(filePath) {
   let dir = path.dirname(filePath)
+  for (;;) {
+    for (const marker of STRONG_MARKERS) {
+      if (existsSync(path.join(dir, marker))) return dir
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+
+  dir = path.dirname(filePath)
   let best = null
   for (let i = 0; i < MAX_ASCENT; i++) {
-    for (const marker of PROJECT_MARKERS) {
+    for (const marker of WEAK_MARKERS) {
       if (existsSync(path.join(dir, marker))) return dir
     }
     if (looksLikeProjectRoot(dir)) best = dir

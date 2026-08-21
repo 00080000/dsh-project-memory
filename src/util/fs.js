@@ -43,7 +43,7 @@ export async function readTextFile(filePath, maxBytes = 2 * 1024 * 1024) {
 const DEFAULT_IGNORE = new Set([
   '.git', 'node_modules', 'dist', 'build', '.next', 'venv', '.venv',
   '__pycache__', '.idea', '.vscode', '.dsh-project-memory', '.cache',
-  'coverage', '.turbo', 'target',
+  'coverage', '.turbo', 'target', 'vendor', 'third_party', 'thirdparty', 'obj',
 ])
 
 export function walkDir(root, ignoreNames = DEFAULT_IGNORE) {

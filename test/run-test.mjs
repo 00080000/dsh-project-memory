@@ -544,6 +544,41 @@ check(
   findProjectRoot(path.join(nestedRoot, 'tools', 'plugin', 'Plugin.cs')) === nestedRoot,
 )
 
+console.log('\n== project root detection at real-world scale ==')
+{
+  const gitRoot = mkdtempSync(path.join(tmpdir(), 'pm-git-'))
+  mkdirSync(path.join(gitRoot, '.git'), { recursive: true })
+  const deep = path.join(gitRoot, 'src', 'main', 'java', 'com', 'company', 'app', 'module', 'service')
+  mkdirSync(deep, { recursive: true })
+  const deepFile = path.join(deep, 'Foo.java')
+  writeFileSync(deepFile, 'class Foo {}\n')
+  check('vcs boundary wins beyond the old 8-level cap', findProjectRoot(deepFile) === gitRoot)
+
+  const mono = mkdtempSync(path.join(tmpdir(), 'pm-mono-'))
+  mkdirSync(path.join(mono, '.git'), { recursive: true })
+  mkdirSync(path.join(mono, 'packages', 'foo', 'src'), { recursive: true })
+  writeFileSync(path.join(mono, 'packages', 'foo', 'package.json'), '{"name":"foo"}')
+  const pkgFile = path.join(mono, 'packages', 'foo', 'src', 'x.js')
+  writeFileSync(pkgFile, 'export function x() {}\n')
+  check('monorepo: vcs boundary beats a nearer package.json', findProjectRoot(pkgFile) === mono)
+}
+
+console.log('\n== default ignore list ==')
+{
+  const { walkDir } = await import('../src/util/fs.js')
+  const igRoot = mkdtempSync(path.join(tmpdir(), 'pm-ignore-'))
+  mkdirSync(path.join(igRoot, 'vendor', 'github.com', 'x'), { recursive: true })
+  mkdirSync(path.join(igRoot, 'obj'), { recursive: true })
+  mkdirSync(path.join(igRoot, 'src'), { recursive: true })
+  writeFileSync(path.join(igRoot, 'vendor', 'github.com', 'x', 'lib.go'), 'package x')
+  writeFileSync(path.join(igRoot, 'obj', 'tmp.cs'), 'class T {}')
+  writeFileSync(path.join(igRoot, 'src', 'main.go'), 'package main')
+  check(
+    'vendor/obj excluded from repo walks',
+    JSON.stringify(walkDir(igRoot)) === JSON.stringify([path.join(igRoot, 'src', 'main.go')]),
+  )
+}
+
 const sessionCwdRoot = mkdtempSync(path.join(tmpdir(), 'pm-cwd-'))
 const procCwdSpy = process.cwd
 process.cwd = () => bareDir
