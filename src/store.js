@@ -38,7 +38,7 @@ function loadJson(filePath, fallback) {
 
 function writeJsonAtomic(filePath, data) {
   const tmp = `${filePath}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify(data, null, 2))
+  writeFileSync(tmp, JSON.stringify(data))
   renameSync(tmp, filePath)
 }
 

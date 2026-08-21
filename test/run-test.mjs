@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { chunkText } from '../src/chunker.js'
@@ -14,7 +14,7 @@ import { watchRepoTool } from '../src/tools/watch-repo.js'
 import { WatchManager } from '../src/watch.js'
 import { linkEntries } from '../src/link.js'
 import { rankEntriesMerged, rankEntries } from '../src/util/search.js'
-import { findProjectRoot, indexFile, setupLazyIndexing } from '../src/lazy.js'
+import { findProjectRoot, indexFile, setupLazyIndexing, codeFirst } from '../src/lazy.js'
 
 let passed = 0
 let failed = 0
@@ -122,6 +122,7 @@ check('supersedes similar problem', add3.superseded === true && store.experience
 check('searches experience', store.searchExperience('pdfjs import').length === 1)
 store.save()
 check('persists to disk', existsSync(path.join(storeDir, 'experience.json')))
+check('store files written compact', !readFileSync(path.join(storeDir, 'experience.json'), 'utf8').includes('\n  '))
 
 console.log('\n== experience capacity ==')
 {
@@ -393,6 +394,45 @@ try {
   pdfErr = err
 }
 check('oversized PDF rejected by byte limit', pdfErr !== null && /too large/i.test(pdfErr.message))
+
+console.log('\n== doc summarization concurrency ==')
+{
+  const concRoot = mkdtempSync(path.join(tmpdir(), 'pm-conc-'))
+  const multiMd = path.join(concRoot, 'multi.md')
+  writeFileSync(multiMd, Array.from({ length: 6 }, (_, i) => `# S${i}\n\nsection ${i} body text.\n`).join('\n'))
+  let active = 0
+  let peak = 0
+  const echoLLM = {
+    async *stream({ messages }) {
+      active++
+      peak = Math.max(peak, active)
+      try {
+        const prompt = messages[1].content.map((b) => b.text).join('\n')
+        const m = prompt.match(/Section: S(\d+)/)
+        const body = JSON.stringify({ title: `T${m ? m[1] : 'X'}`, summary: `sum ${m ? m[1] : ''}`, keywords: [] })
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        yield { type: 'text-delta', index: 0, text: body }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text: body } }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } finally {
+        active--
+      }
+    },
+  }
+  const entriesConc = await buildDocEntries(echoLLM, multiMd, {})
+  check('chunks summarized concurrently within the pool cap', entriesConc.length === 6 && peak <= 4 && peak >= 2)
+  check('entries keep document order', entriesConc.every((e, i) => e.title === `T${i}`))
+}
+
+console.log('\n== lazy queue ordering ==')
+check(
+  'code files are processed before docs',
+  JSON.stringify(codeFirst(['a.md', 'b.js', 'c.ts', 'd.txt'])) === JSON.stringify(['b.js', 'c.ts', 'a.md', 'd.txt']),
+)
+check(
+  'unsupported extensions skip before root detection',
+  (await indexFile(ctx, config, '/nonexistent-dir-for-sure/xyz.json')) === false,
+)
 
 console.log('\n== lazy read-time indexing (fs/observed) ==')
 const lazyRoot = mkdtempSync(path.join(tmpdir(), 'lazy-'))

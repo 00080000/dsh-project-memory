@@ -60,10 +60,10 @@ export function findProjectRoot(filePath) {
 }
 
 export async function indexFile(ctx, config, filePath, watchManager = null) {
-  const root = findProjectRoot(filePath)
-  if (!root) return false
   const ext = path.extname(filePath).toLowerCase()
   if (!isSupportedDoc(ext) && !isSupportedCode(ext)) return false
+  const root = findProjectRoot(filePath)
+  if (!root) return false
 
   const memoryDir = memoryRootFor(root, config.memoryDir)
   return withStoreLock(memoryDir, async () => {
@@ -113,13 +113,21 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
   })
 }
 
+export function codeFirst(paths) {
+  return [...paths].sort((a, b) => {
+    const aCode = isSupportedCode(path.extname(a).toLowerCase()) ? 0 : 1
+    const bCode = isSupportedCode(path.extname(b).toLowerCase()) ? 0 : 1
+    return aCode - bCode
+  })
+}
+
 export function setupLazyIndexing(ctx, config, watchManager = null) {
   const pending = new Map()
   let timer = null
 
   const flush = async () => {
     timer = null
-    const batch = [...pending.keys()]
+    const batch = codeFirst([...pending.keys()])
     pending.clear()
     for (const filePath of batch) {
       try {

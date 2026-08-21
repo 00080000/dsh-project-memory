@@ -20,25 +20,33 @@ export async function extractTextFromFile(filePath, { maxFileSizeMb = 50, maxPdf
   return readTextFile(filePath, maxFileSizeMb * 1024 * 1024)
 }
 
+const DOC_CONCURRENCY = 4
+
 export async function buildDocEntries(llm, filePath, { chunkChars = 3000, maxChunks = 40, maxFileSizeMb = 50, maxPdfPages = 1000 } = {}) {
   const text = await extractTextFromFile(filePath, { maxFileSizeMb, maxPdfPages })
   if (looksLikeDump(text)) return null
   const chunks = chunkText(text, chunkChars, maxChunks)
-  const entries = []
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i]
-    const meta = await extractDocEntry(llm, chunk, filePath)
-    entries.push({
-      id: `${relativeId(filePath)}#${i}`,
-      sourcePath: filePath,
-      sourceLine: chunk.line,
-      type: 'doc',
-      title: meta.title,
-      summary: meta.summary,
-      keywords: meta.keywords,
-    })
-  }
-  return entries
+  const metas = new Array(chunks.length)
+  let cursor = 0
+  await Promise.all(
+    Array.from({ length: Math.min(DOC_CONCURRENCY, chunks.length) }, () =>
+      (async () => {
+        while (cursor < chunks.length) {
+          const i = cursor++
+          metas[i] = await extractDocEntry(llm, chunks[i], filePath)
+        }
+      })(),
+    ),
+  )
+  return metas.map((meta, i) => ({
+    id: `${relativeId(filePath)}#${i}`,
+    sourcePath: filePath,
+    sourceLine: chunks[i].line,
+    type: 'doc',
+    title: meta.title,
+    summary: meta.summary,
+    keywords: meta.keywords,
+  }))
 }
 
 function relativeId(filePath) {
