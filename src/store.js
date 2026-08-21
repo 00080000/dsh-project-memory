@@ -130,7 +130,18 @@ export class ProjectMemoryStore {
     }
     const id = randomUUID()
     this.experience.push({ id, problem, solution, sourceFile, createdAt: now, updatedAt: now })
+    this.pruneExperience()
     return { id, superseded: false }
+  }
+
+  pruneExperience() {
+    const indexedFileCount = Object.keys(this.files).length
+    const max = Math.max(100, Math.min(2000, indexedFileCount * 2))
+    if (this.experience.length <= max) return 0
+    const sorted = [...this.experience].sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : 1))
+    const victims = new Set(sorted.slice(0, this.experience.length - max).map((e) => e.id))
+    this.experience = this.experience.filter((e) => !victims.has(e.id))
+    return victims.size
   }
 
   findSupersede(problem) {

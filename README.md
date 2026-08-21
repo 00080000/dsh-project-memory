@@ -14,7 +14,7 @@ Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/
 - **Read-time indexing** — files are indexed the moment the model actually reads them (`fs/observed`), so the index is a byproduct of normal work, not a separate upfront scan. Files that are never read are never indexed. The project root is detected by markers (`.git`, `package.json`, …), a README plus source directories, or the file's own directory as a last resort.
 - **Doc ↔ code cross-linking** — when a document mentions a symbol, the match is recorded as a `reference`; querying a symbol also surfaces the documents that describe it.
 - **BM25 retrieval** — ranked search over documents, symbols, and experience notes, with optional LLM query expansion to handle vocabulary mismatch.
-- **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches.
+- **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches. The note store is bounded: capacity scales with project size (clamped to 100–2000), and the oldest notes are pruned when the limit is exceeded.
 - **Minimal dependencies** — pure JavaScript; the only runtime dependency is `pdfjs-dist` (PDF text extraction), no native builds required.
 
 ## How it works

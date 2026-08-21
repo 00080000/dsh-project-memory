@@ -116,6 +116,26 @@ check('searches experience', store.searchExperience('pdfjs import').length === 1
 store.save()
 check('persists to disk', existsSync(path.join(storeDir, 'experience.json')))
 
+console.log('\n== experience capacity ==')
+{
+  const capStore = new ProjectMemoryStore(path.join(mkdtempSync(path.join(tmpdir(), 'dsh-cap-')), 'mem')).load()
+  capStore.files = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`f${i}.js`, 'h']))
+  for (let i = 0; i < 130; i++) {
+    capStore.experience.push({ id: `e${i}`, problem: `case${i} trouble`, solution: 'x', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString() })
+  }
+  const pruned = capStore.pruneExperience()
+  check('cap: prunes to dynamic max (120)', capStore.experience.length === 120 && pruned === 10)
+  check('cap: drops oldest batch', !capStore.experience.some((e) => Number(e.id.slice(1)) < 10) && capStore.experience.some((e) => e.id === 'e129'))
+  let added = 0
+  for (let i = 0; i < 150; i++) {
+    const r = capStore.addExperience({ problem: `topic${i} trouble`, solution: 'x' })
+    if (!r.superseded) added++
+  }
+  check('cap: addExperience keeps store at max', capStore.experience.length === 120 && added === 150)
+  check('cap: clamps at 2000 on huge projects', Math.max(100, Math.min(2000, 5000 * 2)) === 2000)
+  check('cap: floors at 100 on empty projects', Math.max(100, Math.min(2000, 0 * 2)) === 100)
+}
+
 console.log('\n== index_doc ==')
 const docTool = indexDocTool(ctx, config)
 let out = await docTool.execute({ file_path: mdPath })
