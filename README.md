@@ -75,6 +75,15 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 - **Query expansion** — `query_memory` may ask `ctx.llm` to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and then merges BM25 scores across variants. Auto-enabled for CJK queries (Chinese/Japanese/Korean) so Chinese questions can match English symbol names; config-gated otherwise (`llmQueryExpansion`, default off).
 - **Consistency** — the fact layer follows the codebase (hash re-extract / remove-on-delete); the experience layer is retrieval-only with supersede and `forget`. Store writes are serialized per memory directory; the lock is in-process, so avoid running multiple dsh instances against the same project store concurrently.
 
+## Known limitations
+
+- **In-process locking** — store writes are serialized per memory directory within one dsh process; two dsh instances sharing a project store is last-writer-wins.
+- **Watch poll holds the lock** — while the watcher re-indexes changed docs (LLM summarization), `remember`/`forget` queue behind it. Overlapping polls serialize on the same lock: safe, but they can pile up on very large diffs.
+- **Silent corruption recovery** — a corrupt store JSON silently falls back to empty and is rebuilt on the next write; there is no warning.
+- **Absolute source paths** — entries cite absolute paths; moving a project invalidates citations until the next re-index.
+- **`forget` by query is eager** — keyword deletion matches at ≥0.5 token overlap and may remove several notes at once; prefer deleting by id for precision.
+- **CJK queries may spend tokens** — Chinese/Japanese/Korean queries trigger LLM query expansion even when `llmQueryExpansion` is off; that is what lets 中文 questions hit English symbol names.
+
 ## Configuration
 
 | Key | Default | Meaning |
@@ -82,7 +91,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | `memoryDir` | `.dsh-project-memory` | store directory inside each indexed root |
 | `chunkChars` | 3000 | max chars per document chunk |
 | `maxChunksPerFile` | 40 | max chunks per document |
-| `maxFileSizeMb` | 50 | skip text and code files larger than this (MB) |
+| `maxFileSizeMb` | 50 | skip documents (incl. PDF) and code files larger than this (MB) |
 | `maxOutputChars` | 8000 | cap for `query_memory` result text (chars) |
 | `maxPdfPages` | 1000 | PDF page cap when pages are not otherwise limited |
 | `llmQueryExpansion` | false | expand queries via `ctx.llm` before BM25 (off by default to save tokens) |
@@ -124,7 +133,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test          # 62 checks: chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency / restore / size limit
+npm test          # 81 checks: chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency / restore / size limit
 ```
 
 ## License

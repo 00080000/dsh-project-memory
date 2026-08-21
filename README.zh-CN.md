@@ -75,6 +75,15 @@ dsh plugin --profile web add /path/to/dsh-project-memory-0.1.0.tgz
 - **查询扩展** — `query_memory` 可让 `ctx.llm` 将查询改写为多个变体（同义词、中英、符号名猜测），再跨变体合并 BM25 分数。中文/日文/韩文查询自动开启（让中文问题能命中英文符号名），否则由配置控制（`llmQueryExpansion`，默认关闭）。
 - **一致性** — 事实层跟随代码库（哈希重抽 / 删除即移除）；经验层仅检索，配合覆盖与 `forget` 机制。每个记忆目录的写入按进程内互斥锁串行化；请避免多个 dsh 实例同时写同一项目存储。
 
+## 已知限制
+
+- **进程内锁** — 存储写入按记忆目录在一个 dsh 进程内串行化；两个 dsh 实例共享同一项目存储时后写覆盖先写。
+- **watch 轮询持锁** — watcher 重索引变更文档（LLM 摘要）期间，`remember`/`forget` 会排队等待。重叠轮询靠同一把锁串行：安全，但大改动时可能堆积。
+- **损坏静默重建** — 存储 JSON 损坏时静默回落为空并在下次写入时重建，无告警。
+- **绝对路径引用** — 条目引用绝对路径；项目搬家后引用失效，重建索引即恢复。
+- **`forget` 按关键词删除偏激进** — 关键词删除按 ≥0.5 token 重叠匹配，可能一次删掉多条；追求精确请用 id 删除。
+- **CJK 查询可能花费 token** — 中/日/韩查询即使 `llmQueryExpansion` 关闭也会触发 LLM 查询扩展；这正是中文问题能命中英文符号名的原因。
+
 ## 配置
 
 | 键 | 默认值 | 含义 |
@@ -82,7 +91,7 @@ dsh plugin --profile web add /path/to/dsh-project-memory-0.1.0.tgz
 | `memoryDir` | `.dsh-project-memory` | 每个被索引根目录内的存储目录 |
 | `chunkChars` | 3000 | 每个文档块最大字符数 |
 | `maxChunksPerFile` | 40 | 每文档最大块数 |
-| `maxFileSizeMb` | 50 | 大于该值（MB）的文本/代码文件跳过 |
+| `maxFileSizeMb` | 50 | 大于该值（MB）的文档（含 PDF）/代码文件跳过 |
 | `maxOutputChars` | 8000 | `query_memory` 返回文本上限（字符） |
 | `maxPdfPages` | 1000 | 未另行限制时 PDF 的页数上限 |
 | `llmQueryExpansion` | false | BM25 检索前通过 `ctx.llm` 扩展查询（默认关闭，节省 token） |
@@ -124,7 +133,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test          # 62 项检查：chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency / restore / size limit
+npm test          # 81 项检查：chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency / restore / size limit
 ```
 
 ## 许可证
