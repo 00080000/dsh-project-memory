@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { rankEntries, rankExperience, tokenize } from './util/search.js'
@@ -60,8 +60,27 @@ export class ProjectMemoryStore {
     return this
   }
 
+  cleanStaleTmp() {
+    let entries
+    try {
+      entries = readdirSync(this.dir)
+    } catch {
+      return
+    }
+    const now = Date.now()
+    for (const name of entries) {
+      if (!name.endsWith('.tmp')) continue
+      try {
+        if (now - statSync(path.join(this.dir, name)).mtimeMs > 60000) unlinkSync(path.join(this.dir, name))
+      } catch {
+        // already gone or locked; skip
+      }
+    }
+  }
+
   save() {
     mkdirSync(this.dir, { recursive: true })
+    this.cleanStaleTmp()
     writeJsonAtomic(path.join(this.dir, INDEX_FILE), { version: 1, files: this.files })
     writeJsonAtomic(path.join(this.dir, ENTRIES_FILE), this.entries)
     writeJsonAtomic(path.join(this.dir, EXPERIENCE_FILE), this.experience)
@@ -107,15 +126,6 @@ export class ProjectMemoryStore {
 
   searchEntries(query, limit = 8) {
     return rankEntries(this.allEntries(), query, limit)
-  }
-
-  searchExperience(query, limit = 5) {
-    const scored = this.experience.map((item) => ({ item, score: scoreExperience(item, query) }))
-    return scored
-      .filter((s) => s.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit)
-      .map((s) => s.item)
   }
 
   addExperience({ problem, solution, sourceFile }) {
@@ -185,17 +195,4 @@ export class ProjectMemoryStore {
       experience: this.experience.length,
     }
   }
-}
-
-function scoreExperience(item, query) {
-  const tokens = tokenize(query)
-  if (!tokens.length) return 0
-  const problemTokens = tokenize(item.problem)
-  const solutionTokens = tokenize(item.solution || '')
-  let score = 0
-  score += problemTokens.filter((t) => tokens.includes(t)).length * 4
-  score += solutionTokens.filter((t) => tokens.includes(t)).length * 2
-  const lower = `${item.problem} ${item.solution}`.toLowerCase()
-  if (tokens.some((t) => lower.includes(t))) score += 2
-  return score
 }

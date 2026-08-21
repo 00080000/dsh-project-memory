@@ -6,11 +6,10 @@ export function linkEntries(store) {
 
   const symbolByName = new Map()
   for (const s of symbols) {
-    for (const kw of s.keywords) {
-      if (!kw || kw.length < 2) continue
-      if (!symbolByName.has(kw)) symbolByName.set(kw, [])
-      symbolByName.get(kw).push(s)
-    }
+    const name = s.keywords[0]
+    if (!name || name.length < 3) continue
+    if (!symbolByName.has(name)) symbolByName.set(name, [])
+    symbolByName.get(name).push(s)
   }
 
   let links = 0
@@ -18,11 +17,11 @@ export function linkEntries(store) {
     const linked = new Set()
     const haystack = `${doc.title || ''} ${doc.summary || ''} ${doc.keywords ? doc.keywords.join(' ') : ''}`.toLowerCase()
     for (const [name, syms] of symbolByName) {
-      const lower = name.toLowerCase()
-      if (name.length < 3) continue
-      if (haystack.includes(lower)) {
+      if (haystack.includes(name.toLowerCase())) {
         for (const s of syms) {
-          if (linked.add(s.id)) links++
+          const before = linked.size
+          linked.add(s.id)
+          if (linked.size > before) links++
         }
       }
     }

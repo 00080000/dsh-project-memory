@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { chunkText } from '../src/chunker.js'
@@ -13,7 +13,7 @@ import { forgetTool } from '../src/tools/forget.js'
 import { watchRepoTool } from '../src/tools/watch-repo.js'
 import { WatchManager } from '../src/watch.js'
 import { linkEntries } from '../src/link.js'
-import { rankEntriesMerged, rankEntries } from '../src/util/search.js'
+import { rankEntriesMerged, rankEntries, rankExperienceScored, tokenizeRaw } from '../src/util/search.js'
 import { findProjectRoot, indexFile, setupLazyIndexing, codeFirst } from '../src/lazy.js'
 
 let passed = 0
@@ -119,10 +119,15 @@ const add2 = store.addExperience({ problem: 'different problem entirely', soluti
 const add3 = store.addExperience({ problem: 'pdfjs import fails on Node 24 again', solution: 'use legacy build + worker:false' })
 check('adds experience', add1.superseded === false && add2.superseded === false)
 check('supersedes similar problem', add3.superseded === true && store.experience.length === 2)
-check('searches experience', store.searchExperience('pdfjs import').length === 1)
 store.save()
 check('persists to disk', existsSync(path.join(storeDir, 'experience.json')))
 check('store files written compact', !readFileSync(path.join(storeDir, 'experience.json'), 'utf8').includes('\n  '))
+check('searches experience', rankExperienceScored(store.experience, 'pdfjs import').length === 1)
+const staleTmp = path.join(storeDir, 'experience.json.999999.tmp')
+writeFileSync(staleTmp, '{}')
+utimesSync(staleTmp, new Date(Date.now() - 120000), new Date(Date.now() - 120000))
+store.save()
+check('stale tmp files cleaned on save', !existsSync(staleTmp))
 
 console.log('\n== experience capacity ==')
 {
@@ -274,6 +279,32 @@ check('links doc entries to mentioned symbols', linked > 0)
 out = await queryTool.execute({ root, query: 'payment' })
 check('query shows references to linked symbols', out.includes('references:') && out.includes('PaymentService'))
 
+console.log('\n== link hygiene ==')
+{
+  const linkStore = new ProjectMemoryStore(path.join(mkdtempSync(path.join(tmpdir(), 'pm-link-')), 'mem')).load()
+  linkStore.setEntries('src/a.js', [
+    {
+      id: 's1', type: 'symbol', sourcePath: 'src/a.js', sourceLine: 1,
+      title: 'parseConfig (function)', summary: 'function parseConfig', keywords: ['parseConfig', 'function'],
+    },
+  ])
+  linkStore.setEntries('docs/spec.md', [
+    {
+      id: 'd1', type: 'doc', sourcePath: 'docs/spec.md', sourceLine: 1,
+      title: 'Config guide', summary: 'Describes several function entry points.', keywords: ['config'],
+    },
+    {
+      id: 'd2', type: 'doc', sourcePath: 'docs/spec.md', sourceLine: 9,
+      title: 'Parsing', summary: 'parseConfig loads values at boot.', keywords: ['parseConfig'],
+    },
+  ])
+  const links = linkEntries(linkStore)
+  const docs = linkStore.allEntries().filter((e) => e.type === 'doc')
+  check('generic word does not link every symbol', !docs.find((e) => e.id === 'd1').linkedSymbols)
+  check('real name match still links', docs.find((e) => e.id === 'd2').linkedSymbols?.includes('s1'))
+  check('link count is unique pairs only', links === 1)
+}
+
 console.log('\n== silent watch (poll) ==')
 const wm = new WatchManager(ctx, config)
 wm.addRoot(root)
@@ -373,12 +404,11 @@ check(
 check('does not flag markdown', !looksLikeDump('# 使用步骤\n\n把游戏内每个动作'))
 check('empty input is not a dump', !looksLikeDump(''))
 
-console.log('\n== CJK auto expansion coverage ==')
-const { isCjkText } = await import('../src/util/search.js')
-check('hiragana triggers expansion', isCjkText('こんにちは の設定'))
-check('katakana triggers expansion', isCjkText('セーブデータ 確認'))
-check('hangul triggers expansion', isCjkText('결제 모듈 修正'))
-check('latin does not trigger expansion', !isCjkText('payment module fees'))
+console.log('\n== CJK tokenization coverage ==')
+check('hiragana bigram-tokenized', tokenizeRaw('こんにちは の設定').includes('こん'))
+check('katakana bigram-tokenized', tokenizeRaw('セーブデータ 確認').includes('セー'))
+check('hangul bigram-tokenized', tokenizeRaw('결제 모듈 修正').includes('결제'))
+check('latin word tokenized', tokenizeRaw('payment module fees').includes('payment'))
 
 const { buildDocEntries } = await import('../src/doc-pipeline.js')
 const docDumpFile = path.join(docsDir, 'dump.txt')
@@ -394,6 +424,17 @@ try {
   pdfErr = err
 }
 check('oversized PDF rejected by byte limit', pdfErr !== null && /too large/i.test(pdfErr.message))
+
+const smallTxt = path.join(mkdtempSync(path.join(tmpdir(), 'pm-txt-')), 'note.txt')
+writeFileSync(smallTxt, '# Note\n\nhello world content.')
+let zeroRes = null
+let zeroErr = null
+try {
+  zeroRes = await buildDocEntries(fakeLLM, smallTxt, { maxFileSizeMb: 0 })
+} catch (err) {
+  zeroErr = err
+}
+check('maxFileSizeMb=0 means unlimited for text docs', zeroErr === null && zeroRes !== null && zeroRes.length === 1)
 
 console.log('\n== doc summarization concurrency ==')
 {

@@ -17,7 +17,7 @@ export async function extractTextFromFile(filePath, { maxFileSizeMb = 50, maxPdf
     const result = await parsePdf(filePath, { maxPages: maxPdfPages })
     return result.markdown
   }
-  return readTextFile(filePath, maxFileSizeMb * 1024 * 1024)
+  return readTextFile(filePath, maxFileSizeMb ? maxFileSizeMb * 1024 * 1024 : Infinity)
 }
 
 const DOC_CONCURRENCY = 4

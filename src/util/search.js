@@ -1,10 +1,6 @@
 export const CJK_RANGE =
   /[\u3400-\u9fff\uf900-\ufaff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/
 
-export function isCjkText(text) {
-  return CJK_RANGE.test(text || '')
-}
-
 export function tokenizeRaw(text) {
   if (!text) return []
   const lower = text.toLowerCase()
