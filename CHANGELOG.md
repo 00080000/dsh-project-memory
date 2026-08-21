@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### 修复
+- doc↔symbol 链接只按符号名匹配：此前泛化词（function/class 等）混进链接索引，文档摘要里出现"function"一词就会链接到项目全部函数符号；链接计数同步修正为按唯一对统计
+- `maxFileSizeMb: 0` 对文本文档表示不限制（此前会变成 0 字节上限，拒绝所有非空文件）
+
+### 清理
+- 移除无生产调用方的 `store.searchExperience` / `scoreExperience` 与 `isCjkText`
+- save() 自动清理超过 60 秒的陈旧 `.tmp` 残留文件
+
+### 文档
+- 实测 dsh 版本覆盖更新至 0.1.1-rc.1
+
 ## 0.1.2 (2026-08-21)
 
 ### 修复
