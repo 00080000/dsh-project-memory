@@ -42,7 +42,7 @@ The `-w` (workspace-root) flag is required: the profile directory is a pnpm work
 A prebuilt tarball is published with each release, installable without a build step:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-project-memory-0.1.0.tgz
+dsh plugin --profile web add /path/to/dsh-project-memory-0.1.1.tgz
 ```
 
 Each indexed project has its own store at `<root>/.dsh-project-memory/`. Add it to `.gitignore` if it should not be committed.

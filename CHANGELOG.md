@@ -8,6 +8,7 @@
 - Rust `pub fn` / `pub(crate) async fn` 公开函数纳入符号表
 - lazy 索引对读取瞬间被删除的文件静默跳过，不再刷错误日志
 - PDF 补上字节大小上限（此前只限页数），index_repo / watch / lazy 三条路径统一生效
+- 修正 peerDependencies：cordis 实际为 ^4.0.1、schemastery 实际为 ^3.18.1（此前按 dsh 的 0.x rc 线声明，匹配不到任何已发布版本）；dsh-tools/dsh-llm 范围补充 0.1.1-rc 线
 
 ### 性能
 - lazy 队列 code 文件优先处理，不被大文档的 LLM 摘要阻塞
