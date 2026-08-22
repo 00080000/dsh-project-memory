@@ -32,7 +32,7 @@ The store is per-project and follows the codebase: changed files are re-extracte
 
 ## Installation
 
-Tested against dsh **0.1.0-rc.7**, **0.1.0-rc.8**, **0.1.1-rc.1** and **0.1.1-rc.2**. Newer rc lines are expected to work — the plugin only touches stable surfaces (`defineTool`, `llm.stream`, `Schema`) — but they are not individually verified. The host provides `@deepseek-ai/cordis` ^4.0.1 and `@deepseek-ai/schemastery` ^3.18.1, declared via peerDependencies.
+Tested against dsh **0.1.0-rc.7 through 0.1.1-rc.2**. Newer rc lines are expected to work — the plugin only touches stable surfaces (`defineTool`, `llm.stream`, `Schema`) — but they are not individually verified. The host provides `@deepseek-ai/cordis` ^4.0.1 and `@deepseek-ai/schemastery` ^3.18.1, declared via peerDependencies.
 
 ```bash
 cd dsh-project-memory
