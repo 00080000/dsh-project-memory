@@ -2,6 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/00080000/dsh-project-memory)
+
 Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(dsh) agents. Indexes documents (PDF / Markdown / txt) and code symbols into a per-workspace store, refreshes them automatically, and recalls them with source citations — documents are cross-linked to the code symbols they reference.
 
 > The plugin keeps a compact project index on disk, with every entry pointing to a concrete file and line — the agent can reorient quickly instead of re-reading the whole project.
