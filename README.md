@@ -137,9 +137,6 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-# the four @deepseek-ai/* packages are optional peers (injected by the dsh host at
-# runtime); install them manually to run the test suite:
-npm install --no-save --legacy-peer-deps @deepseek-ai/cordis@^4.0.1 @deepseek-ai/schemastery@^3.18.1 @deepseek-ai/dsh-tools@0.1.1-rc.2 @deepseek-ai/dsh-llm@0.1.1-rc.2
 npm test          # 101 checks: chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency / restore / size limit
 ```
 
