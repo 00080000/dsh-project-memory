@@ -137,6 +137,8 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
+# 四个 @deepseek-ai/* 包是可选对等依赖（运行时由 dsh 宿主注入），跑测试需手动安装：
+npm install --no-save --legacy-peer-deps @deepseek-ai/cordis@^4.0.1 @deepseek-ai/schemastery@^3.18.1 @deepseek-ai/dsh-tools@0.1.1-rc.2 @deepseek-ai/dsh-llm@0.1.1-rc.2
 npm test          # 101 项检查：chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency / restore / size limit
 ```
 
