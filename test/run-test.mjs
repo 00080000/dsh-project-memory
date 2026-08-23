@@ -579,6 +579,29 @@ console.log('\n== default ignore list ==')
   )
 }
 
+console.log('\n== root detection ignores system temp ancestors ==')
+{
+  const fakeTmp = mkdtempSync(path.join(tmpdir(), 'pm-ceiling-'))
+  mkdirSync(path.join(fakeTmp, 'src'), { recursive: true })
+  mkdirSync(path.join(fakeTmp, 'lib'), { recursive: true })
+  writeFileSync(path.join(fakeTmp, 'README.md'), 'junk')
+  const proj = path.join(fakeTmp, 'proj')
+  mkdirSync(proj, { recursive: true })
+  writeFileSync(path.join(proj, 'main.js'), 'export function main() {}\n')
+  check('heuristic junk above the temp boundary does not hijack', findProjectRoot(path.join(proj, 'main.js'), fakeTmp) === proj)
+
+  const bare = path.join(fakeTmp, 'bare')
+  mkdirSync(bare, { recursive: true })
+  writeFileSync(path.join(bare, 'note.txt'), 'x')
+  check('bare dirs stay put even with junky ancestors', findProjectRoot(path.join(bare, 'note.txt'), fakeTmp) === bare)
+
+  const nested = path.join(fakeTmp, 'nested', 'app')
+  mkdirSync(nested, { recursive: true })
+  writeFileSync(path.join(nested, 'README.md'), 'x')
+  writeFileSync(path.join(nested, 'main.js'), 'export function n() {}\n')
+  check('nearest heuristic root wins over higher matches', findProjectRoot(path.join(nested, 'main.js'), fakeTmp) === nested)
+}
+
 const sessionCwdRoot = mkdtempSync(path.join(tmpdir(), 'pm-cwd-'))
 const procCwdSpy = process.cwd
 process.cwd = () => bareDir

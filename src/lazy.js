@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { tmpdir } from 'node:os'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfFile, storeKey } from './util/fs.js'
 import { buildDocEntries } from './doc-pipeline.js'
@@ -17,8 +18,6 @@ const WEAK_MARKERS = [
   'requirements.txt',
   'pom.xml',
 ]
-
-const MAX_ASCENT = 8
 
 const SOURCE_DIR_NAMES = new Set([
   'src', 'app', 'lib', 'libs', 'tools', 'include', 'core', 'modules',
@@ -43,26 +42,34 @@ function looksLikeProjectRoot(dir) {
   return sourceDirs >= 2 || (hasReadmeFile && sourceDirs >= 1)
 }
 
-export function findProjectRoot(filePath) {
+function sameDir(a, b) {
+  return storeKey(path.resolve(a)) === storeKey(path.resolve(b))
+}
+
+export function findProjectRoot(filePath, ceiling = path.resolve(tmpdir())) {
   let dir = path.dirname(filePath)
   for (;;) {
-    for (const marker of STRONG_MARKERS) {
-      if (existsSync(path.join(dir, marker))) return dir
+    if (!sameDir(dir, ceiling)) {
+      for (const marker of STRONG_MARKERS) {
+        if (existsSync(path.join(dir, marker))) return dir
+      }
     }
     const parent = path.dirname(dir)
-    if (parent === dir) break
+    if (parent === dir || sameDir(parent, ceiling)) break
     dir = parent
   }
 
   dir = path.dirname(filePath)
   let best = null
-  for (let i = 0; i < MAX_ASCENT; i++) {
-    for (const marker of WEAK_MARKERS) {
-      if (existsSync(path.join(dir, marker))) return dir
+  for (;;) {
+    if (!sameDir(dir, ceiling)) {
+      for (const marker of WEAK_MARKERS) {
+        if (existsSync(path.join(dir, marker))) return dir
+      }
+      if (!best && looksLikeProjectRoot(dir)) best = dir
     }
-    if (looksLikeProjectRoot(dir)) best = dir
     const parent = path.dirname(dir)
-    if (parent === dir) break
+    if (parent === dir || sameDir(parent, ceiling)) break
     dir = parent
   }
   return best || path.dirname(filePath)
