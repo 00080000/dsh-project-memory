@@ -16,7 +16,7 @@
 
 ### 清理
 - 移除无生产调用方的 `store.searchExperience` / `scoreExperience` 与 `isCjkText`
-- save() 自动清理超过 60 秒的陈旧 `.tmp` 残留文件
+- 原子写失败时自动删除本次临时文件；进程崩溃的残留 `.tmp` 由下次保存兜底清理（超 60 秒）
 
 ### 文档
 - 实测 dsh 版本覆盖更新至 0.1.1-rc.1

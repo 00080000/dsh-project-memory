@@ -38,8 +38,17 @@ function loadJson(filePath, fallback) {
 
 function writeJsonAtomic(filePath, data) {
   const tmp = `${filePath}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify(data))
-  renameSync(tmp, filePath)
+  try {
+    writeFileSync(tmp, JSON.stringify(data))
+    renameSync(tmp, filePath)
+  } catch (err) {
+    try {
+      unlinkSync(tmp)
+    } catch {
+      // tmp already gone (rename succeeded) or undeletable; nothing to do
+    }
+    throw err
+  }
 }
 
 export class ProjectMemoryStore {
