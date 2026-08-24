@@ -1,5 +1,5 @@
 {
-  "name": "dsh-project-memory",
+  "name": "@yolk_vat-y/dsh-project-memory",
   "version": "0.1.3",
   "description": "Persistent project memory for dsh agents: index docs (PDF/Markdown/text) and code symbols into a searchable per-workspace store, recall them with cited sources, and keep experience entries (problems -> solutions) searchable on demand.",
   "type": "module",
@@ -29,6 +29,9 @@
     "cordis"
   ],
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=18"
   },

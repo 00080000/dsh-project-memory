@@ -43,6 +43,12 @@ dsh plugin --profile web add . -w
 
 `-w`（workspace-root）标志是必需的：profile 目录是 pnpm 工作区根目录，不带该标志 pnpm 会拒绝 add。其他目录下同样可用路径形式：`dsh plugin --profile web add /path/to/dsh-project-memory -w`。
 
+插件同时发布在 npm 上（scoped 包）：
+
+```bash
+dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
+```
+
 每个版本会附带预构建 tarball，无需构建步骤即可安装：
 
 ```bash

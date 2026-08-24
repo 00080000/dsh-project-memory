@@ -43,6 +43,12 @@ dsh plugin --profile web add . -w
 
 The `-w` (workspace-root) flag is required: the profile directory is a pnpm workspace root, and pnpm rejects `add` there without it. From any other directory, the path form works the same: `dsh plugin --profile web add /path/to/dsh-project-memory -w`.
 
+The plugin is also published on npm as a scoped package:
+
+```bash
+dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
+```
+
 A prebuilt tarball is published with each release, installable without a build step:
 
 ```bash

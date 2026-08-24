@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### 新增
+- 发布 npm 包 `@yolk_vat-y/dsh-project-memory`，支持 `dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w` 直接安装；`publishConfig.access` 设为 `public`（scoped 包默认 restricted，不设置会导致他人安装 403）
+
 ## 0.1.3 (2026-08-23)
 
 ### 修复
