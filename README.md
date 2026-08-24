@@ -52,7 +52,7 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 A prebuilt tarball is published with each release, installable without a build step:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-project-memory-0.1.4.tgz
+dsh plugin --profile web add /path/to/dsh-project-memory-0.1.5.tgz
 ```
 
 Each indexed project has its own store at `<root>/.dsh-project-memory/`. Add it to `.gitignore` if it should not be committed.

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5 (2026-08-25)
+
+### 修复
+- **关键**：`cordis.patch.yml` 的 loader entry `name` 从已弃用的裸包名改为实际的 scoped 包名。此前从 npm / 市场安装后启动 dsh 必然崩溃（`Cannot find package 'dsh-project-memory'`）；本地路径安装的旧用户不受影响，但 npm 安装路径完全不可用
+- 测试新增守卫：bundle patch 引用的包名必须与 package.json 一致，杜绝再次漂移
+
 ## 0.1.4 (2026-08-25)
 
 ### 修复

@@ -1,6 +1,6 @@
 - insert:
     - id: project-memory
-      name: dsh-project-memory
+      name: "@yolk_vat-y/dsh-project-memory"
       config:
         memoryDir: .dsh-project-memory
         chunkChars: 3000

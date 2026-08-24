@@ -769,5 +769,13 @@ console.log('\n== bilingual keyword instruction ==')
   check('bilingual keywords pass through', entryBi.keywords.includes('payment') && entryBi.keywords.includes('支付'))
 }
 
+console.log('\n== bundle patch references the real package name ==')
+{
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  const patchText = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  check('patch name matches package.json name', patchText.includes(`name: "${pkg.name}"`))
+  check('patch does not reference the retired bare name', !/name:\s*dsh-project-memory\s*$/.test(patchText))
+}
+
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECKS FAILED`} (${passed} passed)`)
 process.exit(failed === 0 ? 0 : 1)
