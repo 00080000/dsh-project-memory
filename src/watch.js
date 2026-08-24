@@ -64,6 +64,7 @@ export class WatchManager {
   async pollRoot(root, state) {
     const memoryDir = memoryRootFor(root, this.config.memoryDir)
     await withStoreLock(memoryDir, async () => {
+      state.store = new ProjectMemoryStore(memoryDir).load()
       const files = walkDir(root)
       const seen = new Set()
       let changed = 0

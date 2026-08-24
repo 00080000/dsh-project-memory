@@ -29,9 +29,22 @@ export async function withStoreLock(memoryDir, fn) {
 }
 
 function loadJson(filePath, fallback) {
+  let raw
   try {
-    return JSON.parse(readFileSync(filePath, 'utf8'))
+    raw = readFileSync(filePath, 'utf8')
   } catch {
+    return fallback
+  }
+  try {
+    return JSON.parse(raw)
+  } catch {
+    const backup = `${filePath}.${Date.now()}.corrupt`
+    try {
+      renameSync(filePath, backup)
+      console.error(`[dsh-project-memory] corrupted ${path.basename(filePath)} moved to ${path.basename(backup)}; starting fresh`)
+    } catch (err) {
+      console.error(`[dsh-project-memory] corrupted ${path.basename(filePath)} could not be backed up: ${err.message}`)
+    }
     return fallback
   }
 }

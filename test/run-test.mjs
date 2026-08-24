@@ -1,10 +1,10 @@
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, utimesSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { chunkText } from '../src/chunker.js'
 import { scanSymbols } from '../src/symbols.js'
-import { ProjectMemoryStore } from '../src/store.js'
-import { memoryRootFor, resolveIndexRoot } from '../src/util/fs.js'
+import { ProjectMemoryStore, withStoreLock } from '../src/store.js'
+import { memoryRootFor, resolveIndexRoot, sha256OfFile } from '../src/util/fs.js'
 import { indexDocTool } from '../src/tools/index-doc.js'
 import { indexRepoTool } from '../src/tools/index-repo.js'
 import { queryMemoryTool } from '../src/tools/query-memory.js'
@@ -242,7 +242,6 @@ out = await forgetToolInst.execute({ root, id_or_query: 'OPS import breaks' })
 check('forget removes', out.includes('Removed'))
 
 console.log('\n== concurrent store writes are serialized ==')
-const { withStoreLock } = await import('../src/store.js')
 const lockDir = mkdtempSync(path.join(tmpdir(), 'pm-lock-'))
 const mkStore = () => new ProjectMemoryStore(memoryRootFor(lockDir, config.memoryDir))
 await Promise.all([
@@ -322,6 +321,86 @@ console.log('\n== link hygiene ==')
   check('link count is unique pairs only', links === 1)
 }
 
+console.log('\n== link word boundaries ==')
+{
+  const bStore = new ProjectMemoryStore(path.join(mkdtempSync(path.join(tmpdir(), 'pm-linkb-')), 'mem')).load()
+  bStore.setEntries('src/r.js', [
+    {
+      id: 'sr', type: 'symbol', sourcePath: 'src/r.js', sourceLine: 1,
+      title: 'run (function)', summary: 'function run', keywords: ['run', 'verb'],
+    },
+  ])
+  bStore.setEntries('docs/x.md', [
+    {
+      id: 'dx', type: 'doc', sourcePath: 'docs/x.md', sourceLine: 1,
+      title: 'Runtime notes', summary: 'About runtime internals.', keywords: ['runtime'],
+    },
+  ])
+  bStore.setEntries('docs/y.md', [
+    {
+      id: 'dy', type: 'doc', sourcePath: 'docs/y.md', sourceLine: 1,
+      title: 'Run guide', summary: 'How to run tasks.', keywords: ['run'],
+    },
+  ])
+  linkEntries(bStore)
+  const docs = bStore.allEntries().filter((e) => e.type === 'doc')
+  check('substring run does not match runtime', !docs.find((e) => e.id === 'dx').linkedSymbols)
+  check('standalone run matches', docs.find((e) => e.id === 'dy').linkedSymbols?.includes('sr'))
+}
+
+console.log('\n== watch reloads store each poll (external writes preserved) ==')
+{
+  const extRoot = mkdtempSync(path.join(tmpdir(), 'pm-watchext-'))
+  const extDocs = path.join(extRoot, 'docs')
+  mkdirSync(extDocs, { recursive: true })
+  writeFileSync(path.join(extDocs, 'a.md'), '# Doc A\n\nAlpha content.')
+  let llmCalls = 0
+  const countingLLM = {
+    async *stream(...args) {
+      llmCalls++
+      yield* fakeLLM.stream(...args)
+    },
+  }
+  const extWm = new WatchManager({ llm: countingLLM }, config)
+  extWm.addRoot(extRoot)
+  await extWm.poll()
+  check('initial poll indexes the doc once', llmCalls === 1)
+
+  // external writer (index_doc / lazy path) indexes a second doc straight to disk
+  const memDir = memoryRootFor(extRoot, config.memoryDir)
+  const docB = path.join(extDocs, 'b.md')
+  writeFileSync(docB, '# Doc B\n\nBeta content.')
+  await withStoreLock(memDir, async () => {
+    const disk = new ProjectMemoryStore(memDir).load()
+    disk.markFile('docs/b.md', { sha256: (await sha256OfFile(docB)).hash, size: 20, type: 'doc', indexedAt: new Date().toISOString() })
+    disk.setEntries('docs/b.md', [
+      {
+        id: 'ext-b', type: 'doc', sourcePath: 'docs/b.md', sourceLine: 1,
+        title: 'Doc B', summary: 'External beta entry.', keywords: ['beta'],
+      },
+    ])
+    disk.save()
+  })
+
+  await extWm.poll()
+  check('watch skips externally indexed doc (no repeat LLM)', llmCalls === 1)
+  const afterExt = new ProjectMemoryStore(memDir).load()
+  check('external entry survives watch save', afterExt.fileRecord('docs/b.md')?.type === 'doc' && afterExt.entries['docs/b.md']?.[0]?.id === 'ext-b')
+  extWm.stop()
+}
+
+console.log('\n== corrupt json backup ==')
+{
+  const cDir = path.join(mkdtempSync(path.join(tmpdir(), 'pm-corrupt-')), 'mem')
+  mkdirSync(cDir, { recursive: true })
+  writeFileSync(path.join(cDir, 'entries.json'), '{not valid json')
+  writeFileSync(path.join(cDir, 'experience.json'), '[]')
+  const s = new ProjectMemoryStore(cDir).load()
+  check('corrupt entries start fresh', Object.keys(s.entries).length === 0)
+  const backups = readdirSync(cDir).filter((n) => n.startsWith('entries.json.') && n.endsWith('.corrupt'))
+  check('corrupt file backed up as .corrupt', backups.length === 1)
+}
+
 console.log('\n== silent watch (poll) ==')
 const wm = new WatchManager(ctx, config)
 wm.addRoot(root)
@@ -364,10 +443,16 @@ console.log('\n== watch failure retries ==')
 
 console.log('\n== watch_repo tool ==')
 const watchTool = watchRepoTool(wm, config)
-out = await watchTool.execute({ root })
+const sessionCwd = mkdtempSync(path.join(tmpdir(), 'pm-session-'))
+const execMock = { agent: { session: { header: { cwd: sessionCwd } } } }
+out = await watchTool.execute({ root }, execMock)
 check('watch_repo starts watching', out.includes('Watching'))
-out = await watchTool.execute({ root, watch: false })
+const sessionStore = new ProjectMemoryStore(memoryRootFor(sessionCwd, config.memoryDir)).load()
+check('watch mirrored into session cwd watchlist', sessionStore.watchlist.includes(root))
+out = await watchTool.execute({ root, watch: false }, execMock)
 check('watch_repo stops watching', out.includes('Stopped watching'))
+const sessionStoreAfter = new ProjectMemoryStore(memoryRootFor(sessionCwd, config.memoryDir)).load()
+check('watch removed from session cwd watchlist', !sessionStoreAfter.watchlist.includes(root))
 
 const wmClamp = new WatchManager(ctx, config)
 wmClamp.start(0)

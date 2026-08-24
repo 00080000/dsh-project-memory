@@ -52,7 +52,7 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 A prebuilt tarball is published with each release, installable without a build step:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-project-memory-0.1.3.tgz
+dsh plugin --profile web add /path/to/dsh-project-memory-0.1.4.tgz
 ```
 
 Each indexed project has its own store at `<root>/.dsh-project-memory/`. Add it to `.gitignore` if it should not be committed.
@@ -89,7 +89,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 
 - **In-process locking** — store writes are serialized per memory directory within one dsh process; two dsh instances sharing a project store is last-writer-wins.
 - **Watch poll holds the lock** — while the watcher re-indexes changed docs (LLM summarization), `remember`/`forget` queue behind it. Overlapping polls serialize on the same lock: safe, but they can pile up on very large diffs.
-- **Silent corruption recovery** — a corrupt store JSON silently falls back to empty and is rebuilt on the next write; there is no warning.
+- **Silent corruption recovery** — a corrupt store JSON falls back to empty for that file and is rebuilt on the next write; the broken file is renamed to `*.corrupt` with an error logged, but its data cannot be recovered.
 - **Absolute source paths** — entries cite absolute paths; moving a project invalidates citations until the next re-index.
 - **`forget` by query is eager** — keyword deletion matches at ≥0.5 token overlap and may remove several notes at once; prefer deleting by id for precision.
 - **Cross-language recall depends on index time** — with `llmQueryExpansion` off, a Chinese-only query reaches English content through bilingual keywords captured when docs are indexed, plus doc↔symbol links. Stores indexed before v0.1.1 gain bilingual keywords as files change, or immediately via `index_repo` with `reindex: true`.

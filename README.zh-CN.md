@@ -52,7 +52,7 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 每个版本会附带预构建 tarball，无需构建步骤即可安装：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-project-memory-0.1.3.tgz
+dsh plugin --profile web add /path/to/dsh-project-memory-0.1.4.tgz
 ```
 
 每个被索引的项目在 `<root>/.dsh-project-memory/` 下有独立存储。如无需入库，可加入 `.gitignore`。
@@ -89,7 +89,7 @@ dsh plugin --profile web add /path/to/dsh-project-memory-0.1.3.tgz
 
 - **进程内锁** — 存储写入按记忆目录在一个 dsh 进程内串行化；两个 dsh 实例共享同一项目存储时后写覆盖先写。
 - **watch 轮询持锁** — watcher 重索引变更文档（LLM 摘要）期间，`remember`/`forget` 会排队等待。重叠轮询靠同一把锁串行：安全，但大改动时可能堆积。
-- **损坏静默重建** — 存储 JSON 损坏时静默回落为空并在下次写入时重建，无告警。
+- **损坏静默重建** — 存储 JSON 损坏时该文件回落为空并在下次写入时重建；坏文件会改名备份为 `*.corrupt` 并输出错误日志，但该文件内的数据无法恢复。
 - **绝对路径引用** — 条目引用绝对路径；项目搬家后引用失效，重建索引即恢复。
 - **`forget` 按关键词删除偏激进** — 关键词删除按 ≥0.5 token 重叠匹配，可能一次删掉多条；追求精确请用 id 删除。
 - **跨语种召回依赖索引时** — `llmQueryExpansion` 关闭时，纯中文查询靠索引时捕获的双语 keywords 和 doc↔symbol 链接触达英文内容。v0.1.1 之前建立的索引随文件变更逐步获得双语关键词，或用 `index_repo` 的 `reindex: true` 立即重建。
