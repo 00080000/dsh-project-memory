@@ -1,14 +1,17 @@
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { rankEntries, rankExperience, tokenize } from './util/search.js'
 
+const FORMAT_FILE = 'format.json'
 const INDEX_FILE = 'index.json'
 const ENTRIES_FILE = 'entries.json'
 const EXPERIENCE_FILE = 'experience.json'
 const WATCH_FILE = 'watch.json'
+const SHARDS_DIR = 'shards'
 
 const dirLocks = new Map()
+const storeCache = new Map()
 
 export async function withStoreLock(memoryDir, fn) {
   const key = path.resolve(memoryDir)
@@ -64,6 +67,10 @@ function writeJsonAtomic(filePath, data) {
   }
 }
 
+function shardRelPath(dir, rel) {
+  return path.join(dir, SHARDS_DIR, createHash('sha256').update(rel).digest('hex') + '.json')
+}
+
 export class ProjectMemoryStore {
   constructor(memoryDir) {
     this.dir = memoryDir
@@ -71,31 +78,81 @@ export class ProjectMemoryStore {
     this.entries = {}
     this.experience = []
     this.watchlist = []
+    this._dirtyShards = new Set()
+    this._removedShards = new Set()
+    this._dirtyExperience = false
+    this._dirtyWatch = false
+    this._formatWritten = false
   }
 
   load() {
-    const index = loadJson(path.join(this.dir, INDEX_FILE), {})
-    this.files = index.files || {}
-    this.entries = loadJson(path.join(this.dir, ENTRIES_FILE), {})
-    this.experience = loadJson(path.join(this.dir, EXPERIENCE_FILE), [])
-    this.watchlist = loadJson(path.join(this.dir, WATCH_FILE), [])
+    const key = path.resolve(this.dir)
+    const hot = storeCache.get(key)
+    if (hot && hot !== this) return hot
+    this._migrateLegacyIfNeeded()
+    this._loadSharded()
+    storeCache.set(key, this)
     return this
   }
 
-  cleanStaleTmp() {
-    let entries
-    try {
-      entries = readdirSync(this.dir)
-    } catch {
-      return
+  _migrateLegacyIfNeeded() {
+    const formatPath = path.join(this.dir, FORMAT_FILE)
+    if (loadJson(formatPath, null)?.version === 2) return
+    const legacyEntriesPath = path.join(this.dir, ENTRIES_FILE)
+    if (!existsSafe(legacyEntriesPath)) return
+    const index = loadJson(path.join(this.dir, INDEX_FILE), {})
+    const files = index.files || {}
+    const entries = loadJson(legacyEntriesPath, {})
+    mkdirSync(path.join(this.dir, SHARDS_DIR), { recursive: true })
+    for (const rel of Object.keys(files)) {
+      writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: files[rel], entries: entries[rel] || [] })
     }
-    const now = Date.now()
-    for (const name of entries) {
-      if (!name.endsWith('.tmp')) continue
+    writeJsonAtomic(formatPath, { version: 2, layout: 'sharded' })
+    for (const stale of [legacyEntriesPath, path.join(this.dir, INDEX_FILE)]) {
       try {
-        if (now - statSync(path.join(this.dir, name)).mtimeMs > 60000) unlinkSync(path.join(this.dir, name))
+        unlinkSync(stale)
       } catch {
-        // already gone or locked; skip
+        // already renamed away by corrupt backup, or gone; nothing to do
+      }
+    }
+    console.error(`[dsh-project-memory] migrated legacy store at ${this.dir} to sharded layout (${Object.keys(files).length} files)`)
+  }
+
+  _loadSharded() {
+    let shardNames = []
+    try {
+      shardNames = readdirSync(path.join(this.dir, SHARDS_DIR)).filter((n) => n.endsWith('.json'))
+    } catch {
+      shardNames = []
+    }
+    for (const name of shardNames) {
+      const shard = loadJson(path.join(this.dir, SHARDS_DIR, name), null)
+      if (!shard || typeof shard.relPath !== 'string' || !shard.record) continue
+      this.files[shard.relPath] = shard.record
+      this.entries[shard.relPath] = shard.entries || []
+    }
+    this.experience = loadJson(path.join(this.dir, EXPERIENCE_FILE), [])
+    this.watchlist = loadJson(path.join(this.dir, WATCH_FILE), [])
+    this._formatWritten = existsSafe(path.join(this.dir, FORMAT_FILE))
+  }
+
+  cleanStaleTmp() {
+    const scanDirs = [this.dir, path.join(this.dir, SHARDS_DIR)]
+    const now = Date.now()
+    for (const dir of scanDirs) {
+      let entries
+      try {
+        entries = readdirSync(dir)
+      } catch {
+        continue
+      }
+      for (const name of entries) {
+        if (!name.endsWith('.tmp')) continue
+        try {
+          if (now - statSync(path.join(dir, name)).mtimeMs > 60000) unlinkSync(path.join(dir, name))
+        } catch {
+          // already gone or locked; skip
+        }
       }
     }
   }
@@ -103,18 +160,51 @@ export class ProjectMemoryStore {
   save() {
     mkdirSync(this.dir, { recursive: true })
     this.cleanStaleTmp()
-    writeJsonAtomic(path.join(this.dir, INDEX_FILE), { version: 1, files: this.files })
-    writeJsonAtomic(path.join(this.dir, ENTRIES_FILE), this.entries)
-    writeJsonAtomic(path.join(this.dir, EXPERIENCE_FILE), this.experience)
-    writeJsonAtomic(path.join(this.dir, WATCH_FILE), this.watchlist)
+    if (!this._formatWritten) {
+      writeJsonAtomic(path.join(this.dir, FORMAT_FILE), { version: 2, layout: 'sharded' })
+      this._formatWritten = true
+    }
+    for (const rel of this._dirtyShards) {
+      if (this.files[rel]) {
+        mkdirSync(path.join(this.dir, SHARDS_DIR), { recursive: true })
+        writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: this.files[rel], entries: this.entries[rel] || [] })
+      } else {
+        this._removedShards.add(rel)
+      }
+    }
+    this._dirtyShards.clear()
+    for (const rel of this._removedShards) {
+      try {
+        unlinkSync(shardRelPath(this.dir, rel))
+      } catch {
+        // shard file already gone; nothing to do
+      }
+    }
+    this._removedShards.clear()
+    if (this._dirtyExperience) {
+      writeJsonAtomic(path.join(this.dir, EXPERIENCE_FILE), this.experience)
+      this._dirtyExperience = false
+    }
+    if (this._dirtyWatch) {
+      writeJsonAtomic(path.join(this.dir, WATCH_FILE), this.watchlist)
+      this._dirtyWatch = false
+    }
   }
 
   addWatch(root) {
     if (!this.watchlist.includes(root)) {
       this.watchlist.push(root)
+      this._dirtyWatch = true
       return true
     }
     return false
+  }
+
+  removeWatch(root) {
+    const before = this.watchlist.length
+    this.watchlist = this.watchlist.filter((r) => r !== root)
+    if (this.watchlist.length !== before) this._dirtyWatch = true
+    return before !== this.watchlist.length
   }
 
   fileRecord(relPath) {
@@ -123,6 +213,8 @@ export class ProjectMemoryStore {
 
   markFile(relPath, record) {
     this.files[relPath] = record
+    this._dirtyShards.add(relPath)
+    this._removedShards.delete(relPath)
   }
 
   setEntries(relPath, entries) {
@@ -131,11 +223,17 @@ export class ProjectMemoryStore {
     } else {
       delete this.entries[relPath]
     }
+    this._dirtyShards.add(relPath)
+    this._removedShards.delete(relPath)
   }
 
   removeFile(relPath) {
-    delete this.files[relPath]
-    delete this.entries[relPath]
+    if (relPath in this.files) {
+      delete this.files[relPath]
+      delete this.entries[relPath]
+      this._dirtyShards.add(relPath)
+      this._removedShards.add(relPath)
+    }
   }
 
   allEntries() {
@@ -158,11 +256,13 @@ export class ProjectMemoryStore {
       existing.solution = solution
       if (sourceFile) existing.sourceFile = sourceFile
       existing.updatedAt = now
+      this._dirtyExperience = true
       return { id: existing.id, superseded: true }
     }
     const id = randomUUID()
     this.experience.push({ id, problem, solution, sourceFile, createdAt: now, updatedAt: now })
     this.pruneExperience()
+    this._dirtyExperience = true
     return { id, superseded: false }
   }
 
@@ -207,6 +307,7 @@ export class ProjectMemoryStore {
         return overlap / Math.min(tokens.length, itemTokens.length) < 0.5
       })
     }
+    if (this.experience.length !== before) this._dirtyExperience = true
     return before - this.experience.length
   }
 
@@ -216,6 +317,15 @@ export class ProjectMemoryStore {
       entries: this.allEntries().length,
       experience: this.experience.length,
     }
+  }
+}
+
+function existsSafe(p) {
+  try {
+    statSync(p)
+    return true
+  } catch {
+    return false
   }
 }
 

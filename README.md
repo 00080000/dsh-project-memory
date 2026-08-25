@@ -75,11 +75,14 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 
 ```
 .dsh-project-memory/
-  index.json       file-level content-hash map (incremental)
-  entries.json     doc summaries + symbol table entries, keyed by file
+  format.json      layout marker (v2, sharded)
+  shards/          one self-describing JSON per indexed source file
+                   ({ relPath, record, entries }) — writes touch only dirty shards
   experience.json  problem → solution notes (retrieval-only)
   watch.json       watched roots
 ```
+
+Stores created before v0.2.0 (single `entries.json` / `index.json`) migrate automatically and idempotently on first load. Within one dsh process, all tool calls share a single in-memory store per project, so hot-path indexing writes only the shard that changed.
 
 - **Incremental** — content hash per file; only changed files are re-extracted.
 - **Cross-linking** — after indexing, doc summaries are matched against symbol names; matches are attached to the doc entry as `references` and surfaced by `query_memory`.

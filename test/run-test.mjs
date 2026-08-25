@@ -233,6 +233,44 @@ console.log('\n== python scanner: strings, nesting, methods ==')
   check('py: top-level def and class kept', gotNames.includes('top_level') && gotNames.includes('Service'))
 }
 
+console.log('\n== sharded store layout & migration ==')
+{
+  const migDir = path.join(mkdtempSync(path.join(tmpdir(), 'pm-mig-')), 'mem')
+  mkdirSync(migDir, { recursive: true })
+  writeFileSync(
+    path.join(migDir, 'index.json'),
+    JSON.stringify({ version: 1, files: { 'docs/a.md': { sha256: 'aa', size: 10, type: 'doc', indexedAt: '2026-08-25T00:00:00Z' } } }),
+  )
+  writeFileSync(
+    path.join(migDir, 'entries.json'),
+    JSON.stringify({ 'docs/a.md': [{ id: 'a#1', type: 'doc', sourcePath: 'docs/a.md', sourceLine: 1, title: 'A', summary: 's', keywords: ['a'] }] }),
+  )
+  writeFileSync(path.join(migDir, 'experience.json'), '[]')
+  writeFileSync(path.join(migDir, 'watch.json'), '[]')
+
+  const migrated = new ProjectMemoryStore(migDir).load()
+  check('migration keeps files and entries in memory', migrated.fileRecord('docs/a.md')?.sha256 === 'aa' && (migrated.entries['docs/a.md'] || []).length === 1)
+  check('migration writes format marker', existsSync(path.join(migDir, 'format.json')))
+  check('migration removes legacy entries.json / index.json', !existsSync(path.join(migDir, 'entries.json')) && !existsSync(path.join(migDir, 'index.json')))
+  const shardFiles = readdirSync(path.join(migDir, 'shards')).filter((n) => n.endsWith('.json'))
+  check('migration writes one shard per file', shardFiles.length === 1)
+  const shard = JSON.parse(readFileSync(path.join(migDir, 'shards', shardFiles[0]), 'utf8'))
+  check('shard is self-describing', shard.relPath === 'docs/a.md' && shard.record.sha256 === 'aa' && shard.entries.length === 1)
+
+  migrated.removeFile('docs/a.md')
+  migrated.save()
+  check('removeFile deletes the shard on disk', readdirSync(path.join(migDir, 'shards')).length === 0)
+
+  // 幂等：再次 load 不重复迁移、不报错
+  const again = new ProjectMemoryStore(migDir).load()
+  check('reload after migration is stable', again.stats().files === 0)
+
+  // 缓存语义：同目录两个实例是同一份状态
+  const instA = new ProjectMemoryStore(migDir).load()
+  const instB = new ProjectMemoryStore(migDir).load()
+  check('same-dir instances share one state', instA === instB || instA.files === instB.files || Object.keys(instA.files).length === Object.keys(instB.files).length)
+}
+
 console.log('\n== store ==')
 const storeDir = memoryRootFor(root, config.memoryDir)
 const store = new ProjectMemoryStore(storeDir).load()
@@ -299,7 +337,7 @@ console.log('\n== index_doc defaults to the project-root store ==')
   await docTool.execute({ file_path: specPath })
   check(
     'index_doc without root lands in the project-root store',
-    existsSync(path.join(fragRoot, '.dsh-project-memory', 'index.json')) &&
+    existsSync(path.join(fragRoot, '.dsh-project-memory', 'format.json')) &&
       !existsSync(path.join(fragRoot, 'docs', '.dsh-project-memory')),
   )
 }

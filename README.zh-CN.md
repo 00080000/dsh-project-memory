@@ -75,11 +75,14 @@ dsh plugin --profile web add /path/to/dsh-project-memory-0.1.5.tgz
 
 ```
 .dsh-project-memory/
-  index.json       文件级内容哈希表（增量）
-  entries.json     文档摘要 + 符号表条目，按文件
+  format.json      布局标记（v2，分片式）
+  shards/          每个被索引源文件一个自描述 JSON
+                   （{ relPath, record, entries }）——写入只落脏分片
   experience.json  问题 → 方案笔记（仅检索）
   watch.json       被监听根目录
 ```
+
+v0.2.0 之前创建的库（单文件 `entries.json` / `index.json`）在首次加载时自动幂等迁移。同一个 dsh 进程内，所有工具调用共享每个项目的单一内存 store 实例，热路径索引只写发生变化的那一个分片。
 
 - **增量** — 按文件内容哈希，仅重新抽取变更文件。
 - **交叉链接** — 索引后将文档摘要与符号名匹配，命中符号以 `references` 挂载到文档条目，由 `query_memory` 带出。

@@ -36,15 +36,14 @@ export function watchRepoTool(watchManager, config) {
           if (path.resolve(sessionMemoryDir) === path.resolve(memoryDir)) return
           await withStoreLock(sessionMemoryDir, () => {
             const sessionStore = new ProjectMemoryStore(sessionMemoryDir).load()
-            const before = sessionStore.watchlist.length
-            sessionStore.watchlist = sessionStore.watchlist.filter((r) => r !== root)
-            if (present) sessionStore.addWatch(root)
-            if (sessionStore.watchlist.length !== before || present) sessionStore.save()
+            const removed = sessionStore.removeWatch(root)
+            const added = present ? sessionStore.addWatch(root) : false
+            if (removed || added) sessionStore.save()
           })
         }
         if (args.watch === false) {
           watchManager.removeRoot(root)
-          store.watchlist = store.watchlist.filter((r) => r !== root)
+          store.removeWatch(root)
           store.save()
           await mirrorSessionWatchlist(false)
           return `Stopped watching: ${root}`
