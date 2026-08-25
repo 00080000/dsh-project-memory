@@ -52,7 +52,7 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 每个版本会附带预构建 tarball，无需构建步骤即可安装：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-project-memory-0.1.5.tgz
+dsh plugin --profile web add /path/to/dsh-project-memory-0.1.6.tgz
 ```
 
 每个被索引的项目在 `<root>/.dsh-project-memory/` 下有独立存储。如无需入库，可加入 `.gitignore`。

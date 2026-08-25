@@ -122,9 +122,8 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
       store.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
     }
     store.setEntries(rel, entries)
+    linkEntries(store)
     store.save()
-    const links = linkEntries(store)
-    if (links) store.save()
     return true
   })
 }

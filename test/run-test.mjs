@@ -404,6 +404,37 @@ console.log('\n== no-hit introspection & stats tool ==')
   check('stats tool lists per-file entries', out.includes('spec.md [doc] entries:') && out.includes('payments.py [code] entries:'))
 }
 
+console.log('\n== linkedSymbols persist to disk (cross-process probe) ==')
+{
+  const lpRoot = mkdtempSync(path.join(tmpdir(), 'pm-linkdisk-'))
+  mkdirSync(path.join(lpRoot, 'docs'), { recursive: true })
+  mkdirSync(path.join(lpRoot, 'src'), { recursive: true })
+  const gwPath = path.join(lpRoot, 'src', 'gw.py')
+  writeFileSync(gwPath, 'class Gateway:\n    def charge(self): pass\n')
+  const spec = path.join(lpRoot, 'docs', 'spec.md')
+  writeFileSync(spec, '# Spec\n\nSee gateway notes.')
+  // 先让代码符号入库（模拟 lazy 路径），再走 index-doc
+  const lpMemDir = memoryRootFor(lpRoot, config.memoryDir)
+  {
+    const st = new ProjectMemoryStore(lpMemDir).load()
+    st.markFile('src/gw.py', { sha256: 'gw', size: 1, type: 'code', indexedAt: new Date().toISOString() })
+    st.setEntries('src/gw.py', scanSymbols(gwPath, readFileSync(gwPath, 'utf8')))
+    st.save()
+  }
+  await docTool.execute({ file_path: spec, root: lpRoot })
+  const shardDir = path.join(lpMemDir, 'shards')
+  let persisted = null
+  const specRel = path.relative(lpRoot, spec).split(path.sep).join('/')
+  for (const name of readdirSync(shardDir)) {
+    const shard = JSON.parse(readFileSync(path.join(shardDir, name), 'utf8'))
+    if (shard.relPath === specRel) persisted = shard
+  }
+  check(
+    'linkedSymbols written to shard on disk (not just process memory)',
+    Array.isArray(persisted?.entries?.[0]?.linkedSymbols) && persisted.entries[0].linkedSymbols.length > 0,
+  )
+}
+
 console.log('\n== remember / forget ==')
 const remTool = rememberTool(config)
 out = await remTool.execute({ root, problem: 'OPS import breaks', solution: 'import from legacy build', source_file: 'x.js' })

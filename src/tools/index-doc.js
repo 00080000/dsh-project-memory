@@ -56,9 +56,8 @@ export function indexDocTool(ctx, config) {
         }
         store.setEntries(rel, entries)
         store.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
+        linkEntries(store)
         store.save()
-        const links = linkEntries(store)
-        if (links) store.save()
 
         const preview = entries
           .map((e) => `  - ${e.title} @ ${rel}:${e.sourceLine}`)

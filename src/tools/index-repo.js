@@ -81,9 +81,8 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
       }
     }
 
-    store.save()
     const links = linkEntries(store)
-    if (links) store.save()
+    store.save()
     const stats = store.stats()
     let report =
       `Indexed project: ${root}\n` +
