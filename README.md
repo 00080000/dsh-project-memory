@@ -85,14 +85,16 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 - **Query expansion** — when `llmQueryExpansion` is on, `query_memory` asks `ctx.llm` to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and merges BM25 scores across variants; when off, queries never touch the LLM. Cross-language recall (a Chinese question hitting English content) comes from index time instead: doc keywords are required to cover the document's own language AND English, and doc↔symbol links surface English symbol names from Chinese hits.
 - **Consistency** — the fact layer follows the codebase (hash re-extract / remove-on-delete); the experience layer is retrieval-only with supersede and `forget`. Store writes are serialized per memory directory; the lock is in-process, so avoid running multiple dsh instances against the same project store concurrently.
 
-## Known limitations
+## Design tradeoffs
 
-- **In-process locking** — store writes are serialized per memory directory within one dsh process; two dsh instances sharing a project store is last-writer-wins.
-- **Watch poll holds the lock** — while the watcher re-indexes changed docs (LLM summarization), `remember`/`forget` queue behind it. Overlapping polls serialize on the same lock: safe, but they can pile up on very large diffs.
-- **Silent corruption recovery** — a corrupt store JSON falls back to empty for that file and is rebuilt on the next write; the broken file is renamed to `*.corrupt` with an error logged, but its data cannot be recovered.
+These are deliberate scope choices.
+
+- **In-process locking** — store writes are serialized per memory directory within one dsh process; two dsh instances sharing a project store is last-writer-wins. A cross-process lock would need a resident daemon, which conflicts with the pure-JS, no-background-service positioning, so multi-instance writes are explicitly unsupported.
+- **Watch poll holds the lock** — while the watcher re-indexes changed docs (LLM summarization), `remember`/`forget` queue behind it. Polling (mtime + content hash) instead of `fs.watch` events keeps behavior consistent across platforms; overlapping polls serialize on the same lock: safe, but they can pile up on very large diffs. Tune via `watchInterval`.
+- **Corrupt files are quarantined** — a store JSON that fails to parse falls back to empty for that file and is rebuilt on the next write; the broken file is renamed to `*.corrupt` with an error logged, but its data cannot be recovered. Auto-repairing partial writes would require a journal or an embedded database, contradicting plain-JSON storage that users can inspect and hand-edit.
 - **Absolute source paths** — entries cite absolute paths; moving a project invalidates citations until the next re-index.
 - **`forget` by query is eager** — keyword deletion matches at ≥0.5 token overlap and may remove several notes at once; prefer deleting by id for precision.
-- **Cross-language recall depends on index time** — with `llmQueryExpansion` off, a Chinese-only query reaches English content through bilingual keywords captured when docs are indexed, plus doc↔symbol links. Stores indexed before v0.1.1 gain bilingual keywords as files change, or immediately via `index_repo` with `reindex: true`.
+- **Cross-language recall depends on index time** — with `llmQueryExpansion` off, a Chinese-only query reaches English content through bilingual keywords captured when docs are indexed, plus doc↔symbol links; queries stay LLM-free. Stores indexed before v0.1.1 gain bilingual keywords as files change, or immediately via `index_repo` with `reindex: true`.
 
 ## Configuration
 
