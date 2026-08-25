@@ -5,6 +5,7 @@ import { queryMemoryTool } from './tools/query-memory.js'
 import { rememberTool } from './tools/remember.js'
 import { forgetTool } from './tools/forget.js'
 import { watchRepoTool } from './tools/watch-repo.js'
+import { statsTool } from './tools/stats.js'
 import { WatchManager } from './watch.js'
 import { setupLazyIndexing } from './lazy.js'
 
@@ -46,6 +47,7 @@ export function apply(ctx, config) {
   ctx.tools.register(rememberTool(config))
   ctx.tools.register(forgetTool(config))
   ctx.tools.register(watchRepoTool(watchManager, config))
+  ctx.tools.register(statsTool(config))
 
   if (config.autoIndexOnFirstUse) {
     ctx.effect(async () => {

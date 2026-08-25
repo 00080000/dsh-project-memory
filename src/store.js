@@ -218,3 +218,16 @@ export class ProjectMemoryStore {
     }
   }
 }
+
+export function storeOverview(store) {
+  let latest = null
+  for (const rec of Object.values(store.files)) {
+    if (rec.indexedAt && (!latest || rec.indexedAt > latest)) latest = rec.indexedAt
+  }
+  return {
+    files: Object.keys(store.files).length,
+    entries: store.allEntries().length,
+    experience: store.experience.length,
+    latest,
+  }
+}

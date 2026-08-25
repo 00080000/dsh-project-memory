@@ -66,6 +66,7 @@ dsh plugin --profile web add /path/to/dsh-project-memory-0.1.5.tgz
 | `index_doc file_path` | 索引单个文档（PDF/MD/txt）：分块 → LLM 摘要 → 带 `路径:行号` 入库。未变更文件自动跳过。 |
 | `index_repo root` | 索引整个项目：文档由 LLM 生成摘要，代码文件生成零 token 符号表。增量更新、清理已删除文件、文档与符号交叉链接。 |
 | `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件（mtime + 内容哈希），仅重抽这些文件。监听的项目在插件重启后自动恢复。 |
+| `memory_stats root` | 查看记忆库内容：总量（文件 / 条目 / 经验笔记）、最近索引时间，以及按时间排序的逐文件清单。 |
 | `query_memory query` | 对文档、符号、经验执行 BM25 检索，可选 LLM 查询扩展。返回带相对分数（0-100）、引用与文档→符号链接的排序结果。 |
 | `remember problem solution` | 保存经验笔记。相似问题覆盖而非重复。 |
 | `forget id_or_query` | 删除过期经验笔记。 |

@@ -11,6 +11,7 @@ import { queryMemoryTool } from '../src/tools/query-memory.js'
 import { rememberTool } from '../src/tools/remember.js'
 import { forgetTool } from '../src/tools/forget.js'
 import { watchRepoTool } from '../src/tools/watch-repo.js'
+import { statsTool } from '../src/tools/stats.js'
 import { WatchManager } from '../src/watch.js'
 import { linkEntries } from '../src/link.js'
 import { rankEntriesMerged, rankEntries, rankExperienceScored, tokenizeRaw } from '../src/util/search.js'
@@ -351,6 +352,19 @@ out = await queryTool.execute({ root, query: 'refund' })
 check('recalls code symbol', out.includes('refund') && out.includes('payments.py'))
 out = await queryTool.execute({ root, query: 'pdfjs import' })
 check('recalls experience note', out.includes('pdfjs import fails on Node 24'))
+
+console.log('\n== no-hit introspection & stats tool ==')
+{
+  out = await queryTool.execute({ root, query: 'zzz-no-such-topic-xyz' })
+  check('no-hit query shows store overview', out.includes('No memory matches') && out.includes('Store overview:') && /\d+ files indexed/.test(out))
+  out = await queryTool.execute({ root, query: 'zzz-no-such-topic-xyz', type: 'experience' })
+  check('no-hit experience query hints remember not index', out.includes('remember') && !out.includes('index_repo'))
+  const stats = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+  const expectedFiles = Object.keys(stats.files).length
+  out = await statsTool(config).execute({ root })
+  check('stats tool lists totals and last index', out.includes(`Files indexed: ${expectedFiles}`) && out.includes('Last index:'))
+  check('stats tool lists per-file entries', out.includes('spec.md [doc] entries:') && out.includes('payments.py [code] entries:'))
+}
 
 console.log('\n== remember / forget ==')
 const remTool = rememberTool(config)

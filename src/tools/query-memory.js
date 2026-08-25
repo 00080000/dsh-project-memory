@@ -1,6 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
-import { ProjectMemoryStore } from '../store.js'
+import { ProjectMemoryStore, storeOverview } from '../store.js'
 import { expandQuery } from '../llm.js'
 import { rankEntriesMergedScored, rankExperienceScored } from '../util/search.js'
 import { truncate } from '../util/text.js'
@@ -87,7 +87,18 @@ export function queryMemoryTool(ctx, config) {
       }
 
       if (!lines.length) {
-        return `No memory matches for "${args.query}" in ${root}. Index it first with index_repo / index_doc, or note a fix with remember.`
+        const overview = storeOverview(store)
+        const hint =
+          type === 'experience'
+            ? 'Note a fix with remember so it can be recalled next time.'
+            : type === 'all'
+              ? 'Index it first with index_repo / index_doc, or note a fix with remember.'
+              : 'Index it first with index_repo / index_doc.'
+        return (
+          `No memory matches for "${args.query}" in ${root}. ${hint}\n` +
+          `Store overview: ${overview.files} files indexed, ${overview.entries} entries, ${overview.experience} experience notes` +
+          (overview.latest ? `, last indexed at ${overview.latest}. Use memory_stats to see what the store contains.` : '. The store has never been indexed.')
+        )
       }
       return truncate(lines.join('\n\n'), config.maxOutputChars)
     },
