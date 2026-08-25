@@ -9,6 +9,92 @@ const SHELL = new Set(['.sh', '.zsh'])
 
 const CONTROL = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'foreach', 'using', 'lock', 'var', 'function'])
 
+const JS_MASKER = { lineComment: '//', blockStart: '/*', blockEnd: '*/', quotes: ['`', '"', "'"] }
+const PY_MASKER = { lineComment: '#', blockStart: null, blockEnd: null, quotes: ['"""', "'''", '"', "'"] }
+const GO_MASKER = { lineComment: '//', blockStart: '/*', blockEnd: '*/', quotes: ['`', '"'] }
+const RUST_MASKER = { lineComment: '//', blockStart: '/*', blockEnd: '*/', blockNested: true, quotes: ['"'] }
+const C_FAMILY_MASKER = { lineComment: '//', blockStart: '/*', blockEnd: '*/', quotes: ['"', "'"] }
+const SHELL_MASKER = { lineComment: '#', lineCommentBoundary: true, blockStart: null, blockEnd: null, quotes: ["'", '"'] }
+
+function maskTokens(lines, { lineComment, lineCommentBoundary = false, blockStart, blockEnd, blockNested = false, quotes }) {
+  const out = new Array(lines.length)
+  let mode = 'code'
+  let blockDepth = 0
+  const blank = (n) => ' '.repeat(n)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    let res = ''
+    let j = 0
+    while (j < line.length) {
+      if (mode === 'code') {
+        if (lineComment && line.startsWith(lineComment, j)) {
+          if (!lineCommentBoundary || j === 0 || /\s/.test(line[j - 1])) {
+            res += blank(line.length - j)
+            break
+          }
+        }
+        if (blockStart && line.startsWith(blockStart, j)) {
+          mode = blockEnd
+          blockDepth = 1
+          j += blockStart.length
+          res += blank(blockStart.length)
+          continue
+        }
+        const quote = quotes.find((q) => line.startsWith(q, j))
+        if (quote) {
+          mode = quote
+          j += quote.length
+          res += blank(quote.length)
+          continue
+        }
+        res += line[j]
+        j++
+      } else if (quotes.includes(mode)) {
+        if (line[j] === '\\') {
+          j += 2
+          res += '  '
+          continue
+        }
+        if (line.startsWith(mode, j)) {
+          j += mode.length
+          res += blank(mode.length)
+          mode = 'code'
+          continue
+        }
+        res += ' '
+        j++
+      } else {
+        if (blockNested && blockStart && line.startsWith(blockStart, j)) {
+          blockDepth++
+          res += blank(blockStart.length)
+          j += blockStart.length
+          continue
+        }
+        if (line.startsWith(mode, j)) {
+          j += mode.length
+          res += blank(mode.length)
+          if (blockNested && blockDepth > 1) blockDepth--
+          else mode = 'code'
+          continue
+        }
+        res += ' '
+        j++
+      }
+    }
+    out[i] = res
+  }
+  return out
+}
+
+function balanceDelta(text) {
+  let delta = 0
+  for (const ch of text) {
+    if (ch === '(') delta++
+    else if (ch === ')') delta--
+  }
+  return delta
+}
+
 function matchJsLike(line) {
   let m = line.match(/^export\s+(?:default\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)|class\s+([A-Za-z_$][\w$]*))/)
   if (m) return { name: m[1] || m[2], kind: m[1] ? 'function' : 'class' }
@@ -18,19 +104,74 @@ function matchJsLike(line) {
   if (m) return { name: m[1], kind: 'class' }
   m = line.match(/^(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(/)
   if (m) return { name: m[1], kind: 'function' }
+  m = line.match(/^(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/)
+  if (m) return { name: m[1], kind: 'function' }
   m = line.match(/^(?:export\s+)?(?:async\s+)?function\s*\(/) // anonymous
   if (m) return { name: '(anonymous)', kind: 'function' }
   return null
 }
 
-function matchPython(line) {
-  let m = line.match(/^class\s+(\w+)\s*(?:\(|:)/)
-  if (m) return { name: m[1], kind: 'class' }
-  m = line.match(/^def\s+(\w+)\s*\(/)
-  if (m) return { name: m[1], kind: 'function' }
-  m = line.match(/^async\s+def\s+(\w+)\s*\(/)
-  if (m) return { name: m[1], kind: 'function' }
-  return null
+const JS_DECL_START = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\b|class\b|const\b)/
+
+const JS_NON_METHOD = new Set([
+  'if', 'else', 'for', 'foreach', 'while', 'do', 'switch', 'case', 'default',
+  'try', 'catch', 'finally', 'return', 'throw', 'break', 'continue',
+  'new', 'delete', 'typeof', 'instanceof', 'void', 'await', 'yield', 'with',
+])
+
+function scanJsLike(masked, filePath, rawLines) {
+  const symbols = []
+  let prevOpensBlock = false
+  for (let i = 0; i < masked.length; i++) {
+    const text = masked[i].trim()
+    if (!text) continue
+    let matched = null
+    if (prevOpensBlock) {
+      const method = text.match(/^([A-Za-z_$][\w$]*)\s*(?:<[^<>]*>)?\s*\(([^()]*)\)\s*(?::\s*[^={]{1,80})?\{/)
+      if (method && !JS_NON_METHOD.has(method[1])) matched = { name: method[1], kind: 'method' }
+    }
+    if (!matched) matched = matchJsLike(text)
+    if (!matched && JS_DECL_START.test(text)) {
+      let joined = text
+      let extra = 0
+      for (let j = i + 1; j < masked.length && extra < 3; j++) {
+        const tail = masked[j].trim()
+        if (!tail) continue
+        joined += ' ' + tail
+        extra++
+        matched = matchJsLike(joined)
+        if (matched) {
+          i = j
+          break
+        }
+        if (/[{};]/.test(tail)) break
+      }
+    }
+    if (matched) symbols.push(buildSymbol(matched, filePath, rawLines[i], i + 1))
+    prevOpensBlock = text.endsWith('{')
+  }
+  return symbols
+}
+
+function scanPython(masked, filePath, rawLines) {
+  const symbols = []
+  let depth = 0
+  for (let i = 0; i < masked.length; i++) {
+    const text = masked[i].trim()
+    const delta = balanceDelta(text)
+    if (depth > 0) {
+      depth += delta
+      continue
+    }
+    let matched = null
+    const fn = text.match(/^(?:async\s+)?def\s+(\w+)\s*\(/)
+    const cls = fn ? null : text.match(/^class\s+(\w+)\s*[(:]/)
+    if (fn) matched = { name: fn[1], kind: 'function' }
+    else if (cls) matched = { name: cls[1], kind: 'class' }
+    if (matched) symbols.push(buildSymbol(matched, filePath, rawLines[i], i + 1))
+    depth += delta
+  }
+  return symbols
 }
 
 function matchGo(line) {
@@ -44,7 +185,7 @@ function matchGo(line) {
 }
 
 function matchRust(line) {
-  let m = line.match(/^(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*\(/)
+  let m = line.match(/^(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*(?:<[^<>]*>)?\s*\(/)
   if (m) return { name: m[1], kind: 'function' }
   m = line.match(/^(?:pub\s+)?(?:struct|enum|trait|impl)\s+(\w+)/)
   if (m) return { name: m[1], kind: line.includes('impl') ? 'impl' : 'type' }
@@ -66,36 +207,46 @@ function matchShell(line) {
   return m ? { name: m[1], kind: 'function' } : null
 }
 
+function buildSymbol(matched, filePath, rawLine, lineNo) {
+  return {
+    id: `${String(filePath).replace(/[\\/:\s]/g, '_')}#${lineNo}`,
+    sourcePath: filePath,
+    sourceLine: lineNo,
+    type: 'symbol',
+    title: `${matched.name} (${matched.kind})`,
+    summary: `${matched.kind} "${matched.name}" declared at ${filePath}:${lineNo}`,
+    keywords: [matched.name, matched.kind],
+    text: String(rawLine).trim().slice(0, 200),
+  }
+}
+
 export function scanSymbols(filePath, content) {
   const ext = filePath.slice(filePath.lastIndexOf('.'))
-  const symbols = []
   const lines = content.split(/\r?\n/)
-  for (let i = 0; i < lines.length; i++) {
+  if (JS_LIKE.has(ext)) return scanJsLike(maskTokens(lines, JS_MASKER), filePath, lines)
+  if (PYTHON.has(ext)) return scanPython(maskTokens(lines, PY_MASKER), filePath, lines)
+
+  let masker = null
+  if (GO.has(ext)) masker = GO_MASKER
+  else if (RUST.has(ext)) masker = RUST_MASKER
+  else if (C_FAMILY.has(ext)) masker = C_FAMILY_MASKER
+  else if (SHELL.has(ext)) masker = SHELL_MASKER
+  const masked = masker ? maskTokens(lines, masker) : lines
+
+  const symbols = []
+  for (let i = 0; i < masked.length; i++) {
     const raw = lines[i]
-    const line = raw.replace(/\/\/.*$/, '').replace(/#.*$/, '').trim()
+    const line = masked[i].trim()
     if (!line) continue
     let matched = null
-    if (JS_LIKE.has(ext)) matched = matchJsLike(line)
-    else if (PYTHON.has(ext)) matched = matchPython(line)
-    else if (GO.has(ext)) matched = matchGo(line)
+    if (GO.has(ext)) matched = matchGo(line)
     else if (RUST.has(ext)) matched = matchRust(line)
     else if (C_FAMILY.has(ext)) matched = matchCFamily(line)
     else if (SHELL.has(ext)) matched = matchShell(line)
     else if (/^(?:def|func|fn|function)\s+(\w+)/.test(line)) {
       matched = { name: line.match(/^(?:def|func|fn|function)\s+(\w+)/)[1], kind: 'function' }
     }
-    if (matched) {
-      symbols.push({
-        id: `${String(filePath).replace(/[\\/:\s]/g, '_')}#${i + 1}`,
-        sourcePath: filePath,
-        sourceLine: i + 1,
-        type: 'symbol',
-        title: `${matched.name} (${matched.kind})`,
-        summary: `${matched.kind} "${matched.name}" declared at ${filePath}:${i + 1}`,
-        keywords: [matched.name, matched.kind],
-        text: raw.trim().slice(0, 200),
-      })
-    }
+    if (matched) symbols.push(buildSymbol(matched, filePath, raw, i + 1))
   }
   return symbols
 }

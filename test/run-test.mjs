@@ -113,6 +113,113 @@ check(
 )
 check('rust struct still detected', rustSymbols.some((s) => s.title.startsWith('Thing')))
 
+console.log('\n== go/rust/c/shell masking ==')
+{
+  const goSrc = [
+    'package main',
+    '',
+    'const route = "https://x/fakeFunc"',
+    '// func commentedOut() {}',
+    'func realFn() {}',
+  ].join('\n')
+  const goNames = scanSymbols('main.go', goSrc).map((s) => s.keywords[0])
+  check('go: string/comment funcs ignored', !goNames.includes('fakeFunc') && !goNames.includes('commentedOut'))
+  check('go: real func detected', goNames.includes('realFn'))
+
+  const rustSrc = [
+    'const s = "fn strFake()";',
+    '/* fn blockFake() */ /* nested /* deeper */ still */',
+    "fn lifetime<'a>(x: &'a str) {}",
+    'fn realRust() {}',
+  ].join('\n')
+  const rustNames = scanSymbols('lib2.rs', rustSrc).map((s) => s.keywords[0])
+  check('rust: string/comment/nested-comment fns ignored', !rustNames.includes('strFake') && !rustNames.includes('blockFake') && !rustNames.includes('deeper'))
+  check('rust: lifetime fn detected', rustNames.includes('lifetime'))
+  check('rust: plain fn detected', rustNames.includes('realRust'))
+
+  const cSrc = [
+    'static char* url = "https://x/fakeC();";',
+    '// int commentedC() { return 0; }',
+    'int realC(void)',
+    '{',
+    '    return url != 0;',
+    '}',
+  ].join('\n')
+  const cNames = scanSymbols('m.c', cSrc).map((s) => s.keywords[0])
+  check('c: string/comment decls ignored', !cNames.includes('fakeC') && !cNames.includes('commentedC'))
+  check('c: real decl detected', cNames.includes('realC'))
+
+  const shSrc = [
+    '#!/usr/bin/env bash',
+    'URL="https://x/fakeShell"',
+    'count=${#URL}',
+    'real_shell() { echo "$count"; }',
+  ].join('\n')
+  const shNames = scanSymbols('run.sh', shSrc).map((s) => s.keywords[0])
+  check('shell: string content not a symbol, ${#} survives', !shNames.includes('fakeShell') && shNames.includes('real_shell'))
+}
+
+console.log('\n== js/ts scanner: masking, continuation ==')
+{
+  const js = [
+    '',
+    'const url = "https://fake.example/function decoy()"',
+    '// function commentedOut() {}',
+    '/* function blockCommented() {} */',
+    'export const realArrow = async (req) => { return url }',
+    'export const splitArrow =',
+    '  async (evt) => {}',
+    'export function',
+    '  multilineFn(',
+    '    a,',
+    '    b,',
+    '  ) {}',
+    'class Widget extends Base {',
+    '  methodOne(x) {}',
+    '}',
+  ].join('\n')
+  const got = scanSymbols('app.js', js).map((s) => s.keywords[0])
+  check('js: string/comment content not scanned as symbols', !got.includes('decoy') && !got.includes('commentedOut') && !got.includes('blockCommented'))
+  check('js: arrow function detected', got.includes('realArrow'))
+  check('js: arrow with value on next line detected', got.includes('splitArrow'))
+  check('js: multi-line signature detected', got.includes('multilineFn'))
+  check('js: indented class method detected', scanSymbols('app.js', 'class A {\n  run(x) {}\n}').some((s) => s.keywords.includes('run')))
+}
+
+console.log('\n== python scanner: strings, nesting, methods ==')
+{
+  const py = [
+    'import os',
+    '',
+    'LABEL = "# not a comment"',
+    '',
+    'def top_level(a):',
+    "    s = 'def fake(): pass'",
+    '    return s',
+    '',
+    'class Service:',
+    '    def method(self):',
+    '        pass',
+    '',
+    '    async def async_method(self):',
+    '        pass',
+    '',
+    'RESULT = sum(',
+    '    [1 for x in [] if x],',
+    '    # def nested_fake():',
+    '    [],',
+    ')',
+    '',
+    'def after_call(b):',
+    '    pass',
+  ].join('\n')
+  const gotNames = scanSymbols('svc.py', py).map((s) => s.keywords[0])
+  check('py: string/comment defs ignored', !gotNames.includes('fake') && !gotNames.includes('nested_fake'))
+  check('py: indented methods detected', gotNames.includes('method') && gotNames.includes('async_method'))
+  check('py: scanning resumes after bracket-nested region', gotNames.includes('after_call'))
+  check('py: top-level def and class kept', gotNames.includes('top_level') && gotNames.includes('Service'))
+}
+
 console.log('\n== store ==')
 const storeDir = memoryRootFor(root, config.memoryDir)
 const store = new ProjectMemoryStore(storeDir).load()
