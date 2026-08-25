@@ -9,14 +9,14 @@ const SHELL = new Set(['.sh', '.zsh'])
 
 const CONTROL = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'foreach', 'using', 'lock', 'var', 'function'])
 
-const JS_MASKER = { lineComment: '//', blockStart: '/*', blockEnd: '*/', quotes: ['`', '"', "'"] }
-const PY_MASKER = { lineComment: '#', blockStart: null, blockEnd: null, quotes: ['"""', "'''", '"', "'"] }
-const GO_MASKER = { lineComment: '//', blockStart: '/*', blockEnd: '*/', quotes: ['`', '"'] }
-const RUST_MASKER = { lineComment: '//', blockStart: '/*', blockEnd: '*/', blockNested: true, quotes: ['"'] }
-const C_FAMILY_MASKER = { lineComment: '//', blockStart: '/*', blockEnd: '*/', quotes: ['"', "'"] }
-const SHELL_MASKER = { lineComment: '#', lineCommentBoundary: true, blockStart: null, blockEnd: null, quotes: ["'", '"'] }
+const JS_MASKER = { lineComment: '//', blockStart: '/*', blockEnd: '*/', quotes: ['`', '"', "'"], multilineQuotes: ['`'] }
+const PY_MASKER = { lineComment: '#', blockStart: null, blockEnd: null, quotes: ['"""', "'''", '"', "'"], multilineQuotes: ['"""', "'''"] }
+const GO_MASKER = { lineComment: '//', blockStart: '/*', blockEnd: '*/', quotes: ['`', '"'], multilineQuotes: ['`'] }
+const RUST_MASKER = { lineComment: '//', blockStart: '/*', blockEnd: '*/', blockNested: true, quotes: ['"'], multilineQuotes: [] }
+const C_FAMILY_MASKER = { lineComment: '//', blockStart: '/*', blockEnd: '*/', quotes: ['"', "'"], multilineQuotes: [] }
+const SHELL_MASKER = { lineComment: '#', lineCommentBoundary: true, blockStart: null, blockEnd: null, quotes: ["'", '"'], multilineQuotes: [] }
 
-function maskTokens(lines, { lineComment, lineCommentBoundary = false, blockStart, blockEnd, blockNested = false, quotes }) {
+function maskTokens(lines, { lineComment, lineCommentBoundary = false, blockStart, blockEnd, blockNested = false, quotes, multilineQuotes = [] }) {
   const out = new Array(lines.length)
   let mode = 'code'
   let blockDepth = 0
@@ -81,6 +81,7 @@ function maskTokens(lines, { lineComment, lineCommentBoundary = false, blockStar
         j++
       }
     }
+    if (mode && quotes.includes(mode) && !multilineQuotes.includes(mode)) mode = 'code'
     out[i] = res
   }
   return out
@@ -148,7 +149,7 @@ function scanJsLike(masked, filePath, rawLines) {
       }
     }
     if (matched) symbols.push(buildSymbol(matched, filePath, rawLines[i], i + 1))
-    prevOpensBlock = text.endsWith('{')
+    prevOpensBlock = masked[i].trim().endsWith('{')
   }
   return symbols
 }

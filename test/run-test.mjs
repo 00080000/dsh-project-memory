@@ -186,6 +186,18 @@ console.log('\n== js/ts scanner: masking, continuation ==')
   check('js: indented class method detected', scanSymbols('app.js', 'class A {\n  run(x) {}\n}').some((s) => s.keywords.includes('run')))
 }
 
+console.log('\n== js/go scanner: unterminated quote does not leak across lines ==')
+{
+  const leak1 = ["const re = /['\"]/g;", 'export function victim() {}'].join('\n')
+  check('js: regex literal with quotes does not poison next lines', scanSymbols('a.js', leak1).some((s) => s.keywords.includes('victim')))
+  const leak2 = ['msg = "unterminated', 'export function victim2() {}'].join('\n')
+  check('js: unterminated string resets at end of line', scanSymbols('b.js', leak2).some((s) => s.keywords.includes('victim2')))
+  const leak3 = ['msg := "unterminated', 'func victim3() {}'].join('\n')
+  check('go: unterminated string resets at end of line', scanSymbols('c.go', leak3).some((s) => s.keywords.includes('victim3')))
+  const tmpl = ['const t = `fn fake()`;', 'export function survivor() {}'].join('\n')
+  check('js: backtick template still masked across constructs', !scanSymbols('d.js', tmpl).some((s) => s.keywords.includes('fake')) && scanSymbols('d.js', tmpl).some((s) => s.keywords.includes('survivor')))
+}
+
 console.log('\n== python scanner: strings, nesting, methods ==')
 {
   const py = [
