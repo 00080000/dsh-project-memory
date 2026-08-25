@@ -97,12 +97,31 @@ export class ProjectMemoryStore {
 
   _migrateLegacyIfNeeded() {
     const formatPath = path.join(this.dir, FORMAT_FILE)
-    if (loadJson(formatPath, null)?.version === 2) return
+    if (loadJson(formatPath, null)?.version === 2) {
+      // 迁移在“写完标记、删旧文件前”崩溃会留下死文件；这里顺手清掉
+      for (const stale of [path.join(this.dir, ENTRIES_FILE), path.join(this.dir, INDEX_FILE)]) {
+        if (existsSafe(stale)) {
+          try {
+            unlinkSync(stale)
+            console.error(`[dsh-project-memory] removed leftover legacy file ${path.basename(stale)} after migration`)
+          } catch {
+            // locked or gone; will be retried next load
+          }
+        }
+      }
+      return
+    }
     const legacyEntriesPath = path.join(this.dir, ENTRIES_FILE)
     if (!existsSafe(legacyEntriesPath)) return
     const index = loadJson(path.join(this.dir, INDEX_FILE), {})
     const files = index.files || {}
     const entries = loadJson(legacyEntriesPath, {})
+    const orphans = Object.keys(entries).filter((rel) => !(rel in files))
+    if (orphans.length) {
+      console.error(
+        `[dsh-project-memory] migration dropped ${orphans.length} entry group(s) with no index record: ${orphans.slice(0, 3).join(', ')}${orphans.length > 3 ? ' …' : ''}`,
+      )
+    }
     mkdirSync(path.join(this.dir, SHARDS_DIR), { recursive: true })
     for (const rel of Object.keys(files)) {
       writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: files[rel], entries: entries[rel] || [] })

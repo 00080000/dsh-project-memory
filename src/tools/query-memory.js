@@ -94,10 +94,15 @@ export function queryMemoryTool(ctx, config) {
             : type === 'all'
               ? 'Index it first with index_repo / index_doc, or note a fix with remember.'
               : 'Index it first with index_repo / index_doc.'
+        const tail =
+          overview.files === 0
+            ? '. The store has never been indexed.'
+            : overview.latest
+              ? `, last indexed at ${overview.latest}. Use memory_stats to see what the store contains.`
+              : '. Use memory_stats to see what the store contains.'
         return (
           `No memory matches for "${args.query}" in ${root}. ${hint}\n` +
-          `Store overview: ${overview.files} files indexed, ${overview.entries} entries, ${overview.experience} experience notes` +
-          (overview.latest ? `, last indexed at ${overview.latest}. Use memory_stats to see what the store contains.` : '. The store has never been indexed.')
+          `Store overview: ${overview.files} files indexed, ${overview.entries} entries, ${overview.experience} experience notes${tail}`
         )
       }
       return truncate(lines.join('\n\n'), config.maxOutputChars)
