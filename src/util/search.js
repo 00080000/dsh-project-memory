@@ -1,6 +1,42 @@
 export const CJK_RANGE =
   /[\u3400-\u9fff\uf900-\ufaff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/
 
+const SYNONYMS = new Map([
+  ['数据库连接池', ['连接池', 'DB pool', 'db pool']],
+  ['连接池', ['数据库连接池', 'DB pool', 'db pool']],
+  ['DB pool', ['数据库连接池', '连接池']],
+  ['db pool', ['数据库连接池', '连接池']],
+])
+
+function extractCjkPhrases(text) {
+  const phrases = []
+  let run = ''
+  for (const ch of text) {
+    if (CJK_RANGE.test(ch)) {
+      run += ch
+    } else if (run.length >= 3) {
+      phrases.push(run)
+      run = ''
+    } else {
+      run = ''
+    }
+  }
+  if (run.length >= 3) phrases.push(run)
+  return phrases
+}
+
+function expandQuery(query) {
+  const lower = query.toLowerCase()
+  const expanded = new Set([lower])
+  for (const [key, vals] of SYNONYMS) {
+    if (lower.includes(key.toLowerCase())) {
+      for (const v of vals) expanded.add(v.toLowerCase())
+    }
+  }
+  const cjkPhrases = extractCjkPhrases(query)
+  return { original: lower, expanded: [...expanded], cjkPhrases }
+}
+
 export function tokenizeRaw(text) {
   if (!text) return []
   const lower = text.toLowerCase()
@@ -43,7 +79,9 @@ export function buildBm25(docs, getFieldText) {
     const terms = tokenizeRaw(text)
     const tf = {}
     for (const t of terms) tf[t] = (tf[t] || 0) + 1
-    return { doc, length: terms.length, tf }
+    const title = (doc.title || '').toLowerCase()
+    const keywords = (doc.keywords || []).join(' ').toLowerCase()
+    return { doc, length: terms.length, tf, title, keywords }
   })
   const df = {}
   for (const d of documents) {
@@ -55,7 +93,12 @@ export function buildBm25(docs, getFieldText) {
   return {
     idf,
     score(query) {
-      const q = tokenize(query)
+      const { expanded, cjkPhrases } = expandQuery(query)
+      const qTokens = new Set()
+      for (const term of expanded) {
+        for (const tok of tokenizeRaw(term)) qTokens.add(tok)
+      }
+      const q = [...qTokens]
       if (!q.length) return []
       const avgLen = avgdl
       return documents
@@ -66,6 +109,12 @@ export function buildBm25(docs, getFieldText) {
             const tf = d.tf[t] || 0
             if (!tf) continue
             score += idf(t) * ((tf * (K1 + 1)) / (tf + K1 * (1 - B + (B * len) / avgLen)))
+          }
+          for (const phrase of cjkPhrases) {
+            const lowerPhrase = phrase.toLowerCase()
+            if (d.title.includes(lowerPhrase) || d.keywords.includes(lowerPhrase)) {
+              score *= 1.5
+            }
           }
           return { doc: d.doc, score }
         })

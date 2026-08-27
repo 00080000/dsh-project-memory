@@ -1,9 +1,13 @@
 const LATIN_NAME = /^[A-Za-z0-9_]+$/
+const CJK_CHAR = /[\u3400-\u9fff\uf900-\ufaff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/
 
 function buildMatcher(name) {
   const lower = name.toLowerCase()
-  if (!LATIN_NAME.test(name)) return { lower, re: null }
-  return { lower, re: new RegExp(`(?<![a-z0-9_$])${lower}(?![a-z0-9_$])`) }
+  if (LATIN_NAME.test(name)) {
+    return { lower, re: new RegExp(`(?<![a-z0-9_$])${lower}(?![a-z0-9_$])`) }
+  }
+  const escaped = lower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return { lower, re: new RegExp(`(?<!${CJK_CHAR.source})${escaped}(?!${CJK_CHAR.source})`) }
 }
 
 export function linkEntries(store) {

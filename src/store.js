@@ -303,8 +303,10 @@ export class ProjectMemoryStore {
     for (const item of this.experience) {
       const itemTokens = tokenize(item.problem)
       const overlap = itemTokens.filter((t) => tokens.includes(t)).length
-      const base = Math.min(tokens.length, itemTokens.length)
-      if (base && overlap / base >= 0.6 && overlap > bestOverlap) {
+      if (overlap === 0) continue
+      const ratioQuery = overlap / tokens.length
+      const ratioItem = overlap / itemTokens.length
+      if (ratioQuery >= 0.7 && ratioItem >= 0.7 && overlap > bestOverlap) {
         best = item
         bestOverlap = overlap
       }
