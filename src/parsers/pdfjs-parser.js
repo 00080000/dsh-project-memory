@@ -5,12 +5,17 @@ let configuredWorkerSrc
 
 function loadPdfjs() {
   if (!pdfjsPromise) {
-    pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs').then((mod) => {
-      if (configuredWorkerSrc) {
-        mod.GlobalWorkerOptions.workerSrc = configuredWorkerSrc
-      }
-      return mod
-    })
+    pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs')
+      .then((mod) => {
+        if (configuredWorkerSrc) {
+          mod.GlobalWorkerOptions.workerSrc = configuredWorkerSrc
+        }
+        return mod
+      })
+      .catch((err) => {
+        pdfjsPromise = undefined
+        throw err
+      })
   }
   return pdfjsPromise
 }
@@ -50,7 +55,7 @@ function extractPageText(items) {
 
 export async function parsePdf(filePath, { pages = null, maxPages = 1000, backend = 'pdfjs', collectLayoutStats = false } = {}) {
   const data = new Uint8Array(await readFile(filePath))
-  const { getDocument, OPS } = await loadPdfjs()
+  const { getDocument } = await loadPdfjs()
   const loadingTask = getDocument({ data, ...PDFJS_OPTIONS })
   const doc = await loadingTask.promise
 
@@ -70,6 +75,7 @@ export async function parsePdf(filePath, { pages = null, maxPages = 1000, backen
       pageList.push({ page: n, text: extractPageText(content.items) })
 
       if (collectLayoutStats && sampledPages < 5) {
+        const { OPS } = await loadPdfjs()
         const opList = await page.getOperatorList()
         for (const fn of opList.fnArray) {
           if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject) imageCount++
