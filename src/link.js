@@ -7,7 +7,11 @@ function buildMatcher(name) {
     return { lower, re: new RegExp(`(?<![a-z0-9_$])${lower}(?![a-z0-9_$])`) }
   }
   const escaped = lower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return { lower, re: new RegExp(`(?<!${CJK_CHAR.source})${escaped}(?!${CJK_CHAR.source})`) }
+  const hasLatin = /[a-z0-9_$]/i.test(name)
+  const tailBoundary = hasLatin
+    ? `(?!${CJK_CHAR.source})(?![a-z0-9_$])`
+    : `(?!${CJK_CHAR.source})`
+  return { lower, re: new RegExp(`${escaped}${tailBoundary}`) }
 }
 
 export function linkEntries(store) {

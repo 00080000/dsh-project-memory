@@ -491,6 +491,26 @@ console.log('\n== BM25 term frequency & field weighting ==')
   check('title hit outweighs body hit', rankEntries(fieldDocs, 'zephyr')[0]?.id === 'head')
 }
 
+console.log('\n== CJK query: phrase boost + synonyms ==')
+{
+  const cjkDocs = [
+    { id: 'd1', title: '数据库连接池配置', summary: '如何配置连接池', keywords: ['数据库连接池', '配置'], sourcePath: 'a.md' },
+    { id: 'd2', title: '连接池调优', summary: '连接池参数调优', keywords: ['连接池', '调优'], sourcePath: 'b.md' },
+    { id: 'd3', title: '其他文档', summary: '无关内容', keywords: ['其他'], sourcePath: 'c.md' },
+  ]
+  // 短语加分：查询"数据库连接池配置详解"，标题含"数据库连接池"应加分
+  const r1 = rankEntries(cjkDocs, '数据库连接池配置详解')
+  check('精确短语加分: 数据库连接池配置详解 -> 数据库连接池配置 排前', r1[0]?.id === 'd1')
+  // 同义词展开：查询"连接池"应召回"数据库连接池配置"
+  const r2 = rankEntries(cjkDocs, '连接池')
+  check('同义词展开: 连接池 召回 数据库连接池配置', r2.some((d) => d.id === 'd1'))
+  // expandQuery undefined 不抛错
+  const { buildBm25 } = await import('../src/util/search.js')
+  const bm25 = buildBm25(cjkDocs, (d) => `${d.title} ${d.keywords.join(' ')} ${d.summary}`)
+  const empty = bm25.score(undefined)
+  check('expandQuery(undefined) 不抛错且返回空', Array.isArray(empty) && empty.length === 0)
+}
+
 console.log('\n== doc <-> symbol cross-linking ==')
 const linked = linkEntries(new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load())
 check('links doc entries to mentioned symbols', linked > 0)
@@ -548,6 +568,46 @@ console.log('\n== link word boundaries ==')
   const docs = bStore.allEntries().filter((e) => e.type === 'doc')
   check('substring run does not match runtime', !docs.find((e) => e.id === 'dx').linkedSymbols)
   check('standalone run matches', docs.find((e) => e.id === 'dy').linkedSymbols?.includes('sr'))
+}
+
+console.log('\n== CJK link boundaries ==')
+{
+  const cjkStore = new ProjectMemoryStore(path.join(mkdtempSync(path.join(tmpdir(), 'pm-linkcjk-')), 'mem')).load()
+  // 符号: 用户服务
+  cjkStore.setEntries('src/svc.js', [
+    { id: 'svc', type: 'symbol', sourcePath: 'src/svc.js', sourceLine: 1, title: '用户服务 (class)', summary: '', keywords: ['用户服务'] },
+  ])
+  // 符号: 用户服务V2
+  cjkStore.setEntries('src/svc2.js', [
+    { id: 'svc2', type: 'symbol', sourcePath: 'src/svc2.js', sourceLine: 1, title: '用户服务V2 (class)', summary: '', keywords: ['用户服务V2'] },
+  ])
+  // 文档: 调用用户服务（前边界是 CJK，应命中）
+  cjkStore.setEntries('docs/a.md', [
+    { id: 'da', type: 'doc', sourcePath: 'docs/a.md', sourceLine: 1, title: '调用用户服务', summary: '如何调用用户服务', keywords: [] },
+  ])
+  // 文档: 用户服务管理器（后缀 CJK，不应命中 用户服务）
+  cjkStore.setEntries('docs/b.md', [
+    { id: 'db', type: 'doc', sourcePath: 'docs/b.md', sourceLine: 1, title: '用户服务管理器', summary: '管理器', keywords: [] },
+  ])
+  // 文档: 用户服务V22（混合名后缀数字，不应命中 用户服务V2）
+  cjkStore.setEntries('docs/c.md', [
+    { id: 'dc', type: 'doc', sourcePath: 'docs/c.md', sourceLine: 1, title: '用户服务V22', summary: 'V22 版本', keywords: [] },
+  ])
+  // 文档: 用户服务V2管理器（混合名后缀 CJK，不应命中 用户服务V2）
+  cjkStore.setEntries('docs/d.md', [
+    { id: 'dd', type: 'doc', sourcePath: 'docs/d.md', sourceLine: 1, title: '用户服务V2管理器', summary: '管理器', keywords: [] },
+  ])
+  // 文档: 用户服务V2（精确匹配，应命中）
+  cjkStore.setEntries('docs/e.md', [
+    { id: 'de', type: 'doc', sourcePath: 'docs/e.md', sourceLine: 1, title: '用户服务V2', summary: 'V2 版本', keywords: [] },
+  ])
+  linkEntries(cjkStore)
+  const cjkDocs = cjkStore.allEntries().filter((e) => e.type === 'doc')
+  check('前边界 CJK 允许匹配: 调用用户服务 -> 用户服务', cjkDocs.find((e) => e.id === 'da').linkedSymbols?.includes('svc'))
+  check('后缀 CJK 阻断: 用户服务管理器 -/-> 用户服务', !cjkDocs.find((e) => e.id === 'db').linkedSymbols?.includes('svc'))
+  check('混合名后缀数字阻断: 用户服务V22 -/-> 用户服务V2', !cjkDocs.find((e) => e.id === 'dc').linkedSymbols?.includes('svc2'))
+  check('混合名后缀 CJK 阻断: 用户服务V2管理器 -/-> 用户服务V2', !cjkDocs.find((e) => e.id === 'dd').linkedSymbols?.includes('svc2'))
+  check('精确匹配: 用户服务V2 -> 用户服务V2', cjkDocs.find((e) => e.id === 'de').linkedSymbols?.includes('svc2'))
 }
 
 console.log('\n== watch reloads store each poll (external writes preserved) ==')

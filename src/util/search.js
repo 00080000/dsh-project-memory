@@ -26,6 +26,7 @@ function extractCjkPhrases(text) {
 }
 
 function expandQuery(query) {
+  if (!query) return { original: '', expanded: [], cjkPhrases: [] }
   const lower = query.toLowerCase()
   const expanded = new Set([lower])
   for (const [key, vals] of SYNONYMS) {
