@@ -80,7 +80,8 @@ export function buildBm25(docs, getFieldText, getPhraseFields) {
     const terms = tokenizeRaw(text)
     const tf = {}
     for (const t of terms) tf[t] = (tf[t] || 0) + 1
-    const phraseFields = getPhraseFields ? getPhraseFields(doc) : [(doc.title || ''), (doc.keywords || []).join(' ')]
+    const rawFields = getPhraseFields ? getPhraseFields(doc) : [(doc.title || ''), (doc.keywords || []).join(' ')]
+    const phraseFields = Array.isArray(rawFields) ? rawFields : [rawFields]
     const phraseText = phraseFields.filter(Boolean).join(' ').toLowerCase()
     return { doc, length: terms.length, tf, phraseText }
   })
