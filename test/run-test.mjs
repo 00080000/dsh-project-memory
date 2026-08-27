@@ -494,16 +494,16 @@ console.log('\n== BM25 term frequency & field weighting ==')
 console.log('\n== CJK query: phrase boost + synonyms ==')
 {
   const cjkDocs = [
-    { id: 'd1', title: '数据库连接池配置', summary: '如何配置连接池', keywords: ['数据库连接池', '配置'], sourcePath: 'a.md' },
+    { id: 'd1', title: '数据库连接池配置详解', summary: '如何配置连接池', keywords: ['数据库连接池', '配置'], sourcePath: 'a.md' },
     { id: 'd2', title: '连接池调优', summary: '连接池参数调优', keywords: ['连接池', '调优'], sourcePath: 'b.md' },
     { id: 'd3', title: '其他文档', summary: '无关内容', keywords: ['其他'], sourcePath: 'c.md' },
   ]
-  // 短语加分：查询"数据库连接池配置详解"，标题含"数据库连接池"应加分
-  const r1 = rankEntries(cjkDocs, '数据库连接池配置详解')
-  check('精确短语加分: 数据库连接池配置详解 -> 数据库连接池配置 排前', r1[0]?.id === 'd1')
-  // 同义词展开：查询"连接池"应召回"数据库连接池配置"
+  // 短语加分：查询"数据库连接池配置"，标题含"数据库连接池配置"应加分（d1 包含查询短语）
+  const r1 = rankEntries(cjkDocs, '数据库连接池配置')
+  check('精确短语加分: 数据库连接池配置 -> 数据库连接池配置详解 排前', r1[0]?.id === 'd1')
+  // 同义词展开：查询"连接池"应召回"数据库连接池配置详解"
   const r2 = rankEntries(cjkDocs, '连接池')
-  check('同义词展开: 连接池 召回 数据库连接池配置', r2.some((d) => d.id === 'd1'))
+  check('同义词展开: 连接池 召回 数据库连接池配置详解', r2.some((d) => d.id === 'd1'))
   // expandQuery undefined 不抛错
   const { buildBm25 } = await import('../src/util/search.js')
   const bm25 = buildBm25(cjkDocs, (d) => `${d.title} ${d.keywords.join(' ')} ${d.summary}`)
@@ -608,6 +608,8 @@ console.log('\n== CJK link boundaries ==')
   check('混合名后缀数字阻断: 用户服务V22 -/-> 用户服务V2', !cjkDocs.find((e) => e.id === 'dc').linkedSymbols?.includes('svc2'))
   check('混合名后缀 CJK 阻断: 用户服务V2管理器 -/-> 用户服务V2', !cjkDocs.find((e) => e.id === 'dd').linkedSymbols?.includes('svc2'))
   check('精确匹配: 用户服务V2 -> 用户服务V2', cjkDocs.find((e) => e.id === 'de').linkedSymbols?.includes('svc2'))
+  // 纯 CJK 符号名不应误链混合后缀
+  check('纯 CJK 名阻断混合后缀: 用户服务V2管理器 -/-> 用户服务', !cjkDocs.find((e) => e.id === 'dd').linkedSymbols?.includes('svc'))
 }
 
 console.log('\n== watch reloads store each poll (external writes preserved) ==')

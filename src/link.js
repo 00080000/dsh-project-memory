@@ -7,11 +7,8 @@ function buildMatcher(name) {
     return { lower, re: new RegExp(`(?<![a-z0-9_$])${lower}(?![a-z0-9_$])`) }
   }
   const escaped = lower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const hasLatin = /[a-z0-9_$]/i.test(name)
-  const tailBoundary = hasLatin
-    ? `(?!${CJK_CHAR.source})(?![a-z0-9_$])`
-    : `(?!${CJK_CHAR.source})`
-  return { lower, re: new RegExp(`${escaped}${tailBoundary}`) }
+  // 尾部统一挡 CJK + 字母数字下划线，防止纯 CJK 名误链混合后缀、混合名误链更长后缀
+  return { lower, re: new RegExp(`${escaped}(?!${CJK_CHAR.source})(?![a-z0-9_$])`) }
 }
 
 export function linkEntries(store) {
