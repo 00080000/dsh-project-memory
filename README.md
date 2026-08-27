@@ -15,8 +15,8 @@ Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/
 - **Automatic refresh** — a background poll (`watch_repo`) detects new or changed files by content hash and re-indexes only those.
 - **Read-time indexing** — files are indexed the moment the model actually reads them (`fs/observed`), so the index is a byproduct of normal work, not a separate upfront scan. Files that are never read are never indexed. The project root is detected by markers (`.git`, `package.json`, …), a README plus source directories, or the file's own directory as a last resort.
 - **Doc ↔ code cross-linking** — when a document mentions a symbol, the match is recorded as a `reference`; querying a symbol also surfaces the documents that describe it.
-- **BM25 retrieval** — ranked search over documents, symbols, and experience notes, with optional LLM query expansion to handle vocabulary mismatch.
-- **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches. The note store is bounded: capacity scales with project size (clamped to 100–2000), and the oldest notes are pruned when the limit is exceeded.
+- **BM25 retrieval** — ranked search over documents, symbols, and experience notes, with optional LLM query expansion to handle vocabulary mismatch. **CJK-optimized**: precise phrase boost (3+ char phrases ×1.5 score on title/keywords match), synonym table (e.g. 数据库连接池 ↔ 连接池 ↔ DB pool), and CJK-aware word boundaries for doc↔symbol linking.
+- **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches. The note store is bounded: capacity scales with project size (clamped to 100–2000), and the oldest notes are pruned when the limit is exceeded. **Supersede tightened to bidirectional 0.7 overlap** (was 0.6); **experience `problem` field now participates in CJK phrase boost** for long-tail query recall.
 - **Minimal dependencies** — pure JavaScript; the only runtime dependency is `pdfjs-dist` (PDF text extraction), no native builds required.
 
 ## How it works
@@ -52,7 +52,7 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 A prebuilt tarball is published with each release, installable without a build step:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-project-memory-0.1.6.tgz
+dsh plugin --profile web add /path/to/dsh-project-memory-0.2.0.tgz
 ```
 
 Each indexed project has its own store at `<root>/.dsh-project-memory/`. Add it to `.gitignore` if it should not be committed.
@@ -99,6 +99,7 @@ These are deliberate scope choices.
 - **Absolute source paths** — entries cite absolute paths; moving a project invalidates citations until the next re-index.
 - **`forget` by query is eager** — keyword deletion matches at ≥0.5 token overlap and may remove several notes at once; prefer deleting by id for precision.
 - **Cross-language recall depends on index time** — with `llmQueryExpansion` off, a Chinese-only query reaches English content through bilingual keywords captured when docs are indexed, plus doc↔symbol links; queries stay LLM-free. Stores indexed before v0.1.1 gain bilingual keywords as files change, or immediately via `index_repo` with `reindex: true`.
+- **CJK retrieval** — phrase boost and synonym expansion are purely query-side; they do not increase index size or LLM usage. Link boundaries use CJK-aware regex only; English symbols keep the original word-boundary behavior. The experience supersede threshold (0.7 bidirectional) is a conservative default; adjust via config if false positives/negatives appear in practice.
 
 ## Configuration
 
