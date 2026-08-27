@@ -37,8 +37,7 @@ The store is per-project and follows the codebase: changed files are re-extracte
 Tested against dsh **0.1.0-rc.7 through 0.1.1-rc.2**. Newer rc lines are expected to work — the plugin only touches stable surfaces (`defineTool`, `llm.stream`, `Schema`) — but they are not individually verified. The host provides `@deepseek-ai/cordis` ^4.0.1 and `@deepseek-ai/schemastery` ^3.18.1, declared via peerDependencies.
 
 ```bash
-cd dsh-project-memory
-dsh plugin --profile web add . -w
+cd dsh-project-memory && dsh plugin --profile web add . -w
 ```
 
 The `-w` (workspace-root) flag is required: the profile directory is a pnpm workspace root, and pnpm rejects `add` there without it. From any other directory, the path form works the same: `dsh plugin --profile web add /path/to/dsh-project-memory -w`.

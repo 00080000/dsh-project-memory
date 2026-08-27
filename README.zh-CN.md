@@ -37,8 +37,7 @@
 实测覆盖 dsh **0.1.0-rc.7 → 0.1.1-rc.2**。更高的 rc 版本预期可用——插件只使用稳定接口（`defineTool`、`llm.stream`、`Schema`）——但未经逐一验证。宿主需提供 `@deepseek-ai/cordis` ^4.0.1 与 `@deepseek-ai/schemastery` ^3.18.1，已通过 peerDependencies 声明。
 
 ```bash
-cd dsh-project-memory
-dsh plugin --profile web add . -w
+cd dsh-project-memory && dsh plugin --profile web add . -w
 ```
 
 `-w`（workspace-root）标志是必需的：profile 目录是 pnpm 工作区根目录，不带该标志 pnpm 会拒绝 add。其他目录下同样可用路径形式：`dsh plugin --profile web add /path/to/dsh-project-memory -w`。
