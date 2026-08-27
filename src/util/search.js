@@ -74,15 +74,15 @@ function avgDocLen(docs) {
   return docs.reduce((sum, d) => sum + d.length, 0) / docs.length
 }
 
-export function buildBm25(docs, getFieldText) {
+export function buildBm25(docs, getFieldText, getPhraseFields) {
   const documents = docs.map((doc) => {
     const text = getFieldText(doc)
     const terms = tokenizeRaw(text)
     const tf = {}
     for (const t of terms) tf[t] = (tf[t] || 0) + 1
-    const title = (doc.title || '').toLowerCase()
-    const keywords = (doc.keywords || []).join(' ').toLowerCase()
-    return { doc, length: terms.length, tf, title, keywords }
+    const phraseFields = getPhraseFields ? getPhraseFields(doc) : [(doc.title || ''), (doc.keywords || []).join(' ')]
+    const phraseText = phraseFields.filter(Boolean).join(' ').toLowerCase()
+    return { doc, length: terms.length, tf, phraseText }
   })
   const df = {}
   for (const d of documents) {
@@ -113,7 +113,7 @@ export function buildBm25(docs, getFieldText) {
           }
           for (const phrase of cjkPhrases) {
             const lowerPhrase = phrase.toLowerCase()
-            if (d.title.includes(lowerPhrase) || d.keywords.includes(lowerPhrase)) {
+            if (d.phraseText.includes(lowerPhrase)) {
               score *= 1.5
             }
           }
@@ -168,8 +168,10 @@ export function rankExperience(items, queryOrQueries, limit = 5) {
 }
 
 export function rankExperienceScored(items, queryOrQueries, limit = 5) {
-  const bm25 = buildBm25(items, (item) =>
-    `${item.problem} ${item.problem} ${item.problem} ${item.solution} ${item.sourceFile || ''}`,
+  const bm25 = buildBm25(
+    items,
+    (item) => `${item.problem} ${item.problem} ${item.problem} ${item.solution} ${item.sourceFile || ''}`,
+    (item) => [item.problem],
   )
   const queries = Array.isArray(queryOrQueries) ? queryOrQueries : [queryOrQueries]
   const merged = new Map()

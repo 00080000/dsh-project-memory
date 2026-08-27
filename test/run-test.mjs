@@ -272,22 +272,38 @@ console.log('\n== sharded store layout & migration ==')
 }
 
 console.log('\n== store ==')
-const storeDir = memoryRootFor(root, config.memoryDir)
-const store = new ProjectMemoryStore(storeDir).load()
-const add1 = store.addExperience({ problem: 'pdfjs import fails on Node 24', solution: 'use legacy build', sourceFile: 'a.js' })
-const add2 = store.addExperience({ problem: 'different problem entirely', solution: 'x' })
-const add3 = store.addExperience({ problem: 'pdfjs import fails on Node 24 again', solution: 'use legacy build + worker:false' })
-check('adds experience', add1.superseded === false && add2.superseded === false)
-check('supersedes similar problem', add3.superseded === true && store.experience.length === 2)
-store.save()
-check('persists to disk', existsSync(path.join(storeDir, 'experience.json')))
-check('store files written compact', !readFileSync(path.join(storeDir, 'experience.json'), 'utf8').includes('\n  '))
-check('searches experience', rankExperienceScored(store.experience, 'pdfjs import').length === 1)
-const staleTmp = path.join(storeDir, 'experience.json.999999.tmp')
-writeFileSync(staleTmp, '{}')
-utimesSync(staleTmp, new Date(Date.now() - 120000), new Date(Date.now() - 120000))
-store.save()
-check('stale tmp files cleaned on save', !existsSync(staleTmp))
+{
+  const storeDir = memoryRootFor(root, config.memoryDir)
+  const store = new ProjectMemoryStore(storeDir).load()
+  const add1 = store.addExperience({ problem: 'pdfjs import fails on Node 24', solution: 'use legacy build', sourceFile: 'a.js' })
+  const add2 = store.addExperience({ problem: 'different problem entirely', solution: 'x' })
+  const add3 = store.addExperience({ problem: 'pdfjs import fails on Node 24 again', solution: 'use legacy build + worker:false' })
+  check('adds experience', add1.superseded === false && add2.superseded === false)
+  check('supersedes similar problem', add3.superseded === true && store.experience.length === 2)
+  store.save()
+  check('persists to disk', existsSync(path.join(storeDir, 'experience.json')))
+  check('store files written compact', !readFileSync(path.join(storeDir, 'experience.json'), 'utf8').includes('\n  '))
+  check('searches experience', rankExperienceScored(store.experience, 'pdfjs import').length === 1)
+  const staleTmp = path.join(storeDir, 'experience.json.999999.tmp')
+  writeFileSync(staleTmp, '{}')
+  utimesSync(staleTmp, new Date(Date.now() - 120000), new Date(Date.now() - 120000))
+  store.save()
+  check('stale tmp files cleaned on save', !existsSync(staleTmp))
+}
+
+console.log('\n== experience phrase boost ==')
+{
+  const expStore = new ProjectMemoryStore(path.join(mkdtempSync(path.join(tmpdir(), 'pm-exp-phrase-')), 'mem')).load()
+  expStore.addExperience({ problem: '数据库连接池配置参数调优', solution: '调大 maxPoolSize', sourceFile: 'a.js' })
+  expStore.addExperience({ problem: '连接池耗尽报错', solution: '检查泄漏', sourceFile: 'b.js' })
+  expStore.addExperience({ problem: '其他问题', solution: 'x', sourceFile: 'c.js' })
+  // 查询包含经验 problem 完整短语，应触发短语加分
+  const r1 = rankExperienceScored(expStore.experience, '数据库连接池配置参数调优')
+  check('经验层短语加分: 数据库连接池配置参数调优 -> 自身 排前', r1[0]?.item?.id === expStore.experience[0]?.id)
+  // 同义词展开也应生效
+  const r2 = rankExperienceScored(expStore.experience, '连接池')
+  check('经验层同义词展开: 连接池 召回 数据库连接池配置参数调优', r2.some((e) => e.item.problem === '数据库连接池配置参数调优'))
+}
 
 console.log('\n== experience capacity ==')
 {
