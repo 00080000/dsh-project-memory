@@ -27,8 +27,11 @@
 - 核心已在 C1 解决（短语乘法加分 + 同义词表）  
 - 补：`problem` 改写归一（同义词映射表复用）。中。
 
-### D-1：pdfjs OPS 按需动态 import
-仅 `collectLayoutStats` 分支用到。半小时。
+### D-1：pdfjs-dist 整体懒加载（启动不加载，仅解析 PDF 时才 import）
+当前 `pdfjs-parser.js` 顶部静态 import `getDocument`/`OPS`，插件启动即加载 pdfjs-dist。
+改为：模块内部 `loadPdfjs()` 懒加载，`parsePdf`/`parsePdfInfo` 调用时才 `import('pdfjs-dist/...')`。
+`configurePdfjsWorker` 兼容同步/异步设置 workerSrc。
+收益：非 PDF 项目零 pdfjs 开销；OPS 自然按需。半小时。
 
 ### D-2：惰性孤儿清理
 query_memory 命中时 stat 源文件，失效条目即时剔除。半小时。

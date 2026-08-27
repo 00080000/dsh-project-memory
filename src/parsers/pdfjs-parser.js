@@ -1,5 +1,19 @@
 import { readFile } from 'node:fs/promises'
-import { getDocument, GlobalWorkerOptions, OPS } from 'pdfjs-dist/legacy/build/pdf.mjs'
+
+let pdfjsPromise
+let configuredWorkerSrc
+
+function loadPdfjs() {
+  if (!pdfjsPromise) {
+    pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs').then((mod) => {
+      if (configuredWorkerSrc) {
+        mod.GlobalWorkerOptions.workerSrc = configuredWorkerSrc
+      }
+      return mod
+    })
+  }
+  return pdfjsPromise
+}
 
 const PDFJS_OPTIONS = {
   useSystemFonts: true,
@@ -36,6 +50,7 @@ function extractPageText(items) {
 
 export async function parsePdf(filePath, { pages = null, maxPages = 1000, backend = 'pdfjs', collectLayoutStats = false } = {}) {
   const data = new Uint8Array(await readFile(filePath))
+  const { getDocument, OPS } = await loadPdfjs()
   const loadingTask = getDocument({ data, ...PDFJS_OPTIONS })
   const doc = await loadingTask.promise
 
@@ -86,6 +101,7 @@ export async function parsePdf(filePath, { pages = null, maxPages = 1000, backen
 
 export async function parsePdfInfo(filePath, maxPages = 1000) {
   const data = new Uint8Array(await readFile(filePath))
+  const { getDocument } = await loadPdfjs()
   const loadingTask = getDocument({ data, ...PDFJS_OPTIONS })
   const doc = await loadingTask.promise
 
@@ -115,5 +131,10 @@ export async function parsePdfInfo(filePath, maxPages = 1000) {
 }
 
 export function configurePdfjsWorker(workerSrc) {
-  GlobalWorkerOptions.workerSrc = workerSrc
+  configuredWorkerSrc = workerSrc
+  if (pdfjsPromise) {
+    pdfjsPromise.then((mod) => {
+      mod.GlobalWorkerOptions.workerSrc = workerSrc
+    })
+  }
 }
