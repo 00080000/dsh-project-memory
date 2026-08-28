@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1 (unreleased)
+
+### 存储：无锁同步事务重构
+- 删除全部锁机制（`withStoreLock`、`dirLocks`、Promise 链锁）：写入统一走同步事务 `store.commit(fn)`，fn 成功后才原子落盘；单进程内天然串行，`remember`/`forget` 不再被 watch 重索引排队阻塞
+- 新增幂等更新 `store.applyFileUpdate(rel, { expectedHash, ... })`：CAS 校验统一 null 处理；`deleted` 删除跳过 hash 对比；type/size 完整透传不猜测
+- `watch`/`index_repo`/`index_doc`/`lazy` 全部改为「事务外计算 → 单次 commit 提交」：LLM 摘要、符号扫描等重活不持任何锁
+- watch 修正：`seen.add` 前置保护全部遍历文件；dump 文件标记 `deleted` 更新 snapshot 但不索引；snapshot 只更新成功处理的文件，CAS 失败回滚下轮重试；索引失败删除 snapshot 自动重试
+- watch 修复回归：snapshot 改用首轮采集的签名落定（而非 commit 后重新 stat），文件在计算窗口内被修改时下一轮能重新检出并重索引，恢复自愈语义；顺带去掉代码文件重复 push
+- `watch_repo` 的 session watchlist 镜像同步去锁
+- 测试 157/157 全绿
+
 ## 0.2.0 (2026-08-27)
 
 ### CJK 检索增强

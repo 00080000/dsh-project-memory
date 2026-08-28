@@ -96,7 +96,6 @@ export class WatchManager {
         let entries
         if (isSupportedCode(ext)) {
           entries = scanSymbols(filePath, readFileSync(filePath, 'utf8'))
-          fileUpdates.push({ rel, expectedHash: state.store.fileRecord(rel)?.sha256, hash, size: stats.size, entries, type: 'code' })
         } else {
           entries = await buildDocEntries(this.ctx.llm, filePath, {
             chunkChars: this.config.chunkChars,
@@ -106,12 +105,12 @@ export class WatchManager {
           })
           if (entries === null) {
             // Dump file - update snapshot so we don't re-hash next poll, but don't index
-            fileUpdates.push({ rel, expectedHash: state.store.fileRecord(rel)?.sha256, deleted: true })
+            fileUpdates.push({ rel, expectedHash: state.store.fileRecord(rel)?.sha256, deleted: true, _sig: sig })
             changed++
             continue
           }
         }
-        fileUpdates.push({ rel, expectedHash: state.store.fileRecord(rel)?.sha256, hash, size: stats.size, entries, type: isSupportedCode(ext) ? 'code' : 'doc' })
+        fileUpdates.push({ rel, expectedHash: state.store.fileRecord(rel)?.sha256, hash, size: stats.size, entries, type: isSupportedCode(ext) ? 'code' : 'doc', _sig: sig })
         changed++
       } catch (err) {
         // Index failed - rollback snapshot so next poll retries
@@ -145,17 +144,13 @@ export class WatchManager {
       }
     })
 
-    // Update snapshot for successfully processed files only
+    // Update snapshot for successfully processed files only, using the
+    // first-pass signature: if the file changed during the compute window
+    // (hash / scanSymbols / LLM summary), the next poll's signature differs
+    // and the file is re-indexed — restoring the pre-refactor self-healing.
     for (const update of fileUpdates) {
       if (update._skipSnapshot) continue
-      const rel = update.rel
-      const filePath = path.join(root, rel)
-      try {
-        const stats = statSync(filePath)
-        state.snapshot[rel] = `${stats.mtimeMs}:${stats.size}`
-      } catch {
-        delete state.snapshot[rel]
-      }
+      state.snapshot[update.rel] = update._sig
     }
   }
 }
