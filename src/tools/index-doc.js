@@ -3,7 +3,7 @@ import path from 'node:path'
 import { assertReadableFile, memoryRootFor, sha256OfFile, storeKey } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { linkEntries } from '../link.js'
-import { ProjectMemoryStore, withStoreLock } from '../store.js'
+import { ProjectMemoryStore } from '../store.js'
 import { findProjectRoot } from '../lazy.js'
 
 export function indexDocTool(ctx, config) {
@@ -33,32 +33,32 @@ export function indexDocTool(ctx, config) {
       const root = path.resolve(args.root && args.root.trim() ? args.root : findProjectRoot(filePath))
       const memoryDir = memoryRootFor(root, config.memoryDir)
 
-      return withStoreLock(memoryDir, async () => {
-        const store = new ProjectMemoryStore(memoryDir).load()
+      const store = new ProjectMemoryStore(memoryDir).load()
 
-        const rel = storeKey(path.relative(root, filePath).split(path.sep).join('/'))
-        const { hash, size } = await sha256OfFile(filePath)
-        const existing = store.fileRecord(rel)
-        if (existing && existing.sha256 === hash) {
-          return `Skipped (unchanged): ${rel}\nAlready indexed with ${(store.entries[rel] || []).length} entry/entries.`
-        }
+      const rel = storeKey(path.relative(root, filePath).split(path.sep).join('/'))
+      const { hash, size } = await sha256OfFile(filePath)
+      const existing = store.fileRecord(rel)
+      if (existing && existing.sha256 === hash) {
+        return `Skipped (unchanged): ${rel}\nAlready indexed with ${(store.entries[rel] || []).length} entry/entries.`
+      }
 
-        const entries = await buildDocEntries(ctx.llm, filePath, {
-          chunkChars: config.chunkChars,
-          maxChunks: config.maxChunksPerFile,
-          maxFileSizeMb: config.maxFileSizeMb,
-          maxPdfPages: config.maxPdfPages,
-        })
-        if (entries === null) {
-          store.removeFile(rel)
-          store.save()
+      const entries = await buildDocEntries(ctx.llm, filePath, {
+        chunkChars: config.chunkChars,
+        maxChunks: config.maxChunksPerFile,
+        maxFileSizeMb: config.maxFileSizeMb,
+        maxPdfPages: config.maxPdfPages,
+      })
+      if (entries === null) {
+        return store.commit((s) => {
+          s.removeFile(rel)
           return `Skipped: ${rel} looks like a reflection dump, not a document.`
-        }
-        store.setEntries(rel, entries)
-        store.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
-        linkEntries(store)
-        store.save()
+        })
+      }
 
+      return store.commit((s) => {
+        s.setEntries(rel, entries)
+        s.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
+        linkEntries(s)
         const preview = entries
           .map((e) => `  - ${e.title} @ ${rel}:${e.sourceLine}`)
           .join('\n')

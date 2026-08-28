@@ -5,7 +5,7 @@ import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfF
 import { buildDocEntries } from './doc-pipeline.js'
 import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
-import { ProjectMemoryStore, withStoreLock } from './store.js'
+import { ProjectMemoryStore } from './store.js'
 
 const STRONG_MARKERS = ['.git', '.hg', '.svn']
 
@@ -82,50 +82,55 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
   if (!root) return false
 
   const memoryDir = memoryRootFor(root, config.memoryDir)
-  return withStoreLock(memoryDir, async () => {
-    const store = new ProjectMemoryStore(memoryDir).load()
-    const rel = storeKey(relativePath(root, filePath))
-    const existing = store.fileRecord(rel)
-    let hash
-    let size
-    try {
-      if (isSupportedCode(ext) && config.maxFileSizeMb && statSync(filePath).size > config.maxFileSizeMb * 1024 * 1024) {
-        return false
-      }
-      ;({ hash, size } = await sha256OfFile(filePath))
-    } catch {
+  const store = new ProjectMemoryStore(memoryDir).load()
+  const rel = storeKey(relativePath(root, filePath))
+  const existing = store.fileRecord(rel)
+  let hash
+  let size
+  try {
+    if (isSupportedCode(ext) && config.maxFileSizeMb && statSync(filePath).size > config.maxFileSizeMb * 1024 * 1024) {
       return false
     }
-    if (existing && existing.sha256 === hash) return false
+    ;({ hash, size } = await sha256OfFile(filePath))
+  } catch {
+    return false
+  }
+  if (existing && existing.sha256 === hash) return false
 
-    if (watchManager) {
-      watchManager.addRoot(root)
-      store.addWatch(root)
-    }
+  if (watchManager) {
+    watchManager.addRoot(root)
+    store.addWatch(root)
+  }
 
-    let entries
-    if (isSupportedCode(ext)) {
-      entries = scanSymbols(filePath, readFileSync(filePath, 'utf8'))
-      store.markFile(rel, { sha256: hash, size, type: 'code', indexedAt: new Date().toISOString() })
-    } else {
-      entries = await buildDocEntries(ctx.llm, filePath, {
-        chunkChars: config.chunkChars,
-        maxChunks: config.maxChunksPerFile,
-        maxFileSizeMb: config.maxFileSizeMb,
-        maxPdfPages: config.maxPdfPages,
-      })
-      if (entries === null) {
-        store.removeFile(rel)
-        store.save()
+  let entries
+  if (isSupportedCode(ext)) {
+    entries = scanSymbols(filePath, readFileSync(filePath, 'utf8'))
+    return store.commit((s) => {
+      s.markFile(rel, { sha256: hash, size, type: 'code', indexedAt: new Date().toISOString() })
+      s.setEntries(rel, entries)
+      linkEntries(s)
+      return true
+    })
+  } else {
+    entries = await buildDocEntries(ctx.llm, filePath, {
+      chunkChars: config.chunkChars,
+      maxChunks: config.maxChunksPerFile,
+      maxFileSizeMb: config.maxFileSizeMb,
+      maxPdfPages: config.maxPdfPages,
+    })
+    if (entries === null) {
+      return store.commit((s) => {
+        s.removeFile(rel)
         return false
-      }
-      store.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
+      })
     }
-    store.setEntries(rel, entries)
-    linkEntries(store)
-    store.save()
-    return true
-  })
+    return store.commit((s) => {
+      s.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
+      s.setEntries(rel, entries)
+      linkEntries(s)
+      return true
+    })
+  }
 }
 
 export function codeFirst(paths) {

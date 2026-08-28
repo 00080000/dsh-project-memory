@@ -5,90 +5,101 @@ import { isSupportedCode, isSupportedDoc, looksLikeDump, memoryRootFor, relative
 import { buildDocEntries } from '../doc-pipeline.js'
 import { scanSymbols } from '../symbols.js'
 import { linkEntries } from '../link.js'
-import { ProjectMemoryStore, withStoreLock } from '../store.js'
+import { ProjectMemoryStore } from '../store.js'
 
 export async function indexRepository(ctx, config, root, { reindex = false } = {}) {
-  return withStoreLock(memoryRootFor(root, config.memoryDir), async () => {
-    const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+  const memoryDir = memoryRootFor(root, config.memoryDir)
+  const store = new ProjectMemoryStore(memoryDir).load()
 
-    const files = walkDir(root)
-    const seen = new Set()
-    let indexed = 0
-    let updated = 0
-    let skipped = 0
-    let removed = 0
-    const failures = []
+  const files = walkDir(root)
+  const seen = new Set()
+  let indexed = 0
+  let updated = 0
+  let skipped = 0
+  let removed = 0
+  const failures = []
 
-    for (const filePath of files) {
-      const rel = storeKey(relativePath(root, filePath))
-      seen.add(rel)
-      const ext = path.extname(filePath).toLowerCase()
-      if (!isSupportedDoc(ext) && !isSupportedCode(ext)) continue
+  // First pass: collect all file info and compute hashes/entries (async work outside commit)
+  const fileUpdates = []
 
-      try {
-        const size = statSync(filePath).size
-        if (isSupportedCode(ext) && config.maxFileSizeMb && size > config.maxFileSizeMb * 1024 * 1024) {
-          store.removeFile(rel)
-          skipped++
-          continue
-        }
+  for (const filePath of files) {
+    const rel = storeKey(relativePath(root, filePath))
+    seen.add(rel)
+    const ext = path.extname(filePath).toLowerCase()
+    if (!isSupportedDoc(ext) && !isSupportedCode(ext)) continue
 
+    try {
+      const size = statSync(filePath).size
         const existing = store.fileRecord(rel)
-        const { hash } = await sha256OfFile(filePath)
-        if (!reindex && existing && existing.sha256 === hash) {
+      if (isSupportedCode(ext) && config.maxFileSizeMb && size > config.maxFileSizeMb * 1024 * 1024) {
+        fileUpdates.push({ rel, deleted: true })
+        skipped++
+        continue
+      }
+
+      // existing declared above before hash
+      const { hash } = await sha256OfFile(filePath)
+      if (!reindex && existing && existing.sha256 === hash) {
+        skipped++
+        continue
+      }
+
+      let entries
+      if (isSupportedCode(ext)) {
+        const content = readFileSync(filePath, 'utf8')
+        entries = scanSymbols(filePath, content)
+        fileUpdates.push({ rel, expectedHash: existing?.sha256, hash, size, entries, type: 'code' })
+        updated++
+      } else {
+        const content = readFileSync(filePath, 'utf8')
+        if (looksLikeDump(content)) {
+          fileUpdates.push({ rel, deleted: true })
           skipped++
           continue
         }
-
-        let entries
-        if (isSupportedCode(ext)) {
-          const content = readFileSync(filePath, 'utf8')
-          entries = scanSymbols(filePath, content)
-          store.markFile(rel, { sha256: hash, size, type: 'code', indexedAt: new Date().toISOString() })
-          updated++
-        } else {
-          const content = readFileSync(filePath, 'utf8')
-          if (looksLikeDump(content)) {
-            store.removeFile(rel)
-            skipped++
-            continue
-          }
-          entries = await buildDocEntries(ctx.llm, filePath, {
-            chunkChars: config.chunkChars,
-            maxChunks: config.maxChunksPerFile,
-            maxFileSizeMb: config.maxFileSizeMb,
-            maxPdfPages: config.maxPdfPages,
-          })
-          if (entries === null) {
-            store.removeFile(rel)
-            skipped++
-            continue
-          }
-          store.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
-          indexed++
+        entries = await buildDocEntries(ctx.llm, filePath, {
+          chunkChars: config.chunkChars,
+          maxChunks: config.maxChunksPerFile,
+          maxFileSizeMb: config.maxFileSizeMb,
+          maxPdfPages: config.maxPdfPages,
+        })
+        if (entries === null) {
+          fileUpdates.push({ rel, deleted: true })
+          skipped++
+          continue
         }
-        store.setEntries(rel, entries)
-      } catch (err) {
-        store.removeFile(rel)
-        failures.push(rel)
+        fileUpdates.push({ rel, expectedHash: existing?.sha256, hash, size, entries, type: 'doc' })
+        indexed++
+      }
+    } catch (err) {
+      failures.push(rel)
+    }
+  }
+
+  // Second pass: single commit with all updates
+  return store.commit((s) => {
+    for (const update of fileUpdates) {
+      const result = s.applyFileUpdate(update.rel, update)
+      if (result.skipped) {
+        // CAS failed - file was modified concurrently, skip
+        continue
       }
     }
 
-    for (const rel of Object.keys(store.files)) {
+    // Remove files not seen
+    for (const rel of Object.keys(s.files)) {
       if (!seen.has(rel)) {
-        store.removeFile(rel)
+        s.removeFile(rel)
         removed++
       }
     }
 
-    const links = linkEntries(store)
-    store.save()
-    const stats = store.stats()
+    linkEntries(s)
+    const stats = s.stats()
     let report =
       `Indexed project: ${root}\n` +
       `docs indexed: ${indexed}, code symbols updated: ${updated}, unchanged skipped: ${skipped}, removed: ${removed}\n` +
-      `memory store: ${stats.files} files, ${stats.entries} entries, ${stats.experience} experience notes` +
-      (links ? `, ${links} doc<->symbol links` : '')
+      `memory store: ${stats.files} files, ${stats.entries} entries, ${stats.experience} experience notes`
     if (failures.length) {
       report += `\nfailed to index ${failures.length} file(s): ${failures.join(', ')}`
     }

@@ -1,7 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
 import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
-import { ProjectMemoryStore, withStoreLock } from '../store.js'
+import { ProjectMemoryStore } from '../store.js'
 
 export function watchRepoTool(watchManager, config) {
   return defineTool({
@@ -30,31 +30,27 @@ export function watchRepoTool(watchManager, config) {
       const memoryDir = memoryRootFor(root, config.memoryDir)
       const sessionRoot = resolveIndexRoot(exec)
       const sessionMemoryDir = memoryRootFor(sessionRoot, config.memoryDir)
-      return withStoreLock(memoryDir, async () => {
-        const store = new ProjectMemoryStore(memoryDir).load()
-        const mirrorSessionWatchlist = async (present) => {
-          if (path.resolve(sessionMemoryDir) === path.resolve(memoryDir)) return
-          await withStoreLock(sessionMemoryDir, () => {
-            const sessionStore = new ProjectMemoryStore(sessionMemoryDir).load()
-            const removed = sessionStore.removeWatch(root)
-            const added = present ? sessionStore.addWatch(root) : false
-            if (removed || added) sessionStore.save()
-          })
-        }
-        if (args.watch === false) {
-          watchManager.removeRoot(root)
-          store.removeWatch(root)
-          store.save()
-          await mirrorSessionWatchlist(false)
-          return `Stopped watching: ${root}`
-        }
-        store.addWatch(root)
-        store.save()
-        await mirrorSessionWatchlist(true)
-        watchManager.addRoot(root)
-        watchManager.start(config.watchInterval * 1000)
-        return `Watching ${root} (interval ${config.watchInterval}s). Docs/code changes will be re-indexed silently.`
-      })
+      const store = new ProjectMemoryStore(memoryDir).load()
+
+      const mirrorSessionWatchlist = async (present) => {
+        if (path.resolve(sessionMemoryDir) === path.resolve(memoryDir)) return
+        const sessionStore = new ProjectMemoryStore(sessionMemoryDir).load()
+        const removed = sessionStore.removeWatch(root)
+        const added = present ? sessionStore.addWatch(root) : false
+        if (removed || added) sessionStore.save()
+      }
+
+      if (args.watch === false) {
+        watchManager.removeRoot(root)
+        store.commit((s) => s.removeWatch(root))
+        await mirrorSessionWatchlist(false)
+        return `Stopped watching: ${root}`
+      }
+      store.commit((s) => s.addWatch(root))
+      await mirrorSessionWatchlist(true)
+      watchManager.addRoot(root)
+      watchManager.start(config.watchInterval * 1000)
+      return `Watching ${root} (interval ${config.watchInterval}s). Docs/code changes will be re-indexed silently.`
     },
   })
 }

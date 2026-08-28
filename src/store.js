@@ -10,26 +10,7 @@ const EXPERIENCE_FILE = 'experience.json'
 const WATCH_FILE = 'watch.json'
 const SHARDS_DIR = 'shards'
 
-const dirLocks = new Map()
 const storeCache = new Map()
-
-export async function withStoreLock(memoryDir, fn) {
-  const key = path.resolve(memoryDir)
-  const prev = dirLocks.get(key) || Promise.resolve()
-  let release
-  const cur = new Promise((resolve) => {
-    release = resolve
-  })
-  const chain = prev.then(() => cur)
-  dirLocks.set(key, chain)
-  await prev
-  try {
-    return await fn()
-  } finally {
-    release()
-    if (dirLocks.get(key) === chain) dirLocks.delete(key)
-  }
-}
 
 function loadJson(filePath, fallback) {
   let raw
@@ -338,6 +319,31 @@ export class ProjectMemoryStore {
       entries: this.allEntries().length,
       experience: this.experience.length,
     }
+  }
+
+  commit(fn) {
+    const result = fn(this)
+    this.save()
+    return result
+  }
+
+  applyFileUpdate(relPath, { expectedHash, hash, entries, meta, deleted, type, size }) {
+    const cur = this.fileRecord(relPath)
+    if (!deleted && (cur?.sha256 ?? null) !== (expectedHash ?? null)) {
+      return { skipped: true }
+    }
+    if (deleted) {
+      this.removeFile(relPath)
+      return { ok: true }
+    }
+    this.markFile(relPath, {
+      sha256: hash,
+      size,
+      type,
+      indexedAt: new Date().toISOString(),
+    })
+    this.setEntries(relPath, entries)
+    return { ok: true }
   }
 }
 

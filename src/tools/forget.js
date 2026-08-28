@@ -1,6 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
-import { ProjectMemoryStore, withStoreLock } from '../store.js'
+import { ProjectMemoryStore } from '../store.js'
 
 export function forgetTool(config) {
   return defineTool({
@@ -25,10 +25,9 @@ export function forgetTool(config) {
     async execute(args, exec) {
       const root = resolveIndexRoot(exec, args.root)
       const memoryDir = memoryRootFor(root, config.memoryDir)
-      return withStoreLock(memoryDir, () => {
-        const store = new ProjectMemoryStore(memoryDir).load()
-        const removed = store.removeExperience(args.id_or_query)
-        store.save()
+      const store = new ProjectMemoryStore(memoryDir).load()
+      return store.commit((s) => {
+        const removed = s.removeExperience(args.id_or_query)
         return removed > 0 ? `Removed ${removed} experience note(s).` : 'No matching experience note found.'
       })
     },

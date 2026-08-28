@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { chunkText } from '../src/chunker.js'
 import { scanSymbols } from '../src/symbols.js'
-import { ProjectMemoryStore, withStoreLock } from '../src/store.js'
+import { ProjectMemoryStore } from '../src/store.js'
 import { memoryRootFor, resolveIndexRoot, sha256OfFile } from '../src/util/fs.js'
 import { indexDocTool } from '../src/tools/index-doc.js'
 import { indexRepoTool } from '../src/tools/index-repo.js'
@@ -459,24 +459,21 @@ const forgetToolInst = forgetTool(config)
 out = await forgetToolInst.execute({ root, id_or_query: 'OPS import breaks' })
 check('forget removes', out.includes('Removed'))
 
-console.log('\n== concurrent store writes are serialized ==')
+console.log('\n== concurrent store writes without lock ==')
 const lockDir = mkdtempSync(path.join(tmpdir(), 'pm-lock-'))
 const mkStore = () => new ProjectMemoryStore(memoryRootFor(lockDir, config.memoryDir))
 await Promise.all([
-  withStoreLock(memoryRootFor(lockDir, config.memoryDir), async () => {
+  (async () => {
     const s = mkStore().load()
-    s.addExperience({ problem: 'p1', solution: 's1' })
-    await new Promise((r) => setTimeout(r, 50))
-    s.save()
-  }),
-  withStoreLock(memoryRootFor(lockDir, config.memoryDir), async () => {
+    s.commit((s) => s.addExperience({ problem: 'p1', solution: 's1' }))
+  })(),
+  (async () => {
     const s = mkStore().load()
-    s.addExperience({ problem: 'p2', solution: 's2' })
-    s.save()
-  }),
+    s.commit((s) => s.addExperience({ problem: 'p2', solution: 's2' }))
+  })(),
 ])
 const lockStore = mkStore().load()
-check('no lost writes under contention', lockStore.experience.length === 2)
+check('no lost writes under contention (commit-based)', lockStore.experience.length === 2)
 
 console.log('\n== incremental cleanup ==')
 writeFileSync(pyPath, 'class PaymentService:\n    def charge(self, amount):\n        pass\n')
@@ -650,16 +647,16 @@ console.log('\n== watch reloads store each poll (external writes preserved) ==')
   const memDir = memoryRootFor(extRoot, config.memoryDir)
   const docB = path.join(extDocs, 'b.md')
   writeFileSync(docB, '# Doc B\n\nBeta content.')
-  await withStoreLock(memDir, async () => {
-    const disk = new ProjectMemoryStore(memDir).load()
-    disk.markFile('docs/b.md', { sha256: (await sha256OfFile(docB)).hash, size: 20, type: 'doc', indexedAt: new Date().toISOString() })
-    disk.setEntries('docs/b.md', [
+  const { hash } = await sha256OfFile(docB)
+  const diskStore = new ProjectMemoryStore(memDir).load()
+  diskStore.commit((s) => {
+    s.markFile('docs/b.md', { sha256: hash, size: 20, type: 'doc', indexedAt: new Date().toISOString() })
+    s.setEntries('docs/b.md', [
       {
         id: 'ext-b', type: 'doc', sourcePath: 'docs/b.md', sourceLine: 1,
         title: 'Doc B', summary: 'External beta entry.', keywords: ['beta'],
       },
     ])
-    disk.save()
   })
 
   await extWm.poll()

@@ -4,7 +4,7 @@ import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfF
 import { buildDocEntries } from './doc-pipeline.js'
 import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
-import { ProjectMemoryStore, withStoreLock } from './store.js'
+import { ProjectMemoryStore } from './store.js'
 
 export class WatchManager {
   constructor(ctx, config) {
@@ -62,75 +62,97 @@ export class WatchManager {
   }
 
   async pollRoot(root, state) {
-    const memoryDir = memoryRootFor(root, this.config.memoryDir)
-    await withStoreLock(memoryDir, async () => {
-      state.store = new ProjectMemoryStore(memoryDir).load()
-      const files = walkDir(root)
-      const seen = new Set()
-      let changed = 0
+    const files = walkDir(root)
+    const seen = new Set()
+    let changed = 0
 
-      for (const filePath of files) {
-        const rel = storeKey(relativePath(root, filePath))
-        seen.add(rel)
-        const ext = path.extname(filePath).toLowerCase()
-        if (!isSupportedDoc(ext) && !isSupportedCode(ext)) continue
+    // First pass: collect all file info and compute hashes/entries (async work outside commit)
+    const fileUpdates = []
 
-        let stats
-        try {
-          stats = statSync(filePath)
-        } catch {
-          continue
-        }
-        const sig = `${stats.mtimeMs}:${stats.size}`
-        if (state.snapshot[rel] === sig) continue
-        state.snapshot[rel] = sig
+    for (const filePath of files) {
+      const rel = storeKey(relativePath(root, filePath))
+      seen.add(rel)
+      const ext = path.extname(filePath).toLowerCase()
+      if (!isSupportedDoc(ext) && !isSupportedCode(ext)) continue
 
-        if (isSupportedCode(ext) && this.config.maxFileSizeMb && stats.size > this.config.maxFileSizeMb * 1024 * 1024) {
-          continue
-        }
+      let stats
+      try {
+        stats = statSync(filePath)
+      } catch {
+        continue
+      }
+      const sig = `${stats.mtimeMs}:${stats.size}`
+      if (state.snapshot[rel] === sig) continue
 
-        const { hash } = await sha256OfFile(filePath)
-        const existing = state.store.fileRecord(rel)
-        if (existing && existing.sha256 === hash) continue
+      if (isSupportedCode(ext) && this.config.maxFileSizeMb && stats.size > this.config.maxFileSizeMb * 1024 * 1024) {
+        continue
+      }
 
-        try {
-          let entries
-          if (isSupportedCode(ext)) {
-            entries = scanSymbols(filePath, readFileSync(filePath, 'utf8'))
-            state.store.markFile(rel, { sha256: hash, size: stats.size, type: 'code', indexedAt: new Date().toISOString() })
-          } else {
-            entries = await buildDocEntries(this.ctx.llm, filePath, {
-              chunkChars: this.config.chunkChars,
-              maxChunks: this.config.maxChunksPerFile,
-              maxFileSizeMb: this.config.maxFileSizeMb,
-              maxPdfPages: this.config.maxPdfPages,
-            })
-            if (entries === null) {
-              state.store.removeFile(rel)
-              changed++
-              continue
-            }
-            state.store.markFile(rel, { sha256: hash, size: stats.size, type: 'doc', indexedAt: new Date().toISOString() })
+      const { hash } = await sha256OfFile(filePath)
+      const existing = state.store.fileRecord(rel)
+      if (existing && existing.sha256 === hash) continue
+
+      try {
+        let entries
+        if (isSupportedCode(ext)) {
+          entries = scanSymbols(filePath, readFileSync(filePath, 'utf8'))
+          fileUpdates.push({ rel, expectedHash: state.store.fileRecord(rel)?.sha256, hash, size: stats.size, entries, type: 'code' })
+        } else {
+          entries = await buildDocEntries(this.ctx.llm, filePath, {
+            chunkChars: this.config.chunkChars,
+            maxChunks: this.config.maxChunksPerFile,
+            maxFileSizeMb: this.config.maxFileSizeMb,
+            maxPdfPages: this.config.maxPdfPages,
+          })
+          if (entries === null) {
+            // Dump file - update snapshot so we don't re-hash next poll, but don't index
+            fileUpdates.push({ rel, expectedHash: state.store.fileRecord(rel)?.sha256, deleted: true })
+            changed++
+            continue
           }
-          state.store.setEntries(rel, entries)
-          changed++
-        } catch (err) {
-          delete state.snapshot[rel]
-          console.error(`[dsh-project-memory] re-index failed for ${rel}: ${err.message}`)
+        }
+        fileUpdates.push({ rel, expectedHash: state.store.fileRecord(rel)?.sha256, hash, size: stats.size, entries, type: isSupportedCode(ext) ? 'code' : 'doc' })
+        changed++
+      } catch (err) {
+        // Index failed - rollback snapshot so next poll retries
+        delete state.snapshot[rel]
+        console.error(`[dsh-project-memory] re-index failed for ${rel}: ${err.message}`)
+        continue
+      }
+    }
+
+    // Single commit with all updates
+    state.store.commit((s) => {
+      for (const update of fileUpdates) {
+        const result = s.applyFileUpdate(update.rel, update)
+        if (result.skipped) {
+          // CAS failed - file was modified concurrently, rollback snapshot to retry next poll
+          delete state.snapshot[update.rel]
         }
       }
 
-      for (const rel of Object.keys(state.store.files)) {
+      // Remove deleted files
+      for (const rel of Object.keys(s.files)) {
         if (!seen.has(rel)) {
-          state.store.removeFile(rel)
-          changed++
+          s.removeFile(rel)
         }
       }
 
       if (changed) {
-        linkEntries(state.store)
-        state.store.save()
+        linkEntries(s)
       }
     })
+
+    // Update snapshot for all processed files (including dump files that were skipped)
+    for (const update of fileUpdates) {
+      const rel = update.rel
+      const filePath = path.join(root, rel)
+      try {
+        const stats = statSync(filePath)
+        state.snapshot[rel] = `${stats.mtimeMs}:${stats.size}`
+      } catch {
+        delete state.snapshot[rel]
+      }
+    }
   }
 }
