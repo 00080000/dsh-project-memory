@@ -128,6 +128,8 @@ export class WatchManager {
         if (result.skipped) {
           // CAS failed - file was modified concurrently, rollback snapshot to retry next poll
           delete state.snapshot[update.rel]
+          // Mark this update to skip snapshot update after commit
+          update._skipSnapshot = true
         }
       }
 
@@ -143,8 +145,9 @@ export class WatchManager {
       }
     })
 
-    // Update snapshot for all processed files (including dump files that were skipped)
+    // Update snapshot for successfully processed files only
     for (const update of fileUpdates) {
+      if (update._skipSnapshot) continue
       const rel = update.rel
       const filePath = path.join(root, rel)
       try {
