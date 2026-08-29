@@ -12,7 +12,7 @@ Done items → CHANGELOG.
 
 ## Mid-term (Trigger-based)
 
-- **A3: Lock Scope Reduction** — move LLM summarization out of lock
+- [x] **A3: Lock Scope Reduction** — move LLM summarization out of lock (done in v0.2.1)
 - **Async I/O / Cold Start** — if hot path >5ms or cold start >100ms
 
 ## On Hold (Await User Feedback)
