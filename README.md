@@ -4,18 +4,18 @@
 
 [![ci](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![npm](https://img.shields.io/npm/v/@yolk_vat-y/dsh-project-memory)](https://www.npmjs.com/package/@yolk_vat-y/dsh-project-memory) [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/00080000/dsh-project-memory) [![Awesome](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
-Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(dsh) agents. Indexes documents (PDF / Markdown / txt) and code symbols into a per-workspace store, refreshes them automatically, and recalls them with source citations — documents are cross-linked to the code symbols they reference.
+Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(dsh) agents. **Memorizes** documents (PDF / Markdown / txt) and code symbols into a per-workspace store, refreshes them automatically, and **recalls** them with source citations — documents are cross-linked to the code symbols they reference.
 
-> The plugin keeps a compact project index on disk, with every entry pointing to a concrete file and line — the agent can reorient quickly instead of re-reading the whole project.
+> The plugin keeps a compact project **memory** on disk, with every entry pointing to a concrete file and line — the agent can reorient quickly instead of re-reading the whole project.
 
 ## Features
 
-- **Document indexing** — PDF, Markdown, and plain text files are chunked and summarized by the LLM; each entry carries a `path:line` citation back to the source.
-- **Code symbol table** — function, class, and method names are extracted by a dependency-free source scanner (string/comment masking, multi-line signature joining, indentation-aware Python, class-method context), without LLM token usage.
-- **Automatic refresh** — a background poll (`watch_repo`) detects new or changed files by content hash and re-indexes only those.
-- **Read-time indexing** — files are indexed the moment the model actually reads them (`fs/observed`), so the index is a byproduct of normal work, not a separate upfront scan. Files that are never read are never indexed. The project root is detected by markers (`.git`, `package.json`, …), a README plus source directories, or the file's own directory as a last resort.
+- **Document memorization** — PDF, Markdown, and plain text files are chunked and summarized by the LLM; each entry carries a `path:line` citation back to the source.
+- **Code symbol memory** — function, class, and method names are extracted by a dependency-free source scanner (string/comment masking, multi-line signature joining, indentation-aware Python, class-method context), without LLM token usage.
+- **Automatic refresh** — a background poll (`watch_repo`) detects new or changed files by content hash and re-memorizes only those.
+- **Read-time memorization** — files are memorized the moment the model actually reads them (`fs/observed`), so the memory is a byproduct of normal work, not a separate upfront scan. Files that are never read are never memorized. The project root is detected by markers (`.git`, `package.json`, …), a README plus source directories, or the file's own directory as a last resort.
 - **Doc ↔ code cross-linking** — when a document mentions a symbol, the match is recorded as a `reference`; querying a symbol also surfaces the documents that describe it.
-- **BM25 retrieval** — ranked search over documents, symbols, and experience notes, with optional LLM query expansion to handle vocabulary mismatch. **CJK-optimized**: precise phrase boost (3+ char phrases ×1.5 score on title/keywords match), synonym table (e.g. 数据库连接池 ↔ 连接池 ↔ DB pool), and CJK-aware word boundaries for doc↔symbol linking.
+- **BM25 memory recall** — ranked search over documents, symbols, and experience notes, with optional LLM query expansion to handle vocabulary mismatch. **CJK-optimized**: precise phrase boost (3+ char phrases ×1.5 score on title/keywords match), synonym table (e.g. 数据库连接池 ↔ 连接池 ↔ DB pool), and CJK-aware word boundaries for doc↔symbol linking.
 - **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches. The note store is bounded: capacity scales with project size (clamped to 100–2000), and the oldest notes are pruned when the limit is exceeded. **Supersede tightened to bidirectional 0.7 overlap** (was 0.6); **experience `problem` field now participates in CJK phrase boost** for long-tail query recall.
 - **Minimal dependencies** — pure JavaScript; the only runtime dependency is `pdfjs-dist` (PDF text extraction), no native builds required.
 - **Negligible overhead** — pure in-process operation; cold start <100 ms (5k files), typical project query median 2–3 ms (p99 < 7 ms); bottleneck is LLM summarization and PDF parsing, not the plugin.
@@ -25,11 +25,11 @@ Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/
 The design follows four principles:
 
 - **Volatility** — context is ephemeral; it is lost when a session is compacted.
-- **Persistence** — the index is stored on disk and survives compaction and new sessions.
-- **Compactness** — only summaries are stored; the index runs around 0.5% the size of the source it covers (8.8 MB of source → 49 KB of index in the example project), so retrieval replaces re-reading the full file.
-- **Verifiability** — hits carry a `path:line` citation where applicable, so the agent can confirm details against the source.
+- **Persistence** — the **memory** is stored on disk and survives compaction and new sessions.
+- **Compactness** — only summaries are stored; the **memory** runs around 0.5% the size of the source it covers (8.8 MB of source → 49 KB of index in the example project), so **recall** replaces re-reading the full file.
+- **Verifiability** — **recalls** carry a `path:line` citation where applicable, so the agent can confirm details against the source.
 
-Building the index does not require an upfront scan: files are indexed as the model reads them, so the index grows to cover exactly what has been worked with. Re-reading a file that has not changed is a no-op (content hash), so the index stays fresh with minimal ongoing overhead.
+Building the **memory** does not require an upfront scan: files are memorized as the model reads them, so the **memory** grows to cover exactly what has been worked with. Re-reading a file that has not changed is a no-op (content hash), so the **memory** stays fresh with minimal ongoing overhead.
 
 The store is per-project and follows the codebase: changed files are re-extracted by content hash, deleted files are removed. Experience notes are retrieval-only, so accumulation does not affect context.
 
