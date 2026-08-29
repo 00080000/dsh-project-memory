@@ -47,7 +47,7 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
       let entries
       if (isSupportedCode(ext)) {
         const content = readFileSync(filePath, 'utf8')
-        entries = scanSymbols(filePath, content)
+        entries = scanSymbols(rel, filePath, content)
         fileUpdates.push({ rel, expectedHash: existing?.sha256, hash, size, entries, type: 'code' })
         updated++
       } else {
@@ -57,7 +57,7 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
           skipped++
           continue
         }
-        entries = await buildDocEntries(ctx.llm, filePath, {
+        entries = await buildDocEntries(ctx.llm, rel, filePath, {
           chunkChars: config.chunkChars,
           maxChunks: config.maxChunksPerFile,
           maxFileSizeMb: config.maxFileSizeMb,

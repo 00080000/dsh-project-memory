@@ -22,10 +22,12 @@ export async function extractTextFromFile(filePath, { maxFileSizeMb = 50, maxPdf
 
 const DOC_CONCURRENCY = 4
 
-export async function buildDocEntries(llm, filePath, { chunkChars = 3000, maxChunks = 40, maxFileSizeMb = 50, maxPdfPages = 1000 } = {}) {
-  const text = await extractTextFromFile(filePath, { maxFileSizeMb, maxPdfPages })
+export async function buildDocEntries(llm, a, b, c) {
+  // Backward compatible: old signature (llm, filePath, opts) or new (llm, relPath, filePath, opts)
+  const [relPath, filePath, opts] = c === undefined ? [a, a, b] : [a, b, c]
+  const text = await extractTextFromFile(filePath, opts)
   if (looksLikeDump(text)) return null
-  const chunks = chunkText(text, chunkChars, maxChunks)
+  const chunks = chunkText(text, opts.chunkChars, opts.maxChunks)
   const metas = new Array(chunks.length)
   let cursor = 0
   await Promise.all(
@@ -39,8 +41,8 @@ export async function buildDocEntries(llm, filePath, { chunkChars = 3000, maxChu
     ),
   )
   return metas.map((meta, i) => ({
-    id: `${relativeId(filePath)}#${i}`,
-    sourcePath: filePath,
+    id: `${relativeId(relPath)}#${i}`,
+    sourcePath: relPath,
     sourceLine: chunks[i].line,
     type: 'doc',
     title: meta.title,

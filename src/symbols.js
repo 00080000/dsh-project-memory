@@ -120,7 +120,7 @@ const JS_NON_METHOD = new Set([
   'new', 'delete', 'typeof', 'instanceof', 'void', 'await', 'yield', 'with',
 ])
 
-function scanJsLike(masked, filePath, rawLines) {
+function scanJsLike(masked, relPath, rawLines) {
   const symbols = []
   let prevOpensBlock = false
   for (let i = 0; i < masked.length; i++) {
@@ -148,13 +148,13 @@ function scanJsLike(masked, filePath, rawLines) {
         if (/[{};]/.test(tail)) break
       }
     }
-    if (matched) symbols.push(buildSymbol(matched, filePath, rawLines[i], i + 1))
+    if (matched) symbols.push(buildSymbol(matched, relPath, rawLines[i], i + 1))
     prevOpensBlock = masked[i].trim().endsWith('{')
   }
   return symbols
 }
 
-function scanPython(masked, filePath, rawLines) {
+function scanPython(masked, relPath, rawLines) {
   const symbols = []
   let depth = 0
   for (let i = 0; i < masked.length; i++) {
@@ -169,7 +169,7 @@ function scanPython(masked, filePath, rawLines) {
     const cls = fn ? null : text.match(/^class\s+(\w+)\s*[(:]/)
     if (fn) matched = { name: fn[1], kind: 'function' }
     else if (cls) matched = { name: cls[1], kind: 'class' }
-    if (matched) symbols.push(buildSymbol(matched, filePath, rawLines[i], i + 1))
+    if (matched) symbols.push(buildSymbol(matched, relPath, rawLines[i], i + 1))
     depth += delta
   }
   return symbols
@@ -208,24 +208,26 @@ function matchShell(line) {
   return m ? { name: m[1], kind: 'function' } : null
 }
 
-function buildSymbol(matched, filePath, rawLine, lineNo) {
+function buildSymbol(matched, relPath, rawLine, lineNo) {
   return {
-    id: `${String(filePath).replace(/[\\/:\s]/g, '_')}#${lineNo}`,
-    sourcePath: filePath,
+    id: `${String(relPath).replace(/[\\/:\s]/g, '_')}#${lineNo}`,
+    sourcePath: relPath,
     sourceLine: lineNo,
     type: 'symbol',
     title: `${matched.name} (${matched.kind})`,
-    summary: `${matched.kind} "${matched.name}" declared at ${filePath}:${lineNo}`,
+    summary: `${matched.kind} "${matched.name}" declared at ${relPath}:${lineNo}`,
     keywords: [matched.name, matched.kind],
     text: String(rawLine).trim().slice(0, 200),
   }
 }
 
-export function scanSymbols(filePath, content) {
-  const ext = filePath.slice(filePath.lastIndexOf('.'))
+export function scanSymbols(a, b, c) {
+  // Backward compatible: old signature (filePath, content) or new (relPath, filePath, content)
+  const [relPath, filePath, content] = c === undefined ? [a, a, b] : [a, b, c]
+  const ext = relPath.slice(relPath.lastIndexOf('.'))
   const lines = content.split(/\r?\n/)
-  if (JS_LIKE.has(ext)) return scanJsLike(maskTokens(lines, JS_MASKER), filePath, lines)
-  if (PYTHON.has(ext)) return scanPython(maskTokens(lines, PY_MASKER), filePath, lines)
+  if (JS_LIKE.has(ext)) return scanJsLike(maskTokens(lines, JS_MASKER), relPath, lines)
+  if (PYTHON.has(ext)) return scanPython(maskTokens(lines, PY_MASKER), relPath, lines)
 
   let masker = null
   if (GO.has(ext)) masker = GO_MASKER
@@ -247,7 +249,7 @@ export function scanSymbols(filePath, content) {
     else if (/^(?:def|func|fn|function)\s+(\w+)/.test(line)) {
       matched = { name: line.match(/^(?:def|func|fn|function)\s+(\w+)/)[1], kind: 'function' }
     }
-    if (matched) symbols.push(buildSymbol(matched, filePath, raw, i + 1))
+    if (matched) symbols.push(buildSymbol(matched, relPath, raw, i + 1))
   }
   return symbols
 }

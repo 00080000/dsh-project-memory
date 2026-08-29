@@ -42,7 +42,7 @@ export function indexDocTool(ctx, config) {
         return `Skipped (unchanged): ${rel}\nAlready indexed with ${(store.entries[rel] || []).length} entry/entries.`
       }
 
-      const entries = await buildDocEntries(ctx.llm, filePath, {
+      const entries = await buildDocEntries(ctx.llm, rel, filePath, {
         chunkChars: config.chunkChars,
         maxChunks: config.maxChunksPerFile,
         maxFileSizeMb: config.maxFileSizeMb,

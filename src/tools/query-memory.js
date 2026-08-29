@@ -1,9 +1,14 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import path from 'node:path'
 import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
 import { expandQuery } from '../llm.js'
 import { rankEntriesMergedScored, rankExperienceScored } from '../util/search.js'
 import { truncate } from '../util/text.js'
+
+function toAbs(root, rel) {
+  return path.isAbsolute(rel) ? rel : path.join(root, rel)
+}
 
 export function queryMemoryTool(ctx, config) {
   return defineTool({
@@ -59,13 +64,13 @@ export function queryMemoryTool(ctx, config) {
           const top = scored[0].score || 1
           lines.push(`## Memory (${type === 'all' ? 'docs + symbols' : type})`)
           for (const { entry: e, score } of scored) {
-            const source = e.sourceLine ? `${e.sourcePath}:${e.sourceLine}` : e.sourcePath
+            const absSource = e.sourceLine ? `${toAbs(root, e.sourcePath)}:${e.sourceLine}` : toAbs(root, e.sourcePath)
             const rel = Math.round((score / top) * 100)
-            lines.push(`### ${e.title} (score: ${rel})\n- source: ${source}\n- ${e.summary}`)
+            lines.push(`### ${e.title} (score: ${rel})\n- source: ${absSource}\n- ${e.summary}`)
             if (e.type === 'doc' && Array.isArray(e.linkedSymbols) && e.linkedSymbols.length) {
               const refs = e.linkedSymbols.slice(0, 5).map((id) => {
                 const s = symbolById.get(id)
-                return s ? `${s.title} @ ${s.sourcePath}:${s.sourceLine}` : id
+                return s ? `${s.title} @ ${toAbs(root, s.sourcePath)}:${s.sourceLine}` : id
               })
               lines.push(`- references: ${refs.join('; ')}`)
             }
@@ -78,7 +83,7 @@ export function queryMemoryTool(ctx, config) {
           const expTop = scoredExp[0].score || 1
           lines.push(`## Experience (past problems -> solutions)`)
           for (const { item: e, score } of scoredExp) {
-            const source = e.sourceFile ? ` (source: ${e.sourceFile})` : ''
+            const source = e.sourceFile ? ` (source: ${toAbs(root, e.sourceFile)})` : ''
             lines.push(
               `### Problem: ${e.problem} (score: ${Math.round((score / expTop) * 100)}, id: ${e.id})\n- solution: ${e.solution}${source}\n- updated: ${e.updatedAt}`,
             )

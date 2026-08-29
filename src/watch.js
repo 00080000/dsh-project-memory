@@ -95,9 +95,9 @@ export class WatchManager {
       try {
         let entries
         if (isSupportedCode(ext)) {
-          entries = scanSymbols(filePath, readFileSync(filePath, 'utf8'))
+          entries = scanSymbols(rel, filePath, readFileSync(filePath, 'utf8'))
         } else {
-          entries = await buildDocEntries(this.ctx.llm, filePath, {
+          entries = await buildDocEntries(this.ctx.llm, rel, filePath, {
             chunkChars: this.config.chunkChars,
             maxChunks: this.config.maxChunksPerFile,
             maxFileSizeMb: this.config.maxFileSizeMb,

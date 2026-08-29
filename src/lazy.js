@@ -104,7 +104,7 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
 
   let entries
   if (isSupportedCode(ext)) {
-    entries = scanSymbols(filePath, readFileSync(filePath, 'utf8'))
+    entries = scanSymbols(rel, filePath, readFileSync(filePath, 'utf8'))
     return store.commit((s) => {
       s.markFile(rel, { sha256: hash, size, type: 'code', indexedAt: new Date().toISOString() })
       s.setEntries(rel, entries)
@@ -112,7 +112,7 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
       return true
     })
   } else {
-    entries = await buildDocEntries(ctx.llm, filePath, {
+    entries = await buildDocEntries(ctx.llm, rel, filePath, {
       chunkChars: config.chunkChars,
       maxChunks: config.maxChunksPerFile,
       maxFileSizeMb: config.maxFileSizeMb,
