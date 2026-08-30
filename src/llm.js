@@ -96,10 +96,15 @@ export async function expandQuery(llm, query, count = 6) {
 export async function extractDocEntry(llm, chunk, sourcePath) {
   const system =
     'You are a project-documentation indexer. Given a chunk of a project document, ' +
-    'return a STRICT JSON object with exactly three fields: ' +
-    '"title" (short section title, string), "summary" (2-4 sentence dense summary of what this section covers, ' +
-    'mentioning concrete names, decisions and constraints), "keywords" (array of 5-10 searchable strings: ' +
-    'cover the document\'s own language AND English equivalents, so a query in either language can match). ' +
+    'return a STRICT JSON object with exactly four fields: ' +
+    '"title" (short section title, string), ' +
+    '"summary" (3-5 sentence dense summary of what this section covers, ' +
+    'mentioning concrete names, decisions, constraints, and key technical details), ' +
+    '"blindSpots" (string describing what this summary does NOT cover, ' +
+    'e.g. "未覆盖：部署细节、性能基准、v0.2 前 API", empty string if none), ' +
+    '"keywords" (array of 5-10 searchable strings: ' +
+    'cover the document\'s own language AND English equivalents, ' +
+    'so a query in either language can match). ' +
     'Do not include markdown fences, do not add commentary, output only the JSON object.'
 
   const user =
@@ -109,6 +114,7 @@ export async function extractDocEntry(llm, chunk, sourcePath) {
   const fallback = () => ({
     title: chunk.title || sourcePath,
     summary: summarizeText(chunk.text),
+    blindSpots: '',
     keywords: tokenize(chunk.title).slice(0, 5),
   })
 
@@ -121,7 +127,8 @@ export async function extractDocEntry(llm, chunk, sourcePath) {
     const kw = Array.isArray(parsed.keywords) ? parsed.keywords.map(String).filter((k) => k).slice(0, 8) : []
     return {
       title: typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title.trim() : chunk.title || sourcePath,
-      summary: summarizeText(parsed.summary),
+      summary: summarizeText(parsed.summary.trim()),
+      blindSpots: typeof parsed.blindSpots === 'string' ? parsed.blindSpots.trim() : '',
       keywords: kw.length ? kw : tokenize(chunk.title).slice(0, 5),
     }
   } catch {

@@ -17,6 +17,7 @@
 - **文档 ↔ 代码交叉链接** — 文档提及某符号时记录为 `reference`；查询符号时同时带出描述该符号的文档。
 - **BM25 记忆召回** — 对文档、符号与经验笔记进行排序召回，可选 LLM 查询扩展以应对表述不一致。**CJK 增强**：精确短语乘法加分（3+ 字短语在标题/关键词命中 ×1.5）、同义词表（如 数据库连接池 ↔ 连接池 ↔ DB pool）、CJK 感知的文档↔符号链接边界。
 - **经验笔记** — 记录问题 → 方案；相似问题覆盖而非重复；笔记仅在检索命中时返回。笔记数量有界：容量随项目规模伸缩（钳制在 100–2000），超限时淘汰最旧的笔记。**覆盖阈值收紧为双向 0.7 重叠**（原 0.6）；**经验 `problem` 字段现参与 CJK 短语加分**，提升长尾问句召回。
+- **无锁同步事务** — 不采用锁：所有写入（index / watch / remember / forget / watch_repo）统一走同步事务 `store.commit(fn)`，fn 成功后才一次落盘；JS 单线程事件循环保证事务间不交错，`remember`/`forget` 不会被 watch 重索引阻塞排队。多实例并发写入同一项目存储时，得益于 CAS 幂等更新与原子提交，自然具备幂等性，无数据损坏风险。
 - **依赖极简** — 纯 JavaScript；唯一运行时依赖是 `pdfjs-dist`（PDF 文本提取），无需原生构建。
 - **开销可忽略** — 纯进程内操作；冷启动 <100 ms（5k 文件），典型项目查询中位数 2–3 ms（p99 < 7 ms）；瓶颈在 LLM 摘要与 PDF 解析，插件本身不阻塞。
 
@@ -52,7 +53,7 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 每个版本会附带预构建 tarball，无需构建步骤即可安装：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-project-memory-0.3.0.tgz
+dsh plugin --profile web add /path/to/dsh-project-memory.tgz
 ```
 
 每个被索引的项目在 `<root>/.dsh-project-memory/` 下有独立存储。如无需入库，可加入 `.gitignore`。
@@ -93,7 +94,7 @@ v0.2.0 之前创建的库（单文件 `entries.json` / `index.json`）在首次�
 
 以下是刻意的范围选择。
 
-- **无锁同步事务** — 不采用锁：所有写入（index / watch / remember / forget / watch_repo）统一走同步事务 `store.commit(fn)`，fn 成功后才一次落盘；JS 单线程事件循环保证事务间不交错，`remember`/`forget` 不会被 watch 重索引阻塞排队。两个 dsh 实例共享同一项目存储时后写覆盖先写；跨进程协调需要常驻守护进程，违背纯 JS 插件、无后台服务的定位，故明确不支持多实例共写。
+- **无锁同步事务** — 不采用锁：所有写入（index / watch / remember / forget / watch_repo）统一走同步事务 `store.commit(fn)`，fn 成功后才一次落盘；JS 单线程事件循环保证事务间不交错，`remember`/`forget` 不会被 watch 重索引阻塞排队。多实例并发写入同一项目存储时，得益于 CAS 幂等更新与原子提交，自然具备幂等性，无数据损坏风险。我们不担心 dsh 变多进程，因为 dsh 基于 Cordis，而 Cordis 的单进程架构是基础——改变它将是整个生态的破坏性变更。
 - **watch 计算与提交分离** — watcher 在事务外完成 mtime/哈希/符号扫描/LLM 摘要等重活，再以单次 `commit` 原子应用全部变更；`applyFileUpdate` 用 CAS 校验（统一 null 处理、删除跳过对比）防并发修改，失败回滚 snapshot 下轮重试，索引失败删除 snapshot 自动重试。轮询（mtime + 内容哈希）而非 `fs.watch` 事件驱动，是为了跨平台行为一致。间隔可用 `watchInterval` 调整。
 - **损坏隔离重建** — 存储 JSON 损坏时该文件回落为空并在下次写入时重建；坏文件会改名备份为 `*.corrupt` 并输出错误日志，但该文件内的数据无法恢复。自动修复半写文件需要预写日志或嵌入式数据库，代价与收益不成比例——而隔离一个坏文件的成本几乎为零。
 - **`forget` 按关键词删除偏激进** — 关键词删除按 ≥0.5 token 重叠匹配，可能一次删掉多条；追求精确请用 id 删除。

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { stat } from 'node:fs/promises'
 import { looksLikeDump, readTextFile } from './util/fs.js'
@@ -27,6 +28,10 @@ export async function buildDocEntries(llm, a, b, c) {
   const [relPath, filePath, opts] = c === undefined ? [a, a, b] : [a, b, c]
   const text = await extractTextFromFile(filePath, opts)
   if (looksLikeDump(text)) return null
+  
+  // Compute content hash for update detection
+  const hash = createHash('sha256').update(text).digest('hex').slice(0, 16)
+  
   const chunks = chunkText(text, opts.chunkChars, opts.maxChunks)
   const metas = new Array(chunks.length)
   let cursor = 0
@@ -47,7 +52,9 @@ export async function buildDocEntries(llm, a, b, c) {
     type: 'doc',
     title: meta.title,
     summary: meta.summary,
+    blindSpots: meta.blindSpots || '',
     keywords: meta.keywords,
+    hash,
   }))
 }
 

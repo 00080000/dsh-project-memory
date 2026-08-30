@@ -208,16 +208,68 @@ function matchShell(line) {
   return m ? { name: m[1], kind: 'function' } : null
 }
 
+function extractParamsAndReturn(line) {
+  const trimmed = line.trim()
+  
+  // Try to extract params and return type from function declaration
+  // Matches: function name(params): returnType { or => returnType {
+  const funcMatch = line.match(/function\s+([A-Za-z_$][\w$]*)\s*(\([^)]*\))\s*(?::\s*([^{]+))?\s*\{/)
+  if (funcMatch) {
+    const params = funcMatch[2] || '()'
+    const returnType = funcMatch[3] ? `: ${funcMatch[3].trim()}` : ''
+    return `${funcMatch[1]}${params}${returnType}`
+  }
+  
+  // Arrow function: const name = (params): returnType => {
+  const arrowMatch = line.match(/const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?\(([^)]*)\)\s*:\s*([^=]+)\s*=>/)
+  if (arrowMatch) {
+    return `${arrowMatch[1]}(${arrowMatch[2]}): ${arrowMatch[3].trim()}`
+  }
+  
+  // Arrow function without explicit return type: const name = (params) => {
+  const arrowSimple = line.match(/const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?\(([^)]*)\)\s*=>/)
+  if (arrowMatch) {
+    return `${arrowMatch[1]}(${arrowMatch[2]})`
+  }
+  
+  // Class method: methodName(params): returnType {
+  const methodMatch = line.match(/^\s*([A-Za-z_$][\w$]*)\s*(?:<[^<>]*>)?\s*\(([^()]*)\)\s*(?::\s*([^{]+))?\s*\{/)
+  if (methodMatch) {
+    const returnType = methodMatch[3] ? `: ${methodMatch[3].trim()}` : ''
+    return `${methodMatch[1]}(${methodMatch[2] || ''})${returnType}`
+  }
+  
+  // Constructor
+  const constructorMatch = line.match(/constructor\s*\(([^)]*)\)/)
+  if (constructorMatch) {
+    return `constructor(${constructorMatch[1]})`
+  }
+  
+  // Fallback: try to extract from the raw line
+  const declMatch = line.match(/(function|const|let|var)\s+([A-Za-z_$][\w$]*)/)
+  if (declMatch) {
+    return declMatch[0]
+  }
+  
+  // Fallback: return the raw line trimmed
+  return ''
+}
+
 function buildSymbol(matched, relPath, rawLine, lineNo) {
+  // Extract signature from raw line - keep full declaration
+  const fullDecl = String(rawLine).trim()
+  
+  // Build one-line identity: name(params): returnType — file.ts:lineNo
+  const identity = `${matched.name}${extractParamsAndReturn(rawLine)} — ${relPath}:${lineNo}`
+
   return {
     id: `${String(relPath).replace(/[\\/:\s]/g, '_')}#${lineNo}`,
     sourcePath: relPath,
     sourceLine: lineNo,
     type: 'symbol',
     title: `${matched.name} (${matched.kind})`,
-    summary: `${matched.kind} "${matched.name}" declared at ${relPath}:${lineNo}`,
     keywords: [matched.name, matched.kind],
-    text: String(rawLine).trim().slice(0, 200),
+    text: `${matched.name}${extractParamsAndReturn(rawLine)} — ${relPath}:${lineNo}`,  // full signature as identity card
   }
 }
 
