@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { createRequire } from 'node:module'
+
+const require = createRequire(import.meta.url)
 
 let ts = null
 let tsPath = null
@@ -89,7 +92,7 @@ async function saveTypeCache(cacheDir, key, data) {
   } catch {}
 }
 
-function deepParseWithTS(filePath, content) {
+export function deepParseWithTS(filePath, content) {
   if (!ts) return null
 
   const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true)
@@ -98,16 +101,42 @@ function deepParseWithTS(filePath, content) {
 
   const symbols = []
 
+  function getSignature(node) {
+    try {
+      return checker.getSignatureFromDeclaration(node)
+    } catch {
+      return undefined
+    }
+  }
+
+  function getReturnType(signature) {
+    if (!signature) return null
+    try {
+      return checker.getReturnTypeOfSignature(signature)
+    } catch {
+      return null
+    }
+  }
+
+  function getTypeStr(type) {
+    if (!type) return 'void'
+    try {
+      return checker.typeToString(type)
+    } catch {
+      return 'any'
+    }
+  }
+
   function visit(node) {
     if (ts.isFunctionDeclaration(node) && node.name) {
-      const signature = checker.getSignatureFromDeclaration(node)
-      const returnType = signature ? checker.getReturnTypeOfSignature(signature) : null
+      const signature = getSignature(node)
+      const returnType = getReturnType(signature)
       const typeParams = node.typeParameters?.map(tp => tp.getText()) || []
       const params = node.parameters.map(p => {
-        const type = p.type ? checker.typeToString(checker.getTypeAtLocation(p.type)) : 'any'
+        const type = p.type ? getTypeStr(checker.getTypeAtLocation(p.type)) : 'any'
         return `${p.name.getText()}: ${type}`
       })
-      const returnTypeStr = returnType ? checker.typeToString(returnType) : 'void'
+      const returnTypeStr = getTypeStr(returnType)
       const generics = typeParams.length ? `<${typeParams.join(', ')}>` : ''
       symbols.push({
         name: node.name.getText(),
@@ -116,14 +145,14 @@ function deepParseWithTS(filePath, content) {
         line: sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1
       })
     } else if (ts.isMethodDeclaration(node) && node.name) {
-      const signature = checker.getSignatureFromDeclaration(node)
-      const returnType = signature ? checker.getReturnTypeOfSignature(signature) : null
+      const signature = getSignature(node)
+      const returnType = getReturnType(signature)
       const typeParams = node.typeParameters?.map(tp => tp.getText()) || []
       const params = node.parameters.map(p => {
-        const type = p.type ? checker.typeToString(checker.getTypeAtLocation(p.type)) : 'any'
+        const type = p.type ? getTypeStr(checker.getTypeAtLocation(p.type)) : 'any'
         return `${p.name.getText()}: ${type}`
       })
-      const returnTypeStr = returnType ? checker.typeToString(returnType) : 'void'
+      const returnTypeStr = getTypeStr(returnType)
       const generics = typeParams.length ? `<${typeParams.join(', ')}>` : ''
       symbols.push({
         name: node.name.getText(),
@@ -131,6 +160,28 @@ function deepParseWithTS(filePath, content) {
         typeSig: `${generics}(${params.join(', ')}): ${returnTypeStr}`,
         line: sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1
       })
+    } else if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+      // Handle arrow functions and function expressions assigned to variables
+      const parent = node.parent
+      if (parent && (ts.isVariableDeclaration(parent) || ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent))) {
+        const signature = getSignature(node)
+        const returnType = getReturnType(signature)
+        const typeParams = node.typeParameters?.map(tp => tp.getText()) || []
+        const params = node.parameters.map(p => {
+          const type = p.type ? getTypeStr(checker.getTypeAtLocation(p.type)) : 'any'
+          return `${p.name.getText()}: ${type}`
+        })
+        const returnTypeStr = getTypeStr(returnType)
+        const generics = typeParams.length ? `<${typeParams.join(', ')}>` : ''
+        const name = parent.name?.getText() || '(anonymous)'
+        const kind = ts.isArrowFunction(node) ? 'arrow' : 'function'
+        symbols.push({
+          name,
+          kind,
+          typeSig: `${generics}(${params.join(', ')}): ${returnTypeStr}`,
+          line: sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1
+        })
+      }
     } else if (ts.isClassDeclaration(node) && node.name) {
       const typeParams = node.typeParameters?.map(tp => tp.getText()) || []
       const generics = typeParams.length ? `<${typeParams.join(', ')}>` : ''
@@ -145,11 +196,14 @@ function deepParseWithTS(filePath, content) {
       symbols.push({
         name: node.name.getText(),
         kind: 'interface',
-        typeSig: `{ ${node.members.map(m => `${m.name.getText()}: ${m.type ? checker.typeToString(checker.getTypeAtLocation(m.type)) : 'any'}`).join('; ')} }`,
+        typeSig: `{ ${node.members.map(m => {
+          const type = m.type ? getTypeStr(checker.getTypeAtLocation(m.type)) : 'any'
+          return `${m.name.getText()}: ${type}`
+        }).join('; ')} }`,
         line: sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1
       })
     } else if (ts.isTypeAliasDeclaration(node)) {
-      const typeStr = node.type ? checker.typeToString(checker.getTypeAtLocation(node.type)) : 'any'
+      const typeStr = node.type ? getTypeStr(checker.getTypeAtLocation(node.type)) : 'any'
       symbols.push({
         name: node.name.getText(),
         kind: 'type',
