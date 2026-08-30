@@ -96,19 +96,117 @@ function balanceDelta(text) {
   return delta
 }
 
+function extractTypeSignature(line) {
+  let sig = ''
+  
+  // 1. Generics: <T, U extends Base> - but NOT the return type generics like Promise<T>
+  // Match generics that appear BEFORE the first ( (function params) or => (arrow)
+  // For: function foo<T>(a: T): R
+  // For: const foo = <T>(a: T): R =>
+  // For: class Foo<T> { method() }
+  const beforeParams = line.split(/\(|=>/)[0]
+  const genericMatch = beforeParams.match(/<[^<>]*(?:<[^<>]*>[^<>]*)*>/)
+  if (genericMatch) sig += genericMatch[0]
+  
+  // 2. Parameters: (a: string, b: number) - handle nested parentheses
+  let paramMatch = null
+  const parenIdx = line.indexOf('(')
+  if (parenIdx >= 0) {
+    let depth = 0
+    for (let i = parenIdx; i < line.length; i++) {
+      if (line[i] === '(') depth++
+      else if (line[i] === ')') {
+        depth--
+        if (depth === 0) {
+          paramMatch = line.slice(parenIdx, i + 1)
+          // 3. Return type: ONLY after the closing ) of params
+          const afterParams = line.slice(i + 1)
+          // Match return type including nested generics, stop at { ; => 
+          const retMatch = afterParams.match(/^\s*:\s*([^{;=]+)/)
+          if (retMatch) sig += paramMatch + `: ${retMatch[1].trim()}`
+          else sig += paramMatch
+          break
+        }
+      }
+    }
+  }
+  
+  // 3b. Arrow function without parens: foo = (x): R => or foo = x: R =>
+  if (!paramMatch) {
+    const arrowMatch = line.match(/=>/)
+    if (arrowMatch) {
+      const afterArrow = line.slice(arrowMatch.index + 2)
+      const retMatch = afterArrow.match(/^\s*([^{;=]+)/)
+      if (retMatch) sig += `: ${retMatch[1].trim()}`
+    }
+  }
+  
+  return sig
+}
+
+function extractInterfaceOrType(line) {
+  // interface User { name: string; age: number }
+  const ifaceMatch = line.match(/^interface\s+(\w+)\s*(?:extends\s+[^{]+)?\s*\{([^}]*)\}/)
+  if (ifaceMatch) {
+    return `{ ${ifaceMatch[2].trim()} }`
+  }
+  // type UserMap = Map<string, User>
+  const typeMatch = line.match(/^type\s+(\w+)\s*=\s*([^;{]+)/)
+  if (typeMatch) {
+    return `= ${typeMatch[2].trim()}`
+  }
+  return ''
+}
+
+function extractOverloads(masked, startIdx) {
+  const overloads = []
+  for (let i = startIdx; i < masked.length; i++) {
+    const text = masked[i].trim()
+    if (!text) continue
+    
+    // Skip comments
+    if (text.startsWith('//') || text.startsWith('/*')) continue
+    
+    // Check for function declaration (with or without export/async/default)
+    const fnMatch = text.match(/^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+\w+\s*/)
+    if (!fnMatch) break
+    
+    // Extract ONLY the signature part (generics + params + return), NOT the function name
+    const sig = extractTypeSignature(text)
+    if (sig) overloads.push(sig)
+    
+    // If it has a body {, it's the implementation - stop
+    if (text.includes('{')) break
+  }
+  return overloads
+}
+
 function matchJsLike(line) {
+  // export default async function foo<T>(a: T): Promise<T> { ... }
   let m = line.match(/^export\s+(?:default\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)|class\s+([A-Za-z_$][\w$]*))/)
   if (m) return { name: m[1] || m[2], kind: m[1] ? 'function' : 'class' }
-  m = line.match(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/)
+  
+  // export async function foo<T>(a: T): Promise<T> { ... }
+  // Handle optional generics: function name<T>(...
+  m = line.match(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*(?:<[^<>]*>)?\s*\(/)
   if (m) return { name: m[1], kind: 'function' }
+  
+  // export class Foo { ... }
   m = line.match(/^(?:export\s+)?class\s+([A-Za-z_$][\w$]*)/)
   if (m) return { name: m[1], kind: 'class' }
+  
+  // export const foo = (a: T): Promise<T> => { ... }
   m = line.match(/^(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(/)
   if (m) return { name: m[1], kind: 'function' }
+  
+  // export const foo = async (a: T): Promise<T> => { ... }
   m = line.match(/^(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/)
   if (m) return { name: m[1], kind: 'function' }
-  m = line.match(/^(?:export\s+)?(?:async\s+)?function\s*\(/) // anonymous
+  
+  // anonymous function
+  m = line.match(/^(?:export\s+)?(?:async\s+)?function\s*\(/)
   if (m) return { name: '(anonymous)', kind: 'function' }
+  
   return null
 }
 
@@ -124,31 +222,66 @@ function scanJsLike(masked, relPath, rawLines) {
   const symbols = []
   let prevOpensBlock = false
   for (let i = 0; i < masked.length; i++) {
-    const text = masked[i].trim()
-    if (!text) continue
+    const rawText = rawLines[i].trim()
+    const maskedText = masked[i].trim()
+    if (!rawText) continue
+    
     let matched = null
-    if (prevOpensBlock) {
-      const method = text.match(/^([A-Za-z_$][\w$]*)\s*(?:<[^<>]*>)?\s*\(([^()]*)\)\s*(?::\s*[^={]{1,80})?\{/)
-      if (method && !JS_NON_METHOD.has(method[1])) matched = { name: method[1], kind: 'method' }
-    }
-    if (!matched) matched = matchJsLike(text)
-    if (!matched && JS_DECL_START.test(text)) {
-      let joined = text
-      let extra = 0
-      for (let j = i + 1; j < masked.length && extra < 3; j++) {
-        const tail = masked[j].trim()
-        if (!tail) continue
-        joined += ' ' + tail
-        extra++
-        matched = matchJsLike(joined)
-        if (matched) {
-          i = j
-          break
-        }
-        if (/[{};]/.test(tail)) break
+    
+    // Check for interface / type alias first (on raw line, not masked)
+    const ifaceSig = extractInterfaceOrType(rawText)
+    if (ifaceSig) {
+      const nameMatch = rawText.match(/^(?:export\s+)?(?:interface|type)\s+(\w+)/)
+      if (nameMatch) {
+        matched = { name: nameMatch[1], kind: 'interface', typeSig: ifaceSig }
       }
     }
-    if (matched) symbols.push(buildSymbol(matched, relPath, rawLines[i], i + 1))
+    
+    if (!matched) {
+      // Check for method inside class (prev line ends with {)
+      if (prevOpensBlock) {
+        const method = maskedText.match(/^([A-Za-z_$][\w$]*)\s*(?:<[^<>]*>)?\s*\(([^()]*)\)\s*(?::\s*[^={]{1,80})?\{/)
+        if (method && !JS_NON_METHOD.has(method[1])) matched = { name: method[1], kind: 'method' }
+      }
+      
+      // Regular declarations
+      if (!matched) matched = matchJsLike(maskedText)
+      
+      // Multi-line declaration joining
+      if (!matched && JS_DECL_START.test(maskedText)) {
+        let joined = maskedText
+        let extra = 0
+        for (let j = i + 1; j < masked.length && extra < 3; j++) {
+          const tail = masked[j].trim()
+          if (!tail) continue
+          joined += ' ' + tail
+          extra++
+          matched = matchJsLike(joined)
+          if (matched) {
+            i = j
+            break
+          }
+          if (/[{};]/.test(tail)) break
+        }
+      }
+    }
+    
+    if (matched) {
+      // Extract type signature from raw line (not masked)
+      if (matched.kind !== 'interface') {
+        const typeSig = extractTypeSignature(rawText)
+        if (typeSig) matched.typeSig = typeSig
+      }
+      
+      // Extract overloads for function declarations
+      if (matched.kind === 'function' && rawText.startsWith('function')) {
+        const overloads = extractOverloads(masked, i)
+        if (overloads.length > 1) matched.overloads = overloads
+      }
+      
+      symbols.push(buildSymbol(matched, relPath, rawLines[i], i + 1))
+    }
+    
     prevOpensBlock = masked[i].trim().endsWith('{')
   }
   return symbols
@@ -256,11 +389,20 @@ function extractParamsAndReturn(line) {
 }
 
 function buildSymbol(matched, relPath, rawLine, lineNo) {
-  // Extract signature from raw line - keep full declaration
-  const fullDecl = String(rawLine).trim()
+  // Use pre-extracted type signature if available, otherwise fall back to extractParamsAndReturn
+  let typeSig = matched.typeSig || extractParamsAndReturn(rawLine)
   
-  // Build one-line identity: name(params): returnType — file.ts:lineNo
-  const identity = `${matched.name}${extractParamsAndReturn(rawLine)} — ${relPath}:${lineNo}`
+  // Add overloads if present
+  const overloadPart = matched.overloads?.length
+    ? ` | overloads: ${matched.overloads.join('; ')}`
+    : ''
+  
+  // For interface/type, typeSig already includes the full signature without name
+  // For others, typeSig is just the generics+params+return
+  const prefix = matched.kind === 'interface' ? '' : matched.name
+  
+  // Build one-line identity: name<Generics>(params): ReturnType — file.ts:lineNo
+  const identity = `${prefix}${typeSig}${overloadPart} — ${relPath}:${lineNo}`
 
   return {
     id: `${String(relPath).replace(/[\\/:\s]/g, '_')}#${lineNo}`,
@@ -269,7 +411,7 @@ function buildSymbol(matched, relPath, rawLine, lineNo) {
     type: 'symbol',
     title: `${matched.name} (${matched.kind})`,
     keywords: [matched.name, matched.kind],
-    text: `${matched.name}${extractParamsAndReturn(rawLine)} — ${relPath}:${lineNo}`,  // full signature as identity card
+    text: identity,
   }
 }
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### 符号层：只存身份牌，不存行为
+- `src/symbols.js` `buildSymbol`：删除 `summary` 废话字段；`text` 不再截断，保存完整声明行（含签名）；返回一行身份牌 `fn(a: A, b: B): R — file.ts:42`；删除冗余 `sig` 字段
+
+### 文档层：答案级摘要 + 自报盲区
+- `src/llm.js` `extractDocEntry`：新增 `blindSpots` 字段（自报盲区，如 `// 未覆盖：部署细节、性能基准、v0.2 前 API`）；Prompt 要求 LLM 返回 `blindSpots`；摘要通过 `summarizeText()` 截断至 300 字符；`blindSpots` 追加在摘要末尾 `// 未覆盖：...`
+- `src/doc-pipeline.js` `buildDocEntries`：新增 `hash` 字段（SHA256 内容哈希，用于更新检测）；新增 `blindSpots` 字段存入分片
+
+## 0.3.1 (2026-08-30)
+
+### 存储：相对路径存储
+- Entry 存相对路径（如 `src/main.js`），查询时按项目根解析绝对路径；项目搬家仅在根目录变更时需重新索引，兼容旧绝对路径 entry
+- 所有写入路径（`index_doc` / `index_repo` / `watch` / `lazy`）统一传相对路径给构建函数
+- `scanSymbols` / `buildDocEntries` 兼容旧签名（绝对路径 entry 仍可读）
+
+### 设计取舍同步
+- 移除「绝对路径引用」项，该限制已由相对路径存储方案解决
+
 ## 0.3.0 (2026-08-29)
 
 ### 存储：无锁同步事务重构
