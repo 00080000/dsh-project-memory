@@ -8,6 +8,7 @@ import { watchRepoTool } from './tools/watch-repo.js'
 import { statsTool } from './tools/stats.js'
 import { WatchManager } from './watch.js'
 import { setupLazyIndexing } from './lazy.js'
+import { initTypeScript } from './enhancer.js'
 
 export const name = 'dsh-project-memory'
 export const inject = ['llm', 'tools']
@@ -25,9 +26,12 @@ export const Config = Schema.object({
   autoIndexOnFirstUse: Schema.boolean().default(false),
   watch: Schema.boolean().default(true),
   watchInterval: Schema.number().default(15),
+  tsPath: Schema.string(),
 })
 
 export function apply(ctx, config) {
+  initTypeScript(config)
+
   const watchManager = new WatchManager(ctx, config)
   if (config.watch) {
     watchManager.restorePersisted()

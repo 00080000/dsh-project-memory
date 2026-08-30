@@ -5,6 +5,7 @@ import { buildDocEntries } from './doc-pipeline.js'
 import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
 import { ProjectMemoryStore } from './store.js'
+import { onFileChanged } from './enhancer.js'
 
 export class WatchManager {
   constructor(ctx, config) {
@@ -144,12 +145,13 @@ export class WatchManager {
       }
     })
 
-    // Update snapshot for successfully processed files only, using the
-    // first-pass signature: if the file changed during the compute window
-    // (hash / scanSymbols / LLM summary), the next poll's signature differs
-    // and the file is re-indexed — restoring the pre-refactor self-healing.
+    // Trigger TS enhancement for code files
     for (const update of fileUpdates) {
       if (update._skipSnapshot) continue
+      if (update.type === 'code') {
+        const filePath = path.join(root, update.rel)
+        onFileChanged(state.store, update.rel, filePath, this.config)
+      }
       state.snapshot[update.rel] = update._sig
     }
   }

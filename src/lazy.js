@@ -6,6 +6,7 @@ import { buildDocEntries } from './doc-pipeline.js'
 import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
 import { ProjectMemoryStore } from './store.js'
+import { onFileObserved } from './enhancer.js'
 
 const STRONG_MARKERS = ['.git', '.hg', '.svn']
 
@@ -112,6 +113,7 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
       return true
     })
   } else {
+    onFileObserved(store, rel, filePath, config)
     entries = await buildDocEntries(ctx.llm, rel, filePath, {
       chunkChars: config.chunkChars,
       maxChunks: config.maxChunksPerFile,

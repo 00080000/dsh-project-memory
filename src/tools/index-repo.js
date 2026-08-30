@@ -6,6 +6,7 @@ import { buildDocEntries } from '../doc-pipeline.js'
 import { scanSymbols } from '../symbols.js'
 import { linkEntries } from '../link.js'
 import { ProjectMemoryStore } from '../store.js'
+import { onFileIndexed } from '../enhancer.js'
 
 export async function indexRepository(ctx, config, root, { reindex = false } = {}) {
   const memoryDir = memoryRootFor(root, config.memoryDir)
@@ -77,7 +78,7 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
   }
 
   // Second pass: single commit with all updates
-  return store.commit((s) => {
+  const report = store.commit((s) => {
     for (const update of fileUpdates) {
       const result = s.applyFileUpdate(update.rel, update)
       if (result.skipped) {
@@ -105,6 +106,16 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
     }
     return report
   })
+
+  // Trigger TS enhancement for code files
+  for (const update of fileUpdates) {
+    if (update.type === 'code') {
+      const filePath = path.join(root, update.rel)
+      onFileIndexed(store, update.rel, filePath, config)
+    }
+  }
+
+  return report
 }
 
 export function indexRepoTool(ctx, config) {
