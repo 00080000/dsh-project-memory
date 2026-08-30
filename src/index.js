@@ -27,10 +27,14 @@ export const Config = Schema.object({
   watch: Schema.boolean().default(true),
   watchInterval: Schema.number().default(15),
   tsPath: Schema.string(),
+  enableTypeScript: Schema.boolean().default(true),
 })
 
 export function apply(ctx, config) {
-  initTypeScript(config)
+  // Initialize TypeScript enhancer if enabled
+  if (config.enableTypeScript !== false) {
+    initTypeScript(config)
+  }
 
   const watchManager = new WatchManager(ctx, config)
   if (config.watch) {

@@ -5,7 +5,7 @@ import { buildDocEntries } from './doc-pipeline.js'
 import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
 import { ProjectMemoryStore } from './store.js'
-import { onFileChanged } from './enhancer.js'
+import { onFileChanged, isTypeScriptFile } from './enhancer.js'
 
 export class WatchManager {
   constructor(ctx, config) {
@@ -145,12 +145,14 @@ export class WatchManager {
       }
     })
 
-    // Trigger TS enhancement for code files
+    // Trigger TS enhancement for code files (TS/JS only)
     for (const update of fileUpdates) {
       if (update._skipSnapshot) continue
       if (update.type === 'code') {
         const filePath = path.join(root, update.rel)
-        onFileChanged(state.store, update.rel, filePath, this.config)
+        if (isTypeScriptFile(filePath)) {
+          onFileChanged(state.store, update.rel, filePath, this.config, root)
+        }
       }
       state.snapshot[update.rel] = update._sig
     }

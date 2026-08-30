@@ -6,7 +6,7 @@ import { buildDocEntries } from '../doc-pipeline.js'
 import { scanSymbols } from '../symbols.js'
 import { linkEntries } from '../link.js'
 import { ProjectMemoryStore } from '../store.js'
-import { onFileIndexed } from '../enhancer.js'
+import { onFileIndexed, isTypeScriptFile } from '../enhancer.js'
 
 export async function indexRepository(ctx, config, root, { reindex = false } = {}) {
   const memoryDir = memoryRootFor(root, config.memoryDir)
@@ -107,11 +107,13 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
     return report
   })
 
-  // Trigger TS enhancement for code files
+  // Trigger TS enhancement for code files (TS/JS only)
   for (const update of fileUpdates) {
     if (update.type === 'code') {
       const filePath = path.join(root, update.rel)
-      onFileIndexed(store, update.rel, filePath, config)
+      if (isTypeScriptFile(filePath)) {
+        onFileIndexed(store, update.rel, filePath, config, root)
+      }
     }
   }
 

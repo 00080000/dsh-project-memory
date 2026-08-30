@@ -6,7 +6,7 @@ import { buildDocEntries } from './doc-pipeline.js'
 import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
 import { ProjectMemoryStore } from './store.js'
-import { onFileObserved } from './enhancer.js'
+import { onFileObserved, onFileChanged } from './enhancer.js'
 
 const STRONG_MARKERS = ['.git', '.hg', '.svn']
 
@@ -88,6 +88,7 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
   const existing = store.fileRecord(rel)
   let hash
   let size
+  let entries
   try {
     if (isSupportedCode(ext) && config.maxFileSizeMb && statSync(filePath).size > config.maxFileSizeMb * 1024 * 1024) {
       return false
@@ -103,9 +104,9 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
     store.addWatch(root)
   }
 
-  let entries
   if (isSupportedCode(ext)) {
     entries = scanSymbols(rel, filePath, readFileSync(filePath, 'utf8'))
+    onFileObserved(store, rel, filePath, config, root)
     return store.commit((s) => {
       s.markFile(rel, { sha256: hash, size, type: 'code', indexedAt: new Date().toISOString() })
       s.setEntries(rel, entries)
@@ -113,7 +114,6 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
       return true
     })
   } else {
-    onFileObserved(store, rel, filePath, config)
     entries = await buildDocEntries(ctx.llm, rel, filePath, {
       chunkChars: config.chunkChars,
       maxChunks: config.maxChunksPerFile,
@@ -126,6 +126,7 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
         return false
       })
     }
+    onFileChanged(store, rel, filePath, config, root)
     return store.commit((s) => {
       s.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
       s.setEntries(rel, entries)
