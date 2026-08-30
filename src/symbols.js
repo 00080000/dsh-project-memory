@@ -462,5 +462,3 @@ export function scanSymbols(a, b, c) {
   }
   return symbols
 }
-
-export { maskTokens, JS_MASKER, matchJsLike, JS_DECL_START, extractTypeSignature }
