@@ -203,6 +203,10 @@ function matchJsLike(line) {
   m = line.match(/^(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/)
   if (m) return { name: m[1], kind: 'function' }
   
+  // export function (multi-line, name on next line)
+  m = line.match(/^(?:export\s+)?(?:async\s+)?function\s*$/)
+  if (m) return { name: '(pending)', kind: 'function' }
+  
   // anonymous function
   m = line.match(/^(?:export\s+)?(?:async\s+)?function\s*\(/)
   if (m) return { name: '(anonymous)', kind: 'function' }
@@ -227,6 +231,7 @@ function scanJsLike(masked, relPath, rawLines) {
     if (!rawText) continue
     
     let matched = null
+    let joinedText = null
     
     // Check for interface / type alias first (on raw line, not masked)
     const ifaceSig = extractInterfaceOrType(rawText)
@@ -244,37 +249,47 @@ function scanJsLike(masked, relPath, rawLines) {
         if (method && !JS_NON_METHOD.has(method[1])) matched = { name: method[1], kind: 'method' }
       }
       
-      // Regular declarations
+      // Regular declarations - try initial match
       if (!matched) matched = matchJsLike(maskedText)
-      
-      // Multi-line declaration joining
-      if (!matched && JS_DECL_START.test(maskedText)) {
-        let joined = maskedText
-        let extra = 0
-        for (let j = i + 1; j < masked.length && extra < 3; j++) {
-          const tail = masked[j].trim()
-          if (!tail) continue
-          joined += ' ' + tail
-          extra++
-          matched = matchJsLike(joined)
-          if (matched) {
+    }
+    
+    // Multi-line declaration joining (only when no initial match, or when match is pending)
+    if ((!matched || (matched && matched.name === '(pending)')) && JS_DECL_START.test(maskedText)) {
+      // No initial match, or pending match - do joining to find/resolve one
+      let joined = maskedText
+      let extra = 0
+      let declMatched = null
+      for (let j = i + 1; j < masked.length && extra < 5; j++) {
+        const tail = masked[j].trim()
+        if (!tail) continue
+        joined += ' ' + tail
+        extra++
+        if (!declMatched) declMatched = matchJsLike(joined)
+        if (/[{};]/.test(tail)) {
+          if (declMatched && declMatched.name !== '(pending)') {
+            matched = declMatched
             i = j
-            break
+            joinedText = joined
           }
-          if (/[{};]/.test(tail)) break
+          break
         }
+      }
+      if (!matched && declMatched && declMatched.name !== '(pending)') {
+        matched = declMatched
+        joinedText = joined
       }
     }
     
     if (matched) {
-      // Extract type signature from raw line (not masked)
+      // Extract type signature: use joined text if multi-line, else raw line
       if (matched.kind !== 'interface') {
-        const typeSig = extractTypeSignature(rawText)
+        const sourceForType = joinedText || rawText
+        const typeSig = extractTypeSignature(sourceForType)
         if (typeSig) matched.typeSig = typeSig
       }
       
       // Extract overloads for function declarations
-      if (matched.kind === 'function' && rawText.startsWith('function')) {
+      if (matched.kind === 'function' && (joinedText || rawText).startsWith('function')) {
         const overloads = extractOverloads(masked, i)
         if (overloads.length > 1) matched.overloads = overloads
       }
@@ -447,3 +462,5 @@ export function scanSymbols(a, b, c) {
   }
   return symbols
 }
+
+export { maskTokens, JS_MASKER, matchJsLike, JS_DECL_START, extractTypeSignature }
