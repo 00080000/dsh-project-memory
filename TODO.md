@@ -14,6 +14,7 @@ Done items → CHANGELOG.
 - [x] **L3 Disk Cache** — type-cache/ keyed by content hash (v0.3.2)
 - [x] **Symbol Layer Refactor** — one-line identity `fn(a:A,b:B):R — file.ts:42`, no `summary`/`sig` (v0.3.3)
 - [x] **Doc Layer Refactor** — blindSpots, hash, answer-level summary (v0.3.3)
+- [x] **Doc retrieval: blindSpots-aware logic in query_memory** (v0.3.3)
 
 ## Mid-term (Trigger-based)
 
@@ -27,7 +28,6 @@ Done items → CHANGELOG.
 
 ## Candidates (v0.4.0+)
 
-- Doc retrieval: blindSpots-aware logic in query_memory
 - Dictionary max-match (50KB vocab)
 - Experience SimHash dedup
 - Symbol link kind weights
