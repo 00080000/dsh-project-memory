@@ -12,11 +12,13 @@
 
 - **文档记忆** — PDF、Markdown、纯文本按块切分并由 LLM 生成摘要，每条记忆携带 `路径:行号` 引用回源文件。
 - **代码符号记忆** — 通过零依赖的源码扫描器提取函数、类与方法名及完整类型签名（泛型、参数类型、返回类型、重载签名），包含字符串/注释掩码、多行签名续行、Python 缩进感知、类方法上下文，不使用 LLM token。
-- **可选 TypeScript 语义增强** — 当用户项目安装了 `typescript`（`npm i -D typescript`），插件自动激活第二层（L2），利用 TS Compiler API 推导返回类型、实例化泛型、提取接口与类型别名、丰富箭头函数签名 —— 全部在优先级队列中异步后台处理（P0：`fs/observed` 读文件瞬间、P1：`watch` 变更后、P2：`index_repo` 批量索引）。结果按文件内容哈希缓存到磁盘，冷启动毫秒级复用。零配置：装 TS 再重启 dsh 即可。完全可选；若无 TS 或设置 `enableTypeScript: false`，回退至 L1 正则提取。
+- **L1 增强正则** — 零依赖正则扫描器现可提取泛型、参数/返回类型、重载、接口、类型别名，产出单行身份签名 `fn(a: A, b: B): R — file.ts:42`。
+- **可选 TypeScript 语义增强 (L2/L3)** — 当用户项目安装了 `typescript`（`npm i -D typescript`），插件自动激活第二层（L2），利用 TS Compiler API 推导返回类型、实例化泛型、提取接口与类型别名、丰富箭头函数签名 —— 全部在优先级队列中异步后台处理（P0：`fs/observed` 读文件瞬间、P1：`watch` 变更后、P2：`index_repo` 批量索引）。结果按文件内容哈希缓存到磁盘（L3），冷启动毫秒级复用。零配置：装 TS 再重启 dsh 即可。完全可选；若无 TS 或设置 `enableTypeScript: false`，回退至 L1 正则提取。
 - **自动刷新** — `watch_repo` 后台轮询，按内容哈希识别新增或变更文件，仅重记这些文件。
 - **读到即记忆** — 文件在模型**实际读取的瞬间**被记忆（监听 `fs/observed`），记忆是正常工作的副产品，而非额外的一次全量扫描。从未读过的文件不会被记忆。项目根通过标记（`.git`、`package.json` 等）、README 加源码目录、或兜底到文件所在目录逐级识别。
 - **文档 ↔ 代码交叉链接** — 文档提及某符号时记录为 `reference`；查询符号时同时带出描述该符号的文档。
 - **BM25 记忆召回** — 对文档、符号与经验笔记进行排序召回，可选 LLM 查询扩展以应对表述不一致。**CJK 增强**：精确短语乘法加分（3+ 字短语在标题/关键词命中 ×1.5）、同义词表（如 数据库连接池 ↔ 连接池 ↔ DB pool）、CJK 感知的文档↔符号链接边界。
+- **blindSpots 感知召回** — 文档摘要携带 `blindSpots` 字段（明确说明摘要未覆盖的内容）。查询命中盲区时，`query_memory` 追加提示引导模型去读原文，防止半截摘要误导。
 - **经验笔记** — 记录问题 → 方案；相似问题覆盖而非重复；笔记仅在检索命中时返回。笔记数量有界：容量随项目规模伸缩（钳制在 100–2000），超限时淘汰最旧的笔记。**覆盖阈值收紧为双向 0.7 重叠**（原 0.6）；**经验 `problem` 字段现参与 CJK 短语加分**，提升长尾问句召回。
 - **无锁同步事务** — 不采用锁：所有写入（index / watch / remember / forget / watch_repo）统一走同步事务 `store.commit(fn)`，fn 成功后才一次落盘；JS 单线程事件循环保证事务间不交错，`remember`/`forget` 不会被 watch 重索引阻塞排队。多实例并发写入同一项目存储时，得益于 CAS 幂等更新与原子提交，自然具备幂等性，无数据损坏风险。
 - **依赖极简** — 纯 JavaScript；唯一运行时依赖是 `pdfjs-dist`（PDF 文本提取），无需原生构建。
@@ -228,7 +230,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test          # 157 tests (v0.3.2)：chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency / restore / size limit
+npm test          # 157 tests (v0.3.3)：chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency / restore / size limit
 ```
 
 ## 许可证
