@@ -24,6 +24,32 @@ Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/
 - **Minimal dependencies** — pure JavaScript; the only runtime dependency is `pdfjs-dist` (PDF text extraction), no native builds required.
 - **Negligible overhead** — pure in-process operation; cold start <100 ms (5k files), typical project query median 2–3 ms (p99 < 7 ms); bottleneck is LLM summarization and PDF parsing, not the plugin.
 
+## Performance
+
+### Synthetic Benchmark (isolated environment, Node 24, Linux)
+
+| Scenario | Scale | Measured |
+|----------|-------|----------|
+| Full cold index | 5,000 files / 20k entries | 318 ms |
+| Cold load | 5,000 files | 70 ms |
+| Hot lazy re-index (single file) | 5k files | median 2.3 ms / max 3.8 ms |
+| Full cold index | 10,000 files / 40k entries | 637 ms |
+| Cold load | 10,000 files | 144 ms |
+| Hot lazy re-index (single file) | 10k files | median 4.5 ms / max 10.2 ms |
+
+> Synthetic benchmark: generated code (~8 symbols/file), Node 24, Linux native FS, SSD. Measures pure indexing overhead without LLM calls.
+
+> Synthetic benchmark: generated code (~8 symbols/file), Node 24, Linux file system, SSD. Measures pure indexing overhead without LLM calls.
+
+### Real Project Storage
+
+| Project | Files | Entries | Store Size | Per Entry |
+|---------|-------|---------|------------|-----------|
+| Java Spring Boot backend | 1,254 | 7,335 | 6.7 MB | ~0.9 KB |
+| Vue 3 + Vite frontend | 289 | 2,141 | 1.0 MB | ~0.5 KB |
+
+> Real projects (Java + Vue), tested on Linux file system (Node 24). Real project entries are smaller than synthetic benchmarks due to lower symbol density and shorter declarations.
+
 ## How it works
 
 The design follows four principles:
