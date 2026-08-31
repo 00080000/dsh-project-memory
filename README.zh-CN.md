@@ -12,6 +12,7 @@
 
 - **文档记忆** — PDF、Markdown、纯文本按块切分并由 LLM 生成摘要，每条记忆携带 `路径:行号` 引用回源文件。
 - **代码符号记忆** — 通过零依赖的源码扫描器提取函数、类与方法名及完整类型签名（泛型、参数类型、返回类型、重载签名），包含字符串/注释掩码、多行签名续行、Python 缩进感知、类方法上下文，不使用 LLM token。
+- **可选 TypeScript 语义增强** — 当用户项目安装了 `typescript`（`npm i -D typescript`），插件自动激活第二层（L2），利用 TS Compiler API 推导返回类型、实例化泛型、提取接口与类型别名、丰富箭头函数签名 —— 全部在优先级队列中异步后台处理（P0：`fs/observed` 读文件瞬间、P1：`watch` 变更后、P2：`index_repo` 批量索引）。结果按文件内容哈希缓存到磁盘，冷启动毫秒级复用。零配置：装 TS 再重启 dsh 即可。完全可选；若无 TS 或设置 `enableTypeScript: false`，回退至 L1 正则提取。
 - **自动刷新** — `watch_repo` 后台轮询，按内容哈希识别新增或变更文件，仅重记这些文件。
 - **读到即记忆** — 文件在模型**实际读取的瞬间**被记忆（监听 `fs/observed`），记忆是正常工作的副产品，而非额外的一次全量扫描。从未读过的文件不会被记忆。项目根通过标记（`.git`、`package.json` 等）、README 加源码目录、或兜底到文件所在目录逐级识别。
 - **文档 ↔ 代码交叉链接** — 文档提及某符号时记录为 `reference`；查询符号时同时带出描述该符号的文档。
@@ -117,6 +118,8 @@ v0.2.0 之前创建的库（单文件 `entries.json` / `index.json`）在首次�
 | `autoIndexOnFirstUse` | false | 插件加载时对当前工作目录做全量扫描（可选） |
 | `watch` | true | 启用后台刷新 |
 | `watchInterval` | 15 | 轮询间隔（秒） |
+| `tsPath` | (自动) | 可选：强制指定特定 `typescript` 安装路径；省略时按项目 cwd → 插件 node_modules 向上解析 |
+| `enableTypeScript` | true | 设为 `false` 彻底禁用 L2 TS 增强（仅保留 L1 正则） |
 
 ### 功能开关
 
@@ -132,6 +135,8 @@ v0.2.0 之前创建的库（单文件 `entries.json` / `index.json`）在首次�
     llmQueryExpansion: false    # 关闭：不用 LLM 扩展查询，节省 token（默认）
     watch: true                 # 开启：被监听根目录后台保持新鲜（默认）
     watchInterval: 15           # 轮询间隔（秒）
+    enableTypeScript: true      # 开启：装了 TS 时启用 L2 语义增强（默认）
+    # tsPath: /custom/path/to/typescript  # 可选：强制指定 TS 安装路径
 ```
 
 只需列出要改的键，其余键回落到插件默认值。用 `dsh --profile web --dump-config` 验证生效。

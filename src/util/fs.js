@@ -85,7 +85,7 @@ export function looksLikeDump(text, maxBytes = 4096) {
 
 export function isSupportedCode(ext) {
   return [
-    '.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx', '.py', '.java', '.go',
+    '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.jsx', '.tsx', '.py', '.java', '.go',
     '.rs', '.c', '.cpp', '.cc', '.h', '.hpp', '.cs', '.php', '.rb',
     '.swift', '.kt', '.kts', '.sh', '.zsh',
   ].includes(ext)

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 
-const JS_LIKE = new Set(['.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx'])
+const JS_LIKE = new Set(['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.jsx', '.tsx'])
 const PYTHON = new Set(['.py'])
 const GO = new Set(['.go'])
 const RUST = new Set(['.rs'])

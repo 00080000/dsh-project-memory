@@ -12,6 +12,7 @@ Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/
 
 - **Document memorization** — PDF, Markdown, and plain text files are chunked and summarized by the LLM; each entry carries a `path:line` citation back to the source.
 - **Code symbol memory** — function, class, and method names with full type signatures (generics, parameters, return types, overloads) are extracted by a dependency-free source scanner (string/comment masking, multi-line signature joining, indentation-aware Python, class-method context), without LLM token usage.
+- **Optional TypeScript semantic enhancement** — when `typescript` is installed in the user project (`npm i -D typescript`), the plugin automatically activates a second layer (L2) that uses the TS Compiler API to infer return types, resolve generics, extract interfaces and type aliases, and enrich arrow functions — all asynchronously in a priority queue (P0 on `fs/observed`, P1 on `watch`, P2 on `index_repo`). Results are cached on disk keyed by file content hash for instant cold-start reuse. Zero config: just install TS and restart dsh. Fully optional; if TS is absent or disabled via `enableTypeScript: false`, the plugin falls back to L1 regex-only extraction.
 - **Automatic refresh** — a background poll (`watch_repo`) detects new or changed files by content hash and re-memorizes only those.
 - **Read-time memorization** — files are memorized the moment the model actually reads them (`fs/observed`), so the memory is a byproduct of normal work, not a separate upfront scan. Files that are never read are never indexed. The project root is detected by markers (`.git`, `package.json`, …), a README plus source directories, or the file's own directory as a last resort.
 - **Doc ↔ code cross-linking** — when a document mentions a symbol, the match is recorded as a `reference`; querying a symbol also surfaces the documents that describe it.
@@ -117,6 +118,8 @@ These are deliberate scope choices.
 | `autoIndexOnFirstUse` | false | full scan of the current working directory on plugin load (opt-in) |
 | `watch` | true | enable the background refresh |
 | `watchInterval` | 15 | poll interval (seconds) |
+| `tsPath` | (auto) | optional absolute path to a specific `typescript` install; if omitted, resolves from project cwd → plugin node_modules |
+| `enableTypeScript` | true | set `false` to disable L2 TS enhancement entirely (L1 regex only) |
 
 ### Toggling features
 
@@ -132,6 +135,8 @@ Settings live in the plugin's config object. To change them, add an override ent
     llmQueryExpansion: false    # off: do not spend tokens on LLM query expansion (default)
     watch: true                 # on: background refresh for watched roots (default)
     watchInterval: 15           # poll interval in seconds
+    enableTypeScript: true      # on: L2 TS enhancement when TS is installed (default)
+    # tsPath: /custom/path/to/typescript  # optional: force specific TS install
 ```
 
 Only list the keys you want to change; the rest fall back to the plugin defaults. Verify the result with `dsh --profile web --dump-config`.

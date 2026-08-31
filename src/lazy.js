@@ -6,7 +6,7 @@ import { buildDocEntries } from './doc-pipeline.js'
 import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
 import { ProjectMemoryStore } from './store.js'
-import { onFileObserved, onFileChanged } from './enhancer.js'
+import { onFileObserved } from './enhancer.js'
 
 const STRONG_MARKERS = ['.git', '.hg', '.svn']
 
@@ -126,7 +126,6 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
         return false
       })
     }
-    onFileChanged(store, rel, filePath, config, root)
     return store.commit((s) => {
       s.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
       s.setEntries(rel, entries)

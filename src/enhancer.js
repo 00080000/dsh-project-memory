@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join } from 'node:path'
 import { createRequire } from 'node:module'
+import { linkEntries } from './link.js'
 
 const require = createRequire(import.meta.url)
 
@@ -9,17 +10,29 @@ let ts = null
 let tsPath = null
 let tsVersion = null
 
+function acceptTsVersion(mod) {
+  if (mod && mod.version && (mod.version.startsWith('6.') || mod.version.startsWith('7.'))) {
+    console.warn(`[dsh-project-memory] TypeScript ${mod.version} 不受支持，回退到 L1 正则。请使用 TS 5.x 获得增强类型。`)
+    return null
+  }
+  return mod
+}
+
 export function initTypeScript(config) {
+  if (config?.enableTypeScript === false) return null
   if (ts) return ts
 
   // 1. 配置指定路径
   if (config?.tsPath) {
     try {
       const req = createRequire(config.tsPath)
-      ts = req(config.tsPath)
-      tsPath = config.tsPath
-      tsVersion = ts.version
-      return ts
+      const mod = acceptTsVersion(req(config.tsPath))
+      if (mod) {
+        ts = mod
+        tsPath = config.tsPath
+        tsVersion = mod.version
+        return ts
+      }
     } catch (e) {
       console.warn(`[dsh-project-memory] tsPath 无效: ${config.tsPath}`)
     }
@@ -28,19 +41,24 @@ export function initTypeScript(config) {
   // 2. 从用户项目 cwd 向上查找 node_modules/typescript
   try {
     const req = createRequire(process.cwd() + '/')
-    ts = req('typescript')
-    tsPath = req.resolve('typescript')
-    tsVersion = ts.version
-    return ts
+    const mod = acceptTsVersion(req('typescript'))
+    if (mod) {
+      ts = mod
+      tsPath = req.resolve('typescript')
+      tsVersion = mod.version
+      return ts
+    }
   } catch {}
 
-  // 3. 全局
+  // 3. 全局（从插件自身位置解析）
   try {
-    const req = createRequire(process.cwd() + '/')
-    ts = req('typescript')
-    tsPath = req.resolve('typescript')
-    tsVersion = ts.version
-    return ts
+    const mod = acceptTsVersion(require('typescript'))
+    if (mod) {
+      ts = mod
+      tsPath = require.resolve('typescript')
+      tsVersion = mod.version
+      return ts
+    }
   } catch {}
 
   ts = null
@@ -74,7 +92,6 @@ const enhanceQueue = []
 let processing = false
 
 function getCacheDirForRoot(root, config) {
-  const base = config.memoryDir || '.dsh-project-memory'
   return join(root, config.memoryDir || '.dsh-project-memory', 'type-cache')
 }
 
@@ -104,7 +121,8 @@ async function saveTypeCache(cacheDir, key, data) {
 
 export function isTypeScriptFile(filePath) {
   const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase()
-  return ext === '.ts' || ext === '.tsx' || ext === '.js' || ext === '.jsx'
+  return ext === '.ts' || ext === '.tsx' || ext === '.js' || ext === '.jsx' ||
+         ext === '.mjs' || ext === '.cjs' || ext === '.mts' || ext === '.cts'
 }
 
 export function deepParseWithTS(filePath, content) {
@@ -234,13 +252,16 @@ export function deepParseWithTS(filePath, content) {
       })
       ts.forEachChild(node, visit)
     } else if (ts.isInterfaceDeclaration(node)) {
+      const members = node.members.map(m => {
+        // Skip index signatures (m.name is undefined for index signatures like [key: string]: T)
+        if (!m.name) return null
+        const type = m.type ? getTypeStr(checker.getTypeAtLocation(m.type)) : 'any'
+        return `${m.name.getText()}: ${type}`
+      }).filter(Boolean).join('; ')
       symbols.push({
         name: node.name.getText(),
         kind: 'interface',
-        typeSig: `{ ${node.members.map(m => {
-          const type = m.type ? getTypeStr(checker.getTypeAtLocation(m.type)) : 'any'
-          return `${m.name.getText()}: ${type}`
-        }).join('; ')} }`,
+        typeSig: `{ ${members} }`,
         line: getLine(node)
       })
     } else if (ts.isTypeAliasDeclaration(node)) {
@@ -266,7 +287,13 @@ export function deepParseWithTS(filePath, content) {
 export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BATCH, config, root) {
   if (!ts) return Promise.resolve()
 
-  const content = readFileSync(filePath, 'utf8')
+  let content
+  try {
+    content = readFileSync(filePath, 'utf8')
+  } catch {
+    // File disappeared between detection and enqueue - skip silently
+    return Promise.resolve()
+  }
   const cacheKey = getCacheKey(content)
 
   // Dedupe by (relPath, contentHash) - if same content, skip; if different, replace
@@ -277,6 +304,7 @@ export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BAT
       // Same content, just update priority if higher
       if (priority < existing.priority) {
         enhanceQueue[existingIdx].priority = priority
+        enhanceQueue.sort((a, b) => a.priority - b.priority)
       }
       return existing.promise
     } else {
@@ -306,7 +334,8 @@ export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BAT
     } catch (err) {
       console.warn(`[dsh-project-memory] enhance failed for ${relPath}: ${err.message}`)
     } finally {
-      const idx = enhanceQueue.findIndex(q => q.relPath === relPath)
+      // Remove only this task's own queue entry (not a newer one for the same relPath)
+      const idx = enhanceQueue.findIndex(q => q.promise === p)
       if (idx >= 0) enhanceQueue.splice(idx, 1)
     }
   })()
@@ -345,29 +374,38 @@ function scheduleProcess() {
 }
 
 function applyEnhancedSymbols(fn, relPath, enhanced) {
-  // fn.files is a plain object, not Map
-  const record = fn.files[relPath]
-  if (!record) return
-  
-  // Merge: keep existing L1 entries, update/add enhanced ones
-  const existingEntries = record.entries || []
-  const enhancedMap = new Map(enhanced.map(s => [`${s.name}#${s.line}`, s]))
-  
+  // Store entries in fn.entries[relPath], not fn.files[relPath].entries
+  const existingEntries = fn.entries[relPath] || []
+  // L1 entries carry title "name (kind)" + sourceLine but no name/line fields
+  const nameOf = e => (e.title || '').replace(/\s*\([^)]*\)\s*$/, '')
+  const enhancedByLine = new Map(enhanced.map(s => [s.line, s]))
+  const existingKeys = new Set(existingEntries.map(e => `${nameOf(e)}#${e.sourceLine}`))
+
+  // Upgrade L1 entries in place only when TS found the same symbol on the same line
   const mergedEntries = existingEntries.map(e => {
-    const key = `${e.title}#${e.sourceLine}` // approximate key
-    return enhancedMap.get(key) ? {
+    const enh = enhancedByLine.get(e.sourceLine)
+    if (!enh || nameOf(e) !== enh.name) return e
+    return {
       ...e,
-      text: enhancedMap.get(key).text,
-      typeSig: enhancedMap.get(key).typeSig,
+      text: `${enh.name}${enh.typeSig} -- ${relPath}:${enh.line}`,
+      typeSig: enh.typeSig,
       enhanced: true
-    } : e
+    }
   })
-  
-  // Add new enhanced entries not in L1
-  const existingKeys = new Set(existingEntries.map(e => `${e.title}#${e.sourceLine}`))
-  const newEntries = enhanced.filter(s => !existingKeys.has(`${s.name}#${s.line}`))
-    .map(s => ({
-      id: `${s.name}#${s.line}`.replace(/[\/:\s]/g, '_'),
+
+  // Add enhanced symbols that L1 missed; keep ids unique even when several
+  // symbols share one line (e.g. one-line class + method)
+  const usedIds = new Set(existingEntries.map(e => e.id))
+  const newEntries = []
+  for (const s of enhanced) {
+    if (existingKeys.has(`${s.name}#${s.line}`)) continue
+    const base = `${relPath.replace(/[\/:\s]/g, '_')}#${s.line}`
+    let id = base
+    if (usedIds.has(id)) id = `${base}-${s.kind}`
+    for (let n = 2; usedIds.has(id); n++) id = `${base}-${s.kind}-${n}`
+    usedIds.add(id)
+    newEntries.push({
+      id,
       sourcePath: relPath,
       sourceLine: s.line,
       type: 'symbol',
@@ -375,10 +413,19 @@ function applyEnhancedSymbols(fn, relPath, enhanced) {
       keywords: [s.name, s.kind],
       text: `${s.name}${s.typeSig} -- ${relPath}:${s.line}`,
       enhanced: true
-    }))
+    })
+  }
 
-  record.entries = [...mergedEntries, ...newEntries]
-  record.enhanced = true
+  // Write to store.entries via setEntries so the shard is marked dirty and persisted
+  fn.setEntries(relPath, [...mergedEntries, ...newEntries])
+
+  // Refresh doc<->symbol links for newly added symbols
+  if (newEntries.length) linkEntries(fn)
+
+  // Also update fn.files metadata
+  if (fn.files[relPath]) {
+    fn.files[relPath].enhanced = true
+  }
 }
 
 export function onFileObserved(store, relPath, filePath, config, root) {
