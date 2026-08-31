@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.3 (2026-08-31)
+
+### 符号层：只存身份牌，不存行为
+- `src/symbols.js` `buildSymbol`：删除 `summary` 废话字段；`text` 不再截断，保存完整声明行（含签名）；返回一行身份牌 `fn(a: A, b: B): R — file.ts:42`；删除冗余 `sig` 字段
+
+### 文档层：答案级摘要 + 自报盲区
+- `src/llm.js` `extractDocEntry`：新增 `blindSpots` 字段（自报盲区，如 `// 未覆盖：部署细节、性能基准、v0.2 前 API`）；Prompt 要求 LLM 返回 `blindSpots`；摘要通过 `summarizeText()` 截断至 300 字符；`blindSpots` 追加在摘要末尾 `// 未覆盖：...`
+- `src/doc-pipeline.js` `buildDocEntries`：新增 `hash` 字段（SHA256 内容哈希，用于更新检测）；新增 `blindSpots` 字段存入分片
+
+### L1 增强正则：泛型、参数/返回类型、重载、接口/类型别名
+- `src/symbols.js` 新增 `extractTypeSignature` / `extractInterfaceOrType` / `extractOverloads`：提取泛型参数、参数类型注解、返回类型注解、重载签名、接口成员、类型别名右侧、变量/常量类型注解
+- 产出直接融入 `buildSymbol` 的 `text` 字段，零依赖、~0.5ms/文件
+
+### 文档检索侧：blindSpots 感知召回
+- `src/tools/query-memory.js`：召回文档条目时，若查询词命中 `blindSpots`，追加警告行提示模型去读原文
+
 ## 0.3.2 (2026-08-31)
 
 ### TS Compiler API 增强器 (Phase 2 L2/L3)
@@ -12,15 +28,6 @@
 - **扩展名支持**：新增 `.mts` `.cts`
 - **文档同步**：README.md / README.zh-CN.md 新增功能介绍与配置表
 - **依赖升级**：cordis 4.0.2、schemastery 3.18.2、dsh-tools/llm 0.1.2-alpha.2
-
-## Unreleased
-
-### 符号层：只存身份牌，不存行为
-- `src/symbols.js` `buildSymbol`：删除 `summary` 废话字段；`text` 不再截断，保存完整声明行（含签名）；返回一行身份牌 `fn(a: A, b: B): R — file.ts:42`；删除冗余 `sig` 字段
-
-### 文档层：答案级摘要 + 自报盲区
-- `src/llm.js` `extractDocEntry`：新增 `blindSpots` 字段（自报盲区，如 `// 未覆盖：部署细节、性能基准、v0.2 前 API`）；Prompt 要求 LLM 返回 `blindSpots`；摘要通过 `summarizeText()` 截断至 300 字符；`blindSpots` 追加在摘要末尾 `// 未覆盖：...`
-- `src/doc-pipeline.js` `buildDocEntries`：新增 `hash` 字段（SHA256 内容哈希，用于更新检测）；新增 `blindSpots` 字段存入分片
 
 ## 0.3.1 (2026-08-30)
 

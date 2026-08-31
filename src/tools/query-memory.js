@@ -66,7 +66,16 @@ export function queryMemoryTool(ctx, config) {
           for (const { entry: e, score } of scored) {
             const absSource = e.sourceLine ? `${toAbs(root, e.sourcePath)}:${e.sourceLine}` : toAbs(root, e.sourcePath)
             const rel = Math.round((score / top) * 100)
-            lines.push(`### ${e.title} (score: ${rel})\n- source: ${absSource}\n- ${e.summary}`)
+            let summaryLine = `- ${e.summary}`
+            if (e.type === 'doc' && e.blindSpots) {
+              const queryTokens = queries.flatMap(q => q.split(/[\s\-_]+/)).map(t => t.toLowerCase()).filter(Boolean)
+              const blindTokens = e.blindSpots.split(/[\s\-\u3000、，,、;；.。]+/).map(t => t.toLowerCase()).filter(Boolean)
+              const hit = queryTokens.some(qt => blindTokens.some(bt => bt.includes(qt) || qt.includes(bt)))
+              if (hit) {
+                summaryLine += `\n- ⚠️ 摘要未覆盖：${e.blindSpots.replace(/^\s*\/\/\s*未覆盖[:：]\s*/, '')}。建议读原文 ${absSource}`
+              }
+            }
+            lines.push(`### ${e.title} (score: ${rel})\n- source: ${absSource}\n${summaryLine}`)
             if (e.type === 'doc' && Array.isArray(e.linkedSymbols) && e.linkedSymbols.length) {
               const refs = e.linkedSymbols.slice(0, 5).map((id) => {
                 const s = symbolById.get(id)
