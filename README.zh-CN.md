@@ -63,7 +63,7 @@
 
 ## 安装
 
-实测覆盖 dsh **0.1.0-rc.7 至 0.1.2-alpha.2**。插件仅依赖通过 peerDependencies 声明的稳定公共 API（`defineTool`、`llm.stream`、`Schema`），保证与后续 rc 版本无需改动即兼容。
+实测覆盖 dsh **0.1.0-rc.7 至 0.1.2-alpha.3**。插件仅依赖通过 peerDependencies 声明的稳定公共 API（`defineTool`、`llm.stream`、`Schema`），保证与后续 rc/alpha 版本无需改动即兼容。
 
 ```bash
 cd dsh-project-memory && dsh plugin --profile web add . -w
