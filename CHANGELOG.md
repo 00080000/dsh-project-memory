@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0 (2026-09-02)
+
+### TaskBridge：跨会话开发任务（取代 v1.2 workflow 方案，v2.5 契约落地）
+
+- **定位**：模型会话内用宿主 `todo_write` 维护的清单 + 实际读过的文件，自动沉淀为跨会话可续接的任务实体——新会话 `list_tasks` → `select_task` 即接回进度与文件
+- **事件订阅（`session/event`，签名 (session, event)）**：`todo/write` → 绑定任务 steps 快照整体覆盖，未绑定会话自动新建任务并绑定；`tool/call`（read/write/edit/read_image，`arguments` 为 JSON 串）→ 绑定任务 files 并集（归一化相对路径、项目外拒绝、上限 100）
+- **标题由模型定**：`select_task(title=任务名)` 先命名再写 todo；自动回退取用户消息最后「：」后的任务段（截断 48 字）；续接可 `select_task(taskId, title)` 改名
+- **工具**：`list_tasks` / `select_task`（taskId 精确、自动解归档；title 完全匹配、多候选返回列表、无则新建）/ `archive_task`
+- **用户命令 `/tasks`**（`ctx.commands` 存在时注册，handler 不经模型）：任务数、标题、步骤进度、涉及文件、当前会话绑定；快捷键无宿主 API 不做
+- **`query_memory`**：新增 `type:'task'` 检索（title/steps/files）；`type:'all'` 结果尾部附一行任务计数提示
+- **存储**：`.dsh-project-memory/tasks.json` + `binding.json`（load 兜底空值、独立于 format v2 布局）；容量随项目体积自适应 `fileCount/20` clamp [5,100]，超限按 lastActiveAt 归档最旧
+- **边界**：不做步骤↔文件映射（todo 无 id、全量替换，语义上不可靠）；不去重（宿主语义）；子代理会话无法可靠判定，接受其自动建档（低频）
+- **环境要求**：自动同步需含 `session/event` 事件与 `todo_write` 的 dsh（0.1.2-alpha.x 实测）；旧宿主 `ctx.on('session/event')` 不触发时降级——任务工具仍可作纯记录使用
+- **测试**：新增 `test/taskbridge.test.mjs`（5 项：持久化往返/容量裁剪/路径归一化/自动建任务+快照覆盖/tool 文件跟踪边界）；既有 166 项测试全绿
+- **文档同步**：README.md / README.zh-CN.md
+
 ## 0.3.4 (2026-09-02)
 
 ### query_memory 性能优化：流式 TF + IDF 缓存

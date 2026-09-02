@@ -9,6 +9,9 @@ import { statsTool } from './tools/stats.js'
 import { WatchManager } from './watch.js'
 import { setupLazyIndexing } from './lazy.js'
 import { initTypeScript } from './enhancer.js'
+import { setupTaskbridge } from './setup/taskbridge.js'
+import { listTasksTool, selectTaskTool, archiveTaskTool } from './tools/task-tools.js'
+import { tasksCommandDefinition } from './commands/tasks.js'
 
 export const name = 'dsh-project-memory'
 export const inject = ['llm', 'tools']
@@ -28,6 +31,9 @@ export const Config = Schema.object({
   watchInterval: Schema.number().default(15),
   tsPath: Schema.string(),
   enableTypeScript: Schema.boolean().default(true),
+  tasklist: Schema.object({
+    enabled: Schema.boolean().default(true),
+  }).default({}),
 })
 
 export function apply(ctx, config) {
@@ -47,6 +53,21 @@ export function apply(ctx, config) {
 
   if (config.lazyIndexing) {
     setupLazyIndexing(ctx, config, watchManager)
+  }
+
+  // TaskBridge：任务实体 + 宿主 todo 同步
+  setupTaskbridge(ctx, config)
+  ctx.tools.register(listTasksTool(config))
+  ctx.tools.register(selectTaskTool(config))
+  ctx.tools.register(archiveTaskTool(config))
+
+  // /tasks 用户命令（宿主 commands 服务存在时注册，feature-detect 降级）
+  try {
+    ctx.inject(['commands'], (commandsCtx) => {
+      commandsCtx.commands.register(tasksCommandDefinition(config))
+    })
+  } catch (err) {
+    console.error(`[dsh-project-memory] /tasks registration skipped: ${err.message}`)
   }
 
   ctx.tools.register(indexDocTool(ctx, config))

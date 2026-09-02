@@ -22,6 +22,7 @@
 - **经验笔记** — 记录问题 → 方案；相似问题覆盖而非重复；笔记仅在检索命中时返回。笔记数量有界：容量随项目规模伸缩（钳制在 100–2000），超限时淘汰最旧的笔记。**覆盖阈值收紧为双向 0.7 重叠**（原 0.6）；**经验 `problem` 字段现参与 CJK 短语加分**，提升长尾问句召回。
 - **流式 TF + IDF 缓存** — 查询路径按存储版本缓存 IDF（词逆频率）；命中时单次流式遍历 20k 条目仅需 ~8 ms（5k 文件） / ~1 ms（1k 文件），零中间对象；写入路径仅 O(1) 版本号递增。
 - **无锁同步事务** — 不采用锁：所有写入（index / watch / remember / forget / watch_repo）统一走同步事务 `store.commit(fn)`，fn 成功后才一次落盘；JS 单线程事件循环保证事务间不交错，`remember`/`forget` 不会被 watch 重索引阻塞排队。多实例并发写入同一项目存储时，得益于 CAS 幂等更新与原子提交，自然具备幂等性，无数据损坏风险。
+- **TaskBridge：跨会话开发任务** — 监听会话内宿主 `todo_write` 维护的任务清单与 `tool/call` 读文件：进度快照（steps）与触碰文件自动同步进跨会话的任务实体。未绑定会话写 todo 时自动建档。新会话通过 `list_tasks` → `select_task`（绑定/改名/解归档）续接；`query_memory` 新增 `type:'task'`，`type:'all'` 结果尾部附任务计数提示。用户侧 `/tasks` 命令展示任务栈、步骤进度、涉及文件与当前会话绑定。标题由模型经 `select_task(title=…)` 命名（回退：取消息最后一个「：」后的任务段）。容量随项目体积自适应（fileCount/20，clamp 5–100）。存储：`.dsh-project-memory/tasks.json` + `binding.json`。自动同步需含会话事件与 `todo_write` 的 dsh（0.1.2-alpha.x 实测）；旧宿主下降级为纯记录。
 - **依赖极简** — 纯 JavaScript；唯一运行时依赖是 `pdfjs-dist`（PDF 文本提取），无需原生构建。
 - **开销可忽略** — 纯进程内操作；冷启动 <100 ms（5k 文件），典型项目查询中位数 2–3 ms（p99 < 7 ms）；瓶颈在 LLM 摘要与 PDF 解析，插件本身不阻塞。
 
@@ -99,6 +100,10 @@ dsh plugin --profile web add /path/to/dsh-project-memory.tgz
 | `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件（mtime + 内容哈希），仅重抽这些文件。监听的项目在插件重启后自动恢复。 |
 | `memory_stats root` | 查看记忆库内容：总量（文件 / 条目 / 经验笔记）、最近索引时间，以及按时间排序的逐文件清单。 |
 | `query_memory query` | 对文档、符号、经验执行 BM25 检索，可选 LLM 查询扩展。返回带相对分数（0-100）、引用与文档→符号链接的排序结果。 |
+| `list_tasks` | 列出本项目任务记录（含归档，带标记）。新会话/续接前先调用。 |
+| `select_task` | 将会话绑定到某任务（此后 todo 清单与读文件同步进该任务）。按 `taskId` 精确绑定，或按 `title` 完全匹配（多个同名返回候选；无则新建）。带 title 可改名；自动解归档。 |
+| `archive_task` | 归档任务（隐藏默认视图、不占容量、停止同步）。`select_task` 可恢复。 |
+| `/tasks`（用户输入，不经模型） | 展示任务栈：标题、步骤进度、涉及文件、当前会话绑定哪套任务。 |
 | `remember problem solution` | 保存经验笔记。相似问题覆盖而非重复。 |
 | `forget id_or_query` | 删除过期经验笔记。 |
 
@@ -213,6 +218,7 @@ v0.2.0 之前创建的库（单文件 `entries.json` / `index.json`）在首次�
 | `maxChunksPerFile` | 40 | 每文档最大块数 |
 | `maxFileSizeMb` | 50 | 大于该值（MB）的文档（含 PDF）/代码文件跳过 |
 | `maxOutputChars` | 8000 | `query_memory` 返回文本上限（字符） |
+| `tasklist.enabled` | true | 启用 TaskBridge 自动同步（由会话 todo 清单与文件读取沉淀任务实体） |
 | `maxPdfPages` | 1000 | 未另行限制时 PDF 的页数上限 |
 | `llmQueryExpansion` | false | BM25 检索前通过 `ctx.llm` 扩展查询（默认关闭，节省 token） |
 | `expansionCount` | 6 | 扩展变体上限 |
@@ -257,7 +263,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test          # 157 tests (v0.3.3)：chunker / symbols / store / tools / BM25 / links / watch / lazy / config / dump / concurrency / restore / size limit
+npm test          # 166 tests (v0.4.0) + TaskBridge 套件（node test/taskbridge.test.mjs，5 项）
 ```
 
 ## 许可证

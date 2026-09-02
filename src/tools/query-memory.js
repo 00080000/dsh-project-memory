@@ -30,8 +30,8 @@ export function queryMemoryTool(ctx, config) {
       },
       type: {
         type: 'string',
-        enum: ['all', 'doc', 'symbol', 'experience'],
-        description: 'Which memory layer to search. Default "all".',
+        enum: ['all', 'doc', 'symbol', 'experience', 'task'],
+        description: 'Which memory layer to search. Default "all". "task" searches task records (title/steps/files).',
       },
       limit: {
         type: 'number',
@@ -100,6 +100,31 @@ export function queryMemoryTool(ctx, config) {
             )
           }
         }
+      }
+
+      // TaskBridge: type:'task' 专门查任务记录；type:'all' 尾部附一行任务计数提示
+      const tasks = store.tasks || []
+      if (type === 'task') {
+        const q = (queries[0] || '').toLowerCase()
+        const matched = tasks
+          .filter((t) => !t.archived && (t.title.toLowerCase().includes(q) || (t.steps || []).some((s) => s.text?.toLowerCase().includes(q)) || (t.files || []).some((f) => f.toLowerCase().includes(q))))
+          .slice(0, limit)
+        if (!matched.length) {
+          return `任务记录: 0 套匹配 "${args.query}"（list_tasks 查看全部，select_task 续做）`
+        }
+        for (const t of matched) {
+          const done = (t.steps || []).filter((s) => s.status === 'completed').length
+          const total = (t.steps || []).length
+          const stepsText = (t.steps || []).length
+            ? (t.steps || []).map((s) => `- [${s.status === 'completed' ? 'x' : s.status === 'in_progress' ? '*' : ' '}] ${s.text}`).join('\n')
+            : '（无步骤）'
+          const files = (t.files || []).slice(0, 8).join(', ')
+          lines.push(`### ${t.title} (${done}/${total} 完成)\n${stepsText}\n- 文件: ${files || '无'}`)
+        }
+        return truncate(lines.join('\n\n'), config.maxOutputChars)
+      }
+      if (type === 'all' && tasks.length) {
+        lines.push(`任务记录: ${tasks.length} 套（list_tasks 查看，select_task 续做）`)
       }
 
       if (!lines.length) {

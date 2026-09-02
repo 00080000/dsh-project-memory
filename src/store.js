@@ -7,6 +7,8 @@ const FORMAT_FILE = 'format.json'
 const INDEX_FILE = 'index.json'
 const ENTRIES_FILE = 'entries.json'
 const EXPERIENCE_FILE = 'experience.json'
+const TASKS_FILE = 'tasks.json'
+const BINDING_FILE = 'binding.json'
 const WATCH_FILE = 'watch.json'
 const SHARDS_DIR = 'shards'
 
@@ -58,10 +60,14 @@ export class ProjectMemoryStore {
     this.files = {}
     this.entries = {}
     this.experience = []
+    this.tasks = []
+    this.binding = {}
     this.watchlist = []
     this._dirtyShards = new Set()
     this._removedShards = new Set()
     this._dirtyExperience = false
+    this._dirtyTasks = false
+    this._dirtyBinding = false
     this._dirtyWatch = false
     this._formatWritten = false
     this._version = 0
@@ -134,6 +140,8 @@ export class ProjectMemoryStore {
       this.entries[shard.relPath] = shard.entries || []
     }
     this.experience = loadJson(path.join(this.dir, EXPERIENCE_FILE), [])
+    this.tasks = loadJson(path.join(this.dir, TASKS_FILE), [])
+    this.binding = loadJson(path.join(this.dir, BINDING_FILE), {})
     this.watchlist = loadJson(path.join(this.dir, WATCH_FILE), [])
     this._formatWritten = existsSafe(path.join(this.dir, FORMAT_FILE))
   }
@@ -186,6 +194,14 @@ export class ProjectMemoryStore {
     if (this._dirtyExperience) {
       writeJsonAtomic(path.join(this.dir, EXPERIENCE_FILE), this.experience)
       this._dirtyExperience = false
+    }
+    if (this._dirtyTasks) {
+      writeJsonAtomic(path.join(this.dir, TASKS_FILE), this.tasks)
+      this._dirtyTasks = false
+    }
+    if (this._dirtyBinding) {
+      writeJsonAtomic(path.join(this.dir, BINDING_FILE), this.binding)
+      this._dirtyBinding = false
     }
     if (this._dirtyWatch) {
       writeJsonAtomic(path.join(this.dir, WATCH_FILE), this.watchlist)
@@ -355,11 +371,83 @@ export class ProjectMemoryStore {
       files: Object.keys(this.files).length,
       entries: this.allEntries().length,
       experience: this.experience.length,
+      tasks: this.tasks.length,
+      tasksActive: this.tasks.filter((t) => !t.archived).length,
+      tasksArchived: this.tasks.filter((t) => t.archived).length,
     }
+  }
+
+  // ---- TaskBridge: task entities + per-session binding ----
+
+  getTasks() {
+    return this.tasks
+  }
+
+  getTask(id) {
+    return this.tasks.find((t) => t.id === id)
+  }
+
+  addTask(task) {
+    this.tasks.push(task)
+    this._dirtyTasks = true
+  }
+
+  updateTask(id, updates) {
+    const task = this.tasks.find((t) => t.id === id)
+    if (!task) return false
+    Object.assign(task, updates, { updatedAt: new Date().toISOString() })
+    this._dirtyTasks = true
+    return true
+  }
+
+  removeTask(id) {
+    const idx = this.tasks.findIndex((t) => t.id === id)
+    if (idx === -1) return false
+    this.tasks.splice(idx, 1)
+    for (const sid of Object.keys(this.binding)) {
+      if (this.binding[sid] === id) delete this.binding[sid]
+    }
+    this._dirtyTasks = true
+    this._dirtyBinding = true
+    return true
+  }
+
+  setBinding(sessionId, taskId) {
+    if (!sessionId) return
+    this.binding[sessionId] = taskId
+    this._dirtyBinding = true
+  }
+
+  getBoundTaskId(sessionId) {
+    return sessionId ? this.binding[sessionId] : undefined
+  }
+
+  removeBinding(sessionId) {
+    if (sessionId && sessionId in this.binding) {
+      delete this.binding[sessionId]
+      this._dirtyBinding = true
+    }
+  }
+
+  /** 每项目任务数上限随项目体积自适应；超限按 lastActiveAt 归档最旧（只统计非归档）。 */
+  pruneTasks() {
+    const fileCount = Object.keys(this.files).length
+    const maxTasks = Math.min(100, Math.max(5, Math.floor(fileCount / 20)))
+    const nonArchived = this.tasks.filter((t) => !t.archived)
+    if (nonArchived.length <= maxTasks) return 0
+    const ts = (t) => new Date(t.lastActiveAt || t.updatedAt || t.createdAt || 0).getTime()
+    const sorted = [...nonArchived].sort((a, b) => ts(a) - ts(b))
+    const toArchive = sorted.slice(0, nonArchived.length - maxTasks)
+    for (const task of toArchive) {
+      task.archived = true
+      this._dirtyTasks = true
+    }
+    return toArchive.length
   }
 
   commit(fn) {
     const result = fn(this)
+    this.pruneTasks()
     this.save()
     return result
   }

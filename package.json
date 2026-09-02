@@ -1,6 +1,6 @@
 {
   "name": "@yolk_vat-y/dsh-project-memory",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "description": "Persistent project memory for dsh agents: index docs (PDF/Markdown/text) and code symbols into a searchable per-workspace store, recall them with cited sources, and keep experience entries (problems -> solutions) searchable on demand.",
   "type": "module",
   "main": "src/index.js",
