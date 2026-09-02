@@ -4,9 +4,9 @@
 
 [![ci](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![npm](https://img.shields.io/npm/v/@yolk_vat-y/dsh-project-memory)](https://www.npmjs.com/package/@yolk_vat-y/dsh-project-memory) [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/00080000/dsh-project-memory) [![Awesome](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
-Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(dsh) agents. **Memorizes** documents (PDF / Markdown / txt) and code symbols into a per-workspace store, refreshes them automatically, and **recalls** them with source citations — documents are cross-linked to the code symbols they reference.
+A persistent **project memory** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) agents. Built for software development: the agent's task list (todo_write) and file reads are continuously consolidated into durable cross-session task records, solving context loss. Documents (PDF/Markdown/txt) and code symbols are indexed into a per-workspace store with doc↔symbol cross-links. Experience notes (problem → solution) are deduplicated automatically. All data stored per-project on disk, survives session compaction, recalls with `path:line` citations for verification. Zero external dependencies (only `pdfjs-dist` for PDF text), no vector DB, no native builds.
 
-> The plugin keeps a compact project **memory** on disk, with every entry pointing to a concrete file and line — the agent can reorient quickly instead of re-reading the whole project.
+> The plugin keeps a compact project **memory** on disk, with every entry pointing to a concrete file and line — the agent can reorient quickly instead of re-reading the whole project. Tasks and experience persist across session compactions and handovers.
 
 ## Features
 

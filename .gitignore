@@ -13,3 +13,4 @@ test/ablation-results.json
 tool-server.mjs
 tool-log.jsonl
 tool-runner.mjs
+pnpm-lock.yaml
