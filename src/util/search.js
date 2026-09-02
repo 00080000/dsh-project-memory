@@ -8,7 +8,7 @@ const SYNONYMS = new Map([
   ['db pool', ['数据库连接池', '连接池']],
 ])
 
-function extractCjkPhrases(text) {
+export function extractCjkPhrases(text) {
   const phrases = []
   let run = ''
   for (const ch of text) {
@@ -135,6 +135,10 @@ export function weightedFieldText(entry) {
   return parts.join(' ')
 }
 
+export function makeSearchText(entry) {
+  return weightedFieldText(entry).toLowerCase()
+}
+
 export function rankEntries(entries, query, limit = 8) {
   const bm25 = buildBm25(entries, weightedFieldText)
   const scored = bm25.score(query)
@@ -182,6 +186,61 @@ export function rankExperienceScored(items, queryOrQueries, limit = 5) {
         if (r.score > merged.get(r.doc.id).score) merged.get(r.doc.id).score = r.score
       } else {
         merged.set(r.doc.id, { item: r.doc, score: r.score })
+      }
+    }
+  }
+  return [...merged.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+}
+
+function countOccurrences(text, token) {
+  if (!token) return 0
+  let count = 0
+  let pos = 0
+  while ((pos = text.indexOf(token, pos)) !== -1) {
+    count++
+    pos += token.length
+  }
+  return count
+}
+
+const STREAM_K1 = 1.2
+const STREAM_B = 0.75
+
+export function rankEntriesStreaming(entries, queries, idf, limit = 8) {
+  if (!queries.length) return entries.slice(0, limit).map((entry) => ({ entry, score: 0 }))
+  const merged = new Map()
+  for (const query of queries) {
+    const { expanded, cjkPhrases } = expandQuery(query)
+    const qTokens = new Set()
+    for (const term of expanded) {
+      for (const tok of tokenizeRaw(term)) qTokens.add(tok)
+    }
+    const queryTokens = [...qTokens]
+    if (!queryTokens.length) continue
+    for (const entry of entries) {
+      const text = entry.searchText || weightedFieldText(entry).toLowerCase()
+      const len = text.length || 1
+      let score = 0
+      for (const t of queryTokens) {
+        const tf = countOccurrences(text, t)
+        if (!tf) continue
+        const idfVal = idf[t] || 1
+        score += idfVal * ((tf * (STREAM_K1 + 1)) / (tf + STREAM_K1 * (1 - STREAM_B + (STREAM_B * len) / 1000)))
+      }
+      for (const phrase of cjkPhrases) {
+        const lowerPhrase = phrase.toLowerCase()
+        if (text.includes(lowerPhrase)) {
+          score *= 1.5
+        }
+      }
+      if (score > 0) {
+        const id = entry.id || entry.sourcePath
+        const existing = merged.get(id)
+        if (!existing || score > existing.score) {
+          merged.set(id, { entry, score })
+        }
       }
     }
   }

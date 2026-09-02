@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.4 (2026-09-02)
+
+### query_memory 性能优化：流式 TF + IDF 缓存
+- **IDF 缓存**：`store._version` + `store._idfCache`，`save()` 时 `version++` 标记失效，查询时版本命中直接复用，无需重建 BM25 索引
+- **预计算 searchText**：`setEntries` 时预计算 `entry.searchText`（标题×5 + keywords + summary + path 的小写拼接），查询时直接复用，避免重复字符串拼接与 `toLowerCase()`
+- **流式打分**：`rankEntriesStreaming` 单次遍历 entries，用 `countOccurrences()` 字符串计数替代完整 `tokenizeRaw` + TF 表构建，零中间对象分配
+- **性能提升**：5k 文件 / 20k 条目场景 `query_memory` 中位数 **187 ms → 9.3 ms**（20x）；1k 文件典型项目 **<1 ms**
+
+### 测试覆盖
+- 新增 `IDF caching & streaming TF` 测试组（7 项）：缓存构建、命中、版本失效、流式打分正确性、空查询、searchText 预计算
+- 新增 `query_memory streaming path` 集成测试（2 项）：端到端首次查询建缓存、二次查询复用缓存
+- 总测试数 157 → 166 全绿
+
 ## 0.3.3 (2026-08-31)
 
 ### 符号层：只存身份牌，不存行为

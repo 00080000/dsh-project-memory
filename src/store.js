@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { rankEntries, rankExperience, tokenize } from './util/search.js'
+import { rankEntries, rankExperience, tokenize, tokenizeRaw, extractCjkPhrases, makeSearchText } from './util/search.js'
 
 const FORMAT_FILE = 'format.json'
 const INDEX_FILE = 'index.json'
@@ -64,6 +64,8 @@ export class ProjectMemoryStore {
     this._dirtyExperience = false
     this._dirtyWatch = false
     this._formatWritten = false
+    this._version = 0
+    this._idfCache = null
   }
 
   load() {
@@ -189,6 +191,40 @@ export class ProjectMemoryStore {
       writeJsonAtomic(path.join(this.dir, WATCH_FILE), this.watchlist)
       this._dirtyWatch = false
     }
+    this._version++
+    this._idfCache = null
+  }
+
+  getIdfCache() {
+    if (this._idfCache && this._idfCache.version === this._version) {
+      return this._idfCache.idf
+    }
+    const idf = this._rebuildIdf()
+    this._idfCache = { version: this._version, idf }
+    return idf
+  }
+
+  _rebuildIdf() {
+    const entries = this.allEntries()
+    const N = entries.length
+    if (N === 0) return {}
+    const df = {}
+    for (const entry of entries) {
+      const text = entry.title || ''
+      const keywords = (entry.keywords || []).join(' ')
+      const summary = entry.summary || ''
+      const combined = `${text} ${text} ${text} ${text} ${text} ${keywords} ${summary}`.toLowerCase()
+      const terms = tokenizeRaw(combined)
+      const seen = new Set(terms)
+      for (const t of seen) {
+        df[t] = (df[t] || 0) + 1
+      }
+    }
+    const idf = {}
+    for (const [t, df_t] of Object.entries(df)) {
+      idf[t] = Math.log(1 + (N - df_t + 0.5) / (df_t + 0.5))
+    }
+    return idf
   }
 
   addWatch(root) {
@@ -219,7 +255,8 @@ export class ProjectMemoryStore {
 
   setEntries(relPath, entries) {
     if (entries.length) {
-      this.entries[relPath] = entries
+      const enriched = entries.map((e) => ({ ...e, searchText: makeSearchText(e) }))
+      this.entries[relPath] = enriched
     } else {
       delete this.entries[relPath]
     }

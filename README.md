@@ -20,6 +20,7 @@ Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/
 - **BM25 memory recall** — ranked search over documents, symbols, and experience notes, with optional LLM query expansion to handle vocabulary mismatch. **CJK-optimized**: precise phrase boost (3+ char phrases ×1.5 score on title/keywords match), synonym table (e.g. 数据库连接池 ↔ 连接池 ↔ DB pool), and CJK-aware word boundaries for doc↔symbol linking.
 - **blindSpots-aware recall** — document summaries carry a `blindSpots` field (what the summary explicitly does NOT cover). When a query hits a blind spot, `query_memory` appends a warning pointing the model to read the source file, preventing hallucination from partial summaries.
 - **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches. The note store is bounded: capacity scales with project size (clamped to 100–2000), and the oldest notes are pruned when the limit is exceeded. **Supersede tightened to bidirectional 0.7 overlap** (was 0.6); **experience `problem` field now participates in CJK phrase boost** for long-tail query recall.
+- **Streaming TF + IDF caching** — query path caches IDF (term inverse frequency) per store version; on cache hit, single-pass streaming scores 20k entries in ~8 ms (5k files) / ~1 ms (1k files) with zero intermediate objects; write path is O(1) version bump.
 - **Lock-free sync transactions** — all writes (index / watch / remember / forget / watch_repo) go through synchronous transactions `store.commit(fn)`; fn succeeds then atomic write; JS single-threaded event loop guarantees no interleaving; `remember`/`forget` never blocked by watch re-indexing.
 - **Minimal dependencies** — pure JavaScript; the only runtime dependency is `pdfjs-dist` (PDF text extraction), no native builds required.
 - **Negligible overhead** — pure in-process operation; cold start <100 ms (5k files), typical project query median 2–3 ms (p99 < 7 ms); bottleneck is LLM summarization and PDF parsing, not the plugin.
@@ -30,16 +31,16 @@ Persistent project memory for [DeepSeek Harness](https://github.com/deepseek-ai/
 
 | Scenario | Scale | Measured |
 |----------|-------|----------|
-| Full cold index | 5,000 files / 20k entries | 318 ms |
-| Cold load | 5,000 files | 70 ms |
-| Hot lazy re-index (single file) | 5k files | median 2.3 ms / max 3.8 ms |
+| Full cold index | 5,000 files / 20k entries | 353 ms |
+| Cold load | 5,000 files | 82 ms |
+| Hot lazy re-index (single file) | 5k files | median 2.3 ms / max 4.0 ms |
+| query_memory (cached) | 5k files / 20k entries | median 9.3 ms / p95 12.6 ms |
+| query_memory (cached) | 1k files / 4k entries | median 1.0 ms / p95 2.0 ms |
 | Full cold index | 10,000 files / 40k entries | 637 ms |
 | Cold load | 10,000 files | 144 ms |
 | Hot lazy re-index (single file) | 10k files | median 4.5 ms / max 10.2 ms |
 
-> Synthetic benchmark: generated code (~8 symbols/file), Node 24, Linux native FS, SSD. Measures pure indexing overhead without LLM calls.
-
-> Synthetic benchmark: generated code (~8 symbols/file), Node 24, Linux file system, SSD. Measures pure indexing overhead without LLM calls.
+> Synthetic benchmark: generated code (~8 symbols/file), Node 24, Linux native FS, SSD. Measures pure indexing overhead without LLM calls. query_memory benchmark uses IDF cache + precomputed searchText; first query after write rebuilds IDF (~150 ms), subsequent queries hit cache.
 
 ### Real Project Storage
 

@@ -291,6 +291,56 @@ console.log('\n== store ==')
   check('stale tmp files cleaned on save', !existsSync(staleTmp))
 }
 
+console.log('\n== IDF caching & streaming TF ==')
+{
+  const cacheDir = mkdtempSync(path.join(tmpdir(), 'pm-idf-cache-'))
+  const cacheMemDir = memoryRootFor(cacheDir, config.memoryDir)
+  const store = new ProjectMemoryStore(cacheMemDir).load()
+
+  // Add test entries
+  store.setEntries('a.md', [
+    { id: '1', type: 'doc', sourcePath: 'a.md', sourceLine: 1, title: 'Database Pool Config', summary: 'How to configure database connection pool', keywords: ['database', 'pool', 'config'], searchText: 'database pool config database pool config database pool config database pool config database pool config pool config how to configure database connection pool a.md' },
+    { id: '2', type: 'doc', sourcePath: 'b.md', sourceLine: 1, title: 'Pool Tuning', summary: 'Tuning connection pool parameters', keywords: ['pool', 'tuning'], searchText: 'pool tuning pool tuning pool tuning pool tuning pool tuning pool tuning tuning connection pool parameters b.md' },
+    { id: '3', type: 'doc', sourcePath: 'c.md', sourceLine: 1, title: 'Other', summary: 'Unrelated', keywords: ['other'], searchText: 'other other other other other other unrelated c.md' },
+  ])
+  store.save()
+
+  // Test IDF cache creation
+  const idf1 = store.getIdfCache()
+  check('IDF cache built on first query', Object.keys(idf1).length > 0 && idf1.pool > 0)
+
+  // Test cache hit (same version)
+  const idf2 = store.getIdfCache()
+  check('IDF cache hit on same version', idf2 === idf1)
+
+  // Test version bump on save invalidates cache
+  store.save()
+  const idf3 = store.getIdfCache()
+  check('save() bumps version and invalidates IDF cache', idf3 !== idf1)
+
+  // Test streaming rank function directly
+  const { rankEntriesStreaming } = await import('../src/util/search.js')
+  const entries = store.allEntries()
+  const queries = ['database pool']
+  const scored = rankEntriesStreaming(entries, queries, idf1, 8)
+  check('rankEntriesStreaming returns scored results', scored.length > 0 && scored[0].entry.id === '1')
+
+  // Test that score decreases with less relevant docs
+  const scored2 = rankEntriesStreaming(entries, ['tuning'], idf1, 8)
+  check('streaming TF ranks tuning higher for b.md', scored2[0]?.entry?.id === '2')
+
+  // Test empty query handling
+  const empty = rankEntriesStreaming(entries, [], idf1, 8)
+  check('empty query returns zero-score entries', empty.length <= 8 && empty.every((r) => r.score === 0))
+
+  // Test searchText precomputation on setEntries
+  const freshStore = new ProjectMemoryStore(memoryRootFor(mkdtempSync(path.join(tmpdir(), 'pm-fresh-')), config.memoryDir)).load()
+  freshStore.setEntries('test.js', [
+    { id: 't1', type: 'symbol', sourcePath: 'test.js', sourceLine: 1, title: 'Test', summary: 'test function', keywords: ['test'], }
+  ])
+  check('setEntries adds searchText to entries', freshStore.entries['test.js'][0].searchText !== undefined)
+}
+
 console.log('\n== experience phrase boost ==')
 {
   const expStore = new ProjectMemoryStore(path.join(mkdtempSync(path.join(tmpdir(), 'pm-exp-phrase-')), 'mem')).load()
@@ -406,6 +456,28 @@ out = await queryTool.execute({ root, query: 'refund' })
 check('recalls code symbol', out.includes('refund') && out.includes('payments.py'))
 out = await queryTool.execute({ root, query: 'pdfjs import' })
 check('recalls experience note', out.includes('pdfjs import fails on Node 24'))
+
+console.log('\n== query_memory streaming path (IDF cache) ==')
+{
+  const streamRoot = mkdtempSync(path.join(tmpdir(), 'pm-stream-'))
+  const streamDocs = path.join(streamRoot, 'docs')
+  const streamSrc = path.join(streamRoot, 'src')
+  mkdirSync(streamDocs, { recursive: true })
+  mkdirSync(streamSrc, { recursive: true })
+  writeFileSync(path.join(streamDocs, 'api.md'), '# API\n\nPayment module fees constraint guide.')
+  writeFileSync(path.join(streamSrc, 'db.js'), 'export function getPool() {}\nexport const POOL_SIZE = 10\n')
+  const streamConfig = { ...config, llmQueryExpansion: false }
+  const streamTool = queryMemoryTool(ctx, streamConfig)
+  const streamRepoTool = indexRepoTool(ctx, streamConfig)
+  // Index first
+  await streamRepoTool.execute({ root: streamRoot })
+  // First query builds IDF cache
+  out = await streamTool.execute({ root: streamRoot, query: 'payment fees' })
+  check('streaming query returns results', out.includes('Payment Module') && out.includes('fees'))
+  // Second query uses cached IDF
+  out = await streamTool.execute({ root: streamRoot, query: 'constraint' })
+  check('cached IDF query returns results', out.includes('Payment Module') && out.toLowerCase().includes('constraint'))
+}
 
 console.log('\n== no-hit introspection & stats tool ==')
 {

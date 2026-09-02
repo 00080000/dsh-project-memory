@@ -3,7 +3,7 @@ import path from 'node:path'
 import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
 import { expandQuery } from '../llm.js'
-import { rankEntriesMergedScored, rankExperienceScored } from '../util/search.js'
+import { rankEntriesMergedScored, rankExperienceScored, rankEntriesStreaming } from '../util/search.js'
 import { truncate } from '../util/text.js'
 
 function toAbs(root, rel) {
@@ -56,10 +56,12 @@ export function queryMemoryTool(ctx, config) {
         if (e.type === 'symbol') symbolById.set(e.id, e)
       }
 
+      const idf = store.getIdfCache()
+
       const lines = []
       if (type === 'all' || type === 'doc' || type === 'symbol') {
         const pool = type === 'all' ? store.allEntries() : store.allEntries().filter((e) => e.type === type)
-        const scored = rankEntriesMergedScored(pool, queries, limit)
+        const scored = rankEntriesStreaming(pool, queries, idf, limit)
         if (scored.length) {
           const top = scored[0].score || 1
           lines.push(`## Memory (${type === 'all' ? 'docs + symbols' : type})`)
