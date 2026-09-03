@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 (2026-09-03)
+
+### TS 6.x 兼容
+
+- **L2/L3 增强器**：验证 TS Compiler API 在 TypeScript 6.0.3 下完全兼容，放开版本限制；`peerDependencies` 与运行时检查同步支持 `^5.0.0 || ^6.0.0`
+- 仅拦截 TS 7.x+（major 版本通常有 breaking changes），警告提示更新为「请使用 TS 5.x/6.x 获得增强类型」
+
 ## 0.4.0 (2026-09-02)
 
 ### TaskBridge：跨会话开发任务（取代 v1.2 workflow 方案，v2.5 契约落地）
@@ -51,7 +58,7 @@
 - **L2 语义增强层**：用户项目安装 `typescript`（`npm i -D typescript`）后，插件自动激活，利用 TS Compiler API 推导返回类型、实例化泛型、提取接口与类型别名、丰富箭头函数签名
 - **L3 磁盘缓存层**：增强结果按文件内容 SHA256 哈希缓存至 `.dsh-project-memory/type-cache/<hash>.json`，冷启动毫秒级复用，跨会话持久化
 - **三级优先级队列**：P0 ACTIVE（`fs/observed` 读文件瞬间）> P1 RECENT（`watch` 变更后）> P2 BATCH（`index_repo` 批量）> P3 BACKLOG（启动补全历史），`setImmediate` 每任务后让出事件循环
-- **零配置、零感知**：装 TS 重启 dsh 即可；无 TS 或 `enableTypeScript: false` 时优雅回退 L1 正则；TS 6.x/7.x 检测到警告并回退 L1
+- **零配置、零感知**：装 TS 重启 dsh 即可；无 TS 或 `enableTypeScript: false` 时优雅回退 L1 正则；TS 7.x 检测到警告并回退 L1
 - **解析策略**：单文件 `createProgram`（快 10x），`createRequire(import.meta.url)` 兼容 ESM，解析优先级：配置 `tsPath` → 项目 cwd 向上 `node_modules/typescript` → 插件自身 `node_modules`
 - **新增配置**：`tsPath`（可选指定 TS 路径）、`enableTypeScript`（默认 true，设 false 彻底禁用）
 - **扩展名支持**：新增 `.mts` `.cts`

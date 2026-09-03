@@ -11,8 +11,8 @@ let tsPath = null
 let tsVersion = null
 
 function acceptTsVersion(mod) {
-  if (mod && mod.version && (mod.version.startsWith('6.') || mod.version.startsWith('7.'))) {
-    console.warn(`[dsh-project-memory] TypeScript ${mod.version} 不受支持，回退到 L1 正则。请使用 TS 5.x 获得增强类型。`)
+  if (mod && mod.version && mod.version.startsWith('7.')) {
+    console.warn(`[dsh-project-memory] TypeScript ${mod.version} 不受支持，回退到 L1 正则。请使用 TS 5.x/6.x 获得增强类型。`)
     return null
   }
   return mod
