@@ -571,7 +571,7 @@ function TaskPanelEntry({ ctx }) {
 	return /* @__PURE__ */ jsx(TaskPanel, { ctx });
 }
 //#endregion
-//#region src/client/index.ts
+//#region src/client/client.ts
 /**
 * dsh-project-memory Client Entry
 * Registers Task Panel in conversation.overlay slot for floating panel
@@ -615,4 +615,4 @@ function apply(ctx) {
 //#endregion
 export { REQUIRED_PRIMITIVES, apply, missingPrimitives, name };
 
-//# sourceMappingURL=index.js.map
+//# sourceMappingURL=client.js.map

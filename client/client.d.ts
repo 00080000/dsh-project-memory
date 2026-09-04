@@ -1,4 +1,4 @@
-//#region src/client/index.d.ts
+//#region src/client/client.d.ts
 /**
  * Required primitives that may not exist on older hosts.
  * If missing, we skip registration gracefully.
@@ -24,4 +24,4 @@ declare const name = "dsh-project-memory";
 declare function apply(ctx: TaskPanelHostContext): void;
 //#endregion
 export { REQUIRED_PRIMITIVES, apply, missingPrimitives, name };
-//# sourceMappingURL=index.d.ts.map
+//# sourceMappingURL=client.d.ts.map

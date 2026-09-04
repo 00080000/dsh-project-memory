@@ -10,7 +10,7 @@ export default defineConfig([
     external: ['pdfjs-dist'],
   },
   {
-    entry: 'src/client/index.ts',
+    entry: 'src/client/client.ts',
     format: ['esm'],
     dts: { resolve: true },
     outDir: 'client',

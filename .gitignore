@@ -1,6 +1,7 @@
 node_modules/
 .dsh-project-memory/
 dist/
+lib/
 .env
 *.log
 *.tgz
