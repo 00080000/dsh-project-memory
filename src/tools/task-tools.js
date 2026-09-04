@@ -2,7 +2,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { truncate } from '../util/text.js'
-import { genTaskId, hash8 } from '../setup/taskbridge.js'
+import { genTaskId, hash8, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
 import { createHash } from 'node:crypto'
 
 function sessionIdOf(exec) {
@@ -127,6 +127,11 @@ export function selectTaskTool(config) {
       task.lastActiveAt = now
       if (sid) task.lastSessionId = sid
       store.save()
+
+      // 反向接管：绑定成功后，把任务步骤推成宿主 todo/write（dsh 清单跟随我们的任务）
+      if (shouldAdoptToHost(config)) {
+        adoptStepsToSession(exec?.agent?.session || exec?.ctx?.session, task)
+      }
 
       const card = {
         taskId: task.id,

@@ -1,0 +1,27 @@
+/* /tasks、/task 命令节点渲染：极简单行，替换原大段文本+JSON。 */
+.row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 20px;
+  padding: 2px 0;
+  color: var(--dsw-alias-label-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row[data-variant='ok'] {
+  color: var(--dsw-alias-label-secondary);
+}
+.row[data-variant='error'] {
+  color: var(--dsw-alias-state-warn-label, #b7791f);
+}
+.row[data-variant='running'] {
+  color: var(--dsw-alias-label-dimmed);
+}
+.icon {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+}
