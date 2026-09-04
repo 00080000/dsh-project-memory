@@ -1,0 +1,401 @@
+/* Task Panel Styles - 使用 dsh design tokens */
+
+.panel {
+  position: fixed;
+  z-index: 1000;
+  width: 420px;
+  max-height: 70vh;
+  max-height: 560px;
+  background: var(--dsw-surface-elevated);
+  border: 1px solid var(--dsw-border-subtle);
+  border-radius: 12px;
+  box-shadow: var(--dsw-shadow-elevated);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-family: var(--dsw-font-family);
+  color: var(--dsw-text-primary);
+  user-select: none;
+}
+
+.dragHandle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+  cursor: grab;
+  background: transparent;
+}
+
+.dragHandle:active {
+  cursor: grabbing;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--dsw-border-subtle);
+  background: var(--dsw-surface);
+  flex-shrink: 0;
+}
+
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.headerIcon {
+  color: var(--dsw-accent);
+  flex-shrink: 0;
+}
+
+.headerTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--dsw-text-primary);
+}
+
+.badge {
+  font-size: 11px;
+  color: var(--dsw-text-muted);
+  background: var(--dsw-surface-hover);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.headerRight {
+  display: flex;
+  gap: 4px;
+}
+
+.taskList {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.taskItem {
+  background: var(--dsw-surface);
+  border: 1px solid var(--dsw-border-subtle);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.taskHeader {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  gap: 12px;
+}
+
+.taskHeader:hover {
+  background: var(--dsw-surface-hover);
+}
+
+.taskMain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.boundBadge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--dsw-accent);
+  background: var(--dsw-accent-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.taskTitle {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--dsw-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.taskProgress {
+  font-size: 11px;
+  color: var(--dsw-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.taskActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.progressRing {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.progressBg {
+  stroke: var(--dsw-border-subtle);
+}
+
+.progressFg {
+  stroke: var(--dsw-accent);
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: center;
+  transition: stroke-dasharray 300ms ease-out;
+}
+
+.chevron {
+  color: var(--dsw-text-muted);
+  flex-shrink: 0;
+}
+
+.taskExpanded {
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--dsw-border-subtle);
+  animation: expandIn 200ms ease-out;
+}
+
+@keyframes expandIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.section {
+  margin-top: 12px;
+}
+
+.sectionLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--dsw-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.stepsList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stepRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--dsw-surface);
+  border-radius: 6px;
+  border: 1px solid var(--dsw-border-subtle);
+}
+
+.stepIconCompleted {
+  color: var(--dsw-success);
+}
+
+.stepIconProgress {
+  color: var(--dsw-accent);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.stepIconPending {
+  color: var(--dsw-text-muted);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.stepContent {
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--dsw-text-primary);
+}
+
+.stepCompleted {
+  text-decoration: line-through;
+  color: var(--dsw-text-muted);
+}
+
+.section {
+  margin-top: 12px;
+}
+
+.filesList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fileRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--dsw-surface);
+  border: 1px solid var(--dsw-border-subtle);
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--dsw-text-primary);
+  font-size: 12px;
+  width: 100%;
+}
+
+.fileRow:hover {
+  background: var(--dsw-surface-hover);
+  border-color: var(--dsw-accent);
+}
+
+.fileIcon {
+  color: var(--dsw-text-muted);
+  flex-shrink: 0;
+}
+
+.filePath {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+
+.fileLine {
+  font-size: 11px;
+  color: var(--dsw-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.moreFiles {
+  font-size: 11px;
+  color: var(--dsw-text-muted);
+  padding: 4px 8px;
+}
+
+.taskFooter {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--dsw-border-subtle);
+}
+
+.taskFooter button {
+  flex: 1;
+}
+
+.emptyState {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px;
+  text-align: center;
+  color: var(--dsw-text-muted);
+}
+
+.emptyIcon {
+  color: var(--dsw-text-muted);
+  opacity: 0.5;
+  margin-bottom: 16px;
+}
+
+.emptyState p {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--dsw-text-secondary);
+}
+
+.emptyDesc {
+  font-size: 11px !important;
+  max-width: 280px;
+}
+
+.miniBar {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--dsw-surface-elevated);
+  border: 1px solid var(--dsw-border-subtle);
+  border-radius: 8px;
+  box-shadow: var(--dsw-shadow-elevated);
+  cursor: pointer;
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+
+.miniBar:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--dsw-shadow-dragging);
+}
+
+.miniIcon {
+  color: var(--dsw-accent);
+}
+
+.miniTitle {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--dsw-text-primary);
+  white-space: nowrap;
+}
+
+.miniChevron {
+  color: var(--dsw-text-muted);
+}
+
+/* 响应式：窄屏下面板宽度自适应 */
+@media (max-width: 600px) {
+  .panel {
+    width: calc(100vw - 32px);
+    max-width: 420px;
+  }
+}
+
+/* 减少动画模式 */
+@media (prefers-reduced-motion: reduce) {
+  .taskExpanded,
+  .progressFg,
+  .miniBar,
+  .stepIconProgress {
+    animation: none !important;
+    transition: none !important;
+  }
+}
