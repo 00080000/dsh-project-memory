@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { basename, dirname, resolve as resolvePath } from 'node:path'
 import { transform } from 'lightningcss'
 
-const id = 'dsh-project-memory'
+const id = '@yolk_vat-y/dsh-project-memory'
 
 const CLIENT_EXTERNALS = [
   'react',

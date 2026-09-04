@@ -5,9 +5,10 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
 import { ProjectMemoryStore } from '../src/store.js'
-import { normalizeRelFile, genTaskId, onSessionEvent } from '../src/setup/taskbridge.js'
+import { normalizeRelFile, genTaskId, onSessionEvent, adoptStepsToSession, shouldAdoptToHost } from '../src/setup/taskbridge.js'
 
 const config = { memoryDir: '.dsh-project-memory', tasklist: { enabled: true } }
+const configNoAdopt = { memoryDir: '.dsh-project-memory', tasklist: { enabled: true, syncHostOnAdopt: false } }
 let passed = 0
 const ok = (name) => { passed++; console.log('  ok', name) }
 
@@ -94,6 +95,65 @@ const ev = (type, data) => ({ type, data })
   onSessionEvent(config, sess('sessC', root), ev('tool/call', { name: 'read', arguments: JSON.stringify({ file_path: 'a.ts' }) }), meta)
   assert.equal(store.getTasks().length, 1)
   ok('tool/call：绑定后 files 并集；项目外/非文件工具/未绑定均忽略')
+}
+
+// --- 6. 反向接管 adoptStepsToSession：有步骤→推宿主 todo/write；无步骤/关开关→不推 ---
+{
+  const calls = []
+  const session = { id: 'sessD', header: { cwd: '/tmp' }, append: (type, data) => calls.push([type, data]) }
+  const task = {
+    id: 'tsk_1', title: 'T',
+    steps: [
+      { content: '读现状', status: 'in_progress' },
+      { content: '实现退避', status: 'pending' },
+      { content: '收敛验证', status: 'completed' },
+    ],
+  }
+  assert.equal(adoptStepsToSession(session, task), true)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][0], 'todo/write')
+  assert.deepEqual(calls[0][1].todos, [
+    { content: '读现状', status: 'in_progress' },
+    { content: '实现退避', status: 'pending' },
+    { content: '收敛验证', status: 'completed' },
+  ])
+  ok('adopt：有步骤 → append 一次 todo/write（内容/状态透传）')
+
+  const calls2 = []
+  const session2 = { id: 'sessE', header: { cwd: '/tmp' }, append: (type, data) => calls2.push([type, data]) }
+  assert.equal(adoptStepsToSession(session2, { id: 'tsk_2', steps: null }), false)
+  assert.equal(calls2.length, 0)
+  ok('adopt：任务无步骤 → 不推送（不清空宿主清单）')
+
+  assert.equal(adoptStepsToSession({ id: 'sessF', header: { cwd: '/tmp' } }, task), false)
+  assert.equal(shouldAdoptToHost(config), true)
+  assert.equal(shouldAdoptToHost(configNoAdopt), false)
+  assert.equal(shouldAdoptToHost({}), true)
+  ok('adopt：缺 append 句柄 → 安全跳过；开关默认开、可关')
+
+  // 字符串形态步骤归一化
+  const calls3 = []
+  const session3 = { id: 'sessG', header: { cwd: '/tmp' }, append: (type, data) => calls3.push([type, data]) }
+  adoptStepsToSession(session3, { id: 'tsk_3', steps: ['只写文案'] })
+  assert.deepEqual(calls3[0][1].todos, [{ content: '只写文案', status: 'pending' }])
+  ok('adopt：字符串步骤归一化为 pending TodoItem')
+}
+
+// --- 7. 空 todo/write = 清空：未绑定不建档；绑定则清空 steps ---
+{
+  const { root, store } = newProject()
+  const meta = new Map()
+  onSessionEvent(config, sess('sessH', root), ev('todo/write', { todos: [] }), meta)
+  assert.equal(store.getTasks().length, 0)
+  ok('空 todo/write 且未绑定 → 不自动建档（unbind 清清单不会产生垃圾任务）')
+
+  const s2 = sess('sessI', root)
+  onSessionEvent(config, s2, ev('todo/write', { todos: [{ content: '做一步', status: 'pending' }, { content: '再做一步', status: 'pending' }] }), meta)
+  const tid = store.getBoundTaskId('sessI')
+  assert.ok(tid)
+  onSessionEvent(config, s2, ev('todo/write', { todos: [] }), meta)
+  assert.equal(store.getTask(tid).steps.length, 0)
+  ok('绑定会话收到空 todo/write → steps 清空、任务保留')
 }
 
 console.log(`\nTaskBridge tests: ${passed} passed`)

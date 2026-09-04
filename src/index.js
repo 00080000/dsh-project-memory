@@ -12,6 +12,7 @@ import { initTypeScript } from './enhancer.js'
 import { setupTaskbridge } from './setup/taskbridge.js'
 import { listTasksTool, selectTaskTool, archiveTaskTool } from './tools/task-tools.js'
 import { tasksCommandDefinition } from './commands/tasks.js'
+import { taskCommandDefinition } from './commands/task-actions.js'
 
 export const name = 'dsh-project-memory'
 export const inject = ['llm', 'tools']
@@ -33,6 +34,8 @@ export const Config = Schema.object({
   enableTypeScript: Schema.boolean().default(true),
   tasklist: Schema.object({
     enabled: Schema.boolean().default(true),
+    // 任务成为会话绑定（select_task / /task switch）时，把任务步骤推成宿主 todo/write 快照
+    syncHostOnAdopt: Schema.boolean().default(true),
   }).default({}),
 })
 
@@ -61,13 +64,14 @@ export function apply(ctx, config) {
   ctx.tools.register(selectTaskTool(config))
   ctx.tools.register(archiveTaskTool(config))
 
-  // /tasks 用户命令（宿主 commands 服务存在时注册，feature-detect 降级）
+  // /tasks、/task 用户命令（宿主 commands 服务存在时注册，feature-detect 降级）
   try {
     ctx.inject(['commands'], (commandsCtx) => {
       commandsCtx.commands.register(tasksCommandDefinition(config))
+      commandsCtx.commands.register(taskCommandDefinition(config))
     })
   } catch (err) {
-    console.error(`[dsh-project-memory] /tasks registration skipped: ${err.message}`)
+    console.error(`[dsh-project-memory] /tasks,/task registration skipped: ${err.message}`)
   }
 
   ctx.tools.register(indexDocTool(ctx, config))

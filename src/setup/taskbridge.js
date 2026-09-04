@@ -59,6 +59,32 @@ export function firstTextOf(content) {
   return ''
 }
 
+const TODO_STATUSES = new Set(['pending', 'in_progress', 'completed'])
+
+/**
+ * 反向接管：任务成为某会话绑定后，把任务步骤推成宿主 todo/write 快照，
+ * 让 dsh 渲染的任务清单（UI/投影）变成我们这套任务的步骤。
+ * 规则：任务没有步骤时不推（避免误清模型手头正在用的宿主清单）。
+ * @returns {boolean} 是否实际推送
+ */
+export function adoptStepsToSession(session, task) {
+  if (!session || typeof session.append !== 'function') return false
+  const steps = Array.isArray(task?.steps) ? task.steps : null
+  if (!steps || steps.length === 0) return false
+  const todos = steps.map((s) => {
+    const raw = typeof s === 'string' ? s : s?.content ?? s?.text ?? ''
+    const status = TODO_STATUSES.has(s?.status) ? s.status : 'pending'
+    return { content: String(raw), status }
+  })
+  session.append('todo/write', { todos })
+  return true
+}
+
+/** 是否开启“任务接管时同步宿主清单”（config.tasklist.syncHostOnAdopt 默认 true）。 */
+export function shouldAdoptToHost(config) {
+  return config?.tasklist?.syncHostOnAdopt !== false
+}
+
 function pickTitle(meta, todos) {
   const firstHuman = meta?.firstHuman?.trim()
   if (firstHuman) {
@@ -100,6 +126,8 @@ export function onSessionEvent(config, session, event, meta) {
     store.commit((s) => {
       let task = s.getBoundTaskId(sessionId) ? s.getTask(s.getBoundTaskId(sessionId)) : null
       if (!task || task.archived) {
+        // 空写 = 清空清单：不自动建档（避免"未绑定会话清空 todo"误建垃圾任务）
+        if (todos.length === 0) return
         const title = pickTitle(meta.get(sessionId), todos)
         task = {
           id: genTaskId(root, title),
