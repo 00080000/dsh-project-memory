@@ -4,12 +4,20 @@
 
 [![ci](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![npm](https://img.shields.io/npm/v/@yolk_vat-y/dsh-project-memory)](https://www.npmjs.com/package/@yolk_vat-y/dsh-project-memory) [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/00080000/dsh-project-memory) [![Awesome](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
-A persistent **project memory** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) agents. Built for software development: the agent's task list (todo_write) and file reads are continuously consolidated into durable cross-session task records, solving context loss. Documents (PDF/Markdown/txt) and code symbols are indexed into a per-workspace store with doc↔symbol cross-links. Experience notes (problem → solution) are deduplicated automatically. All data stored per-project on disk, survives session compaction, recalls with `path:line` citations for verification. Zero external dependencies (only `pdfjs-dist` for PDF text), no vector DB, no native builds.
+
+A persistent **project development memory** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) agents. Built specifically for project development, natively integrated with dsh's task system: task lists and files read during a session are automatically persisted as cross-session task records, with tasks ↔ files linked — workflows can be switched and resumed, no need to re-scope the whole project, solving context loss. Documents (PDF/Markdown/txt) and code symbols are stored separately per workspace; documents are automatically cross-linked to the code symbols they mention. Experience notes (problem → solution) are automatically deduplicated, preventing repeated mistakes. All data is stored per project on disk, survives session compaction and handover; recalls include `path:line` citations for source verification. Only one dependency, no vector DB, no native builds.
 
 > The plugin keeps a compact project **memory** on disk, with every entry pointing to a concrete file and line — the agent can reorient quickly instead of re-reading the whole project. Tasks and experience persist across session compactions and handovers.
 
+![alt text](docs/images/image.png)
+The workflow panel is collapsible, automatically adapts to dsh and theme plugin styles, and offers four card style options to switch between.
+![alt text](docs/images/image-4.png)
 ## Features
 
+- **TaskBridge: cross-session development tasks** — the plugin watches each session's live todo list (`todo_write` events) and file reads (`tool/call`): progress snapshots (`steps`) and touched files sync into durable per-project task entities. An unbound session that writes a todo auto-creates a task. New sessions continue by `list_tasks` → `select_task` (bind / rename / unarchive); `query_memory` gains `type: 'task'` and appends a task-count hint to `type: 'all'` results. The user-side `/tasks` command shows the task stack, step progress, involved files, and the current session binding. Titles are chosen by the model via `select_task(title=…)` (fallback: the part of your message after the last colon). Capacity is project-size adaptive (`fileCount/20`, clamped 5–100). Storage: `.dsh-project-memory/tasks.json` + `binding.json`. Auto-sync requires a dsh build with session events + `todo_write` (verified on 0.1.2-alpha.x); on older hosts the task tools still work as a plain record list.
+- **Task Panel (v0.4.2+): Floating task panel in dsh web** — built on the real dsh web 0.1.2-rc.1 client plugin contract (cordis inject + apply, registered into host `shell.overlay` slot). Draggable cards show steps/files (click to copy path); collapse to a draggable mini-bar; hide completely (summon with `/task` / `/tasks`). Render errors have error boundaries — panel crash no longer takes down the host.
+- **Bidirectional task-list sync (host ↔ plugin tasks, v0.4.2+)** — `select_task` or `/task switch` pushes task steps to host `todo/write` so dsh's rendered task list mirrors the plugin's task entity. Config `tasklist.syncHostOnAdopt` (default on) to toggle. Empty `todo/write` means "clear": unbound session clears list without creating junk tasks; bound session clears that task's steps (task retained). Panel edits (step text/status) = write back bound task + push host list, sharing one code path with model `todo_write`. `/task` subcommands: `switch`, `archive`, `unbind`, `rename`, `todos` (invoked by panel buttons/clicks, not the model); `unbind` also clears the host task list above the input.
+- **Panel editing & themes (v0.4.2+)** — bound cards: double-click title/step for inline edit (input auto-grows); click step status icon to cycle todo→in-progress→done. Non-bound cards read-only. **Four visual themes** (click folder icon left of title, persisted locally): Native / Glassmorphism / Brutalist / Terminal monospace — only material, geometry, typeface, density change; colors always use dsw alias tokens, follow host light/dark and theme plugins.
 - **Document memorization** — PDF, Markdown, and plain text files are chunked and summarized by the LLM; each entry carries a `path:line` citation back to the source.
 - **Code symbol memory** — function, class, and method names with full type signatures (generics, parameters, return types, overloads) are extracted by a dependency-free source scanner (string/comment masking, multi-line signature joining, indentation-aware Python, class-method context), without LLM token usage.
 - **L1 Enhanced Regex** — zero-dep regex scanner now extracts generics, parameter/return types, overloads, interfaces, and type aliases for all supported languages, producing one-line identity signatures `fn(a: A, b: B): R — file.ts:42`.
@@ -22,7 +30,6 @@ A persistent **project memory** for [DeepSeek Harness](https://github.com/deepse
 - **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches. The note store is bounded: capacity scales with project size (clamped to 100–2000), and the oldest notes are pruned when the limit is exceeded. **Supersede tightened to bidirectional 0.7 overlap** (was 0.6); **experience `problem` field now participates in CJK phrase boost** for long-tail query recall.
 - **Streaming TF + IDF caching** — query path caches IDF (term inverse frequency) per store version; on cache hit, single-pass streaming scores 20k entries in ~8 ms (5k files) / ~1 ms (1k files) with zero intermediate objects; write path is O(1) version bump.
 - **Lock-free sync transactions** — all writes (index / watch / remember / forget / watch_repo) go through synchronous transactions `store.commit(fn)`; fn succeeds then atomic write; JS single-threaded event loop guarantees no interleaving; `remember`/`forget` never blocked by watch re-indexing.
-- **TaskBridge: cross-session development tasks** — the plugin watches each session's live todo list (`todo_write` events) and file reads (`tool/call`): progress snapshots (`steps`) and touched files sync into durable per-project task entities. An unbound session that writes a todo auto-creates a task. New sessions continue by `list_tasks` → `select_task` (bind / rename / unarchive); `query_memory` gains `type: 'task'` and appends a task-count hint to `type: 'all'` results. The user-side `/tasks` command shows the task stack, step progress, involved files, and the current session binding. Titles are chosen by the model via `select_task(title=…)` (fallback: the part of your message after the last colon). Capacity is project-size adaptive (`fileCount/20`, clamped 5–100). Storage: `.dsh-project-memory/tasks.json` + `binding.json`. Auto-sync requires a dsh build with session events + `todo_write` (verified on 0.1.2-alpha.x); on older hosts the task tools still work as a plain record list.
 - **Minimal dependencies** — pure JavaScript; the only runtime dependency is `pdfjs-dist` (PDF text extraction), no native builds required.
 - **Negligible overhead** — pure in-process operation; cold start <100 ms (5k files), typical project query median 2–3 ms (p99 < 7 ms); bottleneck is LLM summarization and PDF parsing, not the plugin.
 
@@ -104,6 +111,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | `select_task` | Bind the session to a task so its todo list and file reads sync into it. Exact `taskId`, or exact `title` (multiple matches return candidates; no match creates a new task). Pass `title` with `taskId` to rename. Auto-unarchives. |
 | `archive_task` | Archive a task (hide from default views, exclude from capacity, stop syncing). `select_task` restores it. |
 | `/tasks` (typed by the user, not the model) | Shows the task stack: title, step progress, involved files, and which task the current session is bound to. |
+| `/task` (typed by the user, not the model) | Task panel subcommands: `switch` / `archive` / `unbind` / `rename` / `todos`. Invoked by panel buttons/clicks; does not go through the model. |
 | `remember problem solution` | Save an experience note. Similar problems supersede instead of duplicating. |
 | `forget id_or_query` | Delete stale experience notes. |
 
@@ -113,9 +121,11 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 .dsh-project-memory/
   format.json      layout marker (v2, sharded)
   shards/          one self-describing JSON per indexed source file
-                   ({ relPath, record, entries }) — writes touch only dirty shards
+                    ({ relPath, record, entries }) — writes touch only dirty shards
   experience.json  problem → solution notes (retrieval-only)
   watch.json       watched roots
+  tasks.json       TaskBridge task entities (cross-session)
+  binding.json     current session ↔ task binding
 ```
 
 Stores created before v0.2.0 (single `entries.json` / `index.json`) migrate automatically and idempotently on first load. Within one dsh process, all tool calls share a single in-memory store per project, so hot-path indexing writes only the shard that changed.
@@ -219,6 +229,7 @@ These are deliberate scope choices.
 | `maxFileSizeMb` | 50 | skip documents (incl. PDF) and code files larger than this (MB) |
 | `maxOutputChars` | 8000 | cap for `query_memory` result text (chars) |
 | `tasklist.enabled` | true | enable TaskBridge auto-sync (task entities from the session todo list and file reads) |
+| `tasklist.syncHostOnAdopt` | true | when `select_task`/`/task switch` binds a task, push its steps to host `todo/write` so dsh's task list mirrors the task |
 | `maxPdfPages` | 1000 | PDF page cap when pages are not otherwise limited |
 | `llmQueryExpansion` | false | expand queries via `ctx.llm` before BM25 (off by default to save tokens) |
 | `expansionCount` | 6 | max expansion variants |
@@ -263,7 +274,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test          # 166 tests (v0.4.0) + TaskBridge suite (node test/taskbridge.test.mjs, 5)
+npm test          # 177 tests (166 core + 11 TaskBridge)
 ```
 
 ## License
