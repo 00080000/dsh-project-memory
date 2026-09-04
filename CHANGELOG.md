@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3 (2026-09-04)
+### 修复
+- **CI 依赖解析**：锁定 devDependencies 版本，新增 package-lock.json
+
 ## 0.4.2 (2026-09-04)
 
 ### Task Panel 重构：真实 dsh web 契约 + 任务清单双向同步
