@@ -16,6 +16,13 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 
 - **TaskBridge: cross-session development tasks** — the plugin watches each session's live todo list (`todo_write` events) and file reads (`tool/call`): progress snapshots (`steps`) and touched files sync into durable per-project task entities. An unbound session that writes a todo auto-creates a task. New sessions continue by `list_tasks` → `select_task` (bind / rename / unarchive); `query_memory` gains `type: 'task'` and appends a task-count hint to `type: 'all'` results. The user-side `/tasks` command shows the task stack, step progress, involved files, and the current session binding. Titles are chosen by the model via `select_task(title=…)` (fallback: the part of your message after the last colon). Capacity is project-size adaptive (`fileCount/20`, clamped 5–100). Storage: `.dsh-project-memory/tasks.json` + `binding.json`. Auto-sync requires a dsh build with session events + `todo_write` (verified on 0.1.2-alpha.x); on older hosts the task tools still work as a plain record list.
 - **Task Panel (v0.4.2+): Floating task panel in dsh web** — built on the real dsh web 0.1.2-rc.1 client plugin contract (cordis inject + apply, registered into host `shell.overlay` slot). Draggable cards show steps/files (click to copy path); collapse to a draggable mini-bar; hide completely (summon with `/task` / `/tasks`). Render errors have error boundaries — panel crash no longer takes down the host.
+- **Task Panel Behavior** —
+  - **Default hidden**: panel does not show on dsh web startup
+  - **Explicit summon**: type `/tasks` or `/task` (list form) to open; model calls `show_task_panel` tool to open
+  - **Session switch**: only syncs data in background, **does not** auto-open panel
+  - **Page refresh**: panel stays hidden (UI state `closed` not persisted)
+  - **Manual close**: click × to fully hide (no mini-bar); reopen requires explicit summon
+  - **Collapse to mini-bar**: click ↓ to keep draggable top bar; click bar to expand
 - **Bidirectional task-list sync (host ↔ plugin tasks, v0.4.2+)** — `select_task` or `/task switch` pushes task steps to host `todo/write` so dsh's rendered task list mirrors the plugin's task entity. Config `tasklist.syncHostOnAdopt` (default on) to toggle. Empty `todo/write` means "clear": unbound session clears list without creating junk tasks; bound session clears that task's steps (task retained). Panel edits (step text/status) = write back bound task + push host list, sharing one code path with model `todo_write`. `/task` subcommands: `switch`, `archive`, `unbind`, `rename`, `todos` (invoked by panel buttons/clicks, not the model); `unbind` also clears the host task list above the input.
 - **Panel editing & themes (v0.4.2+)** — bound cards: double-click title/step for inline edit (input auto-grows); click step status icon to cycle todo→in-progress→done. Non-bound cards read-only. **Four visual themes** (click folder icon left of title, persisted locally): Native / Glassmorphism / Brutalist / Terminal monospace — only material, geometry, typeface, density change; colors always use dsw alias tokens, follow host light/dark and theme plugins.
 - **Document memorization** — PDF, Markdown, and plain text files are chunked and summarized by the LLM; each entry carries a `path:line` citation back to the source.
@@ -110,6 +117,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | `list_tasks` | List task records for the project (archived marked). Call first in a new session before continuing work. |
 | `select_task` | Bind the session to a task so its todo list and file reads sync into it. Exact `taskId`, or exact `title` (multiple matches return candidates; no match creates a new task). Pass `title` with `taskId` to rename. Auto-unarchives. |
 | `archive_task` | Archive a task (hide from default views, exclude from capacity, stop syncing). `select_task` restores it. |
+| `show_task_panel` | Show the task panel in the UI. Call when the user asks to see the task list or when you want to display the panel. |
 | `/tasks` (typed by the user, not the model) | Shows the task stack: title, step progress, involved files, and which task the current session is bound to. |
 | `/task` (typed by the user, not the model) | Task panel subcommands: `switch` / `archive` / `unbind` / `rename` / `todos`. Invoked by panel buttons/clicks; does not go through the model. |
 | `remember problem solution` | Save an experience note. Similar problems supersede instead of duplicating. |
@@ -134,6 +142,16 @@ Stores created before v0.2.0 (single `entries.json` / `index.json`) migrate auto
 - **Cross-linking** — after indexing, doc summaries are matched against symbol names; matches are attached to the doc entry as `references` and surfaced by `query_memory`.
 - **Query expansion** — when `llmQueryExpansion` is on, `query_memory` asks `ctx.llm` to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and merges BM25 scores across variants; when off, queries never touch the LLM. Cross-language recall (a Chinese question hitting English content) comes from index time instead: doc keywords are required to cover the document's own language AND English, and doc↔symbol links surface English symbol names from Chinese hits.
 - **Consistency** — the fact layer follows the codebase (hash re-extract / remove-on-delete); the experience layer is retrieval-only with supersede and `forget`. Store writes are serialized per memory directory; the lock is in-process, so avoid running multiple dsh instances against the same project store concurrently.
+
+## Architecture (Task Panel)
+
+```
+TaskPanel (Container)
+├── task-data-store  (server data, cross-tab sync via BroadcastChannel)
+├── task-ui-store    (local UI state, localStorage)
+├── task-hooks       (useTaskDrag, useTaskEdit)
+└── TaskComponents   (MiniBar, TaskCard — presentational only)
+```
 
 ## Design tradeoffs
 

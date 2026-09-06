@@ -25,15 +25,17 @@ function withTaskSnapshot(config, cwd, sid, store, note) {
   return { kind: 'success', text: `${human}\n\n\`\`\`json\n${payload}\n\`\`\`` }
 }
 
-export function taskCommandDefinition(config) {
+export function taskCommandDefinition(config, ctx) {
   return {
     name: 'task',
     description: '任务面板动作：/task switch <任务id> 切换绑定，/task archive <任务id> 归档，/task unbind 取消当前任务绑定',
     input: { hint: 'switch|archive <任务id> | unbind' },
     handler: (invocation) => {
       try {
-        const cwd = invocation?.agent?.session?.header?.cwd
-        const sid = invocation?.agent?.session?.id
+        const agent = invocation?.agent
+        const sid = agent?.id || agent?.session?.id
+        const session = sid && agent?.ctx ? agent.ctx.sessions?.get(sid) : (agent?.session || null)
+        const cwd = session?.header?.cwd || agent?.session?.header?.cwd
         const raw = (invocation?.rawInput || '').trim()
         const [verb, taskId, ...rest] = raw.split(/\s+/)
 
@@ -56,8 +58,8 @@ export function taskCommandDefinition(config) {
           if (sid) store.removeBinding(sid)
           store.save()
           // 推空 todo/write 清掉输入框上方的宿主任务清单（TaskBridge 空写=清空，不再自动建档）
-          if (invocation?.agent?.session && typeof invocation.agent.session.append === 'function') {
-            invocation.agent.session.append('todo/write', { todos: [] })
+          if (session && typeof session.append === 'function') {
+            session.append('todo/write', { todos: [] })
           }
           const note = '已取消当前任务绑定并清空会话任务清单（需要时可让模型重新规划）'
           return withTaskSnapshot(config, cwd, sid, store, note)
@@ -116,7 +118,7 @@ export function taskCommandDefinition(config) {
           task.lastActiveAt = task.updatedAt
           store.save()
           if (shouldAdoptToHost(config)) {
-            adoptStepsToSession(invocation?.agent?.session, task)
+            adoptStepsToSession(session, task)
           }
           const note = `已更新「${task.title}」步骤（${norm.length} 条）`
           return withTaskSnapshot(config, cwd, sid, store, note)
@@ -134,7 +136,7 @@ export function taskCommandDefinition(config) {
           store.save()
           // 反向接管：切换成功后把任务步骤推成宿主 todo/write（dsh 清单跟随）
           if (shouldAdoptToHost(config)) {
-            adoptStepsToSession(invocation?.agent?.session, task)
+            adoptStepsToSession(session, task)
           }
           const note = `已切换绑定: ${describeTask(task)}${sid ? '' : '（拿不到会话 id，未持久绑定）'}`
           return withTaskSnapshot(config, cwd, sid, store, note)

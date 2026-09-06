@@ -69,14 +69,16 @@ export function renderTaskSnapshot(config, cwd, sid) {
   return { kind: 'success', text: `${humanText}\n\n\`\`\`json\n${payload}\n\`\`\`` }
 }
 
-export function tasksCommandDefinition(config) {
+export function tasksCommandDefinition(config, ctx) {
   return {
     name: 'tasks',
     description: '查看本项目的任务清单（几套任务、进度、涉及文件、当前绑定）',
     handler: (invocation) => {
       try {
-        const cwd = invocation?.agent?.session?.header?.cwd
-        const sid = invocation?.agent?.session?.id
+        const agent = invocation?.agent
+        const sid = agent?.id || agent?.session?.id
+        const session = sid && agent?.ctx ? agent.ctx.sessions?.get(sid) : (agent?.session || null)
+        const cwd = session?.header?.cwd || agent?.session?.header?.cwd
         return renderTaskSnapshot(config, cwd, sid)
       } catch (err) {
         return { kind: 'error', text: `[tasks] ${err?.message || err}` }

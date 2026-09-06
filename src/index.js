@@ -10,7 +10,7 @@ import { WatchManager } from './watch.js'
 import { setupLazyIndexing } from './lazy.js'
 import { initTypeScript } from './enhancer.js'
 import { setupTaskbridge } from './setup/taskbridge.js'
-import { listTasksTool, selectTaskTool, archiveTaskTool } from './tools/task-tools.js'
+import { listTasksTool, selectTaskTool, archiveTaskTool, showTaskPanelTool } from './tools/task-tools.js'
 import { tasksCommandDefinition } from './commands/tasks.js'
 import { taskCommandDefinition } from './commands/task-actions.js'
 
@@ -63,12 +63,13 @@ export function apply(ctx, config) {
   ctx.tools.register(listTasksTool(config))
   ctx.tools.register(selectTaskTool(config))
   ctx.tools.register(archiveTaskTool(config))
+  ctx.tools.register(showTaskPanelTool(config))
 
   // /tasks、/task 用户命令（宿主 commands 服务存在时注册，feature-detect 降级）
   try {
     ctx.inject(['commands'], (commandsCtx) => {
-      commandsCtx.commands.register(tasksCommandDefinition(config))
-      commandsCtx.commands.register(taskCommandDefinition(config))
+      commandsCtx.commands.register(tasksCommandDefinition(config, ctx))
+      commandsCtx.commands.register(taskCommandDefinition(config, ctx))
     })
   } catch (err) {
     console.error(`[dsh-project-memory] /tasks,/task registration skipped: ${err.message}`)
