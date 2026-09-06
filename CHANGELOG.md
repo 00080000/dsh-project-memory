@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.4.4 (2026-09-06)
+
+### Added
+- **Task data/UI store separation**: `task-data-store.ts` (server-synced data + BroadcastChannel cross-tab sync) and `task-ui-store.ts` (local UI state + localStorage) completely decoupled
+- **Explicit panel open**: panel only opens on `/tasks`, `/task` (list form), or model calling `show_task_panel` tool
+- **Cross-tab data sync**: BroadcastChannel broadcasts only tasks/archivedCount; UI state (closed/minimized/position) stays per-tab
+- **Model tool `show_task_panel`**: model can now explicitly summon the panel via event bus
+
+### Fixed
+- **Default hidden on startup**: `closed: true` forced, ignores localStorage residue
+- **No auto-open on page refresh**: UI `closed` state not persisted, refresh = hidden
+- **No auto-open on session switch**: only data syncs in background; panel closed = no `/tasks` command
+- **MiniBar collapse crash**: fixed `useTaskDrag` hook called in event handler (React hooks rule violation) causing "任务面板（点击重试）" error boundary
+- **Command node side effects**: `TaskCommandNode` now only syncs data; list commands explicitly call `open()`
+
+### Refactored
+- Removed legacy `task-store.ts` (232 lines)
+- Split into 4 single-responsibility modules:
+  - `task-data-store.ts` — server data + cross-tab sync (~180 lines)
+  - `task-ui-store.ts` — local UI state + localStorage (~120 lines)
+  - `task-hooks.ts` — `useTaskDrag` / `useTaskEdit` (~150 lines)
+  - `TaskComponents.tsx` — `MiniBar` / `TaskCard` presentational (~330 lines)
+- `TaskPanel.tsx` slimmed to container (~380 lines): data fetching, command bridging, event listening
+
+### Tested
+- Unit tests: 166 passed
+- TaskBridge integration: 11 passed
+- Client build: ✅
+- Full harness build: ✅
+
 ## 0.4.3 (2026-09-04)
 ### 修复
 - **CI 依赖解析**：锁定 devDependencies 版本，新增 package-lock.json

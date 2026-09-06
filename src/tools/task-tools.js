@@ -145,6 +145,25 @@ export function selectTaskTool(config) {
   })
 }
 
+export function showTaskPanelTool(config) {
+  return defineTool({
+    name: 'show_task_panel',
+    description:
+      'Show the task panel in the UI. Call this when the user asks to see the task list or when you want to display the task panel to the user.',
+    parameters: {},
+    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
+    async execute(_args, exec) {
+      const ctx = exec?.ctx
+      if (!ctx) return '无法获取上下文'
+      // 通过 BroadcastChannel 通知客户端打开面板
+      try {
+        ctx.events?.emit?.('dsh:task-panel:show', {})
+      } catch { /* ignore */ }
+      return '已请求打开任务面板。'
+    },
+  })
+}
+
 export function archiveTaskTool(config) {
   return defineTool({
     name: 'archive_task',

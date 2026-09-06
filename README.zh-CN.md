@@ -17,6 +17,13 @@
 
 - **TaskBridge：跨会话开发任务** — 监听会话内宿主 `todo_write` 维护的任务清单与 `tool/call` 读文件：进度快照（steps）与触碰文件自动同步进跨会话的任务实体。未绑定会话写 todo 时自动建档。新会话通过 `list_tasks` → `select_task`（绑定/改名/解归档）续接；`query_memory` 新增 `type:'task'`，`type:'all'` 结果尾部附任务计数提示。用户侧 `/tasks` 命令展示任务栈、步骤进度、涉及文件与当前会话绑定。标题由模型经 `select_task(title=…)` 命名（回退：取消息最后一个「：」后的任务段）。容量随项目体积自适应（fileCount/20，clamp 5–100）。存储：`.dsh-project-memory/tasks.json` + `binding.json`。自动同步需含会话事件与 `todo_write` 的 dsh（0.1.2-alpha.x 实测）；旧宿主下降级为纯记录。
 - **Task Panel（v0.4.2+）：dsh web 浮动任务面板** — 按 dsh web 0.1.2-rc.1 真实 client 插件契约落地（cordis inject + apply，注册进宿主 `shell.overlay` 槽）。卡片可拖拽、展开查看步骤/文件（点击复制路径）；折叠为可拖拽顶部迷你条；可彻底隐藏（输入 `/task` / `/tasks` 唤起）。渲染错误有边界兜底，面板崩溃不再拖垮宿主。
+- **任务面板行为** —
+  - **默认隐藏**：dsh web 启动时面板不显示
+  - **显式唤起**：输入 `/tasks` 或 `/task`（列表形式）打开；模型调用 `show_task_panel` 工具打开
+  - **会话切换**：仅后台同步数据，**不**自动打开面板
+  - **刷新页面**：面板保持隐藏（UI 状态 `closed` 不持久化）
+  - **手动关闭**：点击 × 彻底隐藏（无迷你条）；重新打开需显式唤起
+  - **折叠迷你条**：点击 ↓ 仅保留顶部可拖拽迷你条；点击迷你条展开
 - **任务清单双向同步（宿主 ↔ 插件任务，v0.4.2+）** — `select_task` 或 `/task switch` 绑定任务时，将任务 steps 推给宿主 `todo/write`，dsh 渲染的任务清单跟随我们维护的任务实体。配置 `tasklist.syncHostOnAdopt`（默认开）可关。空 `todo/write` 语义定为「清空」：未绑定会话清空清单不再误建垃圾任务；已绑定则清空该任务 steps（任务保留）。面板编辑（改步骤文本/状态）= 写回绑定任务并推宿主清单，与模型 `todo_write` 共用一套逻辑，无第二套同步。`/task` 新增 `switch` / `archive` / `unbind` / `rename` / `todos`（均由面板按钮/双击调用，不经模型）；`unbind` 同时清掉输入框上方的宿主任务清单。
 - **面板编辑与风格（v0.4.2+）** — 绑定卡片：双击标题/步骤行内编辑（输入框随内容自动增高），点步骤状态图标循环 待办→进行中→已完成；非绑定卡片只读。**四档外观风格**（点标题左侧文件夹图标切换，本地记忆）：原生 / 玻璃拟态 / 粗野主义 / 终端等宽——只改材质、几何、字型与密度，颜色始终取自 dsw 别名令牌，跟随宿主明暗与主题插件。
 - **文档记忆** — PDF、Markdown、纯文本按块切分并由 LLM 生成摘要，每条记忆携带 `路径:行号` 引用回源文件。
@@ -111,6 +118,7 @@ dsh plugin --profile web add /path/to/dsh-project-memory.tgz
 | `list_tasks` | 列出本项目任务记录（含归档，带标记）。新会话/续接前先调用。 |
 | `select_task` | 将会话绑定到某任务（此后 todo 清单与读文件同步进该任务）。按 `taskId` 精确绑定，或按 `title` 完全匹配（多个同名返回候选；无则新建）。带 title 可改名；自动解归档。 |
 | `archive_task` | 归档任务（隐藏默认视图、不占容量、停止同步）。`select_task` 可恢复。 |
+| `show_task_panel` | 在 UI 中打开任务面板。用户要求查看任务列表或你想展示面板时调用。 |
 | `/tasks`（用户输入，不经模型） | 展示任务栈：标题、步骤进度、涉及文件、当前会话绑定哪套任务。 |
 | `/task`（用户输入，不经模型） | 任务面板子命令：`switch` / `archive` / `unbind` / `rename` / `todos`（面板按钮/点击触发，不经模型）。 |
 | `remember problem solution` | 保存经验笔记。相似问题覆盖而非重复。 |
@@ -136,9 +144,17 @@ v0.2.0 之前创建的库（单文件 `entries.json` / `index.json`）在首次�
 - **查询扩展** — `llmQueryExpansion` 开启时，`query_memory` 让 `ctx.llm` 将查询改写为多个变体（同义词、中英、符号名猜测），再跨变体合并 BM25 分数；关闭时查询完全不碰 LLM。跨语种召回（中文问题命中英文内容）改由索引时承担：文档 keywords 要求同时覆盖文档语言与英文，doc↔symbol 链接也会从中文命中带出英文符号名。
 - **一致性** — 事实层跟随代码库（哈希重抽 / 删除即移除）；经验层仅检索，配合覆盖与 `forget` 机制。每个记忆目录的写入走同步事务 `store.commit(fn)`：fn 内完成校验与变更、成功后才原子落盘，单进程内天然串行；请避免多个 dsh 实例同时写同一项目存储。
 
-## 设计取舍
+## 架构（任务面板）
 
-以下是刻意的范围选择。
+```
+TaskPanel (Container)
+├── task-data-store  (服务端数据，跨标签页 BroadcastChannel 同步)
+├── task-ui-store    (本地 UI 状态，localStorage)
+├── task-hooks       (useTaskDrag, useTaskEdit)
+└── TaskComponents   (MiniBar, TaskCard — 纯展示组件)
+```
+
+## 设计取舍
 
 ### 1. 同步无锁事务，而非异步锁
 

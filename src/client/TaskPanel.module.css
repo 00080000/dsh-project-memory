@@ -2,8 +2,7 @@
    全部用 dsh 别名 token（--dsw-alias-*），亮暗随宿主主题自动切换；
    轻边框 + 轻阴影，无玻璃拟态、无默认 AI 渐变，与 dsh 控件同语言。 */
 
-.panel,
-.pill {
+.panel {
   /* shell.overlay 默认 click-through，条目自身开启 pointer-events */
   pointer-events: auto;
   font-family: inherit;
@@ -102,17 +101,6 @@
   background: var(--dsw-alias-button-primary-fill, #3a6ef5);
   white-space: nowrap;
 }
-.softBadge {
-  flex: none;
-  font-size: 10px;
-  line-height: 14px;
-  padding: 0 6px;
-  border-radius: 7px;
-  color: var(--dsw-alias-label-tertiary);
-  background: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, 0.12));
-  white-space: nowrap;
-}
-
 .notice {
   margin: 8px 12px 0;
   padding: 6px 10px;
@@ -238,6 +226,9 @@
 .cardBody {
   border-top: 1px solid var(--dsw-alias-border-l1, rgba(127, 127, 127, 0.14));
   padding: 8px 10px 10px;
+  max-height: 300px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .section { margin-bottom: 8px; }
 .section:last-child { margin-bottom: 0; }
@@ -355,17 +346,9 @@
   margin-top: 8px;
 }
 
-.spinning svg {
-  animation: spin 0.9s linear infinite;
-}
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .panel { animation: none; }
-  .trackFill, .card, .pill { transition: none; }
-  .spinning svg { animation-duration: 2.4s; }
+  .trackFill, .card { transition: none; }
 }
 
 /* —— 折叠迷你条（顶部可拖拽） —— */
@@ -403,11 +386,6 @@
 .taskList {
   flex: 1 1 auto;
   min-height: 0;
-}
-.cardBody {
-  max-height: 300px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
 }
 .card {
   display: flex;
@@ -452,9 +430,12 @@
   outline: 1px dashed var(--dsw-alias-border-l3, rgba(127,127,127,.4));
   outline-offset: 1px;
 }
+/* 行内编辑框（步骤/标题共用，单行 input） */
 .stepInput {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
+  width: auto;
+  box-sizing: border-box;
   font: inherit;
   font-size: 12px;
   line-height: 20px;
@@ -465,19 +446,12 @@
   padding: 0 5px;
 }
 
-/* —— 行内编辑框（自动长高） —— */
-.stepInput {
-  display: block;
-  flex: 1 1 auto;
-  min-width: 0;
-  width: auto;
-  resize: none;
-  overflow: hidden;
-  box-sizing: border-box;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 20px;
+/* —— 步骤拖拽重排：源行半透明 —— */
+.stepDragging {
+  opacity: 0.3;
+  background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.08));
 }
+
 .cardTitleEditable {
   cursor: text;
   border-radius: 3px;
@@ -562,3 +536,92 @@
 .headerTitle { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .headerRight { min-width: 0; }
 .counts { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; margin-left: auto; }
+
+/* —— 长按拖拽浮动卡片 —— */
+.dragGhost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+  transform: translate(-50%, -50%);
+  transition: left 0.05s ease, top 0.05s ease;
+}
+.dragGhostCard {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base, #fff));
+  border: 1px solid var(--dsw-alias-border-l3, rgba(127,127,127,.35));
+  box-shadow: 0 8px 24px rgba(0,0,0,.18), 0 2px 8px rgba(0,0,0,.1);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+  white-space: nowrap;
+  max-width: 280px;
+  transform: scale(0.9);
+}
+.dragGhostContent {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
+}
+.dragGhostClose {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.dragGhostClose:hover {
+  opacity: 1;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12));
+}
+
+/* —— 步骤列表插入指示线 —— */
+.dropTargetBefore { position: relative; }
+.dropTargetBefore::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -1px;
+  height: 2px;
+  background: var(--dsw-alias-button-primary-fill, #3a6ef5);
+  border-radius: 1px;
+  box-shadow: 0 0 4px var(--dsw-alias-button-primary-fill, #3a6ef5);
+  animation: dropPulse 0.8s ease-in-out infinite;
+}
+.dropTargetAfter { position: relative; }
+.dropTargetAfter::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--dsw-alias-button-primary-fill, #3a6ef5);
+  border-radius: 1px;
+  box-shadow: 0 0 4px var(--dsw-alias-button-primary-fill, #3a6ef5);
+  animation: dropPulse 0.8s ease-in-out infinite;
+}
+@keyframes dropPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+/* —— header 防重叠 —— */

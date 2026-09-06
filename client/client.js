@@ -25,6 +25,9 @@ window.__ModuleLoader__.load({
 			"style.mono": "终端",
 			"panel.syncing": "同步中…",
 			"panel.sync-failed": "同步失败",
+			"panel.hints-on": "显示提示信息",
+			"panel.hints-off": "隐藏提示信息",
+			"drag.cancel": "取消拖拽",
 			"panel.empty": "暂无任务",
 			"panel.empty-desc": "让模型开始工作并维护 todo 清单后会自动建档",
 			"panel.no-session": "还没有会话",
@@ -62,6 +65,9 @@ window.__ModuleLoader__.load({
 			"style.mono": "Mono",
 			"panel.syncing": "Syncing…",
 			"panel.sync-failed": "Sync failed",
+			"panel.hints-on": "Show hints",
+			"panel.hints-off": "Hide hints",
+			"drag.cancel": "Cancel drag",
 			"panel.empty": "No Tasks",
 			"panel.empty-desc": "Tasks are created automatically when the model maintains a todo list",
 			"panel.no-session": "No session yet",
@@ -93,13 +99,12 @@ window.__ModuleLoader__.load({
 			};
 		}
 		//#endregion
-		//#region src/client/task-store.ts
+		//#region src/client/task-data-store.ts
 		/**
-		* Task Panel Client Store（自包含：不依赖宿主 store 包）
-		* Reactive store for task list, bound task, UI state.
-		* 数据由 /tasks、/task 命令执行结果（JSON 载荷）写入，localStorage 持久化 UI 状态。
+		* Task Data Store — 仅管服务端同步的数据（tasks、boundTaskId、archivedCount）
+		* - 单向数据流：命令执行结果 → setTasks → 广播给其他标签页
+		* - 无 UI 状态，无 localStorage，纯内存 + BroadcastChannel 同步
 		*/
-		/** 从命令输出文本中解析任务快照 JSON（支持 fenced ```json 块或尾部对象）。 */
 		function parseTaskPayloadText(text) {
 			if (!text) return null;
 			let jsonBlock = null;
@@ -122,7 +127,87 @@ window.__ModuleLoader__.load({
 				return null;
 			}
 		}
-		const STORAGE_KEY = "dsh-pm-task-panel-state";
+		const SYNC_CHANNEL = typeof window !== "undefined" ? new BroadcastChannel("dsh-pm-tasks-data") : null;
+		let dataState = {
+			tasks: [],
+			boundTaskId: null,
+			archivedCount: 0,
+			lastUpdate: 0
+		};
+		const dataListeners = /* @__PURE__ */ new Set();
+		function setDataState(next) {
+			dataState = next;
+			for (const listener of dataListeners) listener();
+		}
+		function broadcastDataUpdate(tasks, archivedCount) {
+			if (!SYNC_CHANNEL) return;
+			SYNC_CHANNEL.postMessage({
+				type: "PROJECT_TASKS_UPDATED",
+				payload: {
+					tasks,
+					archivedCount
+				}
+			});
+		}
+		if (SYNC_CHANNEL) SYNC_CHANNEL.onmessage = (event) => {
+			const msg = event.data;
+			if (msg?.type === "PROJECT_TASKS_UPDATED" && msg.payload) {
+				const { tasks, archivedCount } = msg.payload;
+				setDataState((prev) => ({
+					...prev,
+					tasks: tasks || [],
+					archivedCount: archivedCount ?? 0,
+					lastUpdate: Date.now()
+				}));
+			}
+		};
+		const taskDataStore = {
+			subscribe(listener) {
+				dataListeners.add(listener);
+				return () => {
+					dataListeners.delete(listener);
+				};
+			},
+			getSnapshot() {
+				return dataState;
+			},
+			actions: {
+				setTasks(payload) {
+					const nextTasks = payload.tasks || [];
+					const nextArchived = payload.archivedCount ?? 0;
+					setDataState({
+						tasks: nextTasks,
+						boundTaskId: payload.boundTaskId ?? null,
+						archivedCount: nextArchived,
+						lastUpdate: Date.now()
+					});
+					broadcastDataUpdate(nextTasks, nextArchived);
+				},
+				reset() {
+					setDataState({
+						tasks: [],
+						boundTaskId: null,
+						archivedCount: 0,
+						lastUpdate: 0
+					});
+				}
+			}
+		};
+		function useTaskData() {
+			return (0, react.useSyncExternalStore)(taskDataStore.subscribe, taskDataStore.getSnapshot, taskDataStore.getSnapshot);
+		}
+		function useTaskDataActions() {
+			return taskDataStore.actions;
+		}
+		//#endregion
+		//#region src/client/task-ui-store.ts
+		/**
+		* Task UI Store — 仅管本地 UI 状态（closed、minimized、position、expandedIds、theme）
+		* - 持久化到 localStorage（key: dsh-pm-task-panel-ui）
+		* - 不跨标签页同步（每个标签页独立）
+		* - 启动/刷新强制 closed: true，面板默认不显示
+		*/
+		const STORAGE_KEY = "dsh-pm-task-panel-ui";
 		function defaultPosition() {
 			if (typeof window !== "undefined") return {
 				x: Math.max(16, window.innerWidth - 408),
@@ -133,138 +218,276 @@ window.__ModuleLoader__.load({
 				y: 0
 			};
 		}
-		function getDefaultState() {
+		/**
+		* 启动时的初始状态：
+		* - closed 恒为 true（不读取 localStorage 的 closed），刷新后面板隐藏；
+		* - 其余（展开项/位置/主题）可恢复上次会话偏好，minimized 默认折叠成迷你条。
+		*/
+		function getDefaultUIState() {
 			if (typeof window !== "undefined") try {
 				const saved = localStorage.getItem(STORAGE_KEY);
 				if (saved) {
 					const parsed = JSON.parse(saved);
 					return {
-						tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
-						boundTaskId: parsed.boundTaskId ?? null,
-						archivedCount: parsed.archivedCount ?? 0,
 						expandedTaskIds: Array.isArray(parsed.expandedTaskIds) ? parsed.expandedTaskIds : [],
 						panelPosition: parsed.panelPosition ?? defaultPosition(),
 						minimized: parsed.minimized !== false,
-						theme: typeof parsed.theme === "string" ? parsed.theme : "native",
-						closed: !!parsed.closed,
-						lastUpdate: parsed.lastUpdate ?? 0
+						closed: true,
+						theme: typeof parsed.theme === "string" ? parsed.theme : "native"
 					};
 				}
 			} catch {}
 			return {
-				tasks: [],
-				boundTaskId: null,
-				archivedCount: 0,
 				expandedTaskIds: [],
 				panelPosition: defaultPosition(),
 				minimized: true,
-				closed: false,
-				theme: "native",
-				lastUpdate: 0
+				closed: true,
+				theme: "native"
 			};
 		}
-		function persist(state) {
+		function persistUI(state) {
 			if (typeof window === "undefined") return;
 			try {
 				localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 			} catch {}
 		}
-		let state = getDefaultState();
-		const listeners = /* @__PURE__ */ new Set();
-		function setState(next) {
-			state = next;
-			persist(next);
-			for (const listener of listeners) listener();
+		let uiState = getDefaultUIState();
+		const uiListeners = /* @__PURE__ */ new Set();
+		function setUIState(next) {
+			uiState = next;
+			persistUI(next);
+			for (const listener of uiListeners) listener();
 		}
-		const taskStore = {
+		const taskUIStore = {
 			subscribe(listener) {
-				listeners.add(listener);
+				uiListeners.add(listener);
 				return () => {
-					listeners.delete(listener);
+					uiListeners.delete(listener);
 				};
 			},
 			getSnapshot() {
-				return state;
+				return uiState;
 			},
 			actions: {
-				setTasks(payload) {
-					setState({
-						...state,
-						tasks: payload.tasks || [],
-						boundTaskId: payload.boundTaskId ?? null,
-						archivedCount: payload.archivedCount ?? 0,
-						lastUpdate: Date.now()
-					});
-				},
 				toggleTaskExpanded(taskId) {
-					const prev = state;
+					const prev = uiState;
 					const ids = prev.expandedTaskIds.includes(taskId) ? prev.expandedTaskIds.filter((id) => id !== taskId) : [...prev.expandedTaskIds, taskId];
-					setState({
+					setUIState({
 						...prev,
 						expandedTaskIds: ids
 					});
 				},
-				expandAll() {
-					const prev = state;
-					setState({
-						...prev,
-						expandedTaskIds: prev.tasks.map((t) => t.id)
+				expandAll(taskIds) {
+					setUIState({
+						...uiState,
+						expandedTaskIds: taskIds
 					});
 				},
 				setPanelPosition(pos) {
-					setState({
-						...state,
+					setUIState({
+						...uiState,
 						panelPosition: pos
 					});
 				},
-				/** 展开面板（同时解除隐藏/折叠）。 */
 				open() {
-					setState({
-						...state,
+					setUIState({
+						...uiState,
 						minimized: false,
 						closed: false
 					});
 				},
-				/** 折叠成顶部迷你条（仍可见）。 */
 				minimize() {
-					setState({
-						...state,
+					setUIState({
+						...uiState,
 						minimized: true,
 						closed: false
 					});
 				},
-				/** 彻底隐藏（无迷你条）；仅能通过 /task、/tasks 或重新加载唤起。 */
 				close() {
-					setState({
-						...state,
+					setUIState({
+						...uiState,
 						minimized: true,
 						closed: true
 					});
 				},
 				setTheme(theme) {
-					setState({
-						...state,
+					setUIState({
+						...uiState,
 						theme
 					});
 				},
-				setMinimized(minimized) {
-					setState({
-						...state,
-						minimized,
-						closed: minimized ? state.closed : false
-					});
-				},
 				reset() {
-					setState(getDefaultState());
+					setUIState(getDefaultUIState());
 				}
 			}
 		};
-		function useTaskStore() {
-			return (0, react.useSyncExternalStore)(taskStore.subscribe, taskStore.getSnapshot, taskStore.getSnapshot);
+		function useTaskUI() {
+			return (0, react.useSyncExternalStore)(taskUIStore.subscribe, taskUIStore.getSnapshot, taskUIStore.getSnapshot);
+		}
+		function useTaskUIActions() {
+			return taskUIStore.actions;
+		}
+		//#endregion
+		//#region src/client/task-hooks.ts
+		/**
+		* Task Panel Hooks — 步骤拖拽交互逻辑（useTaskDrag）。
+		* 只依赖 react + task-data-store 类型，不碰数据/UI store。
+		*/
+		/**
+		* useTaskDrag — 步骤拖拽重排（绑定任务内，同一任务卡的步骤行间移动）。
+		*
+		* 交互模型（拖动全程按住鼠标）：
+		*  - 步骤行上按下（左键、非按钮/输入区域）→ 进入预览；
+		*  - 按住 350ms 不松，或按住后移动超过 6px → 唤起跟随鼠标的浮动幽灵卡片；
+		*  - 幽灵悬停到本任务卡内的步骤行时显示蓝色插入线（上半=插到该行前，下半=插到该行后）；
+		*  - 松手（mouseup）：落在有效位置 → onReorder 落子；落在卡外/别的任务卡/原行
+		*    （插入自身前后）/按钮输入等控件上 → 取消；
+		*  - 350ms 内原地松手 = 普通点击，不产生幽灵；Esc → 取消。
+		*/
+		function useTaskDrag(taskId, steps, isBound, onReorder) {
+			const [dragState, setDragState] = (0, react.useState)(null);
+			const [dropTargetIndex, setDropTargetIndex] = (0, react.useState)(null);
+			const dragRef = (0, react.useRef)(dragState);
+			dragRef.current = dragState;
+			const longPressTimer = (0, react.useRef)(void 0);
+			const dragOrigin = (0, react.useRef)(null);
+			const clearTimer = (0, react.useCallback)(() => {
+				if (longPressTimer.current !== void 0) {
+					window.clearTimeout(longPressTimer.current);
+					longPressTimer.current = void 0;
+				}
+			}, []);
+			const cancelDrag = (0, react.useCallback)(() => {
+				clearTimer();
+				dragOrigin.current = null;
+				document.body.style.userSelect = "";
+				setDropTargetIndex(null);
+				setDragState(null);
+			}, [clearTimer]);
+			const startDrag = (0, react.useCallback)((fromIndex, stepContent, e) => {
+				if (!isBound || e.button !== 0) return;
+				if (dragRef.current) return;
+				e.preventDefault();
+				e.stopPropagation();
+				document.body.style.userSelect = "none";
+				dragOrigin.current = {
+					x: e.clientX,
+					y: e.clientY
+				};
+				setDropTargetIndex(null);
+				setDragState({
+					fromIndex,
+					stepContent,
+					clientX: e.clientX,
+					clientY: e.clientY,
+					dragging: false
+				});
+				clearTimer();
+				longPressTimer.current = window.setTimeout(() => {
+					longPressTimer.current = void 0;
+					setDragState((prev) => prev ? {
+						...prev,
+						dragging: true
+					} : null);
+				}, 350);
+			}, [isBound, clearTimer]);
+			/** 计算某行上 y 坐标对应的插入位（行数下标：上半=该行前，下半=该行后）；非本任务卡返回 null */
+			const dropIndexAt = (0, react.useCallback)((row, clientY) => {
+				const parentOl = row.closest("ol");
+				if (!parentOl || !parentOl.closest(`article[data-task-id="${taskId}"]`)) return null;
+				const index = Array.from(parentOl.children).indexOf(row);
+				const rect = row.getBoundingClientRect();
+				return clientY < rect.top + rect.height / 2 ? index : index + 1;
+			}, [taskId]);
+			/** 在 (x,y) 处结算：命中有效落点则重排，否则取消；并结束本次拖拽 */
+			const commitDrop = (0, react.useCallback)((x, y) => {
+				const cur = dragRef.current;
+				if (!cur || !cur.dragging) return;
+				const el = document.elementFromPoint(x, y);
+				if (el && !el.closest("button, input, textarea, a")) {
+					const row = el.closest("[data-step-row]");
+					if (row) {
+						const drop = dropIndexAt(row, y);
+						if (drop !== null) {
+							if ((drop > cur.fromIndex ? drop - 1 : drop) !== cur.fromIndex) onReorder(cur.fromIndex, drop);
+						}
+					}
+				}
+				cancelDrag();
+			}, [
+				dropIndexAt,
+				onReorder,
+				cancelDrag
+			]);
+			const active = dragState !== null;
+			(0, react.useEffect)(() => {
+				if (!active) return;
+				const onMouseMove = (e) => {
+					const cur = dragRef.current;
+					if (!cur) return;
+					if (!cur.dragging) {
+						const origin = dragOrigin.current;
+						if (!origin) return;
+						if (Math.hypot(e.clientX - origin.x, e.clientY - origin.y) < 6) return;
+						clearTimer();
+						setDragState((prev) => prev ? {
+							...prev,
+							dragging: true,
+							clientX: e.clientX,
+							clientY: e.clientY
+						} : null);
+					} else setDragState((prev) => prev ? {
+						...prev,
+						clientX: e.clientX,
+						clientY: e.clientY
+					} : null);
+					const row = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-step-row]");
+					setDropTargetIndex(row ? dropIndexAt(row, e.clientY) : null);
+				};
+				const onMouseUp = (e) => {
+					const cur = dragRef.current;
+					if (!cur) return;
+					if (cur.dragging) commitDrop(e.clientX, e.clientY);
+					else cancelDrag();
+				};
+				const onClick = (e) => {
+					const cur = dragRef.current;
+					if (!cur || !cur.dragging) return;
+					commitDrop(e.clientX, e.clientY);
+				};
+				const onKeyDown = (e) => {
+					if (e.key === "Escape") cancelDrag();
+				};
+				window.addEventListener("mousemove", onMouseMove);
+				window.addEventListener("mouseup", onMouseUp);
+				window.addEventListener("click", onClick, true);
+				window.addEventListener("keydown", onKeyDown);
+				return () => {
+					window.removeEventListener("mousemove", onMouseMove);
+					window.removeEventListener("mouseup", onMouseUp);
+					window.removeEventListener("click", onClick, true);
+					window.removeEventListener("keydown", onKeyDown);
+					document.body.style.userSelect = "";
+				};
+			}, [
+				active,
+				taskId,
+				dropIndexAt,
+				onReorder,
+				cancelDrag,
+				commitDrop
+			]);
+			(0, react.useEffect)(() => () => clearTimer(), [clearTimer]);
+			return {
+				dragState,
+				dropTargetIndex,
+				startDrag,
+				cancelDrag
+			};
 		}
 		//#endregion
 		//#region \0dsh-css:/home/sxt/project/dsh-project-memory/src/client/TaskPanel.module.css.mjs
-		const css$1 = ".vZSZnG_panel,.vZSZnG_pill{pointer-events:auto;font-family:inherit}.vZSZnG_panel{background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));border:1px solid var(--dsw-alias-border-l2,#7f7f7f4d);border-radius:14px;flex-direction:column;width:380px;max-width:calc(100vw - 24px);max-height:min(70vh,640px);animation:.18s ease-out vZSZnG_panelIn;display:flex;position:fixed;overflow:hidden;box-shadow:0 12px 32px #00000029,0 2px 8px #00000014}@keyframes vZSZnG_panelIn{0%{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}.vZSZnG_dragHandle{cursor:grab;z-index:1;justify-content:center;align-items:center;height:12px;display:flex;position:absolute;top:0;left:0;right:0}.vZSZnG_dragHandle:active{cursor:grabbing}.vZSZnG_handleGrip{background:var(--dsw-alias-separator-primary,#7f7f7f59);opacity:.8;border-radius:2px;width:32px;height:3px}.vZSZnG_header{border-bottom:1px solid var(--dsw-alias-border-l1,#7f7f7f2e);-webkit-user-select:none;user-select:none;justify-content:space-between;align-items:center;gap:8px;padding:10px 10px 8px 14px;display:flex}.vZSZnG_headerLeft{align-items:center;gap:6px;min-width:0;display:flex}.vZSZnG_headerIcon{color:var(--dsw-alias-label-secondary);flex:none}.vZSZnG_headerTitle{color:var(--dsw-alias-label-primary);white-space:nowrap;margin:0;font-size:13px;font-weight:600;line-height:20px}.vZSZnG_headerRight{align-items:center;gap:2px;margin-left:auto;display:flex}.vZSZnG_counts{color:var(--dsw-alias-label-tertiary);white-space:nowrap;margin-right:4px;font-size:11px;line-height:16px}.vZSZnG_boundBadge{color:var(--dsw-alias-label-primary-foreground,#fff);background:var(--dsw-alias-button-primary-fill,#3a6ef5);white-space:nowrap;border-radius:7px;flex:none;padding:0 6px;font-size:10px;line-height:14px}.vZSZnG_softBadge{color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f);white-space:nowrap;border-radius:7px;flex:none;padding:0 6px;font-size:10px;line-height:14px}.vZSZnG_notice{color:var(--dsw-alias-state-warn-label,#b7791f);background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1a);word-break:break-all;border-radius:8px;margin:8px 12px 0;padding:6px 10px;font-size:12px;line-height:18px}.vZSZnG_taskList{scrollbar-width:thin;scrollbar-color:var(--dsw-alias-scrollbar-bg-l2,transparent) transparent;flex-direction:column;gap:6px;padding:8px;display:flex;overflow-y:auto}.vZSZnG_emptyState{text-align:center;color:var(--dsw-alias-label-secondary);padding:36px 24px 30px}.vZSZnG_emptyTitle{color:var(--dsw-alias-label-primary);margin:0 0 6px;font-size:13px;font-weight:600}.vZSZnG_emptyDesc{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:20px}.vZSZnG_syncHint{color:var(--dsw-alias-label-dimmed);justify-content:center;align-items:center;gap:6px;margin:10px 0 0;font-size:11px;display:flex}.vZSZnG_card{border:1px solid var(--dsw-alias-border-l1,#7f7f7f29);background:var(--dsw-alias-bg-base,transparent);border-radius:10px;transition:border-color .15s;overflow:hidden}.vZSZnG_cardBound{border-color:var(--dsw-alias-border-l3,#7f7f7f59);box-shadow:inset 0 0 0 .5px var(--dsw-alias-border-l3,transparent)}.vZSZnG_cardHead{cursor:pointer;text-align:left;background:0 0;border:none;justify-content:space-between;align-items:center;gap:8px;width:100%;padding:8px 10px 7px;display:flex}.vZSZnG_cardHead:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_cardTitleRow{align-items:center;gap:6px;min-width:0;display:flex}.vZSZnG_cardTitle{color:var(--dsw-alias-label-primary);white-space:nowrap;text-overflow:ellipsis;font-size:13px;font-weight:500;line-height:20px;overflow:hidden}.vZSZnG_cardMeta{color:var(--dsw-alias-label-tertiary);flex:none;align-items:center;gap:8px;display:flex}.vZSZnG_progressText{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}.vZSZnG_updated{color:var(--dsw-alias-label-dimmed);font-size:10px;line-height:14px}.vZSZnG_chevron{color:var(--dsw-alias-label-tertiary);display:inline-flex}.vZSZnG_track{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f);border-radius:1px;height:2px;margin:0 10px 6px;overflow:hidden}.vZSZnG_trackFill{background:var(--dsw-alias-label-primary-bluish,var(--dsw-alias-button-primary-fill,#3a6ef5));border-radius:1px;height:100%;transition:width .2s}.vZSZnG_cardBody{border-top:1px solid var(--dsw-alias-border-l1,#7f7f7f24);padding:8px 10px 10px}.vZSZnG_section{margin-bottom:8px}.vZSZnG_section:last-child{margin-bottom:0}.vZSZnG_sectionLabel{color:var(--dsw-alias-label-secondary);align-items:center;gap:6px;margin-bottom:4px;font-size:11px;line-height:16px;display:flex}.vZSZnG_sectionCount{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1a);color:var(--dsw-alias-label-tertiary);border-radius:6px;padding:0 5px;font-size:10px;line-height:14px}.vZSZnG_stepsList{flex-direction:column;gap:1px;margin:0;padding:0;list-style:none;display:flex}.vZSZnG_stepRow{align-items:flex-start;gap:7px;padding:3px 2px;display:flex}.vZSZnG_stepRow>svg{flex:none;margin-top:2px}.vZSZnG_stepDone{color:var(--dsw-alias-label-dimmed)}.vZSZnG_stepRun{color:var(--dsw-alias-label-primary-bluish,#3a6ef5)}.vZSZnG_stepPending{background:var(--dsw-alias-border-l3,#7f7f7f80);border-radius:50%;flex:none;width:8px;height:8px;margin:5px 3px}.vZSZnG_stepContent{color:var(--dsw-alias-label-secondary);word-break:break-word;font-size:12px;line-height:20px}.vZSZnG_stepContentDone{color:var(--dsw-alias-label-dimmed);text-decoration:line-through}.vZSZnG_stepContentRun{color:var(--dsw-alias-label-primary)}.vZSZnG_muted{color:var(--dsw-alias-label-dimmed);font-size:11px;line-height:18px}.vZSZnG_filesList{flex-direction:column;margin:0;padding:0;list-style:none;display:flex}.vZSZnG_fileRow{cursor:pointer;text-align:left;background:0 0;border:none;border-radius:6px;align-items:center;gap:6px;width:100%;padding:3px 4px;display:flex}.vZSZnG_fileRow:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_fileDot{background:var(--dsw-alias-border-l3,#7f7f7f80);border-radius:50%;flex:none;width:5px;height:5px}.vZSZnG_filePath{color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;text-align:left;direction:rtl;font-family:ui-monospace,SF Mono,Menlo,Consolas,monospace;font-size:11px;line-height:18px;overflow:hidden}.vZSZnG_fileLine{color:var(--dsw-alias-label-dimmed);flex:none;font-size:10px;line-height:18px}.vZSZnG_cardFooter{gap:6px;margin-top:8px;display:flex}.vZSZnG_spinning svg{animation:.9s linear infinite vZSZnG_spin}@keyframes vZSZnG_spin{to{transform:rotate(360deg)}}@media (prefers-reduced-motion:reduce){.vZSZnG_panel{animation:none}.vZSZnG_trackFill,.vZSZnG_card,.vZSZnG_pill{transition:none}.vZSZnG_spinning svg{animation-duration:2.4s}}.vZSZnG_miniBar{border:1px solid var(--dsw-alias-border-l3,#7f7f7f4d);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));max-width:min(46vw,340px);height:34px;color:var(--dsw-alias-label-primary);cursor:grab;-webkit-user-select:none;user-select:none;pointer-events:auto;border-radius:999px;align-items:center;gap:7px;padding:0 12px;font-size:12px;line-height:18px;transition:background .15s,border-color .15s;display:inline-flex;position:fixed;box-shadow:0 6px 20px #00000024,0 1px 4px #00000014}.vZSZnG_miniBar:active{cursor:grabbing}.vZSZnG_miniBar:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_miniIcon{color:var(--dsw-alias-label-secondary);flex:none}.vZSZnG_miniText{white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.vZSZnG_miniChevron{color:var(--dsw-alias-label-tertiary);flex:none}.vZSZnG_taskList{flex:auto;min-height:0}.vZSZnG_cardBody{overscroll-behavior:contain;max-height:300px;overflow-y:auto}.vZSZnG_card{flex-direction:column;display:flex}.vZSZnG_boundaryFallback{border:1px solid var(--dsw-alias-border-l3,#7f7f7f4d);background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-secondary);cursor:pointer;pointer-events:auto;border-radius:999px;padding:4px 10px;font-size:12px;line-height:18px;position:fixed;top:64px;right:16px}.vZSZnG_stepToggle{cursor:pointer;background:0 0;border:none;border-radius:4px;flex:none;align-items:center;margin-top:2px;padding:0;display:inline-flex}.vZSZnG_stepToggle:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f)}.vZSZnG_stepToggle:disabled{cursor:default;opacity:.5}.vZSZnG_stepEditable{cursor:text;border-radius:3px}.vZSZnG_stepEditable:hover{outline:1px dashed var(--dsw-alias-border-l3,#7f7f7f66);outline-offset:1px}.vZSZnG_stepInput{min-width:0;font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base,transparent);border:1px solid var(--dsw-alias-border-l3,#7f7f7f73);resize:none;box-sizing:border-box;white-space:pre-wrap;word-break:break-word;border-radius:5px;flex:auto;width:auto;min-width:0;padding:0 5px;font-size:12px;line-height:20px;display:block;overflow:hidden}.vZSZnG_cardTitleEditable{cursor:text;border-radius:3px}.vZSZnG_cardTitleEditable:hover{outline:1px dashed var(--dsw-alias-border-l3,#7f7f7f66);outline-offset:1px}.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:color-mix(in srgb, var(--dsw-alias-bg-layer-2,#fff) 90%, transparent);-webkit-backdrop-filter:blur(18px)saturate(1.2);border:1px solid color-mix(in srgb, var(--dsw-alias-border-l2,#7f7f7f4d) 80%, transparent)}.vZSZnG_panel[data-theme=glass] .vZSZnG_card{background:color-mix(in srgb, var(--dsw-alias-bg-base,transparent) 84%, transparent);border-color:color-mix(in srgb, var(--dsw-alias-border-l1,#7f7f7f29) 60%, transparent)}.vZSZnG_panel[data-theme=glass] .vZSZnG_cardBody{border-top-color:color-mix(in srgb, var(--dsw-alias-border-l1,#7f7f7f24) 60%, transparent)}@media (prefers-reduced-transparency:reduce){.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:var(--dsw-alias-bg-layer-2,#fff);-webkit-backdrop-filter:none;backdrop-filter:none}.vZSZnG_panel[data-theme=glass] .vZSZnG_card{background:var(--dsw-alias-bg-base,transparent)}}@supports not ((-webkit-backdrop-filter:blur(1px)) or (backdrop-filter:blur(1px))){.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:var(--dsw-alias-bg-layer-2,#fff)}}.vZSZnG_panel[data-theme=brutal]{box-shadow:none;border-width:1px;border-radius:6px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_card{border:1px solid var(--dsw-alias-border-l3,#7f7f7f6b);background:var(--dsw-alias-bg-base,transparent);box-shadow:none;border-radius:3px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardHead{padding:7px 10px 6px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardTitle{letter-spacing:.01em;font-weight:650}.vZSZnG_panel[data-theme=brutal] .vZSZnG_headerTitle{letter-spacing:.03em}.vZSZnG_panel[data-theme=brutal] .vZSZnG_boundBadge{border-radius:2px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_track{border-radius:0;height:3px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_trackFill{border-radius:0}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardBody{border-top:1px solid var(--dsw-alias-border-l2,#7f7f7f3d)}.vZSZnG_panel[data-theme=mono] .vZSZnG_headerTitle,.vZSZnG_panel[data-theme=mono] .vZSZnG_counts,.vZSZnG_panel[data-theme=mono] .vZSZnG_cardTitle,.vZSZnG_panel[data-theme=mono] .vZSZnG_progressText,.vZSZnG_panel[data-theme=mono] .vZSZnG_stepContent,.vZSZnG_panel[data-theme=mono] .vZSZnG_filePath{font-family:ui-monospace,SF Mono,Menlo,Consolas,Liberation Mono,monospace}.vZSZnG_panel[data-theme=mono] .vZSZnG_cardTitle{font-size:12px}.vZSZnG_panel[data-theme=mono] .vZSZnG_stepContent{font-size:11.5px}.vZSZnG_panel[data-theme=mono] .vZSZnG_card{border-radius:5px}.vZSZnG_panel[data-theme=mono] .vZSZnG_trackFill{border-radius:0}.vZSZnG_panel[data-theme=mono] .vZSZnG_stepPending{border-radius:1px}.vZSZnG_panel[data-theme=mono] .vZSZnG_updated{letter-spacing:.02em}.vZSZnG_headerIconBtn{color:inherit;cursor:pointer;background:0 0;border:none;border-radius:0;flex:none;justify-content:center;align-items:center;margin:0;padding:0;display:inline-flex}.vZSZnG_headerIcon{color:var(--dsw-alias-label-secondary);flex:none;display:block}.vZSZnG_headerLeft{min-width:0}.vZSZnG_headerTitle{text-overflow:ellipsis;flex:0 auto;min-width:0;overflow:hidden}.vZSZnG_headerRight{min-width:0}.vZSZnG_counts{text-overflow:ellipsis;flex:none;max-width:45%;margin-left:auto;overflow:hidden}";
+		const css$1 = ".vZSZnG_panel{pointer-events:auto;background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));border:1px solid var(--dsw-alias-border-l2,#7f7f7f4d);border-radius:14px;flex-direction:column;width:380px;max-width:calc(100vw - 24px);max-height:min(70vh,640px);font-family:inherit;animation:.18s ease-out vZSZnG_panelIn;display:flex;position:fixed;overflow:hidden;box-shadow:0 12px 32px #00000029,0 2px 8px #00000014}@keyframes vZSZnG_panelIn{0%{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}.vZSZnG_dragHandle{cursor:grab;z-index:1;justify-content:center;align-items:center;height:12px;display:flex;position:absolute;top:0;left:0;right:0}.vZSZnG_dragHandle:active{cursor:grabbing}.vZSZnG_handleGrip{background:var(--dsw-alias-separator-primary,#7f7f7f59);opacity:.8;border-radius:2px;width:32px;height:3px}.vZSZnG_header{border-bottom:1px solid var(--dsw-alias-border-l1,#7f7f7f2e);-webkit-user-select:none;user-select:none;justify-content:space-between;align-items:center;gap:8px;padding:10px 10px 8px 14px;display:flex}.vZSZnG_headerLeft{align-items:center;gap:6px;min-width:0;display:flex}.vZSZnG_headerIcon{color:var(--dsw-alias-label-secondary);flex:none}.vZSZnG_headerTitle{color:var(--dsw-alias-label-primary);white-space:nowrap;margin:0;font-size:13px;font-weight:600;line-height:20px}.vZSZnG_headerRight{align-items:center;gap:2px;margin-left:auto;display:flex}.vZSZnG_counts{color:var(--dsw-alias-label-tertiary);white-space:nowrap;margin-right:4px;font-size:11px;line-height:16px}.vZSZnG_boundBadge{color:var(--dsw-alias-label-primary-foreground,#fff);background:var(--dsw-alias-button-primary-fill,#3a6ef5);white-space:nowrap;border-radius:7px;flex:none;padding:0 6px;font-size:10px;line-height:14px}.vZSZnG_notice{color:var(--dsw-alias-state-warn-label,#b7791f);background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1a);word-break:break-all;border-radius:8px;margin:8px 12px 0;padding:6px 10px;font-size:12px;line-height:18px}.vZSZnG_taskList{scrollbar-width:thin;scrollbar-color:var(--dsw-alias-scrollbar-bg-l2,transparent) transparent;flex-direction:column;gap:6px;padding:8px;display:flex;overflow-y:auto}.vZSZnG_emptyState{text-align:center;color:var(--dsw-alias-label-secondary);padding:36px 24px 30px}.vZSZnG_emptyTitle{color:var(--dsw-alias-label-primary);margin:0 0 6px;font-size:13px;font-weight:600}.vZSZnG_emptyDesc{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:20px}.vZSZnG_syncHint{color:var(--dsw-alias-label-dimmed);justify-content:center;align-items:center;gap:6px;margin:10px 0 0;font-size:11px;display:flex}.vZSZnG_card{border:1px solid var(--dsw-alias-border-l1,#7f7f7f29);background:var(--dsw-alias-bg-base,transparent);border-radius:10px;transition:border-color .15s;overflow:hidden}.vZSZnG_cardBound{border-color:var(--dsw-alias-border-l3,#7f7f7f59);box-shadow:inset 0 0 0 .5px var(--dsw-alias-border-l3,transparent)}.vZSZnG_cardHead{cursor:pointer;text-align:left;background:0 0;border:none;justify-content:space-between;align-items:center;gap:8px;width:100%;padding:8px 10px 7px;display:flex}.vZSZnG_cardHead:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_cardTitleRow{align-items:center;gap:6px;min-width:0;display:flex}.vZSZnG_cardTitle{color:var(--dsw-alias-label-primary);white-space:nowrap;text-overflow:ellipsis;font-size:13px;font-weight:500;line-height:20px;overflow:hidden}.vZSZnG_cardMeta{color:var(--dsw-alias-label-tertiary);flex:none;align-items:center;gap:8px;display:flex}.vZSZnG_progressText{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}.vZSZnG_updated{color:var(--dsw-alias-label-dimmed);font-size:10px;line-height:14px}.vZSZnG_chevron{color:var(--dsw-alias-label-tertiary);display:inline-flex}.vZSZnG_track{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f);border-radius:1px;height:2px;margin:0 10px 6px;overflow:hidden}.vZSZnG_trackFill{background:var(--dsw-alias-label-primary-bluish,var(--dsw-alias-button-primary-fill,#3a6ef5));border-radius:1px;height:100%;transition:width .2s}.vZSZnG_cardBody{border-top:1px solid var(--dsw-alias-border-l1,#7f7f7f24);overscroll-behavior:contain;max-height:300px;padding:8px 10px 10px;overflow-y:auto}.vZSZnG_section{margin-bottom:8px}.vZSZnG_section:last-child{margin-bottom:0}.vZSZnG_sectionLabel{color:var(--dsw-alias-label-secondary);align-items:center;gap:6px;margin-bottom:4px;font-size:11px;line-height:16px;display:flex}.vZSZnG_sectionCount{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1a);color:var(--dsw-alias-label-tertiary);border-radius:6px;padding:0 5px;font-size:10px;line-height:14px}.vZSZnG_stepsList{flex-direction:column;gap:1px;margin:0;padding:0;list-style:none;display:flex}.vZSZnG_stepRow{align-items:flex-start;gap:7px;padding:3px 2px;display:flex}.vZSZnG_stepRow>svg{flex:none;margin-top:2px}.vZSZnG_stepDone{color:var(--dsw-alias-label-dimmed)}.vZSZnG_stepRun{color:var(--dsw-alias-label-primary-bluish,#3a6ef5)}.vZSZnG_stepPending{background:var(--dsw-alias-border-l3,#7f7f7f80);border-radius:50%;flex:none;width:8px;height:8px;margin:5px 3px}.vZSZnG_stepContent{color:var(--dsw-alias-label-secondary);word-break:break-word;font-size:12px;line-height:20px}.vZSZnG_stepContentDone{color:var(--dsw-alias-label-dimmed);text-decoration:line-through}.vZSZnG_stepContentRun{color:var(--dsw-alias-label-primary)}.vZSZnG_muted{color:var(--dsw-alias-label-dimmed);font-size:11px;line-height:18px}.vZSZnG_filesList{flex-direction:column;margin:0;padding:0;list-style:none;display:flex}.vZSZnG_fileRow{cursor:pointer;text-align:left;background:0 0;border:none;border-radius:6px;align-items:center;gap:6px;width:100%;padding:3px 4px;display:flex}.vZSZnG_fileRow:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_fileDot{background:var(--dsw-alias-border-l3,#7f7f7f80);border-radius:50%;flex:none;width:5px;height:5px}.vZSZnG_filePath{color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;text-align:left;direction:rtl;font-family:ui-monospace,SF Mono,Menlo,Consolas,monospace;font-size:11px;line-height:18px;overflow:hidden}.vZSZnG_fileLine{color:var(--dsw-alias-label-dimmed);flex:none;font-size:10px;line-height:18px}.vZSZnG_cardFooter{gap:6px;margin-top:8px;display:flex}@media (prefers-reduced-motion:reduce){.vZSZnG_panel{animation:none}.vZSZnG_trackFill,.vZSZnG_card{transition:none}}.vZSZnG_miniBar{border:1px solid var(--dsw-alias-border-l3,#7f7f7f4d);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));max-width:min(46vw,340px);height:34px;color:var(--dsw-alias-label-primary);cursor:grab;-webkit-user-select:none;user-select:none;pointer-events:auto;border-radius:999px;align-items:center;gap:7px;padding:0 12px;font-size:12px;line-height:18px;transition:background .15s,border-color .15s;display:inline-flex;position:fixed;box-shadow:0 6px 20px #00000024,0 1px 4px #00000014}.vZSZnG_miniBar:active{cursor:grabbing}.vZSZnG_miniBar:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_miniIcon{color:var(--dsw-alias-label-secondary);flex:none}.vZSZnG_miniText{white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.vZSZnG_miniChevron{color:var(--dsw-alias-label-tertiary);flex:none}.vZSZnG_taskList{flex:auto;min-height:0}.vZSZnG_card{flex-direction:column;display:flex}.vZSZnG_boundaryFallback{border:1px solid var(--dsw-alias-border-l3,#7f7f7f4d);background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-secondary);cursor:pointer;pointer-events:auto;border-radius:999px;padding:4px 10px;font-size:12px;line-height:18px;position:fixed;top:64px;right:16px}.vZSZnG_stepToggle{cursor:pointer;background:0 0;border:none;border-radius:4px;flex:none;align-items:center;margin-top:2px;padding:0;display:inline-flex}.vZSZnG_stepToggle:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f)}.vZSZnG_stepToggle:disabled{cursor:default;opacity:.5}.vZSZnG_stepEditable{cursor:text;border-radius:3px}.vZSZnG_stepEditable:hover{outline:1px dashed var(--dsw-alias-border-l3,#7f7f7f66);outline-offset:1px}.vZSZnG_stepInput{box-sizing:border-box;width:auto;min-width:0;font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base,transparent);border:1px solid var(--dsw-alias-border-l3,#7f7f7f73);border-radius:5px;flex:auto;padding:0 5px;font-size:12px;line-height:20px}.vZSZnG_stepDragging{opacity:.3;background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_cardTitleEditable{cursor:text;border-radius:3px}.vZSZnG_cardTitleEditable:hover{outline:1px dashed var(--dsw-alias-border-l3,#7f7f7f66);outline-offset:1px}.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:color-mix(in srgb, var(--dsw-alias-bg-layer-2,#fff) 90%, transparent);-webkit-backdrop-filter:blur(18px)saturate(1.2);border:1px solid color-mix(in srgb, var(--dsw-alias-border-l2,#7f7f7f4d) 80%, transparent)}.vZSZnG_panel[data-theme=glass] .vZSZnG_card{background:color-mix(in srgb, var(--dsw-alias-bg-base,transparent) 84%, transparent);border-color:color-mix(in srgb, var(--dsw-alias-border-l1,#7f7f7f29) 60%, transparent)}.vZSZnG_panel[data-theme=glass] .vZSZnG_cardBody{border-top-color:color-mix(in srgb, var(--dsw-alias-border-l1,#7f7f7f24) 60%, transparent)}@media (prefers-reduced-transparency:reduce){.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:var(--dsw-alias-bg-layer-2,#fff);-webkit-backdrop-filter:none;backdrop-filter:none}.vZSZnG_panel[data-theme=glass] .vZSZnG_card{background:var(--dsw-alias-bg-base,transparent)}}@supports not ((-webkit-backdrop-filter:blur(1px)) or (backdrop-filter:blur(1px))){.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:var(--dsw-alias-bg-layer-2,#fff)}}.vZSZnG_panel[data-theme=brutal]{box-shadow:none;border-width:1px;border-radius:6px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_card{border:1px solid var(--dsw-alias-border-l3,#7f7f7f6b);background:var(--dsw-alias-bg-base,transparent);box-shadow:none;border-radius:3px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardHead{padding:7px 10px 6px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardTitle{letter-spacing:.01em;font-weight:650}.vZSZnG_panel[data-theme=brutal] .vZSZnG_headerTitle{letter-spacing:.03em}.vZSZnG_panel[data-theme=brutal] .vZSZnG_boundBadge{border-radius:2px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_track{border-radius:0;height:3px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_trackFill{border-radius:0}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardBody{border-top:1px solid var(--dsw-alias-border-l2,#7f7f7f3d)}.vZSZnG_panel[data-theme=mono] .vZSZnG_headerTitle,.vZSZnG_panel[data-theme=mono] .vZSZnG_counts,.vZSZnG_panel[data-theme=mono] .vZSZnG_cardTitle,.vZSZnG_panel[data-theme=mono] .vZSZnG_progressText,.vZSZnG_panel[data-theme=mono] .vZSZnG_stepContent,.vZSZnG_panel[data-theme=mono] .vZSZnG_filePath{font-family:ui-monospace,SF Mono,Menlo,Consolas,Liberation Mono,monospace}.vZSZnG_panel[data-theme=mono] .vZSZnG_cardTitle{font-size:12px}.vZSZnG_panel[data-theme=mono] .vZSZnG_stepContent{font-size:11.5px}.vZSZnG_panel[data-theme=mono] .vZSZnG_card{border-radius:5px}.vZSZnG_panel[data-theme=mono] .vZSZnG_trackFill{border-radius:0}.vZSZnG_panel[data-theme=mono] .vZSZnG_stepPending{border-radius:1px}.vZSZnG_panel[data-theme=mono] .vZSZnG_updated{letter-spacing:.02em}.vZSZnG_headerIconBtn{color:inherit;cursor:pointer;background:0 0;border:none;border-radius:0;flex:none;justify-content:center;align-items:center;margin:0;padding:0;display:inline-flex}.vZSZnG_headerIcon{color:var(--dsw-alias-label-secondary);flex:none;display:block}.vZSZnG_headerLeft{min-width:0}.vZSZnG_headerTitle{text-overflow:ellipsis;flex:0 auto;min-width:0;overflow:hidden}.vZSZnG_headerRight{min-width:0}.vZSZnG_counts{text-overflow:ellipsis;flex:none;max-width:45%;margin-left:auto;overflow:hidden}.vZSZnG_dragGhost{pointer-events:none;z-index:9999;transition:left 50ms,top 50ms;position:fixed;transform:translate(-50%,-50%)}.vZSZnG_dragGhostCard{background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));border:1px solid var(--dsw-alias-border-l3,#7f7f7f59);color:var(--dsw-alias-label-primary);white-space:nowrap;border-radius:8px;align-items:center;gap:8px;max-width:280px;padding:8px 12px;font-size:12px;line-height:20px;display:inline-flex;transform:scale(.9);box-shadow:0 8px 24px #0000002e,0 2px 8px #0000001a}.vZSZnG_dragGhostContent{text-overflow:ellipsis;word-break:break-word;flex:1;min-width:0;overflow:hidden}.vZSZnG_dragGhostClose{width:20px;height:20px;color:var(--dsw-alias-label-tertiary);cursor:pointer;opacity:.6;background:0 0;border:none;border-radius:4px;flex:none;justify-content:center;align-items:center;margin-left:8px;font-size:16px;line-height:1;transition:opacity .15s,background .15s,color .15s;display:inline-flex}.vZSZnG_dragGhostClose:hover{opacity:1;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f)}.vZSZnG_dropTargetBefore{position:relative}.vZSZnG_dropTargetBefore:before{content:\"\";background:var(--dsw-alias-button-primary-fill,#3a6ef5);height:2px;box-shadow:0 0 4px var(--dsw-alias-button-primary-fill,#3a6ef5);border-radius:1px;animation:.8s ease-in-out infinite vZSZnG_dropPulse;position:absolute;top:-1px;left:0;right:0}.vZSZnG_dropTargetAfter{position:relative}.vZSZnG_dropTargetAfter:after{content:\"\";background:var(--dsw-alias-button-primary-fill,#3a6ef5);height:2px;box-shadow:0 0 4px var(--dsw-alias-button-primary-fill,#3a6ef5);border-radius:1px;animation:.8s ease-in-out infinite vZSZnG_dropPulse;position:absolute;bottom:-1px;left:0;right:0}@keyframes vZSZnG_dropPulse{0%,to{opacity:.6}50%{opacity:1}}";
 		const tagId$1 = "@yolk_vat-y/dsh-project-memory/TaskPanel.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$1) + "]") === null) {
 			const tag = document.createElement("style");
@@ -274,86 +497,78 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var TaskPanel_module_css_default = {
-			"stepEditable": "vZSZnG_stepEditable",
-			"stepContent": "vZSZnG_stepContent",
-			"cardBound": "vZSZnG_cardBound",
-			"updated": "vZSZnG_updated",
-			"headerRight": "vZSZnG_headerRight",
-			"muted": "vZSZnG_muted",
-			"fileLine": "vZSZnG_fileLine",
-			"spinning": "vZSZnG_spinning",
-			"headerTitle": "vZSZnG_headerTitle",
-			"miniText": "vZSZnG_miniText",
-			"boundBadge": "vZSZnG_boundBadge",
-			"card": "vZSZnG_card",
-			"spin": "vZSZnG_spin",
-			"syncHint": "vZSZnG_syncHint",
-			"emptyDesc": "vZSZnG_emptyDesc",
-			"stepsList": "vZSZnG_stepsList",
-			"stepRow": "vZSZnG_stepRow",
-			"trackFill": "vZSZnG_trackFill",
-			"stepContentDone": "vZSZnG_stepContentDone",
-			"filesList": "vZSZnG_filesList",
-			"miniBar": "vZSZnG_miniBar",
-			"boundaryFallback": "vZSZnG_boundaryFallback",
-			"handleGrip": "vZSZnG_handleGrip",
-			"sectionCount": "vZSZnG_sectionCount",
-			"miniIcon": "vZSZnG_miniIcon",
-			"panelIn": "vZSZnG_panelIn",
-			"stepInput": "vZSZnG_stepInput",
-			"cardTitleRow": "vZSZnG_cardTitleRow",
-			"filePath": "vZSZnG_filePath",
-			"panel": "vZSZnG_panel",
-			"dragHandle": "vZSZnG_dragHandle",
-			"cardHead": "vZSZnG_cardHead",
-			"pill": "vZSZnG_pill",
-			"chevron": "vZSZnG_chevron",
-			"header": "vZSZnG_header",
-			"fileRow": "vZSZnG_fileRow",
-			"emptyState": "vZSZnG_emptyState",
-			"headerIconBtn": "vZSZnG_headerIconBtn",
-			"headerIcon": "vZSZnG_headerIcon",
-			"stepToggle": "vZSZnG_stepToggle",
-			"taskList": "vZSZnG_taskList",
-			"cardTitleEditable": "vZSZnG_cardTitleEditable",
-			"notice": "vZSZnG_notice",
-			"softBadge": "vZSZnG_softBadge",
-			"stepDone": "vZSZnG_stepDone",
-			"stepPending": "vZSZnG_stepPending",
-			"track": "vZSZnG_track",
-			"cardTitle": "vZSZnG_cardTitle",
-			"cardMeta": "vZSZnG_cardMeta",
-			"fileDot": "vZSZnG_fileDot",
-			"counts": "vZSZnG_counts",
-			"stepContentRun": "vZSZnG_stepContentRun",
-			"emptyTitle": "vZSZnG_emptyTitle",
-			"progressText": "vZSZnG_progressText",
-			"cardBody": "vZSZnG_cardBody",
-			"stepRun": "vZSZnG_stepRun",
-			"cardFooter": "vZSZnG_cardFooter",
-			"sectionLabel": "vZSZnG_sectionLabel",
-			"miniChevron": "vZSZnG_miniChevron",
 			"headerLeft": "vZSZnG_headerLeft",
-			"section": "vZSZnG_section"
+			"counts": "vZSZnG_counts",
+			"card": "vZSZnG_card",
+			"filePath": "vZSZnG_filePath",
+			"headerIcon": "vZSZnG_headerIcon",
+			"fileDot": "vZSZnG_fileDot",
+			"dropPulse": "vZSZnG_dropPulse",
+			"stepContent": "vZSZnG_stepContent",
+			"stepInput": "vZSZnG_stepInput",
+			"track": "vZSZnG_track",
+			"muted": "vZSZnG_muted",
+			"cardMeta": "vZSZnG_cardMeta",
+			"miniChevron": "vZSZnG_miniChevron",
+			"stepRun": "vZSZnG_stepRun",
+			"stepEditable": "vZSZnG_stepEditable",
+			"dragGhostContent": "vZSZnG_dragGhostContent",
+			"chevron": "vZSZnG_chevron",
+			"dragGhostCard": "vZSZnG_dragGhostCard",
+			"cardBound": "vZSZnG_cardBound",
+			"boundaryFallback": "vZSZnG_boundaryFallback",
+			"headerTitle": "vZSZnG_headerTitle",
+			"stepContentDone": "vZSZnG_stepContentDone",
+			"fileLine": "vZSZnG_fileLine",
+			"sectionLabel": "vZSZnG_sectionLabel",
+			"emptyTitle": "vZSZnG_emptyTitle",
+			"stepDragging": "vZSZnG_stepDragging",
+			"trackFill": "vZSZnG_trackFill",
+			"miniIcon": "vZSZnG_miniIcon",
+			"progressText": "vZSZnG_progressText",
+			"cardTitle": "vZSZnG_cardTitle",
+			"cardFooter": "vZSZnG_cardFooter",
+			"headerIconBtn": "vZSZnG_headerIconBtn",
+			"header": "vZSZnG_header",
+			"miniBar": "vZSZnG_miniBar",
+			"dropTargetAfter": "vZSZnG_dropTargetAfter",
+			"filesList": "vZSZnG_filesList",
+			"boundBadge": "vZSZnG_boundBadge",
+			"cardTitleEditable": "vZSZnG_cardTitleEditable",
+			"fileRow": "vZSZnG_fileRow",
+			"dragGhost": "vZSZnG_dragGhost",
+			"cardTitleRow": "vZSZnG_cardTitleRow",
+			"cardHead": "vZSZnG_cardHead",
+			"panel": "vZSZnG_panel",
+			"stepRow": "vZSZnG_stepRow",
+			"headerRight": "vZSZnG_headerRight",
+			"handleGrip": "vZSZnG_handleGrip",
+			"panelIn": "vZSZnG_panelIn",
+			"stepToggle": "vZSZnG_stepToggle",
+			"notice": "vZSZnG_notice",
+			"emptyState": "vZSZnG_emptyState",
+			"miniText": "vZSZnG_miniText",
+			"updated": "vZSZnG_updated",
+			"stepsList": "vZSZnG_stepsList",
+			"dragHandle": "vZSZnG_dragHandle",
+			"taskList": "vZSZnG_taskList",
+			"sectionCount": "vZSZnG_sectionCount",
+			"stepDone": "vZSZnG_stepDone",
+			"syncHint": "vZSZnG_syncHint",
+			"section": "vZSZnG_section",
+			"stepContentRun": "vZSZnG_stepContentRun",
+			"dragGhostClose": "vZSZnG_dragGhostClose",
+			"emptyDesc": "vZSZnG_emptyDesc",
+			"dropTargetBefore": "vZSZnG_dropTargetBefore",
+			"stepPending": "vZSZnG_stepPending",
+			"cardBody": "vZSZnG_cardBody"
 		};
 		//#endregion
-		//#region src/client/TaskPanel.tsx
+		//#region src/client/TaskComponents.tsx
 		/**
-		* Task Panel — dsh web `shell.overlay` 浮动任务面板。
-		*
-		* 升级原 `/tasks` 文本输出为可交互卡片：
-		*  - 默认收成右侧浮标（不影响用户操作/不挡对话）；
-		*  - 展开时通过宿主 `remote.commands.execute(sessionId, '/tasks')` 拉取最新快照
-		*    （命令只读，走 /tasks 同一数据源 = tasks.json，因此与模型维护的 todo 双向一致）；
-		*  - 卡片内「切换 / 归档」执行 `/task switch|archive <id>`，服务端返回新快照 JSON，
-		*    面板即时刷新，无需再跑一次 /tasks；
-		*  - 可拖拽（仅头部把手），位置持久化 localStorage。
-		*
-		* 依赖仅 react + @deepseek-ai/dsh-client-ui-primitives（宿主 seed 模块）。
+		* Task Panel Presentational 组件 — MiniBar（折叠迷你条）与 TaskCard（任务卡）。
+		* 纯渲染 + 卡片局部行内编辑/拖拽状态，动作经 props 回调交给容器（TaskPanel.tsx）。
 		*/
-		function getT() {
-			return createTranslate(typeof navigator !== "undefined" && navigator.language.startsWith("zh") ? zh : en);
-		}
 		function timeAgo(iso) {
 			if (!iso) return "";
 			const diff = Date.now() - new Date(iso).getTime();
@@ -369,62 +584,6 @@ window.__ModuleLoader__.load({
 			if (status === "in_progress") return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPlayOutline16, { className: TaskPanel_module_css_default.stepRun });
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: TaskPanel_module_css_default.stepPending });
 		}
-		function useSessionId(ctx) {
-			const [, force] = (0, react.useState)(0);
-			(0, react.useEffect)(() => {
-				const list = ctx?.sessions?.list;
-				if (!list || typeof list.subscribe !== "function") return;
-				return list.subscribe(() => force((n) => n + 1));
-			}, [ctx]);
-			const snap = ctx?.sessions?.list?.getSnapshot?.();
-			if (!snap) return null;
-			if (snap.current) return snap.current;
-			return (Array.isArray(snap.items) ? snap.items.find((s) => !s.blank) ?? snap.items[0] : void 0)?.sessionId ?? null;
-		}
-		/** 行内编辑框：自动按内容增高（最多 160px），Enter 提交、Shift+Enter 换行、Esc 取消、失焦提交。 */
-		function AutoEdit({ value, onCommit, onCancel, singleLine }) {
-			const [text, setText] = (0, react.useState)(value);
-			const ref = (0, react.useRef)(null);
-			const settled = (0, react.useRef)(false);
-			const once = (fn) => {
-				if (settled.current) return;
-				settled.current = true;
-				fn();
-			};
-			const adjust = () => {
-				const el = ref.current;
-				if (!el) return;
-				el.style.height = "auto";
-				el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-			};
-			(0, react.useEffect)(() => {
-				adjust();
-				const el = ref.current;
-				el?.focus();
-				el?.select();
-			}, []);
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
-				ref,
-				className: TaskPanel_module_css_default.stepInput,
-				rows: 1,
-				value: text,
-				onChange: (e) => {
-					setText(e.target.value);
-					adjust();
-				},
-				onBlur: () => once(() => onCommit(text)),
-				onKeyDown: (e) => {
-					if (e.key === "Escape") {
-						e.preventDefault();
-						once(() => onCancel());
-					} else if (e.key === "Enter" && (singleLine || !e.shiftKey)) {
-						e.preventDefault();
-						once(() => onCommit(text));
-					}
-				}
-			});
-		}
-		/** 折叠迷你条：可拖拽（按住拖动，轻点展开）。 */
 		function MiniBar({ label, hint, position, theme, onMove, open }) {
 			const barRef = (0, react.useRef)(null);
 			const down = (0, react.useRef)(null);
@@ -484,18 +643,284 @@ window.__ModuleLoader__.load({
 				]
 			});
 		}
+		function TaskCard({ task, isBound, expanded, onToggleExpand, onSwitch, onUnbind, onArchive, onRename, onEditStep, onCycleStatus, onReorderSteps, showHints, syncing, t }) {
+			const steps = task.steps || [];
+			const { dragState, dropTargetIndex, startDrag, cancelDrag } = useTaskDrag(task.id, steps, isBound, onReorderSteps);
+			const [stepEdit, setStepEdit] = (0, react.useState)(null);
+			const [titleEdit, setTitleEdit] = (0, react.useState)(null);
+			const done = steps.filter((s) => s.status === "completed").length;
+			const pct = steps.length > 0 ? Math.round(done / steps.length * 100) : 0;
+			const commitStepEdit = (index) => {
+				if (!stepEdit || stepEdit.index !== index) return;
+				const value = stepEdit.value;
+				setStepEdit(null);
+				onEditStep(index, value);
+			};
+			const commitTitleEdit = () => {
+				if (titleEdit === null) return;
+				const value = titleEdit.value;
+				setTitleEdit(null);
+				onRename(value);
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("article", {
+				"data-task-id": task.id,
+				className: `${TaskPanel_module_css_default.card}${isBound ? ` ${TaskPanel_module_css_default.cardBound}` : ""}`,
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+						className: TaskPanel_module_css_default.cardHead,
+						onClick: () => {
+							if (titleEdit !== null) return;
+							onToggleExpand();
+						},
+						"aria-expanded": expanded,
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: TaskPanel_module_css_default.cardTitleRow,
+							children: [isBound && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: TaskPanel_module_css_default.boundBadge,
+								children: t("task.current")
+							}), isBound && titleEdit !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+								className: TaskPanel_module_css_default.stepInput,
+								value: titleEdit.value,
+								autoFocus: true,
+								onChange: (e) => setTitleEdit({ value: e.target.value }),
+								onBlur: commitTitleEdit,
+								onKeyDown: (e) => {
+									if (e.key === "Enter") commitTitleEdit();
+									else if (e.key === "Escape") setTitleEdit(null);
+								}
+							}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: `${TaskPanel_module_css_default.cardTitle}${isBound ? ` ${TaskPanel_module_css_default.cardTitleEditable}` : ""}`,
+								title: isBound ? t("task.title-edit") : void 0,
+								onDoubleClick: (e) => {
+									e.preventDefault();
+									e.stopPropagation();
+									if (isBound) setTitleEdit({ value: String(task.title ?? "") });
+								},
+								children: task.title
+							})]
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: TaskPanel_module_css_default.cardMeta,
+							children: [
+								steps.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+									className: TaskPanel_module_css_default.progressText,
+									children: [
+										done,
+										"/",
+										steps.length
+									]
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: TaskPanel_module_css_default.updated,
+									children: timeAgo(task.updatedAt || task.lastActiveAt)
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: TaskPanel_module_css_default.chevron,
+									children: expanded ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronUpOutline14, {}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
+								})
+							]
+						})]
+					}),
+					steps.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: TaskPanel_module_css_default.track,
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: TaskPanel_module_css_default.trackFill,
+							style: { width: `${pct}%` }
+						})
+					}),
+					expanded && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: TaskPanel_module_css_default.cardBody,
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: TaskPanel_module_css_default.section,
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: TaskPanel_module_css_default.sectionLabel,
+									children: [t("task.steps"), steps.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										className: TaskPanel_module_css_default.sectionCount,
+										children: steps.length
+									})]
+								}), steps.length > 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("ol", {
+									className: TaskPanel_module_css_default.stepsList,
+									children: steps.map((step, i) => {
+										const stepIsEditing = stepEdit !== null && stepEdit.index === i;
+										const stepIsDragging = dragState?.dragging && dragState.fromIndex === i;
+										const isDropTarget = dropTargetIndex === i;
+										const isDropTargetAfter = dropTargetIndex === i + 1;
+										return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+											"data-step-row": true,
+											className: `${TaskPanel_module_css_default.stepRow}${stepIsDragging ? ` ${TaskPanel_module_css_default.stepDragging}` : ""}${isDropTarget ? ` ${TaskPanel_module_css_default.dropTargetBefore}` : ""}${isDropTargetAfter ? ` ${TaskPanel_module_css_default.dropTargetAfter}` : ""}`,
+											onMouseDown: (e) => {
+												if (e.button !== 0) return;
+												if (!isBound || syncing) return;
+												if (e.target.closest("button, input, textarea, a")) return;
+												startDrag(i, step.content, e);
+											},
+											children: [isBound ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+												type: "button",
+												className: TaskPanel_module_css_default.stepToggle,
+												disabled: syncing,
+												onClick: (e) => {
+													e.stopPropagation();
+													onCycleStatus(i);
+												},
+												title: `${t("step.completed")}/${t("step.in-progress")}/${t("step.pending")}`,
+												children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(StepIcon, { status: step.status })
+											}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(StepIcon, { status: step.status }), stepIsEditing ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+												className: TaskPanel_module_css_default.stepInput,
+												value: stepEdit.value,
+												autoFocus: true,
+												onChange: (e) => setStepEdit({
+													index: i,
+													value: e.target.value
+												}),
+												onBlur: () => commitStepEdit(i),
+												onKeyDown: (e) => {
+													if (e.key === "Enter") commitStepEdit(i);
+													else if (e.key === "Escape") setStepEdit(null);
+												}
+											}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+												className: `${TaskPanel_module_css_default.stepContent}${step.status === "completed" ? ` ${TaskPanel_module_css_default.stepContentDone}` : ""}${step.status === "in_progress" ? ` ${TaskPanel_module_css_default.stepContentRun}` : ""}${isBound ? ` ${TaskPanel_module_css_default.stepEditable}` : ""}`,
+												title: isBound && showHints ? t("step.edit-hint") : void 0,
+												onDoubleClick: (e) => {
+													e.stopPropagation();
+													if (isBound) setStepEdit({
+														index: i,
+														value: String(step.content ?? "")
+													});
+												},
+												children: step.content
+											})]
+										}, i);
+									})
+								}), dragState && dragState.dragging && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+									className: TaskPanel_module_css_default.dragGhost,
+									style: {
+										left: dragState.clientX + 12,
+										top: dragState.clientY - 20
+									},
+									children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+										className: TaskPanel_module_css_default.dragGhostCard,
+										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											className: TaskPanel_module_css_default.dragGhostContent,
+											children: dragState.stepContent
+										}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+											type: "button",
+											className: TaskPanel_module_css_default.dragGhostClose,
+											style: { pointerEvents: "auto" },
+											onClick: (e) => {
+												e.stopPropagation();
+												cancelDrag();
+											},
+											title: showHints ? t("drag.cancel") : void 0,
+											"aria-label": t("drag.cancel"),
+											children: "×"
+										})]
+									})
+								})] }) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+									className: TaskPanel_module_css_default.muted,
+									children: t("panel.empty-desc")
+								})]
+							}),
+							(task.files?.length ?? 0) > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: TaskPanel_module_css_default.section,
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: TaskPanel_module_css_default.sectionLabel,
+									children: [t("task.files"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										className: TaskPanel_module_css_default.sectionCount,
+										children: task.files.length
+									})]
+								}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("ul", {
+									className: TaskPanel_module_css_default.filesList,
+									children: [task.files.slice(0, 12).map((file, i) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+										className: TaskPanel_module_css_default.fileRow,
+										onClick: () => navigator.clipboard?.writeText(file.path),
+										title: `${t("file.copy")}: ${file.path}${file.line ? `:${file.line}` : ""}`,
+										children: [
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: TaskPanel_module_css_default.fileDot }),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+												className: TaskPanel_module_css_default.filePath,
+												children: file.path
+											}),
+											file.line && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+												className: TaskPanel_module_css_default.fileLine,
+												children: [":", file.line]
+											})
+										]
+									}) }, i)), (task.files?.length ?? 0) > 12 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+										className: TaskPanel_module_css_default.muted,
+										children: [
+											"… 共 ",
+											task.files.length,
+											" 个"
+										]
+									})]
+								})]
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: TaskPanel_module_css_default.cardFooter,
+								children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+										variant: "outline",
+										size: "sm",
+										disabled: isBound || syncing,
+										onClick: onSwitch,
+										children: t("task.switch")
+									}),
+									isBound && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+										variant: "outline",
+										size: "sm",
+										disabled: syncing,
+										onClick: onUnbind,
+										title: t("task.unbind"),
+										children: t("task.unbind")
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+										variant: "outline",
+										size: "sm",
+										disabled: syncing,
+										onClick: onArchive,
+										children: t("task.archive")
+									})
+								]
+							})
+						]
+					})
+				]
+			});
+		}
+		//#endregion
+		//#region src/client/TaskPanel.tsx
 		/**
-		* 错误边界：任务面板渲染一旦抛错，不再让 shell.overlay 把整条条目退休
-		* （宿主对崩溃条目会永久移除直到重载页面）。捕获后显示一个纯文本兜底，
-		* 点击重新渲染。
+		* Task Panel — dsh web `shell.overlay` 浮动任务面板。
+		* Container 组件：负责数据获取、命令桥接、状态协调
+		* Presentational 组件在 TaskComponents.tsx
 		*/
+		const STATUS_CYCLE = [
+			"pending",
+			"in_progress",
+			"completed"
+		];
+		function getT() {
+			return createTranslate(typeof navigator !== "undefined" && navigator.language.startsWith("zh") ? zh : en);
+		}
+		function useSessionId(ctx) {
+			const [, force] = (0, react.useState)(0);
+			(0, react.useEffect)(() => {
+				const list = ctx?.sessions?.list;
+				if (!list || typeof list.subscribe !== "function") return;
+				return list.subscribe(() => force((n) => n + 1));
+			}, [ctx]);
+			const snap = ctx?.sessions?.list?.getSnapshot?.();
+			if (!snap) return null;
+			if (snap.current) return snap.current;
+			return (Array.isArray(snap.items) ? snap.items.find((s) => !s.blank) ?? snap.items[0] : void 0)?.sessionId ?? null;
+		}
 		var PanelErrorBoundary = class extends react.Component {
 			state = { failed: false };
 			static getDerivedStateFromError() {
 				return { failed: true };
 			}
 			componentDidCatch(error) {
-				console.warn("[dsh-project-memory] task panel render crashed (contained by boundary):", error);
+				console.warn("[dsh-project-memory] task panel render crashed:", error);
 			}
 			render() {
 				if (!this.state.failed) return this.props.children;
@@ -512,22 +937,21 @@ window.__ModuleLoader__.load({
 		}
 		function TaskPanelView({ ctx }) {
 			const t = getT();
-			const state = useTaskStore();
+			const data = useTaskData();
+			const ui = useTaskUI();
 			const sessionId = useSessionId(ctx);
 			const [syncing, setSyncing] = (0, react.useState)(false);
 			const [syncedAt, setSyncedAt] = (0, react.useState)(0);
-			const [copiedPath, setCopiedPath] = (0, react.useState)(null);
 			const [syncError, setSyncError] = (0, react.useState)(null);
-			const panelRef = (0, react.useRef)(null);
-			const drag = (0, react.useRef)(null);
-			const copyTimer = (0, react.useRef)(void 0);
-			const actions = taskStore.actions;
-			const activeTasks = state.tasks.filter((task) => !task.archived);
-			const boundTask = state.boundTaskId ? state.tasks.find((task) => task.id === state.boundTaskId) ?? null : null;
+			const [showHints, setShowHints] = (0, react.useState)(true);
+			const dataActions = useTaskDataActions();
+			const uiActions = useTaskUIActions();
+			const activeTasks = data.tasks.filter((task) => !task.archived);
+			const boundTask = data.boundTaskId ? data.tasks.find((task) => task.id === data.boundTaskId) ?? null : null;
 			const applyPayload = (text) => {
 				const parsed = parseTaskPayloadText(text);
 				if (!parsed) return false;
-				actions.setTasks({
+				dataActions.setTasks({
 					tasks: parsed.tasks,
 					boundTaskId: parsed.boundId,
 					archivedCount: parsed.archived
@@ -562,7 +986,10 @@ window.__ModuleLoader__.load({
 				if (syncing) return;
 				setSyncing(true);
 				try {
+					const prevBoundId = data.boundTaskId;
 					await runLine("/tasks");
+					const newBoundId = useTaskData.getSnapshot().boundTaskId;
+					if (newBoundId && newBoundId !== prevBoundId) await runLine(`/task switch ${newBoundId}`);
 				} finally {
 					setSyncing(false);
 				}
@@ -576,12 +1003,6 @@ window.__ModuleLoader__.load({
 					setSyncing(false);
 				}
 			};
-			const [editing, setEditing] = (0, react.useState)(null);
-			const STATUS_CYCLE = [
-				"pending",
-				"in_progress",
-				"completed"
-			];
 			const pushSteps = (taskId, steps) => {
 				runLine(`/task todos ${JSON.stringify(steps.map((s) => ({
 					content: s.content,
@@ -589,7 +1010,7 @@ window.__ModuleLoader__.load({
 				})))}`);
 			};
 			const cycleStatus = (taskId, index) => {
-				const task = state.tasks.find((tt) => tt.id === taskId);
+				const task = data.tasks.find((tt) => tt.id === taskId);
 				if (!task) return;
 				const next = (task.steps || []).map((s, i) => {
 					if (i !== index) return s;
@@ -602,37 +1023,36 @@ window.__ModuleLoader__.load({
 				pushSteps(taskId, next);
 			};
 			const commitStepText = (taskId, index, value) => {
-				const task = state.tasks.find((tt) => tt.id === taskId);
+				const task = data.tasks.find((tt) => tt.id === taskId);
 				const trimmed = value.trim();
-				if (!task) {
-					setEditing(null);
-					return;
-				}
-				const same = (task.steps || [])[index]?.content === trimmed;
-				setEditing(null);
-				if (same || !trimmed) return;
+				if (!task) return;
+				if ((task.steps || [])[index]?.content === trimmed || !trimmed) return;
 				const next = (task.steps || []).map((s, i) => i === index ? {
 					...s,
 					content: trimmed
 				} : s);
 				pushSteps(taskId, next);
 			};
-			const [editingTitle, setEditingTitle] = (0, react.useState)(null);
+			const reorderSteps = (taskId, fromIndex, toIndex) => {
+				if (fromIndex === toIndex) return;
+				const task = data.tasks.find((tt) => tt.id === taskId);
+				if (!task) return;
+				const steps = [...task.steps || []];
+				const [moved] = steps.splice(fromIndex, 1);
+				const targetIndex = toIndex > fromIndex ? toIndex - 1 : toIndex;
+				steps.splice(targetIndex, 0, moved);
+				pushSteps(taskId, steps);
+			};
 			const commitTitle = (taskId, value) => {
-				const task = state.tasks.find((tt) => tt.id === taskId);
+				const task = data.tasks.find((tt) => tt.id === taskId);
 				const trimmed = value.trim();
-				if (!task) {
-					setEditingTitle(null);
-					return;
-				}
-				const same = task.title === trimmed;
-				setEditingTitle(null);
-				if (same || !trimmed) return;
+				if (!task) return;
+				if (task.title === trimmed || !trimmed) return;
 				runLine(`/task rename ${taskId} ${JSON.stringify(trimmed)}`);
 			};
 			const expand = () => {
-				actions.open();
-				if (Date.now() - Math.max(state.lastUpdate, syncedAt) > 3e4) refresh();
+				uiActions.open();
+				if (Date.now() - Math.max(data.lastUpdate, syncedAt) > 3e4) refresh();
 			};
 			const THEMES = [
 				"native",
@@ -640,12 +1060,14 @@ window.__ModuleLoader__.load({
 				"brutal",
 				"mono"
 			];
-			const style = THEMES.includes(state.theme) ? state.theme : "native";
+			const style = THEMES.includes(ui.theme) ? ui.theme : "native";
 			const styleLabel = t(`style.${style}`);
 			const cycleTheme = () => {
 				const i = THEMES.indexOf(style);
-				actions.setTheme(THEMES[(i + 1) % THEMES.length]);
+				uiActions.setTheme(THEMES[(i + 1) % THEMES.length]);
 			};
+			const panelRef = (0, react.useRef)(null);
+			const drag = (0, react.useRef)(null);
 			const handleDragStart = (e) => {
 				if (e.target !== e.currentTarget) return;
 				const rect = panelRef.current?.getBoundingClientRect();
@@ -660,7 +1082,7 @@ window.__ModuleLoader__.load({
 					panelRef.current?.offsetHeight;
 					const x = Math.max(8, Math.min(window.innerWidth - width - 8, ev.clientX - drag.current.dx));
 					const y = Math.max(8, Math.min(window.innerHeight - 64, ev.clientY - drag.current.dy));
-					actions.setPanelPosition({
+					uiActions.setPanelPosition({
 						x,
 						y
 					});
@@ -673,31 +1095,36 @@ window.__ModuleLoader__.load({
 				window.addEventListener("mousemove", onMove);
 				window.addEventListener("mouseup", onUp);
 			};
-			const copyPath = (path) => {
-				if (copiedPath === path) return;
-				navigator.clipboard?.writeText(path).catch(() => void 0);
-				setCopiedPath(path);
-				window.clearTimeout(copyTimer.current);
-				copyTimer.current = window.setTimeout(() => setCopiedPath(null), 1200);
-			};
-			(0, react.useEffect)(() => () => window.clearTimeout(copyTimer.current), []);
 			(0, react.useEffect)(() => {
 				if (!sessionId) return;
-				const snap = taskStore.getSnapshot();
-				if (snap.lastUpdate === 0 && !snap.closed) {
-					const timer = window.setTimeout(() => void refresh(), 300);
-					return () => window.clearTimeout(timer);
-				}
+				if (!ui.closed) refresh();
 			}, [sessionId]);
-			if (state.closed) return null;
-			if (state.minimized) {
+			(0, react.useEffect)(() => {
+				const ctxWithEvents = ctx;
+				const handler = () => {
+					uiActions.open();
+					if (Date.now() - Math.max(data.lastUpdate, syncedAt) > 3e4) refresh();
+				};
+				ctxWithEvents?.events?.on?.("dsh:task-panel:show", handler);
+				return () => {
+					ctxWithEvents?.events?.off?.("dsh:task-panel:show", handler);
+				};
+			}, [
+				ctx,
+				uiActions,
+				data.lastUpdate,
+				syncedAt,
+				refresh
+			]);
+			if (ui.closed) return null;
+			if (ui.minimized) {
 				const label = boundTask ? `${t("minibar.current")}: ${boundTask.title}` : activeTasks.length > 0 ? `${t("minibar.current")}: ${activeTasks.length} ${t("minibar.tasks")}` : t("minibar.no-task");
 				return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(MiniBar, {
 					label,
 					hint: t("minibar.click-expand"),
-					position: state.panelPosition,
+					position: ui.panelPosition,
 					theme: style,
-					onMove: (pos) => actions.setPanelPosition(pos),
+					onMove: uiActions.setPanelPosition,
 					open: expand
 				});
 			}
@@ -709,8 +1136,8 @@ window.__ModuleLoader__.load({
 				className: TaskPanel_module_css_default.panel,
 				ref: panelRef,
 				style: {
-					left: state.panelPosition.x,
-					top: state.panelPosition.y
+					left: ui.panelPosition.x,
+					top: ui.panelPosition.y
 				},
 				"data-theme": style === "native" ? void 0 : style,
 				children: [
@@ -724,7 +1151,7 @@ window.__ModuleLoader__.load({
 						className: TaskPanel_module_css_default.header,
 						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 							className: TaskPanel_module_css_default.headerLeft,
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 								type: "button",
 								className: TaskPanel_module_css_default.headerIconBtn,
 								onClick: cycleTheme,
@@ -745,17 +1172,15 @@ window.__ModuleLoader__.load({
 								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 									variant: "ghost",
 									size: "sm",
-									className: syncing ? TaskPanel_module_css_default.spinning : void 0,
-									onClick: () => void refresh(),
-									disabled: syncing,
-									"aria-label": t("panel.refresh"),
-									title: t("panel.refresh"),
-									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconRefreshOutline16, {})
+									onClick: () => setShowHints(!showHints),
+									"aria-label": showHints ? t("panel.hints-off") : t("panel.hints-on"),
+									title: showHints ? t("panel.hints-off") : t("panel.hints-on"),
+									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconQuestionOutline14, { size: 16 })
 								}),
 								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 									variant: "ghost",
 									size: "sm",
-									onClick: () => actions.minimize(),
+									onClick: () => uiActions.minimize(),
 									"aria-label": t("panel.minimize"),
 									title: t("panel.minimize"),
 									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
@@ -763,7 +1188,7 @@ window.__ModuleLoader__.load({
 								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 									variant: "ghost",
 									size: "sm",
-									onClick: () => actions.close(),
+									onClick: () => uiActions.close(),
 									"aria-label": t("panel.close"),
 									title: t("panel.close"),
 									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCloseOutline16, {})
@@ -802,185 +1227,24 @@ window.__ModuleLoader__.load({
 					}) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: TaskPanel_module_css_default.taskList,
 						children: [activeTasks.map((task) => {
-							const steps = task.steps || [];
-							const done = steps.filter((s) => s.status === "completed").length;
-							const expanded = state.expandedTaskIds.includes(task.id);
-							const isBound = state.boundTaskId === task.id;
-							const pct = steps.length > 0 ? Math.round(done / steps.length * 100) : 0;
-							return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("article", {
-								className: `${TaskPanel_module_css_default.card}${isBound ? ` ${TaskPanel_module_css_default.cardBound}` : ""}`,
-								children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-										className: TaskPanel_module_css_default.cardHead,
-										onClick: () => {
-											if (editingTitle?.taskId === task.id) return;
-											actions.toggleTaskExpanded(task.id);
-										},
-										"aria-expanded": expanded,
-										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-											className: TaskPanel_module_css_default.cardTitleRow,
-											children: [isBound && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-												className: TaskPanel_module_css_default.boundBadge,
-												children: t("task.current")
-											}), isBound && editingTitle?.taskId === task.id ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(AutoEdit, {
-												value: editingTitle.value,
-												singleLine: true,
-												onCommit: (v) => commitTitle(task.id, v),
-												onCancel: () => setEditingTitle(null)
-											}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-												className: `${TaskPanel_module_css_default.cardTitle}${isBound ? ` ${TaskPanel_module_css_default.cardTitleEditable}` : ""}`,
-												title: isBound ? t("task.title-edit") : void 0,
-												onDoubleClick: (e) => {
-													e.preventDefault();
-													e.stopPropagation();
-													if (isBound) setEditingTitle({
-														taskId: task.id,
-														value: task.title
-													});
-												},
-												children: task.title
-											})]
-										}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-											className: TaskPanel_module_css_default.cardMeta,
-											children: [
-												steps.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-													className: TaskPanel_module_css_default.progressText,
-													children: [
-														done,
-														"/",
-														steps.length
-													]
-												}),
-												/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-													className: TaskPanel_module_css_default.updated,
-													children: timeAgo(task.updatedAt || task.lastActiveAt)
-												}),
-												/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-													className: TaskPanel_module_css_default.chevron,
-													children: expanded ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronUpOutline14, {}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
-												})
-											]
-										})]
-									}),
-									steps.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-										className: TaskPanel_module_css_default.track,
-										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-											className: TaskPanel_module_css_default.trackFill,
-											style: { width: `${pct}%` }
-										})
-									}),
-									expanded && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-										className: TaskPanel_module_css_default.cardBody,
-										children: [
-											/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-												className: TaskPanel_module_css_default.section,
-												children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-													className: TaskPanel_module_css_default.sectionLabel,
-													children: [t("task.steps"), steps.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-														className: TaskPanel_module_css_default.sectionCount,
-														children: steps.length
-													})]
-												}), steps.length > 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ol", {
-													className: TaskPanel_module_css_default.stepsList,
-													children: steps.map((step, i) => {
-														const isEditing = isBound && editing?.taskId === task.id && editing.index === i;
-														return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
-															className: TaskPanel_module_css_default.stepRow,
-															children: [isBound ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-																type: "button",
-																className: TaskPanel_module_css_default.stepToggle,
-																disabled: syncing,
-																onClick: () => cycleStatus(task.id, i),
-																title: `${t("step.completed")}/${t("step.in-progress")}/${t("step.pending")}（点击切换）`,
-																children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(StepIcon, { status: step.status })
-															}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(StepIcon, { status: step.status }), isEditing ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(AutoEdit, {
-																value: editing.value,
-																onCommit: (v) => commitStepText(task.id, i, v),
-																onCancel: () => setEditing(null)
-															}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-																className: `${TaskPanel_module_css_default.stepContent}${step.status === "completed" ? ` ${TaskPanel_module_css_default.stepContentDone}` : ""}${step.status === "in_progress" ? ` ${TaskPanel_module_css_default.stepContentRun}` : ""}${isBound ? ` ${TaskPanel_module_css_default.stepEditable}` : ""}`,
-																title: isBound ? t("step.edit-hint") : void 0,
-																onDoubleClick: () => {
-																	if (isBound) setEditing({
-																		taskId: task.id,
-																		index: i,
-																		value: String(step.content ?? "")
-																	});
-																},
-																children: step.content
-															})]
-														}, i);
-													})
-												}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-													className: TaskPanel_module_css_default.muted,
-													children: t("panel.empty-desc")
-												})]
-											}),
-											(task.files?.length ?? 0) > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-												className: TaskPanel_module_css_default.section,
-												children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-													className: TaskPanel_module_css_default.sectionLabel,
-													children: [t("task.files"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-														className: TaskPanel_module_css_default.sectionCount,
-														children: task.files.length
-													})]
-												}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("ul", {
-													className: TaskPanel_module_css_default.filesList,
-													children: [task.files.slice(0, 12).map((file, i) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-														className: TaskPanel_module_css_default.fileRow,
-														onClick: () => copyPath(file.path),
-														title: `${t(copiedPath === file.path ? "file.copied" : "file.copy")}: ${file.path}${file.line ? `:${file.line}` : ""}`,
-														children: [
-															/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: TaskPanel_module_css_default.fileDot }),
-															/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-																className: TaskPanel_module_css_default.filePath,
-																children: file.path
-															}),
-															file.line && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-																className: TaskPanel_module_css_default.fileLine,
-																children: [":", file.line]
-															})
-														]
-													}) }, i)), (task.files?.length ?? 0) > 12 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
-														className: TaskPanel_module_css_default.muted,
-														children: [
-															"… 共 ",
-															task.files.length,
-															" 个"
-														]
-													})]
-												})]
-											}),
-											/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-												className: TaskPanel_module_css_default.cardFooter,
-												children: [
-													/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
-														variant: "outline",
-														size: "sm",
-														disabled: isBound || syncing,
-														onClick: () => void handleAction("switch", task.id),
-														children: t("task.switch")
-													}),
-													isBound && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
-														variant: "outline",
-														size: "sm",
-														disabled: syncing,
-														onClick: () => void runLine("/task unbind"),
-														title: t("task.unbind"),
-														children: t("task.unbind")
-													}),
-													/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
-														variant: "outline",
-														size: "sm",
-														disabled: syncing,
-														onClick: () => void handleAction("archive", task.id),
-														children: t("task.archive")
-													})
-												]
-											})
-										]
-									})
-								]
+							task.steps;
+							const expanded = ui.expandedTaskIds.includes(task.id);
+							const isBound = data.boundTaskId === task.id;
+							return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TaskCard, {
+								task,
+								isBound,
+								expanded,
+								onToggleExpand: () => uiActions.toggleTaskExpanded(task.id),
+								onSwitch: () => handleAction("switch", task.id),
+								onUnbind: () => runLine("/task unbind"),
+								onArchive: () => handleAction("archive", task.id),
+								onRename: (value) => commitTitle(task.id, value),
+								onEditStep: (index, value) => commitStepText(task.id, index, value),
+								onCycleStatus: (index) => cycleStatus(task.id, index),
+								onReorderSteps: (from, to) => reorderSteps(task.id, from, to),
+								showHints,
+								syncing,
+								t
 							}, task.id);
 						}), syncing && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 							className: TaskPanel_module_css_default.syncHint,
@@ -1009,15 +1273,8 @@ window.__ModuleLoader__.load({
 		//#region src/client/TaskCommandNode.tsx
 		/**
 		* /tasks、/task 命令在会话中的节点渲染器（conversation.chat.commandview，按命令名 key）。
-		*
-		* 目标：不再让大段文本+JSON 出现在会话里——
-		*  - 列表型（/tasks、无动词的 /task）：只渲染一行极简“已同步 N 套”状态；
-		*    同时把节点文本里的 JSON 载荷解析进浮动面板（侧边卡片由它驱动），
-		*    面板若被收起则自动展开（等价“输入 /task 就看到卡片”）。
-		*  - 动作型（/task switch|archive）：渲染一行操作结果（切换/归档反馈）。
-		*  - 错误/执行中：一行极简状态，不倾倒原文。
+		* 列表型命令（/tasks、无动词 /task）同步数据并打开面板。
 		*/
-		/** node = CommandRowOwnerProps.node（CommandNode: name / args / outcome{kind,text}） */
 		function TaskCommandNode({ node }) {
 			const name = node?.name ?? "task";
 			const outcome = node?.outcome ?? null;
@@ -1025,14 +1282,15 @@ window.__ModuleLoader__.load({
 			const isList = name === "tasks" || !verb;
 			const text = outcome?.text ?? "";
 			const parsed = parseTaskPayloadText(text);
+			const live = (0, react.useRef)(outcome === null);
 			(0, react.useEffect)(() => {
-				if (!parsed) return;
-				taskStore.actions.setTasks({
+				if (!parsed || !live.current) return;
+				taskDataStore.actions.setTasks({
 					tasks: parsed.tasks,
 					boundTaskId: parsed.boundId,
 					archivedCount: parsed.archived
 				});
-				if (isList) taskStore.actions.open();
+				if (isList) taskUIStore.actions.open();
 			}, [text]);
 			if (outcome === null) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: TaskCommandNode_module_css_default.row,
