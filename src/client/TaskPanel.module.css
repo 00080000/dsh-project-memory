@@ -280,6 +280,7 @@
   line-height: 20px;
   color: var(--dsw-alias-label-secondary);
   word-break: break-word;
+  white-space: pre-wrap;
 }
 .stepContentDone {
   color: var(--dsw-alias-label-dimmed);
@@ -430,7 +431,7 @@
   outline: 1px dashed var(--dsw-alias-border-l3, rgba(127,127,127,.4));
   outline-offset: 1px;
 }
-/* 行内编辑框（步骤/标题共用，单行 input） */
+/* 行内编辑框（步骤/标题共用，单行 input，仍被 MemoryView 表单复用） */
 .stepInput {
   flex: 1 1 auto;
   min-width: 0;
@@ -444,6 +445,33 @@
   border: 1px solid var(--dsw-alias-border-l3, rgba(127,127,127,.45));
   border-radius: 5px;
   padding: 0 5px;
+}
+
+/* 任务卡行内编辑器（textarea，按内容自适应增高；高度由 JS 测量写死，
+   内容超过 maxRows 行后内部滚动，避免长步骤/长任务名单行横向拖拽编辑） */
+.editorArea {
+  flex: 1 1 0%;
+  min-width: 0;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base, transparent);
+  border: 1px solid var(--dsw-alias-border-l3, rgba(127,127,127,.45));
+  border-radius: 5px;
+  padding: 2px 5px;
+  margin: 0;
+  resize: none;
+  overflow: hidden;
+  vertical-align: middle;
+  cursor: text;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.editorArea:focus {
+  outline: none;
+  border-color: var(--dsw-alias-border-l3, rgba(127,127,127,.6));
 }
 
 /* —— 步骤拖拽重排：源行半透明 —— */

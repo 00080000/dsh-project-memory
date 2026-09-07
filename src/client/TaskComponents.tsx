@@ -2,7 +2,7 @@
  * Task Panel Presentational 组件 — MiniBar（折叠迷你条）与 TaskCard（任务卡）。
  * 纯渲染 + 卡片局部行内编辑/拖拽状态，动作经 props 回调交给容器（TaskPanel.tsx）。
  */
-import { useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   Button,
   IconChevronDownOutline14,
@@ -43,6 +43,75 @@ function StepIcon({ status }: { status: TaskStep['status'] }) {
   if (status === 'completed') return <IconCheckOutline16 className={css.stepDone} />
   if (status === 'in_progress') return <IconPlayOutline16 className={css.stepRun} />
   return <span className={css.stepPending} />
+}
+
+/**
+ * 双击判定窗口（ms）。
+ * 单击（如卡片展开/收起）会延迟该时长执行：若期间收到第二次点击则按“双击”处理并取消单击，
+ * 从而避免“第一下先展开/收起、布局位移后第二下点不到目标”的问题。
+ * 数值是可感知与可靠性的折中：太小慢速双击会失效，太大单击会显“肉”。
+ */
+const CLICK_SINGLE_DELAY_MS = 250
+
+/**
+ * 行内自适应高度文本编辑器（textarea）。
+ * 编辑体验与单行输入一致（Enter 提交 / Shift+Enter 换行 / Esc 取消 / 失焦提交），
+ * 但高度随内容自动增长（按实际渲染行高测量），最多 maxRows 行后内部滚动，
+ * 解决长步骤/长任务名只能挤在一行里横向滚动编辑的问题。
+ */
+interface InlineEditorProps {
+  value: string
+  className?: string
+  maxRows?: number
+  onValueChange: (value: string) => void
+  onCommit: () => void
+  onCancel: () => void
+}
+
+function InlineEditor({ value, className, maxRows = 8, onValueChange, onCommit, onCancel }: InlineEditorProps) {
+  const ref = useRef<HTMLTextAreaElement>(null)
+
+  // 在绘制前按真实内容测量并写死高度：内容 <= maxRows 行时刚好包住，超出后内部滚动。
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    const cs = getComputedStyle(el)
+    const lineHeight = parseFloat(cs.lineHeight) || 20
+    const padV = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0)
+    const borderV = (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0)
+    const cap = maxRows * lineHeight + padV + borderV
+    const height = Math.min(el.scrollHeight, cap)
+    el.style.height = `${height}px`
+    el.style.overflowY = el.scrollHeight > cap ? 'auto' : 'hidden'
+  }, [value, maxRows])
+
+  return (
+    <textarea
+      ref={ref}
+      className={className}
+      rows={1}
+      value={value}
+      autoFocus
+      spellCheck={false}
+      onChange={(e) => onValueChange(e.target.value)}
+      onFocus={(e) => {
+        // 光标放到末尾，便于直接在原文后继续输入
+        const len = e.target.value.length
+        e.target.setSelectionRange(len, len)
+      }}
+      onBlur={onCommit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault()
+          onCommit()
+        } else if (e.key === 'Escape') {
+          e.preventDefault()
+          onCancel()
+        }
+      }}
+    />
+  )
 }
 
 interface MiniBarProps {
@@ -163,29 +232,66 @@ export function TaskCard({
     onRename(value)
   }
 
+  // —— 卡片头单击(展开/收起)与双击(编辑任务名)的时序判定 ——
+  // 单击动作延迟 CLICK_SINGLE_DELAY_MS 执行；若在窗口内收到第二次点击，取消单击、
+  // 命中任务名则直接进入编辑，避免“第一下已展开/收起、布局位移、第二下点不到任务名”。
+  const headClickTimer = useRef<number | null>(null)
+  // 编辑状态下，点卡片头任意处会先触发失焦提交；该次点击不应再当作“切换展开”的单击。
+  const suppressHeadClick = useRef(false)
+  useEffect(() => () => {
+    if (headClickTimer.current !== null) window.clearTimeout(headClickTimer.current)
+  }, [])
+
+  const handleHeadClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (suppressHeadClick.current) {
+      // 上一次 mousedown 落在标题编辑框内（失焦提交产生），吞掉这次点击，不切换展开
+      suppressHeadClick.current = false
+      return
+    }
+    if (titleEdit !== null) return
+    const target = e.target as HTMLElement
+    const onTitle = isBound && target.closest('[data-card-title]') !== null
+    if (headClickTimer.current !== null) {
+      // 第二次点击 → 双击：取消待执行的单击动作
+      window.clearTimeout(headClickTimer.current)
+      headClickTimer.current = null
+      if (onTitle) setTitleEdit({ value: String(task.title ?? '') })
+      else onToggleExpand()
+      return
+    }
+    headClickTimer.current = window.setTimeout(() => {
+      headClickTimer.current = null
+      onToggleExpand()
+    }, CLICK_SINGLE_DELAY_MS)
+  }
+
   return (
     <article data-task-id={task.id} className={`${css.card}${isBound ? ` ${css.cardBound}` : ''}`}>
       <button
         className={css.cardHead}
-        onClick={() => { if (titleEdit !== null) return; onToggleExpand() }}
+        onClick={handleHeadClick}
+        onMouseDownCapture={() => {
+          // 标题编辑中，点击卡片头任意处都会先失焦提交；标记该次点击以在 onClick 中吞掉，
+          // 避免“改名提交一下、卡片又收起/展开一下”的误切换。
+          if (titleEdit !== null) suppressHeadClick.current = true
+        }}
+        onDoubleClick={(e) => e.preventDefault()}
         aria-expanded={expanded}
       >
         <div className={css.cardTitleRow}>
           {isBound && <span className={css.boundBadge}>{t('task.current')}</span>}
           {isBound && titleEdit !== null ? (
-            <input
-              className={css.stepInput}
+            <InlineEditor
+              className={css.editorArea}
               value={titleEdit.value}
-              autoFocus
-              onChange={(e) => setTitleEdit({ value: e.target.value })}
-              onBlur={commitTitleEdit}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') commitTitleEdit()
-                else if (e.key === 'Escape') setTitleEdit(null)
-              }}
+              maxRows={4}
+              onValueChange={(value) => setTitleEdit({ value })}
+              onCommit={commitTitleEdit}
+              onCancel={() => setTitleEdit(null)}
             />
           ) : (
             <span
+              data-card-title
               className={`${css.cardTitle}${isBound ? ` ${css.cardTitleEditable}` : ''}`}
               title={isBound ? t('task.title-edit') : undefined}
               onDoubleClick={(e) => {
@@ -252,16 +358,13 @@ export function TaskCard({
                           <StepIcon status={step.status} />
                         )}
                         {stepIsEditing ? (
-                          <input
-                            className={css.stepInput}
+                          <InlineEditor
+                            className={css.editorArea}
                             value={stepEdit!.value}
-                            autoFocus
-                            onChange={(e) => setStepEdit({ index: i, value: e.target.value })}
-                            onBlur={() => commitStepEdit(i)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') commitStepEdit(i)
-                              else if (e.key === 'Escape') setStepEdit(null)
-                            }}
+                            maxRows={10}
+                            onValueChange={(value) => setStepEdit({ index: i, value })}
+                            onCommit={() => commitStepEdit(i)}
+                            onCancel={() => setStepEdit(null)}
                           />
                         ) : (
                           <span

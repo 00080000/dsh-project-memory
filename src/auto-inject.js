@@ -177,34 +177,40 @@ export function wrapLlmStream(streamFn, config, { resolveRoot, state, llmName = 
   }
 }
 
-/** 注册 agent/pre-step 监听，向每步请求的 enter 决策追加记忆消息（默认开）。 */
+/** 注册 agent/pre-step 监听，向每步请求的 enter 决策追加记忆消息（默认开）。
+ * 宿主瀑布事件签名为 (payload, next)：payload.agent.session 提供会话（header.cwd=项目根）。
+ * 任何异常/无会话 cwd → 原样返回默认决策，零副作用，绝不让宿主请求受影响。
+ */
 export function installAutoInject(ctx, config) {
   const auto = (config && config.autoContext) || {}
   if (auto.enabled === false) return
   const cfg = cfgEngine(config)
   const mem = {}
-  ctx.on('agent/pre-step', async (next, { agent, session }) => {
+  ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next()
     if (!decision || decision.kind !== 'enter') return decision
-    const root = session?.header?.cwd
-    const sessionId = session?.id
-    if (!root) return decision
     try {
+      const agent = payload && payload.agent
+      const session = agent && agent.session
+      const root = session && session.header && session.header.cwd
+      const sessionId = session && session.id
+      if (!root || !sessionId) return decision
       const query = lastUserText(decision.messages)
       const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
       const globalStore = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()
-      const boundTaskId = sessionId && store.getBoundTaskId(sessionId) ? store.getBoundTaskId(sessionId) : null
+      const boundTaskId = store.getBoundTaskId(sessionId) ? store.getBoundTaskId(sessionId) : null
       const task = boundTaskId ? store.getTask(boundTaskId) : null
       const built = buildInjection({ query: query || '', task, store, globalStore, projectTagsList: projectTags(root), cfg })
       const fp = fingerprint(built.text)
       if (built.text && fp !== mem.lastFp) {
-        const last = decision.messages && decision.messages[decision.messages.length - 1]
-        if (last && last.role === 'user') {
-          const content = Array.isArray(last.content) ? last.content : []
-          content.push({ type: 'text', text: `\n\n${INJECT_MARK} auto-context\n${built.text}` })
-          last.content = content
-          mem.lastFp = fp
-        }
+        // 以宿主 createUserMessage 构造的完整 user 消息追加（带 id/source，plan-mode narration 同款）。
+        // 裸 {role,content} 消息缺 source 会让宿主逐条读 message.source.kind 时崩溃。
+        mem.lastFp = fp
+        const injectMessage = createUserMessage({
+          content: [{ type: 'text', text: `\n\n${INJECT_MARK} auto-context\n${built.text}` }],
+          source: { kind: 'plugin', plugin: 'dsh-project-memory', form: 'notice', summary: `记忆注入 ${built.text.length} 字符` },
+        })
+        return { ...decision, messages: [...decision.messages, injectMessage] }
       }
     } catch (err) {
       console.error(`[dsh-project-memory] auto-inject skipped: ${err?.message || err}`)
