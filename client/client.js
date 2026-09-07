@@ -49,7 +49,41 @@ window.__ModuleLoader__.load({
 			"minibar.current": "当前任务",
 			"minibar.click-expand": "点击展开并同步",
 			"minibar.tasks": "个任务",
-			"minibar.no-task": "暂无任务 · 点击查看"
+			"minibar.no-task": "暂无任务 · 点击查看",
+			"view.cycle": "切换视图：任务 / 项目记忆 / 全局记忆",
+			"view.task": "任务",
+			"view.project": "项目记忆",
+			"view.global": "全局记忆",
+			"mem.scope.task": "本任务草稿",
+			"mem.scope.project": "项目记忆",
+			"mem.scope.global": "全局记忆",
+			"mem.empty": "暂无记忆条目（反思或 save_lesson 后出现）",
+			"mem.confirm": "审核",
+			"mem.promote": "提升",
+			"mem.demote": "降级",
+			"mem.archive": "归档",
+			"mem.restore": "恢复",
+			"mem.delete": "删除",
+			"mem.draft": "草稿",
+			"mem.archived": "已归档",
+			"mem.loading": "加载中…",
+			"mem.error": "同步失败",
+			"mem.kind.lesson": "坑",
+			"mem.kind.decision": "权衡",
+			"mem.kind.procedure": "指南",
+			"mem.kind.experience": "经验",
+			"mem.needs-bound": "需绑定任务后可降级",
+			"mem.new": "新建",
+			"mem.save": "保存",
+			"mem.cancel": "取消",
+			"mem.f.title": "标题（教训模式/主题/指南名）",
+			"mem.f.kind": "类型",
+			"mem.f.body": "做法 / 理由 / 解法",
+			"mem.f.steps": "步骤（每行一步）",
+			"mem.f.trigger": "作为 Skill：触发关键词（逗号分隔）",
+			"mem.saved": "已保存",
+			"mem.edit": "编辑",
+			"mem.section-label": "任务记忆"
 		};
 		const en = {
 			"panel.title": "Task Flow",
@@ -89,7 +123,41 @@ window.__ModuleLoader__.load({
 			"minibar.current": "Current task",
 			"minibar.click-expand": "Click to expand & sync",
 			"minibar.tasks": "tasks",
-			"minibar.no-task": "No tasks · click to view"
+			"minibar.no-task": "No tasks · click to view",
+			"view.cycle": "Switch view: tasks / project memory / global memory",
+			"view.task": "Tasks",
+			"view.project": "Project Memory",
+			"view.global": "Global Memory",
+			"mem.scope.task": "Task drafts",
+			"mem.scope.project": "Project memory",
+			"mem.scope.global": "Global memory",
+			"mem.empty": "No memory entries yet (created by reflection or save_lesson)",
+			"mem.confirm": "Approve",
+			"mem.promote": "Promote",
+			"mem.demote": "Demote",
+			"mem.archive": "Archive",
+			"mem.restore": "Restore",
+			"mem.delete": "Delete",
+			"mem.draft": "draft",
+			"mem.archived": "archived",
+			"mem.loading": "Loading…",
+			"mem.error": "Sync failed",
+			"mem.kind.lesson": "lesson",
+			"mem.kind.decision": "decision",
+			"mem.kind.procedure": "procedure",
+			"mem.kind.experience": "experience",
+			"mem.needs-bound": "Bind a task to demote",
+			"mem.new": "New",
+			"mem.save": "Save",
+			"mem.cancel": "Cancel",
+			"mem.f.title": "Title (pattern / topic / procedure name)",
+			"mem.f.kind": "Kind",
+			"mem.f.body": "Fix / reason / solution",
+			"mem.f.steps": "Steps (one per line)",
+			"mem.f.trigger": "As Skill: trigger keywords (comma separated)",
+			"mem.saved": "Saved",
+			"mem.edit": "Edit",
+			"mem.section-label": "Task memory"
 		};
 		function createTranslate(dict) {
 			return (key, params) => {
@@ -136,7 +204,13 @@ window.__ModuleLoader__.load({
 		};
 		const dataListeners = /* @__PURE__ */ new Set();
 		function setDataState(next) {
-			dataState = next;
+			const patch = typeof next === "function" ? next(dataState) : next;
+			dataState = {
+				tasks: Array.isArray(patch?.tasks) ? patch.tasks : [],
+				boundTaskId: patch?.boundTaskId ?? null,
+				archivedCount: typeof patch?.archivedCount === "number" ? patch.archivedCount : 0,
+				lastUpdate: typeof patch?.lastUpdate === "number" ? patch.lastUpdate : 0
+			};
 			for (const listener of dataListeners) listener();
 		}
 		function broadcastDataUpdate(tasks, archivedCount) {
@@ -144,7 +218,7 @@ window.__ModuleLoader__.load({
 			SYNC_CHANNEL.postMessage({
 				type: "PROJECT_TASKS_UPDATED",
 				payload: {
-					tasks,
+					tasks: Array.isArray(tasks) ? tasks : [],
 					archivedCount
 				}
 			});
@@ -155,8 +229,8 @@ window.__ModuleLoader__.load({
 				const { tasks, archivedCount } = msg.payload;
 				setDataState((prev) => ({
 					...prev,
-					tasks: tasks || [],
-					archivedCount: archivedCount ?? 0,
+					tasks: Array.isArray(tasks) ? tasks : [],
+					archivedCount: typeof archivedCount === "number" ? archivedCount : prev.archivedCount,
 					lastUpdate: Date.now()
 				}));
 			}
@@ -487,7 +561,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:/home/sxt/project/dsh-project-memory/src/client/TaskPanel.module.css.mjs
-		const css$1 = ".vZSZnG_panel{pointer-events:auto;background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));border:1px solid var(--dsw-alias-border-l2,#7f7f7f4d);border-radius:14px;flex-direction:column;width:380px;max-width:calc(100vw - 24px);max-height:min(70vh,640px);font-family:inherit;animation:.18s ease-out vZSZnG_panelIn;display:flex;position:fixed;overflow:hidden;box-shadow:0 12px 32px #00000029,0 2px 8px #00000014}@keyframes vZSZnG_panelIn{0%{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}.vZSZnG_dragHandle{cursor:grab;z-index:1;justify-content:center;align-items:center;height:12px;display:flex;position:absolute;top:0;left:0;right:0}.vZSZnG_dragHandle:active{cursor:grabbing}.vZSZnG_handleGrip{background:var(--dsw-alias-separator-primary,#7f7f7f59);opacity:.8;border-radius:2px;width:32px;height:3px}.vZSZnG_header{border-bottom:1px solid var(--dsw-alias-border-l1,#7f7f7f2e);-webkit-user-select:none;user-select:none;justify-content:space-between;align-items:center;gap:8px;padding:10px 10px 8px 14px;display:flex}.vZSZnG_headerLeft{align-items:center;gap:6px;min-width:0;display:flex}.vZSZnG_headerIcon{color:var(--dsw-alias-label-secondary);flex:none}.vZSZnG_headerTitle{color:var(--dsw-alias-label-primary);white-space:nowrap;margin:0;font-size:13px;font-weight:600;line-height:20px}.vZSZnG_headerRight{align-items:center;gap:2px;margin-left:auto;display:flex}.vZSZnG_counts{color:var(--dsw-alias-label-tertiary);white-space:nowrap;margin-right:4px;font-size:11px;line-height:16px}.vZSZnG_boundBadge{color:var(--dsw-alias-label-primary-foreground,#fff);background:var(--dsw-alias-button-primary-fill,#3a6ef5);white-space:nowrap;border-radius:7px;flex:none;padding:0 6px;font-size:10px;line-height:14px}.vZSZnG_notice{color:var(--dsw-alias-state-warn-label,#b7791f);background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1a);word-break:break-all;border-radius:8px;margin:8px 12px 0;padding:6px 10px;font-size:12px;line-height:18px}.vZSZnG_taskList{scrollbar-width:thin;scrollbar-color:var(--dsw-alias-scrollbar-bg-l2,transparent) transparent;flex-direction:column;gap:6px;padding:8px;display:flex;overflow-y:auto}.vZSZnG_emptyState{text-align:center;color:var(--dsw-alias-label-secondary);padding:36px 24px 30px}.vZSZnG_emptyTitle{color:var(--dsw-alias-label-primary);margin:0 0 6px;font-size:13px;font-weight:600}.vZSZnG_emptyDesc{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:20px}.vZSZnG_syncHint{color:var(--dsw-alias-label-dimmed);justify-content:center;align-items:center;gap:6px;margin:10px 0 0;font-size:11px;display:flex}.vZSZnG_card{border:1px solid var(--dsw-alias-border-l1,#7f7f7f29);background:var(--dsw-alias-bg-base,transparent);border-radius:10px;transition:border-color .15s;overflow:hidden}.vZSZnG_cardBound{border-color:var(--dsw-alias-border-l3,#7f7f7f59);box-shadow:inset 0 0 0 .5px var(--dsw-alias-border-l3,transparent)}.vZSZnG_cardHead{cursor:pointer;text-align:left;background:0 0;border:none;justify-content:space-between;align-items:center;gap:8px;width:100%;padding:8px 10px 7px;display:flex}.vZSZnG_cardHead:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_cardTitleRow{align-items:center;gap:6px;min-width:0;display:flex}.vZSZnG_cardTitle{color:var(--dsw-alias-label-primary);white-space:nowrap;text-overflow:ellipsis;font-size:13px;font-weight:500;line-height:20px;overflow:hidden}.vZSZnG_cardMeta{color:var(--dsw-alias-label-tertiary);flex:none;align-items:center;gap:8px;display:flex}.vZSZnG_progressText{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}.vZSZnG_updated{color:var(--dsw-alias-label-dimmed);font-size:10px;line-height:14px}.vZSZnG_chevron{color:var(--dsw-alias-label-tertiary);display:inline-flex}.vZSZnG_track{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f);border-radius:1px;height:2px;margin:0 10px 6px;overflow:hidden}.vZSZnG_trackFill{background:var(--dsw-alias-label-primary-bluish,var(--dsw-alias-button-primary-fill,#3a6ef5));border-radius:1px;height:100%;transition:width .2s}.vZSZnG_cardBody{border-top:1px solid var(--dsw-alias-border-l1,#7f7f7f24);overscroll-behavior:contain;max-height:300px;padding:8px 10px 10px;overflow-y:auto}.vZSZnG_section{margin-bottom:8px}.vZSZnG_section:last-child{margin-bottom:0}.vZSZnG_sectionLabel{color:var(--dsw-alias-label-secondary);align-items:center;gap:6px;margin-bottom:4px;font-size:11px;line-height:16px;display:flex}.vZSZnG_sectionCount{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1a);color:var(--dsw-alias-label-tertiary);border-radius:6px;padding:0 5px;font-size:10px;line-height:14px}.vZSZnG_stepsList{flex-direction:column;gap:1px;margin:0;padding:0;list-style:none;display:flex}.vZSZnG_stepRow{align-items:flex-start;gap:7px;padding:3px 2px;display:flex}.vZSZnG_stepRow>svg{flex:none;margin-top:2px}.vZSZnG_stepDone{color:var(--dsw-alias-label-dimmed)}.vZSZnG_stepRun{color:var(--dsw-alias-label-primary-bluish,#3a6ef5)}.vZSZnG_stepPending{background:var(--dsw-alias-border-l3,#7f7f7f80);border-radius:50%;flex:none;width:8px;height:8px;margin:5px 3px}.vZSZnG_stepContent{color:var(--dsw-alias-label-secondary);word-break:break-word;font-size:12px;line-height:20px}.vZSZnG_stepContentDone{color:var(--dsw-alias-label-dimmed);text-decoration:line-through}.vZSZnG_stepContentRun{color:var(--dsw-alias-label-primary)}.vZSZnG_muted{color:var(--dsw-alias-label-dimmed);font-size:11px;line-height:18px}.vZSZnG_filesList{flex-direction:column;margin:0;padding:0;list-style:none;display:flex}.vZSZnG_fileRow{cursor:pointer;text-align:left;background:0 0;border:none;border-radius:6px;align-items:center;gap:6px;width:100%;padding:3px 4px;display:flex}.vZSZnG_fileRow:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_fileDot{background:var(--dsw-alias-border-l3,#7f7f7f80);border-radius:50%;flex:none;width:5px;height:5px}.vZSZnG_filePath{color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;text-align:left;direction:rtl;font-family:ui-monospace,SF Mono,Menlo,Consolas,monospace;font-size:11px;line-height:18px;overflow:hidden}.vZSZnG_fileLine{color:var(--dsw-alias-label-dimmed);flex:none;font-size:10px;line-height:18px}.vZSZnG_cardFooter{gap:6px;margin-top:8px;display:flex}@media (prefers-reduced-motion:reduce){.vZSZnG_panel{animation:none}.vZSZnG_trackFill,.vZSZnG_card{transition:none}}.vZSZnG_miniBar{border:1px solid var(--dsw-alias-border-l3,#7f7f7f4d);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));max-width:min(46vw,340px);height:34px;color:var(--dsw-alias-label-primary);cursor:grab;-webkit-user-select:none;user-select:none;pointer-events:auto;border-radius:999px;align-items:center;gap:7px;padding:0 12px;font-size:12px;line-height:18px;transition:background .15s,border-color .15s;display:inline-flex;position:fixed;box-shadow:0 6px 20px #00000024,0 1px 4px #00000014}.vZSZnG_miniBar:active{cursor:grabbing}.vZSZnG_miniBar:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_miniIcon{color:var(--dsw-alias-label-secondary);flex:none}.vZSZnG_miniText{white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.vZSZnG_miniChevron{color:var(--dsw-alias-label-tertiary);flex:none}.vZSZnG_taskList{flex:auto;min-height:0}.vZSZnG_card{flex-direction:column;display:flex}.vZSZnG_boundaryFallback{border:1px solid var(--dsw-alias-border-l3,#7f7f7f4d);background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-secondary);cursor:pointer;pointer-events:auto;border-radius:999px;padding:4px 10px;font-size:12px;line-height:18px;position:fixed;top:64px;right:16px}.vZSZnG_stepToggle{cursor:pointer;background:0 0;border:none;border-radius:4px;flex:none;align-items:center;margin-top:2px;padding:0;display:inline-flex}.vZSZnG_stepToggle:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f)}.vZSZnG_stepToggle:disabled{cursor:default;opacity:.5}.vZSZnG_stepEditable{cursor:text;border-radius:3px}.vZSZnG_stepEditable:hover{outline:1px dashed var(--dsw-alias-border-l3,#7f7f7f66);outline-offset:1px}.vZSZnG_stepInput{box-sizing:border-box;width:auto;min-width:0;font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base,transparent);border:1px solid var(--dsw-alias-border-l3,#7f7f7f73);border-radius:5px;flex:auto;padding:0 5px;font-size:12px;line-height:20px}.vZSZnG_stepDragging{opacity:.3;background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_cardTitleEditable{cursor:text;border-radius:3px}.vZSZnG_cardTitleEditable:hover{outline:1px dashed var(--dsw-alias-border-l3,#7f7f7f66);outline-offset:1px}.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:color-mix(in srgb, var(--dsw-alias-bg-layer-2,#fff) 90%, transparent);-webkit-backdrop-filter:blur(18px)saturate(1.2);border:1px solid color-mix(in srgb, var(--dsw-alias-border-l2,#7f7f7f4d) 80%, transparent)}.vZSZnG_panel[data-theme=glass] .vZSZnG_card{background:color-mix(in srgb, var(--dsw-alias-bg-base,transparent) 84%, transparent);border-color:color-mix(in srgb, var(--dsw-alias-border-l1,#7f7f7f29) 60%, transparent)}.vZSZnG_panel[data-theme=glass] .vZSZnG_cardBody{border-top-color:color-mix(in srgb, var(--dsw-alias-border-l1,#7f7f7f24) 60%, transparent)}@media (prefers-reduced-transparency:reduce){.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:var(--dsw-alias-bg-layer-2,#fff);-webkit-backdrop-filter:none;backdrop-filter:none}.vZSZnG_panel[data-theme=glass] .vZSZnG_card{background:var(--dsw-alias-bg-base,transparent)}}@supports not ((-webkit-backdrop-filter:blur(1px)) or (backdrop-filter:blur(1px))){.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:var(--dsw-alias-bg-layer-2,#fff)}}.vZSZnG_panel[data-theme=brutal]{box-shadow:none;border-width:1px;border-radius:6px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_card{border:1px solid var(--dsw-alias-border-l3,#7f7f7f6b);background:var(--dsw-alias-bg-base,transparent);box-shadow:none;border-radius:3px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardHead{padding:7px 10px 6px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardTitle{letter-spacing:.01em;font-weight:650}.vZSZnG_panel[data-theme=brutal] .vZSZnG_headerTitle{letter-spacing:.03em}.vZSZnG_panel[data-theme=brutal] .vZSZnG_boundBadge{border-radius:2px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_track{border-radius:0;height:3px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_trackFill{border-radius:0}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardBody{border-top:1px solid var(--dsw-alias-border-l2,#7f7f7f3d)}.vZSZnG_panel[data-theme=mono] .vZSZnG_headerTitle,.vZSZnG_panel[data-theme=mono] .vZSZnG_counts,.vZSZnG_panel[data-theme=mono] .vZSZnG_cardTitle,.vZSZnG_panel[data-theme=mono] .vZSZnG_progressText,.vZSZnG_panel[data-theme=mono] .vZSZnG_stepContent,.vZSZnG_panel[data-theme=mono] .vZSZnG_filePath{font-family:ui-monospace,SF Mono,Menlo,Consolas,Liberation Mono,monospace}.vZSZnG_panel[data-theme=mono] .vZSZnG_cardTitle{font-size:12px}.vZSZnG_panel[data-theme=mono] .vZSZnG_stepContent{font-size:11.5px}.vZSZnG_panel[data-theme=mono] .vZSZnG_card{border-radius:5px}.vZSZnG_panel[data-theme=mono] .vZSZnG_trackFill{border-radius:0}.vZSZnG_panel[data-theme=mono] .vZSZnG_stepPending{border-radius:1px}.vZSZnG_panel[data-theme=mono] .vZSZnG_updated{letter-spacing:.02em}.vZSZnG_headerIconBtn{color:inherit;cursor:pointer;background:0 0;border:none;border-radius:0;flex:none;justify-content:center;align-items:center;margin:0;padding:0;display:inline-flex}.vZSZnG_headerIcon{color:var(--dsw-alias-label-secondary);flex:none;display:block}.vZSZnG_headerLeft{min-width:0}.vZSZnG_headerTitle{text-overflow:ellipsis;flex:0 auto;min-width:0;overflow:hidden}.vZSZnG_headerRight{min-width:0}.vZSZnG_counts{text-overflow:ellipsis;flex:none;max-width:45%;margin-left:auto;overflow:hidden}.vZSZnG_dragGhost{pointer-events:none;z-index:9999;transition:left 50ms,top 50ms;position:fixed;transform:translate(-50%,-50%)}.vZSZnG_dragGhostCard{background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));border:1px solid var(--dsw-alias-border-l3,#7f7f7f59);color:var(--dsw-alias-label-primary);white-space:nowrap;border-radius:8px;align-items:center;gap:8px;max-width:280px;padding:8px 12px;font-size:12px;line-height:20px;display:inline-flex;transform:scale(.9);box-shadow:0 8px 24px #0000002e,0 2px 8px #0000001a}.vZSZnG_dragGhostContent{text-overflow:ellipsis;word-break:break-word;flex:1;min-width:0;overflow:hidden}.vZSZnG_dragGhostClose{width:20px;height:20px;color:var(--dsw-alias-label-tertiary);cursor:pointer;opacity:.6;background:0 0;border:none;border-radius:4px;flex:none;justify-content:center;align-items:center;margin-left:8px;font-size:16px;line-height:1;transition:opacity .15s,background .15s,color .15s;display:inline-flex}.vZSZnG_dragGhostClose:hover{opacity:1;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f)}.vZSZnG_dropTargetBefore{position:relative}.vZSZnG_dropTargetBefore:before{content:\"\";background:var(--dsw-alias-button-primary-fill,#3a6ef5);height:2px;box-shadow:0 0 4px var(--dsw-alias-button-primary-fill,#3a6ef5);border-radius:1px;animation:.8s ease-in-out infinite vZSZnG_dropPulse;position:absolute;top:-1px;left:0;right:0}.vZSZnG_dropTargetAfter{position:relative}.vZSZnG_dropTargetAfter:after{content:\"\";background:var(--dsw-alias-button-primary-fill,#3a6ef5);height:2px;box-shadow:0 0 4px var(--dsw-alias-button-primary-fill,#3a6ef5);border-radius:1px;animation:.8s ease-in-out infinite vZSZnG_dropPulse;position:absolute;bottom:-1px;left:0;right:0}@keyframes vZSZnG_dropPulse{0%,to{opacity:.6}50%{opacity:1}}";
+		const css$1 = ".vZSZnG_panel{pointer-events:auto;background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));border:1px solid var(--dsw-alias-border-l2,#7f7f7f4d);border-radius:14px;flex-direction:column;width:380px;max-width:calc(100vw - 24px);max-height:min(70vh,640px);font-family:inherit;animation:.18s ease-out vZSZnG_panelIn;display:flex;position:fixed;overflow:hidden;box-shadow:0 12px 32px #00000029,0 2px 8px #00000014}@keyframes vZSZnG_panelIn{0%{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}.vZSZnG_dragHandle{cursor:grab;z-index:1;justify-content:center;align-items:center;height:12px;display:flex;position:absolute;top:0;left:0;right:0}.vZSZnG_dragHandle:active{cursor:grabbing}.vZSZnG_handleGrip{background:var(--dsw-alias-separator-primary,#7f7f7f59);opacity:.8;border-radius:2px;width:32px;height:3px}.vZSZnG_header{border-bottom:1px solid var(--dsw-alias-border-l1,#7f7f7f2e);-webkit-user-select:none;user-select:none;justify-content:space-between;align-items:center;gap:8px;padding:10px 10px 8px 14px;display:flex}.vZSZnG_headerLeft{align-items:center;gap:6px;min-width:0;display:flex}.vZSZnG_headerIcon{color:var(--dsw-alias-label-secondary);flex:none}.vZSZnG_headerTitle{color:var(--dsw-alias-label-primary);white-space:nowrap;margin:0;font-size:13px;font-weight:600;line-height:20px}.vZSZnG_headerRight{align-items:center;gap:2px;margin-left:auto;display:flex}.vZSZnG_counts{color:var(--dsw-alias-label-tertiary);white-space:nowrap;margin-right:4px;font-size:11px;line-height:16px}.vZSZnG_boundBadge{color:var(--dsw-alias-label-primary-foreground,#fff);background:var(--dsw-alias-button-primary-fill,#3a6ef5);white-space:nowrap;border-radius:7px;flex:none;padding:0 6px;font-size:10px;line-height:14px}.vZSZnG_notice{color:var(--dsw-alias-state-warn-label,#b7791f);background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1a);word-break:break-all;border-radius:8px;margin:8px 12px 0;padding:6px 10px;font-size:12px;line-height:18px}.vZSZnG_taskList{scrollbar-width:thin;scrollbar-color:var(--dsw-alias-scrollbar-bg-l2,transparent) transparent;flex-direction:column;gap:6px;padding:8px;display:flex;overflow-y:auto}.vZSZnG_emptyState{text-align:center;color:var(--dsw-alias-label-secondary);padding:36px 24px 30px}.vZSZnG_emptyTitle{color:var(--dsw-alias-label-primary);margin:0 0 6px;font-size:13px;font-weight:600}.vZSZnG_emptyDesc{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:20px}.vZSZnG_syncHint{color:var(--dsw-alias-label-dimmed);justify-content:center;align-items:center;gap:6px;margin:10px 0 0;font-size:11px;display:flex}.vZSZnG_card{border:1px solid var(--dsw-alias-border-l1,#7f7f7f29);background:var(--dsw-alias-bg-base,transparent);border-radius:10px;transition:border-color .15s;overflow:hidden}.vZSZnG_cardBound{border-color:var(--dsw-alias-border-l3,#7f7f7f59);box-shadow:inset 0 0 0 .5px var(--dsw-alias-border-l3,transparent)}.vZSZnG_cardHead{cursor:pointer;text-align:left;background:0 0;border:none;justify-content:space-between;align-items:center;gap:8px;width:100%;padding:8px 10px 7px;display:flex}.vZSZnG_cardHead:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_cardTitleRow{align-items:center;gap:6px;min-width:0;display:flex}.vZSZnG_cardTitle{color:var(--dsw-alias-label-primary);white-space:nowrap;text-overflow:ellipsis;font-size:13px;font-weight:500;line-height:20px;overflow:hidden}.vZSZnG_cardMeta{color:var(--dsw-alias-label-tertiary);flex:none;align-items:center;gap:8px;display:flex}.vZSZnG_progressText{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}.vZSZnG_updated{color:var(--dsw-alias-label-dimmed);font-size:10px;line-height:14px}.vZSZnG_chevron{color:var(--dsw-alias-label-tertiary);display:inline-flex}.vZSZnG_track{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f);border-radius:1px;height:2px;margin:0 10px 6px;overflow:hidden}.vZSZnG_trackFill{background:var(--dsw-alias-label-primary-bluish,var(--dsw-alias-button-primary-fill,#3a6ef5));border-radius:1px;height:100%;transition:width .2s}.vZSZnG_cardBody{border-top:1px solid var(--dsw-alias-border-l1,#7f7f7f24);overscroll-behavior:contain;max-height:300px;padding:8px 10px 10px;overflow-y:auto}.vZSZnG_section{margin-bottom:8px}.vZSZnG_section:last-child{margin-bottom:0}.vZSZnG_sectionLabel{color:var(--dsw-alias-label-secondary);align-items:center;gap:6px;margin-bottom:4px;font-size:11px;line-height:16px;display:flex}.vZSZnG_sectionCount{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1a);color:var(--dsw-alias-label-tertiary);border-radius:6px;padding:0 5px;font-size:10px;line-height:14px}.vZSZnG_stepsList{flex-direction:column;gap:1px;margin:0;padding:0;list-style:none;display:flex}.vZSZnG_stepRow{align-items:flex-start;gap:7px;padding:3px 2px;display:flex}.vZSZnG_stepRow>svg{flex:none;margin-top:2px}.vZSZnG_stepDone{color:var(--dsw-alias-label-dimmed)}.vZSZnG_stepRun{color:var(--dsw-alias-label-primary-bluish,#3a6ef5)}.vZSZnG_stepPending{background:var(--dsw-alias-border-l3,#7f7f7f80);border-radius:50%;flex:none;width:8px;height:8px;margin:5px 3px}.vZSZnG_stepContent{color:var(--dsw-alias-label-secondary);word-break:break-word;font-size:12px;line-height:20px}.vZSZnG_stepContentDone{color:var(--dsw-alias-label-dimmed);text-decoration:line-through}.vZSZnG_stepContentRun{color:var(--dsw-alias-label-primary)}.vZSZnG_muted{color:var(--dsw-alias-label-dimmed);font-size:11px;line-height:18px}.vZSZnG_filesList{flex-direction:column;margin:0;padding:0;list-style:none;display:flex}.vZSZnG_fileRow{cursor:pointer;text-align:left;background:0 0;border:none;border-radius:6px;align-items:center;gap:6px;width:100%;padding:3px 4px;display:flex}.vZSZnG_fileRow:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_fileDot{background:var(--dsw-alias-border-l3,#7f7f7f80);border-radius:50%;flex:none;width:5px;height:5px}.vZSZnG_filePath{color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;text-align:left;direction:rtl;font-family:ui-monospace,SF Mono,Menlo,Consolas,monospace;font-size:11px;line-height:18px;overflow:hidden}.vZSZnG_fileLine{color:var(--dsw-alias-label-dimmed);flex:none;font-size:10px;line-height:18px}.vZSZnG_cardFooter{gap:6px;margin-top:8px;display:flex}@media (prefers-reduced-motion:reduce){.vZSZnG_panel{animation:none}.vZSZnG_trackFill,.vZSZnG_card{transition:none}}.vZSZnG_miniBar{border:1px solid var(--dsw-alias-border-l3,#7f7f7f4d);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));max-width:min(46vw,340px);height:34px;color:var(--dsw-alias-label-primary);cursor:grab;-webkit-user-select:none;user-select:none;pointer-events:auto;border-radius:999px;align-items:center;gap:7px;padding:0 12px;font-size:12px;line-height:18px;transition:background .15s,border-color .15s;display:inline-flex;position:fixed;box-shadow:0 6px 20px #00000024,0 1px 4px #00000014}.vZSZnG_miniBar:active{cursor:grabbing}.vZSZnG_miniBar:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_miniIcon{color:var(--dsw-alias-label-secondary);flex:none}.vZSZnG_miniText{white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.vZSZnG_miniChevron{color:var(--dsw-alias-label-tertiary);flex:none}.vZSZnG_taskList{flex:auto;min-height:0}.vZSZnG_card{flex-direction:column;display:flex}.vZSZnG_boundaryFallback{border:1px solid var(--dsw-alias-border-l3,#7f7f7f4d);background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-secondary);cursor:pointer;pointer-events:auto;border-radius:999px;padding:4px 10px;font-size:12px;line-height:18px;position:fixed;top:64px;right:16px}.vZSZnG_stepToggle{cursor:pointer;background:0 0;border:none;border-radius:4px;flex:none;align-items:center;margin-top:2px;padding:0;display:inline-flex}.vZSZnG_stepToggle:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f)}.vZSZnG_stepToggle:disabled{cursor:default;opacity:.5}.vZSZnG_stepEditable{cursor:text;border-radius:3px}.vZSZnG_stepEditable:hover{outline:1px dashed var(--dsw-alias-border-l3,#7f7f7f66);outline-offset:1px}.vZSZnG_stepInput{box-sizing:border-box;width:auto;min-width:0;font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base,transparent);border:1px solid var(--dsw-alias-border-l3,#7f7f7f73);border-radius:5px;flex:auto;padding:0 5px;font-size:12px;line-height:20px}.vZSZnG_stepDragging{opacity:.3;background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_cardTitleEditable{cursor:text;border-radius:3px}.vZSZnG_cardTitleEditable:hover{outline:1px dashed var(--dsw-alias-border-l3,#7f7f7f66);outline-offset:1px}.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:color-mix(in srgb, var(--dsw-alias-bg-layer-2,#fff) 90%, transparent);-webkit-backdrop-filter:blur(18px)saturate(1.2);border:1px solid color-mix(in srgb, var(--dsw-alias-border-l2,#7f7f7f4d) 80%, transparent)}.vZSZnG_panel[data-theme=glass] .vZSZnG_card{background:color-mix(in srgb, var(--dsw-alias-bg-base,transparent) 84%, transparent);border-color:color-mix(in srgb, var(--dsw-alias-border-l1,#7f7f7f29) 60%, transparent)}.vZSZnG_panel[data-theme=glass] .vZSZnG_cardBody{border-top-color:color-mix(in srgb, var(--dsw-alias-border-l1,#7f7f7f24) 60%, transparent)}@media (prefers-reduced-transparency:reduce){.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:var(--dsw-alias-bg-layer-2,#fff);-webkit-backdrop-filter:none;backdrop-filter:none}.vZSZnG_panel[data-theme=glass] .vZSZnG_card{background:var(--dsw-alias-bg-base,transparent)}}@supports not ((-webkit-backdrop-filter:blur(1px)) or (backdrop-filter:blur(1px))){.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:var(--dsw-alias-bg-layer-2,#fff)}}.vZSZnG_panel[data-theme=brutal]{box-shadow:none;border-width:1px;border-radius:6px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_card{border:1px solid var(--dsw-alias-border-l3,#7f7f7f6b);background:var(--dsw-alias-bg-base,transparent);box-shadow:none;border-radius:3px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardHead{padding:7px 10px 6px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardTitle{letter-spacing:.01em;font-weight:650}.vZSZnG_panel[data-theme=brutal] .vZSZnG_headerTitle{letter-spacing:.03em}.vZSZnG_panel[data-theme=brutal] .vZSZnG_boundBadge{border-radius:2px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_track{border-radius:0;height:3px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_trackFill{border-radius:0}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardBody{border-top:1px solid var(--dsw-alias-border-l2,#7f7f7f3d)}.vZSZnG_panel[data-theme=mono] .vZSZnG_headerTitle,.vZSZnG_panel[data-theme=mono] .vZSZnG_counts,.vZSZnG_panel[data-theme=mono] .vZSZnG_cardTitle,.vZSZnG_panel[data-theme=mono] .vZSZnG_progressText,.vZSZnG_panel[data-theme=mono] .vZSZnG_stepContent,.vZSZnG_panel[data-theme=mono] .vZSZnG_filePath{font-family:ui-monospace,SF Mono,Menlo,Consolas,Liberation Mono,monospace}.vZSZnG_panel[data-theme=mono] .vZSZnG_cardTitle{font-size:12px}.vZSZnG_panel[data-theme=mono] .vZSZnG_stepContent{font-size:11.5px}.vZSZnG_panel[data-theme=mono] .vZSZnG_card{border-radius:5px}.vZSZnG_panel[data-theme=mono] .vZSZnG_trackFill{border-radius:0}.vZSZnG_panel[data-theme=mono] .vZSZnG_stepPending{border-radius:1px}.vZSZnG_panel[data-theme=mono] .vZSZnG_updated{letter-spacing:.02em}.vZSZnG_headerIconBtn{color:inherit;cursor:pointer;background:0 0;border:none;border-radius:0;flex:none;justify-content:center;align-items:center;margin:0;padding:0;display:inline-flex}.vZSZnG_headerIcon{color:var(--dsw-alias-label-secondary);flex:none;display:block}.vZSZnG_headerLeft{min-width:0}.vZSZnG_headerTitle{text-overflow:ellipsis;flex:0 auto;min-width:0;overflow:hidden}.vZSZnG_headerRight{min-width:0}.vZSZnG_counts{text-overflow:ellipsis;flex:none;max-width:45%;margin-left:auto;overflow:hidden}.vZSZnG_dragGhost{pointer-events:none;z-index:9999;transition:left 50ms,top 50ms;position:fixed;transform:translate(-50%,-50%)}.vZSZnG_dragGhostCard{background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));border:1px solid var(--dsw-alias-border-l3,#7f7f7f59);color:var(--dsw-alias-label-primary);white-space:nowrap;border-radius:8px;align-items:center;gap:8px;max-width:280px;padding:8px 12px;font-size:12px;line-height:20px;display:inline-flex;transform:scale(.9);box-shadow:0 8px 24px #0000002e,0 2px 8px #0000001a}.vZSZnG_dragGhostContent{text-overflow:ellipsis;word-break:break-word;flex:1;min-width:0;overflow:hidden}.vZSZnG_dragGhostClose{width:20px;height:20px;color:var(--dsw-alias-label-tertiary);cursor:pointer;opacity:.6;background:0 0;border:none;border-radius:4px;flex:none;justify-content:center;align-items:center;margin-left:8px;font-size:16px;line-height:1;transition:opacity .15s,background .15s,color .15s;display:inline-flex}.vZSZnG_dragGhostClose:hover{opacity:1;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f)}.vZSZnG_dropTargetBefore{position:relative}.vZSZnG_dropTargetBefore:before{content:\"\";background:var(--dsw-alias-button-primary-fill,#3a6ef5);height:2px;box-shadow:0 0 4px var(--dsw-alias-button-primary-fill,#3a6ef5);border-radius:1px;animation:.8s ease-in-out infinite vZSZnG_dropPulse;position:absolute;top:-1px;left:0;right:0}.vZSZnG_dropTargetAfter{position:relative}.vZSZnG_dropTargetAfter:after{content:\"\";background:var(--dsw-alias-button-primary-fill,#3a6ef5);height:2px;box-shadow:0 0 4px var(--dsw-alias-button-primary-fill,#3a6ef5);border-radius:1px;animation:.8s ease-in-out infinite vZSZnG_dropPulse;position:absolute;bottom:-1px;left:0;right:0}@keyframes vZSZnG_dropPulse{0%,to{opacity:.6}50%{opacity:1}}.vZSZnG_memoryPane{flex-direction:column;gap:6px;max-height:480px;padding:8px 10px 10px;display:flex;overflow:auto}.vZSZnG_memToolbar{justify-content:space-between;align-items:center;gap:8px;display:flex}.vZSZnG_memCount{opacity:.75;font-size:12px;font-weight:600}.vZSZnG_memList{flex-direction:column;gap:6px;display:flex}.vZSZnG_memRow{border:1px solid var(--dsw-border-weak,#80808040);background:color-mix(in srgb, var(--dsw-bg-secondary,#f5f5f5) 45%, transparent);border-radius:6px;flex-direction:column;gap:4px;padding:6px 8px;display:flex}.vZSZnG_memRowArchived{opacity:.55}.vZSZnG_memRowMain{flex-direction:column;gap:2px;display:flex}.vZSZnG_memTitle{word-break:break-word;align-items:flex-start;gap:6px;font-size:13px;line-height:1.35;display:flex}.vZSZnG_kindBadge{background:var(--dsw-accent-soft,#5078ff26);color:var(--dsw-accent,#4d6bfe);border-radius:4px;flex:none;padding:0 5px;font-size:11px;line-height:1.5}.vZSZnG_memMeta{flex-wrap:wrap;align-items:center;gap:4px;display:flex}.vZSZnG_badge{background:color-mix(in srgb, var(--dsw-fg,#222) 8%, transparent);border-radius:4px;padding:0 5px;font-size:11px;line-height:1.5}.vZSZnG_badgeDraft{color:#b26a00;background:#ffb40029}.vZSZnG_badgeArchived{opacity:.8}.vZSZnG_memBody{opacity:.8;word-break:break-word;font-size:12px}.vZSZnG_memActs{flex-wrap:wrap;gap:4px;display:flex}.vZSZnG_memToolbarActs{align-items:center;gap:6px;display:flex}.vZSZnG_memNew{border:1px solid var(--dsw-border-weak,#80808040);border-radius:6px;flex-direction:column;gap:6px;padding:8px;display:flex}.vZSZnG_memNewRow{align-items:center;gap:8px;display:flex}.vZSZnG_memLabel{opacity:.8;align-items:center;gap:6px;font-size:12px;display:inline-flex}.vZSZnG_memNew select,.vZSZnG_memNew textarea{box-sizing:border-box;width:100%}";
 		const tagId$1 = "@yolk_vat-y/dsh-project-memory/TaskPanel.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$1) + "]") === null) {
 			const tag = document.createElement("style");
@@ -497,71 +571,90 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var TaskPanel_module_css_default = {
-			"headerLeft": "vZSZnG_headerLeft",
-			"counts": "vZSZnG_counts",
-			"card": "vZSZnG_card",
-			"filePath": "vZSZnG_filePath",
-			"headerIcon": "vZSZnG_headerIcon",
-			"fileDot": "vZSZnG_fileDot",
-			"dropPulse": "vZSZnG_dropPulse",
-			"stepContent": "vZSZnG_stepContent",
-			"stepInput": "vZSZnG_stepInput",
-			"track": "vZSZnG_track",
-			"muted": "vZSZnG_muted",
-			"cardMeta": "vZSZnG_cardMeta",
-			"miniChevron": "vZSZnG_miniChevron",
-			"stepRun": "vZSZnG_stepRun",
-			"stepEditable": "vZSZnG_stepEditable",
-			"dragGhostContent": "vZSZnG_dragGhostContent",
-			"chevron": "vZSZnG_chevron",
-			"dragGhostCard": "vZSZnG_dragGhostCard",
-			"cardBound": "vZSZnG_cardBound",
-			"boundaryFallback": "vZSZnG_boundaryFallback",
-			"headerTitle": "vZSZnG_headerTitle",
-			"stepContentDone": "vZSZnG_stepContentDone",
-			"fileLine": "vZSZnG_fileLine",
-			"sectionLabel": "vZSZnG_sectionLabel",
-			"emptyTitle": "vZSZnG_emptyTitle",
-			"stepDragging": "vZSZnG_stepDragging",
-			"trackFill": "vZSZnG_trackFill",
-			"miniIcon": "vZSZnG_miniIcon",
-			"progressText": "vZSZnG_progressText",
-			"cardTitle": "vZSZnG_cardTitle",
-			"cardFooter": "vZSZnG_cardFooter",
-			"headerIconBtn": "vZSZnG_headerIconBtn",
-			"header": "vZSZnG_header",
-			"miniBar": "vZSZnG_miniBar",
-			"dropTargetAfter": "vZSZnG_dropTargetAfter",
-			"filesList": "vZSZnG_filesList",
-			"boundBadge": "vZSZnG_boundBadge",
-			"cardTitleEditable": "vZSZnG_cardTitleEditable",
-			"fileRow": "vZSZnG_fileRow",
-			"dragGhost": "vZSZnG_dragGhost",
 			"cardTitleRow": "vZSZnG_cardTitleRow",
-			"cardHead": "vZSZnG_cardHead",
-			"panel": "vZSZnG_panel",
-			"stepRow": "vZSZnG_stepRow",
-			"headerRight": "vZSZnG_headerRight",
-			"handleGrip": "vZSZnG_handleGrip",
-			"panelIn": "vZSZnG_panelIn",
-			"stepToggle": "vZSZnG_stepToggle",
-			"notice": "vZSZnG_notice",
-			"emptyState": "vZSZnG_emptyState",
-			"miniText": "vZSZnG_miniText",
-			"updated": "vZSZnG_updated",
-			"stepsList": "vZSZnG_stepsList",
-			"dragHandle": "vZSZnG_dragHandle",
-			"taskList": "vZSZnG_taskList",
-			"sectionCount": "vZSZnG_sectionCount",
-			"stepDone": "vZSZnG_stepDone",
-			"syncHint": "vZSZnG_syncHint",
-			"section": "vZSZnG_section",
-			"stepContentRun": "vZSZnG_stepContentRun",
+			"memMeta": "vZSZnG_memMeta",
+			"cardTitle": "vZSZnG_cardTitle",
 			"dragGhostClose": "vZSZnG_dragGhostClose",
+			"syncHint": "vZSZnG_syncHint",
+			"updated": "vZSZnG_updated",
+			"section": "vZSZnG_section",
+			"emptyTitle": "vZSZnG_emptyTitle",
+			"stepRow": "vZSZnG_stepRow",
+			"sectionLabel": "vZSZnG_sectionLabel",
 			"emptyDesc": "vZSZnG_emptyDesc",
-			"dropTargetBefore": "vZSZnG_dropTargetBefore",
+			"fileLine": "vZSZnG_fileLine",
+			"boundaryFallback": "vZSZnG_boundaryFallback",
+			"fileDot": "vZSZnG_fileDot",
+			"memRow": "vZSZnG_memRow",
+			"stepContent": "vZSZnG_stepContent",
+			"fileRow": "vZSZnG_fileRow",
+			"cardHead": "vZSZnG_cardHead",
+			"stepContentDone": "vZSZnG_stepContentDone",
+			"dropTargetAfter": "vZSZnG_dropTargetAfter",
+			"stepDragging": "vZSZnG_stepDragging",
+			"memNew": "vZSZnG_memNew",
+			"taskList": "vZSZnG_taskList",
+			"memCount": "vZSZnG_memCount",
+			"stepToggle": "vZSZnG_stepToggle",
+			"trackFill": "vZSZnG_trackFill",
+			"memToolbar": "vZSZnG_memToolbar",
 			"stepPending": "vZSZnG_stepPending",
-			"cardBody": "vZSZnG_cardBody"
+			"memBody": "vZSZnG_memBody",
+			"memRowMain": "vZSZnG_memRowMain",
+			"badgeArchived": "vZSZnG_badgeArchived",
+			"header": "vZSZnG_header",
+			"dragGhost": "vZSZnG_dragGhost",
+			"card": "vZSZnG_card",
+			"cardTitleEditable": "vZSZnG_cardTitleEditable",
+			"panelIn": "vZSZnG_panelIn",
+			"headerRight": "vZSZnG_headerRight",
+			"emptyState": "vZSZnG_emptyState",
+			"headerIconBtn": "vZSZnG_headerIconBtn",
+			"progressText": "vZSZnG_progressText",
+			"boundBadge": "vZSZnG_boundBadge",
+			"headerIcon": "vZSZnG_headerIcon",
+			"chevron": "vZSZnG_chevron",
+			"track": "vZSZnG_track",
+			"kindBadge": "vZSZnG_kindBadge",
+			"memLabel": "vZSZnG_memLabel",
+			"cardBound": "vZSZnG_cardBound",
+			"stepsList": "vZSZnG_stepsList",
+			"dragGhostContent": "vZSZnG_dragGhostContent",
+			"miniIcon": "vZSZnG_miniIcon",
+			"stepEditable": "vZSZnG_stepEditable",
+			"memNewRow": "vZSZnG_memNewRow",
+			"panel": "vZSZnG_panel",
+			"filePath": "vZSZnG_filePath",
+			"badge": "vZSZnG_badge",
+			"memTitle": "vZSZnG_memTitle",
+			"cardFooter": "vZSZnG_cardFooter",
+			"headerLeft": "vZSZnG_headerLeft",
+			"notice": "vZSZnG_notice",
+			"headerTitle": "vZSZnG_headerTitle",
+			"miniBar": "vZSZnG_miniBar",
+			"stepDone": "vZSZnG_stepDone",
+			"stepContentRun": "vZSZnG_stepContentRun",
+			"cardBody": "vZSZnG_cardBody",
+			"filesList": "vZSZnG_filesList",
+			"handleGrip": "vZSZnG_handleGrip",
+			"memoryPane": "vZSZnG_memoryPane",
+			"memRowArchived": "vZSZnG_memRowArchived",
+			"dragHandle": "vZSZnG_dragHandle",
+			"miniChevron": "vZSZnG_miniChevron",
+			"badgeDraft": "vZSZnG_badgeDraft",
+			"memList": "vZSZnG_memList",
+			"memActs": "vZSZnG_memActs",
+			"memToolbarActs": "vZSZnG_memToolbarActs",
+			"cardMeta": "vZSZnG_cardMeta",
+			"stepRun": "vZSZnG_stepRun",
+			"stepInput": "vZSZnG_stepInput",
+			"dragGhostCard": "vZSZnG_dragGhostCard",
+			"sectionCount": "vZSZnG_sectionCount",
+			"muted": "vZSZnG_muted",
+			"counts": "vZSZnG_counts",
+			"dropTargetBefore": "vZSZnG_dropTargetBefore",
+			"dropPulse": "vZSZnG_dropPulse",
+			"miniText": "vZSZnG_miniText"
 		};
 		//#endregion
 		//#region src/client/TaskComponents.tsx
@@ -569,6 +662,14 @@ window.__ModuleLoader__.load({
 		* Task Panel Presentational 组件 — MiniBar（折叠迷你条）与 TaskCard（任务卡）。
 		* 纯渲染 + 卡片局部行内编辑/拖拽状态，动作经 props 回调交给容器（TaskPanel.tsx）。
 		*/
+		function insightKindLabel(kind, t) {
+			return {
+				lesson: t("mem.kind.lesson"),
+				decision: t("mem.kind.decision"),
+				procedure: t("mem.kind.procedure"),
+				experience: t("mem.kind.experience")
+			}[kind] ?? kind;
+		}
 		function timeAgo(iso) {
 			if (!iso) return "";
 			const diff = Date.now() - new Date(iso).getTime();
@@ -643,7 +744,7 @@ window.__ModuleLoader__.load({
 				]
 			});
 		}
-		function TaskCard({ task, isBound, expanded, onToggleExpand, onSwitch, onUnbind, onArchive, onRename, onEditStep, onCycleStatus, onReorderSteps, showHints, syncing, t }) {
+		function TaskCard({ task, isBound, expanded, onToggleExpand, onSwitch, onUnbind, onArchive, onRename, onEditStep, onCycleStatus, onReorderSteps, onInsightAction, showHints, syncing, t }) {
 			const steps = task.steps || [];
 			const { dragState, dropTargetIndex, startDrag, cancelDrag } = useTaskDrag(task.id, steps, isBound, onReorderSteps);
 			const [stepEdit, setStepEdit] = (0, react.useState)(null);
@@ -855,6 +956,60 @@ window.__ModuleLoader__.load({
 									})]
 								})]
 							}),
+							onInsightAction && Array.isArray(task.insights) && task.insights.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: TaskPanel_module_css_default.section,
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: TaskPanel_module_css_default.sectionLabel,
+									children: [t("mem.section-label"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										className: TaskPanel_module_css_default.sectionCount,
+										children: task.insights.length
+									})]
+								}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+									className: TaskPanel_module_css_default.memList,
+									children: task.insights.map((ins) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+										className: TaskPanel_module_css_default.memRow,
+										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+											className: TaskPanel_module_css_default.memTitle,
+											children: [
+												/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+													className: TaskPanel_module_css_default.kindBadge,
+													children: insightKindLabel(ins.kind, t)
+												}),
+												/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: ins.title || ins.id }),
+												ins.draft && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+													className: `${TaskPanel_module_css_default.badge} ${TaskPanel_module_css_default.badgeDraft}`,
+													children: t("mem.draft")
+												})
+											]
+										}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+											className: TaskPanel_module_css_default.memActs,
+											children: [
+												ins.draft && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+													variant: "outline",
+													size: "sm",
+													disabled: syncing,
+													onClick: () => onInsightAction("confirm", ins.id),
+													children: t("mem.confirm")
+												}),
+												/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+													variant: "outline",
+													size: "sm",
+													disabled: syncing,
+													onClick: () => onInsightAction("promote", ins.id),
+													children: t("mem.promote")
+												}),
+												/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+													variant: "outline",
+													size: "sm",
+													disabled: syncing,
+													onClick: () => onInsightAction("delete", ins.id),
+													children: t("mem.delete")
+												})
+											]
+										})]
+									}, ins.id))
+								})]
+							}),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 								className: TaskPanel_module_css_default.cardFooter,
 								children: [
@@ -888,6 +1043,469 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
+		//#region src/client/MemoryView.tsx
+		/**
+		* Memory View — 记忆三作用域列表（Task 草稿 / Project / Global）
+		* 数据通道与任务面板一致：remote.commands.execute 执行 /insight 命令，取 JSON 载荷。
+		* 动作：confirm(草稿审核) / promote(向上提升) / demote(向下降级，需绑定任务) / archive / restore / delete
+		*/
+		function parseInsightPayloadText(text) {
+			if (!text) return null;
+			let jsonBlock = null;
+			const fenced = text.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
+			if (fenced) jsonBlock = fenced[1];
+			else {
+				const lastBrace = text.lastIndexOf("{");
+				if (lastBrace !== -1) jsonBlock = text.slice(lastBrace);
+			}
+			if (!jsonBlock) return null;
+			try {
+				const data = JSON.parse(jsonBlock);
+				if (!Array.isArray(data.items)) return null;
+				return {
+					scope: data.scope ?? "project",
+					count: data.count ?? data.items.length,
+					items: data.items
+				};
+			} catch {
+				return null;
+			}
+		}
+		function kindText(kind, t) {
+			return {
+				lesson: t("mem.kind.lesson"),
+				decision: t("mem.kind.decision"),
+				procedure: t("mem.kind.procedure"),
+				experience: t("mem.kind.experience")
+			}[kind] ?? kind;
+		}
+		function MemoryView({ ctx, sessionId, scope, boundTaskId, t }) {
+			const [payload, setPayload] = (0, react.useState)(null);
+			const [error, setError] = (0, react.useState)(null);
+			const [loading, setLoading] = (0, react.useState)(false);
+			const [busy, setBusy] = (0, react.useState)(false);
+			const [showNew, setShowNew] = (0, react.useState)(false);
+			const [editingId, setEditingId] = (0, react.useState)(null);
+			const [form, setForm] = (0, react.useState)({
+				title: "",
+				kind: "lesson",
+				body: "",
+				steps: "",
+				trigger: ""
+			});
+			const [savedTip, setSavedTip] = (0, react.useState)(null);
+			const runLine = (0, react.useCallback)(async (line) => {
+				const commands = ctx?.remote?.commands;
+				if (!sessionId || !commands || typeof commands.execute !== "function") return {
+					ok: false,
+					text: "no session / commands service"
+				};
+				try {
+					const envelope = await commands.execute(sessionId, line, []);
+					const execution = envelope && typeof envelope === "object" && "value" in envelope ? envelope.value : envelope;
+					const result = execution?.result ?? execution;
+					if (result?.kind === "error") return {
+						ok: false,
+						text: result.text ?? "command error"
+					};
+					return {
+						ok: true,
+						text: result?.text ?? ""
+					};
+				} catch (err) {
+					return {
+						ok: false,
+						text: String(err?.message ?? err)
+					};
+				}
+			}, [ctx, sessionId]);
+			const inflightRef = (0, react.useRef)(false);
+			const lastRunRef = (0, react.useRef)(0);
+			const refresh = (0, react.useCallback)(async (force = false) => {
+				if (inflightRef.current) return;
+				const now = Date.now();
+				if (!force && now - lastRunRef.current < 800) return;
+				inflightRef.current = true;
+				lastRunRef.current = now;
+				setLoading(true);
+				setError(null);
+				try {
+					const res = await runLine(`/insight list ${scope}`);
+					if (!res.ok) {
+						setError(res.text);
+						setPayload(null);
+						return;
+					}
+					const parsed = parseInsightPayloadText(res.text);
+					setPayload(parsed);
+					if (!parsed) setError("unparsable payload");
+				} finally {
+					inflightRef.current = false;
+					setLoading(false);
+				}
+			}, [runLine, scope]);
+			(0, react.useEffect)(() => {
+				refresh();
+			}, [refresh]);
+			const act = async (action, id) => {
+				if (busy) return;
+				setBusy(true);
+				setError(null);
+				try {
+					const line = `/insight ${action} ${scope} ${id}${action === "demote" && scope === "project" && boundTaskId ? ` ${boundTaskId}` : ""}`;
+					const res = await runLine(line);
+					if (!res.ok) setError(res.text);
+					else refresh(true);
+				} finally {
+					setBusy(false);
+				}
+			};
+			const rowToForm = (row) => {
+				const main = row.kind === "lesson" ? row.fix : row.kind === "experience" ? row.solution : row.kind === "decision" ? row.reason : row.body;
+				const body = main && main !== row.title ? main : "";
+				return {
+					title: row.title || "",
+					kind: row.kind || "lesson",
+					body,
+					steps: Array.isArray(row.steps) ? row.steps.join("\n") : "",
+					trigger: (row.trigger?.keywords || []).join(",")
+				};
+			};
+			const startEdit = (row) => {
+				setEditingId(row.id);
+				setForm(rowToForm(row));
+				setShowNew(true);
+				setError(null);
+			};
+			const closeForm = () => {
+				setShowNew(false);
+				setEditingId(null);
+				setForm({
+					title: "",
+					kind: "lesson",
+					body: "",
+					steps: "",
+					trigger: ""
+				});
+			};
+			const changeKind = (next) => {
+				setForm((prev) => {
+					if (prev.kind === next) return prev;
+					const fromProc = prev.kind === "procedure";
+					const toProc = next === "procedure";
+					let body = prev.body;
+					let steps = prev.steps;
+					if (fromProc && !toProc && !body && steps.trim()) body = steps.trim();
+					if (toProc && !fromProc && !steps.trim() && body.trim()) steps = body.trim();
+					return {
+						...prev,
+						kind: next,
+						body,
+						steps
+					};
+				});
+			};
+			const submitNew = async () => {
+				if (scope === "task" && !editingId) return;
+				if (busy) return;
+				const title = form.title.trim();
+				if (!title) return;
+				setBusy(true);
+				setError(null);
+				try {
+					const fields = {
+						title,
+						kind: form.kind
+					};
+					if (form.kind === "lesson") fields.pattern = title;
+					if (form.kind === "decision") fields.choice = title;
+					if (form.kind === "experience") fields.problem = title;
+					if (form.body.trim()) {
+						if (form.kind === "lesson") fields.fix = form.body.trim();
+						else if (form.kind === "decision") fields.reason = form.body.trim();
+						else if (form.kind === "experience") fields.solution = form.body.trim();
+						else fields.body = form.body.trim();
+					}
+					if (form.kind === "procedure" && form.steps.trim()) fields.steps = form.steps.split("\n").map((s) => s.trim()).filter(Boolean);
+					if (form.kind === "procedure" && form.trigger.trim()) fields.trigger = { keywords: form.trigger.split(/[,，]/).map((s) => s.trim()).filter(Boolean) };
+					const line = editingId ? `/insight edit ${scope} ${editingId} ${JSON.stringify(fields)}` : `/insight save ${scope} ${JSON.stringify(fields)}`;
+					const res = await runLine(line);
+					if (!res.ok) setError(res.text);
+					else {
+						setSavedTip(t("mem.saved"));
+						closeForm();
+						window.setTimeout(() => setSavedTip(null), 2500);
+						refresh(true);
+					}
+				} finally {
+					setBusy(false);
+				}
+			};
+			const items = payload?.items ?? [];
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: TaskPanel_module_css_default.memoryPane,
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: TaskPanel_module_css_default.memToolbar,
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+							className: TaskPanel_module_css_default.memCount,
+							children: [scope === "task" ? t("mem.scope.task") : scope === "global" ? t("mem.scope.global") : t("mem.scope.project"), payload ? ` · ${payload.count}` : ""]
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+							className: TaskPanel_module_css_default.memToolbarActs,
+							children: [
+								savedTip && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: TaskPanel_module_css_default.badge,
+									children: savedTip
+								}),
+								scope !== "task" && !showNew && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+									variant: "outline",
+									size: "sm",
+									disabled: busy,
+									onClick: () => {
+										setShowNew(true);
+										setEditingId(null);
+										setError(null);
+									},
+									children: t("mem.new")
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+									variant: "outline",
+									size: "sm",
+									onClick: () => void refresh(true),
+									disabled: loading,
+									title: t("panel.refresh"),
+									"aria-label": t("panel.refresh"),
+									children: "↻"
+								})
+							]
+						})]
+					}),
+					showNew && scope !== "task" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: TaskPanel_module_css_default.memNew,
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+								className: TaskPanel_module_css_default.stepInput,
+								placeholder: t("mem.f.title"),
+								value: form.title,
+								onChange: (e) => setForm({
+									...form,
+									title: e.target.value
+								}),
+								autoFocus: true
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: TaskPanel_module_css_default.memNewRow,
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+									className: TaskPanel_module_css_default.memLabel,
+									children: [t("mem.f.kind"), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+										className: TaskPanel_module_css_default.stepInput,
+										value: form.kind,
+										onChange: (e) => changeKind(e.target.value),
+										children: [
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+												value: "lesson",
+												children: "lesson"
+											}),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+												value: "decision",
+												children: "decision"
+											}),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+												value: "procedure",
+												children: "procedure"
+											}),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+												value: "experience",
+												children: "experience"
+											})
+										]
+									})]
+								})
+							}),
+							form.kind !== "procedure" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
+								className: TaskPanel_module_css_default.stepInput,
+								placeholder: t("mem.f.body"),
+								rows: 2,
+								value: form.body,
+								onChange: (e) => setForm({
+									...form,
+									body: e.target.value
+								})
+							}),
+							form.kind === "procedure" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
+								className: TaskPanel_module_css_default.stepInput,
+								placeholder: t("mem.f.steps"),
+								rows: 3,
+								value: form.steps,
+								onChange: (e) => setForm({
+									...form,
+									steps: e.target.value
+								})
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+								className: TaskPanel_module_css_default.stepInput,
+								placeholder: t("mem.f.trigger"),
+								value: form.trigger,
+								onChange: (e) => setForm({
+									...form,
+									trigger: e.target.value
+								})
+							})] }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: TaskPanel_module_css_default.memActs,
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+									variant: "outline",
+									size: "sm",
+									disabled: busy || !form.title.trim(),
+									onClick: () => void submitNew(),
+									children: t("mem.save")
+								}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+									variant: "outline",
+									size: "sm",
+									onClick: closeForm,
+									children: t("mem.cancel")
+								})]
+							})
+						]
+					}),
+					error && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: TaskPanel_module_css_default.notice,
+						children: [
+							t("mem.error"),
+							": ",
+							error
+						]
+					}),
+					loading && !items.length && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: TaskPanel_module_css_default.muted,
+						children: t("mem.loading")
+					}),
+					!loading && !error && items.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: TaskPanel_module_css_default.muted,
+						children: t("mem.empty")
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: TaskPanel_module_css_default.memList,
+						children: items.map((row) => {
+							const canDemoteToTask = scope === "project" && !!boundTaskId;
+							return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: `${TaskPanel_module_css_default.memRow}${row.archived ? ` ${TaskPanel_module_css_default.memRowArchived}` : ""}`,
+								children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+										className: TaskPanel_module_css_default.memRowMain,
+										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+											className: TaskPanel_module_css_default.memTitle,
+											children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+												className: TaskPanel_module_css_default.kindBadge,
+												children: kindText(row.kind, t)
+											}), row.title || row.body]
+										}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+											className: TaskPanel_module_css_default.memMeta,
+											children: [
+												row.draft && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+													className: `${TaskPanel_module_css_default.badge} ${TaskPanel_module_css_default.badgeDraft}`,
+													children: t("mem.draft")
+												}),
+												row.archived && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+													className: `${TaskPanel_module_css_default.badge} ${TaskPanel_module_css_default.badgeArchived}`,
+													children: t("mem.archived")
+												}),
+												row.taskTitle && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+													className: TaskPanel_module_css_default.badge,
+													children: ["@", row.taskTitle]
+												}),
+												row.members !== void 0 && row.members > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+													className: TaskPanel_module_css_default.badge,
+													children: ["×", row.members]
+												}),
+												row.confidence != null && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+													className: TaskPanel_module_css_default.badge,
+													children: [Math.round(row.confidence * 100), "%"]
+												}),
+												row.trigger && row.trigger.keywords.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+													className: TaskPanel_module_css_default.badge,
+													children: ["⚡", row.trigger.keywords.slice(0, 2).join(",")]
+												})
+											]
+										})]
+									}),
+									row.body && row.body !== row.title && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+										className: TaskPanel_module_css_default.memBody,
+										children: String(row.body).slice(0, 160)
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+										className: TaskPanel_module_css_default.memActs,
+										children: [
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+												variant: "outline",
+												size: "sm",
+												disabled: busy,
+												onClick: () => startEdit(row),
+												children: t("mem.edit")
+											}),
+											scope === "task" && !row.archived && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [row.draft && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+												variant: "outline",
+												size: "sm",
+												disabled: busy,
+												onClick: () => void act("confirm", row.id),
+												children: t("mem.confirm")
+											}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+												variant: "outline",
+												size: "sm",
+												disabled: busy,
+												onClick: () => void act("promote", row.id),
+												children: t("mem.promote")
+											})] }),
+											scope === "project" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+												variant: "outline",
+												size: "sm",
+												disabled: busy,
+												onClick: () => void act("promote", row.id),
+												children: t("mem.promote")
+											}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+												variant: "outline",
+												size: "sm",
+												disabled: busy || !canDemoteToTask,
+												title: !canDemoteToTask ? t("mem.needs-bound") : void 0,
+												onClick: () => void act("demote", row.id),
+												children: t("mem.demote")
+											})] }),
+											scope === "global" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+												variant: "outline",
+												size: "sm",
+												disabled: busy,
+												onClick: () => void act("demote", row.id),
+												children: t("mem.demote")
+											}),
+											row.archived ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+												variant: "outline",
+												size: "sm",
+												disabled: busy,
+												onClick: () => void act("restore", row.id),
+												children: t("mem.restore")
+											}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+												variant: "outline",
+												size: "sm",
+												disabled: busy,
+												onClick: () => void act("archive", row.id),
+												children: t("mem.archive")
+											}),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+												variant: "outline",
+												size: "sm",
+												disabled: busy,
+												onClick: () => void act("delete", row.id),
+												children: t("mem.delete")
+											})
+										]
+									})
+								]
+							}, row.id);
+						})
+					})
+				]
+			});
+		}
+		//#endregion
 		//#region src/client/TaskPanel.tsx
 		/**
 		* Task Panel — dsh web `shell.overlay` 浮动任务面板。
@@ -899,8 +1517,13 @@ window.__ModuleLoader__.load({
 			"in_progress",
 			"completed"
 		];
-		function getT() {
-			return createTranslate(typeof navigator !== "undefined" && navigator.language.startsWith("zh") ? zh : en);
+		const VIEW_CYCLE = [
+			"task",
+			"project",
+			"global"
+		];
+		function getT(ctx) {
+			return createTranslate(ctx?.locale?.getSnapshot?.()?.active === "zh" ? zh : en);
 		}
 		function useSessionId(ctx) {
 			const [, force] = (0, react.useState)(0);
@@ -936,7 +1559,7 @@ window.__ModuleLoader__.load({
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PanelErrorBoundary, { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TaskPanelView, { ctx }) });
 		}
 		function TaskPanelView({ ctx }) {
-			const t = getT();
+			const t = getT(ctx);
 			const data = useTaskData();
 			const ui = useTaskUI();
 			const sessionId = useSessionId(ctx);
@@ -944,10 +1567,17 @@ window.__ModuleLoader__.load({
 			const [syncedAt, setSyncedAt] = (0, react.useState)(0);
 			const [syncError, setSyncError] = (0, react.useState)(null);
 			const [showHints, setShowHints] = (0, react.useState)(true);
+			const [view, setView] = (0, react.useState)("task");
+			const cycleView = () => {
+				const i = VIEW_CYCLE.indexOf(view);
+				setView(VIEW_CYCLE[(i + 1) % VIEW_CYCLE.length]);
+			};
+			const viewTitle = view === "task" ? t("panel.title") : view === "global" ? t("view.global") : t("view.project");
 			const dataActions = useTaskDataActions();
 			const uiActions = useTaskUIActions();
-			const activeTasks = data.tasks.filter((task) => !task.archived);
-			const boundTask = data.boundTaskId ? data.tasks.find((task) => task.id === data.boundTaskId) ?? null : null;
+			const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+			const activeTasks = tasks.filter((task) => !task.archived);
+			const boundTask = data.boundTaskId ? tasks.find((task) => task.id === data.boundTaskId) ?? null : null;
 			const applyPayload = (text) => {
 				const parsed = parseTaskPayloadText(text);
 				if (!parsed) return false;
@@ -988,7 +1618,7 @@ window.__ModuleLoader__.load({
 				try {
 					const prevBoundId = data.boundTaskId;
 					await runLine("/tasks");
-					const newBoundId = useTaskData.getSnapshot().boundTaskId;
+					const newBoundId = taskDataStore.getSnapshot().boundTaskId;
 					if (newBoundId && newBoundId !== prevBoundId) await runLine(`/task switch ${newBoundId}`);
 				} finally {
 					setSyncing(false);
@@ -999,6 +1629,16 @@ window.__ModuleLoader__.load({
 				setSyncing(true);
 				try {
 					await runLine(`/task ${verb} ${taskId}`);
+				} finally {
+					setSyncing(false);
+				}
+			};
+			const handleInsightTask = async (action, id) => {
+				if (syncing) return;
+				setSyncing(true);
+				try {
+					await runLine(`/insight ${action} task ${id}`);
+					await refresh();
 				} finally {
 					setSyncing(false);
 				}
@@ -1160,12 +1800,47 @@ window.__ModuleLoader__.load({
 								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutline16, { className: TaskPanel_module_css_default.headerIcon })
 							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("h2", {
 								className: TaskPanel_module_css_default.headerTitle,
-								children: t("panel.title")
+								children: viewTitle
 							})]
 						}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 							className: TaskPanel_module_css_default.headerRight,
 							children: [
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+									variant: "ghost",
+									size: "sm",
+									onClick: cycleView,
+									"aria-label": t("view.cycle"),
+									title: `${t("view.cycle")}（${view} → ${VIEW_CYCLE[(VIEW_CYCLE.indexOf(view) + 1) % VIEW_CYCLE.length]}）`,
+									children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("svg", {
+										width: "16",
+										height: "16",
+										viewBox: "0 0 24 24",
+										fill: "none",
+										stroke: "currentColor",
+										strokeWidth: "2",
+										strokeLinecap: "round",
+										strokeLinejoin: "round",
+										"aria-hidden": "true",
+										children: [
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M2 6h4" }),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M2 10h4" }),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M2 14h4" }),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M2 18h4" }),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("rect", {
+												width: "16",
+												height: "20",
+												x: "4",
+												y: "2",
+												rx: "2"
+											}),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M15 2v20" }),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M15 7h5" }),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M15 12h5" }),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M15 17h5" })
+										]
+									})
+								}),
+								view === "task" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 									className: TaskPanel_module_css_default.counts,
 									children: activeTasks.length > 0 ? `${t("panel.active")} ${activeTasks.length} · ${doneCount}/${activeTasks.length}` : ""
 								}),
@@ -1208,7 +1883,13 @@ window.__ModuleLoader__.load({
 							syncError
 						]
 					}),
-					activeTasks.length === 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					view !== "task" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(MemoryView, {
+						ctx,
+						sessionId,
+						scope: view,
+						boundTaskId: data.boundTaskId,
+						t
+					}) : activeTasks.length === 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: TaskPanel_module_css_default.emptyState,
 						children: [
 							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
@@ -1242,6 +1923,7 @@ window.__ModuleLoader__.load({
 								onEditStep: (index, value) => commitStepText(task.id, index, value),
 								onCycleStatus: (index) => cycleStatus(task.id, index),
 								onReorderSteps: (from, to) => reorderSteps(task.id, from, to),
+								onInsightAction: (action, id) => void handleInsightTask(action, id),
 								showHints,
 								syncing,
 								t
@@ -1272,8 +1954,9 @@ window.__ModuleLoader__.load({
 		//#endregion
 		//#region src/client/TaskCommandNode.tsx
 		/**
-		* /tasks、/task 命令在会话中的节点渲染器（conversation.chat.commandview，按命令名 key）。
-		* 列表型命令（/tasks、无动词 /task）同步数据并打开面板。
+		* /tasks、/task、/insight 命令在会话中的节点渲染器（conversation.chat.commandview，按命令名 key）。
+		* 列表型命令（/tasks、无动词 /task、/insight list）只显示一行摘要；/insight 的动作类只显示一句结果——
+		* 目的：大 JSON 载荷绝不整段渲染进对话（否则切视图会刷屏）。
 		*/
 		function TaskCommandNode({ node }) {
 			const name = node?.name ?? "task";
@@ -1281,14 +1964,15 @@ window.__ModuleLoader__.load({
 			const verb = (typeof node?.args === "string" ? node.args : "").trim().split(/\s+/)[0] ?? "";
 			const isList = name === "tasks" || !verb;
 			const text = outcome?.text ?? "";
-			const parsed = parseTaskPayloadText(text);
+			const parsedTasks = name !== "insight" ? parseTaskPayloadText(text) : null;
+			const parsedInsights = name === "insight" ? parseInsightPayloadText(text) : null;
 			const live = (0, react.useRef)(outcome === null);
 			(0, react.useEffect)(() => {
-				if (!parsed || !live.current) return;
+				if (!parsedTasks || !live.current) return;
 				taskDataStore.actions.setTasks({
-					tasks: parsed.tasks,
-					boundTaskId: parsed.boundId,
-					archivedCount: parsed.archived
+					tasks: parsedTasks.tasks,
+					boundTaskId: parsedTasks.boundId,
+					archivedCount: parsedTasks.archived
 				});
 				if (isList) taskUIStore.actions.open();
 			}, [text]);
@@ -1314,6 +1998,34 @@ window.__ModuleLoader__.load({
 					]
 				});
 			}
+			if (name === "insight") {
+				if (verb === "list" && parsedInsights) {
+					const scope = parsedInsights.scope;
+					const count = parsedInsights.count ?? parsedInsights.items.length;
+					return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: TaskCommandNode_module_css_default.row,
+						"data-variant": "ok",
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutline16, { className: TaskCommandNode_module_css_default.icon }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [
+							"记忆 ",
+							scope,
+							" · ",
+							count,
+							" 条 · 已同步到记忆视图"
+						] })]
+					});
+				}
+				const note = String(text ?? "").split("\n")[0].slice(0, 120);
+				return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: TaskCommandNode_module_css_default.row,
+					"data-variant": "ok",
+					children: [
+						"/insight ",
+						verb,
+						" ",
+						note || "已完成"
+					]
+				});
+			}
 			if (!isList) {
 				const note = String(text ?? "").split(/\n{2,}/)[0].replace(/```.*$/s, "").trim().slice(0, 200);
 				return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
@@ -1327,9 +2039,9 @@ window.__ModuleLoader__.load({
 					]
 				});
 			}
-			const count = parsed ? parsed.tasks.length : 0;
-			const archived = parsed ? parsed.archived : 0;
-			const label = parsed ? `任务 ${count} 套${archived ? `（归档 ${archived}）` : ""} · 已同步到任务面板` : `/${name} 已执行`;
+			const count = parsedTasks ? parsedTasks.tasks.length : 0;
+			const archived = parsedTasks ? parsedTasks.archived : 0;
+			const label = parsedTasks ? `任务 ${count} 套${archived ? `（归档 ${archived}）` : ""} · 已同步到任务面板` : `/${name} 已执行`;
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: TaskCommandNode_module_css_default.row,
 				"data-variant": "ok",
@@ -1358,7 +2070,8 @@ window.__ModuleLoader__.load({
 			"slots",
 			"sessions",
 			"remote",
-			"remote.commands"
+			"remote.commands",
+			"locale"
 		];
 		function apply(ctx) {
 			const slots = ctx?.slots;
@@ -1372,7 +2085,11 @@ window.__ModuleLoader__.load({
 					id: "dsh-project-memory-task-panel",
 					order: 100
 				}, () => (0, react.createElement)(TaskPanelEntry, { ctx })));
-				for (const key of ["tasks", "task"]) slots.inject("conversation.chat.commandview", () => slots.register({
+				for (const key of [
+					"tasks",
+					"task",
+					"insight"
+				]) slots.inject("conversation.chat.commandview", () => slots.register({
 					name: "conversation.chat.commandview",
 					key
 				}, TaskCommandNode));

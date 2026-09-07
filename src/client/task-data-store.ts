@@ -15,6 +15,13 @@ export interface TaskFile {
   line?: number
 }
 
+export interface TaskInsight {
+  id: string
+  kind: string
+  title: string
+  draft?: boolean
+}
+
 export interface Task {
   id: string
   title: string
@@ -23,6 +30,7 @@ export interface Task {
   lastActiveAt: string
   updatedAt: string
   archived?: boolean
+  insights?: TaskInsight[]
 }
 
 export interface TaskPayload {
@@ -68,8 +76,16 @@ let dataState: TaskDataState = {
 
 const dataListeners = new Set<() => void>()
 
-function setDataState(next: TaskDataState): void {
-  dataState = next
+function setDataState(next: TaskDataState | ((prev: TaskDataState) => TaskDataState)): void {
+  // 兼容对象与函数式 updater（BroadcastChannel 曾误把 updater 当对象写入，
+  // 导致 dataState 变成函数、tasks 丢失 → 面板崩溃）。写入一律归一化为完整 shape。
+  const patch = typeof next === 'function' ? next(dataState) : next
+  dataState = {
+    tasks: Array.isArray(patch?.tasks) ? patch.tasks : [],
+    boundTaskId: patch?.boundTaskId ?? null,
+    archivedCount: typeof patch?.archivedCount === 'number' ? patch.archivedCount : 0,
+    lastUpdate: typeof patch?.lastUpdate === 'number' ? patch.lastUpdate : 0,
+  }
   for (const listener of dataListeners) listener()
 }
 
@@ -77,7 +93,7 @@ function broadcastDataUpdate(tasks: Task[], archivedCount: number): void {
   if (!SYNC_CHANNEL) return
   SYNC_CHANNEL.postMessage({
     type: 'PROJECT_TASKS_UPDATED',
-    payload: { tasks, archivedCount },
+    payload: { tasks: Array.isArray(tasks) ? tasks : [], archivedCount },
   })
 }
 
@@ -88,8 +104,8 @@ if (SYNC_CHANNEL) {
       const { tasks, archivedCount } = msg.payload
       setDataState(prev => ({
         ...prev,
-        tasks: tasks || [],
-        archivedCount: archivedCount ?? 0,
+        tasks: Array.isArray(tasks) ? tasks : [],
+        archivedCount: typeof archivedCount === 'number' ? archivedCount : prev.archivedCount,
         lastUpdate: Date.now(),
       }))
     }

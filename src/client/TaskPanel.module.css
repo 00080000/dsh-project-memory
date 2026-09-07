@@ -625,3 +625,125 @@
 }
 
 /* —— header 防重叠 —— */
+
+/* ---- v0.5 Memory View（Task 草稿 / Project / Global 三作用域列表） ---- */
+.memoryPane {
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+  max-height: 480px;
+}
+.memToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.memCount {
+  font-size: 12px;
+  opacity: 0.75;
+  font-weight: 600;
+}
+.memList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.memRow {
+  border: 1px solid var(--dsw-border-weak, rgba(128, 128, 128, 0.25));
+  border-radius: 6px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: color-mix(in srgb, var(--dsw-bg-secondary, #f5f5f5) 45%, transparent);
+}
+.memRowArchived {
+  opacity: 0.55;
+}
+.memRowMain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.memTitle {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+.kindBadge {
+  flex: none;
+  font-size: 11px;
+  border-radius: 4px;
+  padding: 0 5px;
+  line-height: 1.5;
+  background: var(--dsw-accent-soft, rgba(80, 120, 255, 0.15));
+  color: var(--dsw-accent, #4d6bfe);
+}
+.memMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.badge {
+  font-size: 11px;
+  border-radius: 4px;
+  padding: 0 5px;
+  line-height: 1.5;
+  background: color-mix(in srgb, var(--dsw-fg, #222) 8%, transparent);
+}
+.badgeDraft {
+  color: #b26a00;
+  background: rgba(255, 180, 0, 0.16);
+}
+.badgeArchived {
+  opacity: 0.8;
+}
+.memBody {
+  font-size: 12px;
+  opacity: 0.8;
+  word-break: break-word;
+}
+.memActs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* ---- v0.5 Memory View 新建表单 ---- */
+.memToolbarActs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.memNew {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--dsw-border-weak, rgba(128, 128, 128, 0.25));
+  border-radius: 6px;
+  padding: 8px;
+}
+.memNewRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.memLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  opacity: 0.8;
+}
+.memNew select,
+.memNew textarea {
+  width: 100%;
+  box-sizing: border-box;
+}

@@ -10,6 +10,7 @@ const EXPERIENCE_FILE = 'experience.json'
 const TASKS_FILE = 'tasks.json'
 const BINDING_FILE = 'binding.json'
 const WATCH_FILE = 'watch.json'
+const INSIGHTS_FILE = 'insights.json'
 const SHARDS_DIR = 'shards'
 
 const storeCache = new Map()
@@ -60,12 +61,14 @@ export class ProjectMemoryStore {
     this.files = {}
     this.entries = {}
     this.experience = []
+    this.insights = { version: 1, migratedAt: null, items: [] }
     this.tasks = []
     this.binding = {}
     this.watchlist = []
     this._dirtyShards = new Set()
     this._removedShards = new Set()
     this._dirtyExperience = false
+    this._dirtyInsights = false
     this._dirtyTasks = false
     this._dirtyBinding = false
     this._dirtyWatch = false
@@ -80,6 +83,7 @@ export class ProjectMemoryStore {
     if (hot && hot !== this) return hot
     this._migrateLegacyIfNeeded()
     this._loadSharded()
+    this._loadInsights()
     storeCache.set(key, this)
     return this
   }
@@ -146,6 +150,71 @@ export class ProjectMemoryStore {
     this._formatWritten = existsSafe(path.join(this.dir, FORMAT_FILE))
   }
 
+  // ---- v0.5 insights：project 级 insight 文档（任务级在 task.insights[]） ----
+  // 迁移语义（与初版方案的差异，见 PLAN §10 风险 / 收尾说明）：
+  // v0.4 experience.json 仍由 remember/forget/query_memory 服务，不删除；
+  // 首次加载把旧笔记**复制导入** insights.json（kind: experience, source: migrate），
+  // migratedAt 落盘保证跨进程/崩溃幂等。销毁式收敛放到 recall 统一 PR。
+  _loadInsights() {
+    const doc = loadJson(path.join(this.dir, INSIGHTS_FILE), null)
+    this.insights = doc && typeof doc === 'object' && Array.isArray(doc.items) ? doc : { version: 1, migratedAt: null, items: [] }
+    this._migrateExperienceToInsights()
+  }
+
+  _migrateExperienceToInsights() {
+    if (this.insights.migratedAt) return
+    const legacy = this.experience
+    if (!Array.isArray(legacy) || legacy.length === 0) return
+    const now = new Date().toISOString()
+    const known = new Set(this.insights.items.map((it) => it.id))
+    let imported = 0
+    for (const item of legacy) {
+      if (!item || !item.problem || known.has(item.id)) continue
+      known.add(item.id)
+      this.insights.items.push({
+        id: item.id,
+        kind: 'experience',
+        scope: 'project',
+        title: String(item.problem).slice(0, 120),
+        problem: item.problem,
+        solution: item.solution,
+        files: item.sourceFile ? [item.sourceFile] : [],
+        symbols: [],
+        sourceTaskIds: [],
+        source: 'migrate',
+        confidence: 1,
+        hitCount: 0,
+        createdAt: item.createdAt || now,
+        updatedAt: item.updatedAt || now,
+      })
+      imported++
+    }
+    this.insights.migratedAt = now
+    try {
+      mkdirSync(this.dir, { recursive: true })
+      writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights)
+    } catch (err) {
+      console.error(`[dsh-project-memory] insights migration write failed: ${err.message}`)
+    }
+  }
+
+  insightsDoc() {
+    return this.insights
+  }
+
+  insightItems() {
+    return this.insights.items
+  }
+
+  replaceInsightItems(items) {
+    this.insights.items = items
+    this._dirtyInsights = true
+  }
+
+  markTasksDirty() {
+    this._dirtyTasks = true
+  }
+
   cleanStaleTmp() {
     const scanDirs = [this.dir, path.join(this.dir, SHARDS_DIR)]
     const now = Date.now()
@@ -194,6 +263,10 @@ export class ProjectMemoryStore {
     if (this._dirtyExperience) {
       writeJsonAtomic(path.join(this.dir, EXPERIENCE_FILE), this.experience)
       this._dirtyExperience = false
+    }
+    if (this._dirtyInsights) {
+      writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights)
+      this._dirtyInsights = false
     }
     if (this._dirtyTasks) {
       writeJsonAtomic(path.join(this.dir, TASKS_FILE), this.tasks)

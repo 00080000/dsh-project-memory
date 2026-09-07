@@ -36,6 +36,7 @@
 - **BM25 记忆召回** — 对文档、符号与经验笔记进行排序召回，可选 LLM 查询扩展以应对表述不一致。**CJK 增强**：精确短语乘法加分（3+ 字短语在标题/关键词命中 ×1.5）、同义词表（如 数据库连接池 ↔ 连接池 ↔ DB pool）、CJK 感知的文档↔符号链接边界。
 - **blindSpots 感知召回** — 文档摘要携带 `blindSpots` 字段（明确说明摘要未覆盖的内容）。查询命中盲区时，`query_memory` 追加提示引导模型去读原文，防止半截摘要误导。
 - **经验笔记** — 记录问题 → 方案；相似问题覆盖而非重复；笔记仅在检索命中时返回。笔记数量有界：容量随项目规模伸缩（钳制在 100–2000），超限时淘汰最旧的笔记。**覆盖阈值收紧为双向 0.7 重叠**（原 0.6）；**经验 `problem` 字段现参与 CJK 短语加分**，提升长尾问句召回。
+- **v0.5 分层 insight 记忆（教训 / 决策 / 流程）** — 一个 `insight` 实体贯穿三级：`task`（任务私有草稿，存 `tasks.json`）、`project`（`.dsh-project-memory/insights.json`）、`global`（`~/.config/dsh-project-memory/global.json`）。`save_lesson` 三级可写；去重采用双向 token overlap ≥ 0.7（合并）外加 0.65–0.7 近重复强化带；**提升 = scope 字段变更而非复制**——同一 insight 被 2 个任务命中升 project、3+ 升 global。归档为软删（`archived`），容量/衰减只清归档区；写盘前过滤密钥/token 形态内容。LLM **反思默认关闭**，且只产任务级草稿（`source: reflect`，触发于任务切走/归档时）。面板新增 Task / Project / Global 记忆视图：审核、提升/降级、归档/恢复、删除、编辑与新建表单（procedure 可带"作为 Skill"触发关键词）。旧 `experience.json` 笔记**非破坏**导入 `insights.json` 一次。默认值与设计说明见 `PLAN-v0.5.0.md`。
 - **流式 TF + IDF 缓存** — 查询路径按存储版本缓存 IDF（词逆频率）；命中时单次流式遍历 20k 条目仅需 ~8 ms（5k 文件） / ~1 ms（1k 文件），零中间对象；写入路径仅 O(1) 版本号递增。
 - **无锁同步事务** — 不采用锁：所有写入（index / watch / remember / forget / watch_repo）统一走同步事务 `store.commit(fn)`，fn 成功后才一次落盘；JS 单线程事件循环保证事务间不交错，`remember`/`forget` 不会被 watch 重索引阻塞排队。多实例并发写入同一项目存储时，得益于 CAS 幂等更新与原子提交，自然具备幂等性，无数据损坏风险。
 - **依赖极简** — 纯 JavaScript；唯一运行时依赖是 `pdfjs-dist`（PDF 文本提取），无需原生构建。
@@ -121,8 +122,10 @@ dsh plugin --profile web add /path/to/dsh-project-memory.tgz
 | `show_task_panel` | 在 UI 中打开任务面板。用户要求查看任务列表或你想展示面板时调用。 |
 | `/tasks`（用户输入，不经模型） | 展示任务栈：标题、步骤进度、涉及文件、当前会话绑定哪套任务。 |
 | `/task`（用户输入，不经模型） | 任务面板子命令：`switch` / `archive` / `unbind` / `rename` / `todos`（面板按钮/点击触发，不经模型）。 |
+| `/insight`（用户输入，不经模型） | v0.5 记忆视图动作（面板按钮触发）：`list [task|project|global]`、`confirm` / `promote` / `demote` / `archive` / `restore` / `delete` `<scope> <id>`、`save <scope> <json>`、`edit <scope> <id> <json>`。 |
 | `remember problem solution` | 保存经验笔记。相似问题覆盖而非重复。 |
 | `forget id_or_query` | 删除过期经验笔记。 |
+| `save_lesson`（模型工具） | 在 task/project/global 任一作用域保存教训/决策/流程（单一 insight 实体）。近重复按双向 overlap ≥ 0.7 合并、0.65–0.7 强化；同一 insight 被 2+ 任务命中自动 task→project、3+ → global。参数：`title`、`kind`、`scope`、`pattern`/`fix` 或 `choice`/`reason` 或 `steps`/`trigger`、`task_id`、`files`、`symbols`、`confidence`、`root`。 |
 
 ## 设计
 
@@ -135,6 +138,7 @@ dsh plugin --profile web add /path/to/dsh-project-memory.tgz
   watch.json       被监听根目录
   tasks.json       TaskBridge 任务实体（跨会话）
   binding.json     当前会话 ↔ 任务绑定
+  insights.json    v0.5 项目级 insights（教训/决策/流程）；v0.4 经验笔记非破坏导入一次
 ```
 
 v0.2.0 之前创建的库（单文件 `entries.json` / `index.json`）在首次加载时自动幂等迁移。同一个 dsh 进程内，所有工具调用共享每个项目的单一内存 store 实例，热路径索引只写发生变化的那一个分片。
@@ -256,6 +260,9 @@ TaskPanel (Container)
 | `watchInterval` | 15 | 轮询间隔（秒） |
 | `tsPath` | (自动) | 可选：强制指定特定 `typescript` 安装路径；省略时按项目 cwd → 插件 node_modules 向上解析 |
 | `enableTypeScript` | true | 设为 `false` 彻底禁用 L2 TS 增强（仅保留 L1 正则） |
+| `insight.*` | dedupOverlap `0.7` · reinforceBand `0.65` · maxProject `100` · maxGlobalProcedures `200` · promoteConfidence `0.7` · globalPromoteTasks `3` · decayDays `90` · `globalFile`（自动） | v0.5 insight 去重/强化/提升/容量/归档设置 |
+| `reflection.enabled` | false | v0.5 LLM 反思，**只写任务级草稿**（触发于任务切走/归档）。`cooldownMs` `1800000`、`maxLessonsPerReflect` `3`、`maxDecisionsPerReflect` `2` |
+| `autoContext.enabled` | true | v0.5 静默注入包装（entry 常驻块 + relevance）。宿主无法解析会话 cwd 时完全透传（零副作用）；`maxTokens` `400` |
 
 ### 功能开关
 

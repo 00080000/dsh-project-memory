@@ -13,8 +13,20 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { createTranslate } from './locales.ts'
 import { useTaskDrag } from './task-hooks.ts'
-import { type Task, type TaskStep } from './task-data-store.ts'
+import { type Task, type TaskInsight, type TaskStep } from './task-data-store.ts'
 import css from './TaskPanel.module.css'
+
+function insightKindLabel(kind: string, t: ReturnType<typeof createTranslate>): string {
+  const map: Record<string, string> = {
+    lesson: t('mem.kind.lesson'),
+    decision: t('mem.kind.decision'),
+    procedure: t('mem.kind.procedure'),
+    experience: t('mem.kind.experience'),
+  }
+  return map[kind] ?? kind
+}
+
+type InsightAction = 'confirm' | 'promote' | 'delete'
 
 function timeAgo(iso?: string) {
   if (!iso) return ''
@@ -104,6 +116,7 @@ interface TaskCardProps {
   onEditStep: (index: number, value: string) => void
   onCycleStatus: (index: number) => void
   onReorderSteps: (fromIndex: number, toIndex: number) => void
+  onInsightAction?: (action: InsightAction, id: string) => void
   showHints: boolean
   syncing: boolean
   t: ReturnType<typeof createTranslate>
@@ -121,6 +134,7 @@ export function TaskCard({
   onEditStep,
   onCycleStatus,
   onReorderSteps,
+  onInsightAction,
   showHints,
   syncing,
   t,
@@ -317,6 +331,39 @@ export function TaskCard({
                 {(task.files?.length ?? 0) > 12 && (
                   <li className={css.muted}>… 共 {task.files.length} 个</li>
                 )}
+              </ul>
+            </div>
+          )}
+
+          {onInsightAction && Array.isArray(task.insights) && task.insights.length > 0 && (
+            <div className={css.section}>
+              <div className={css.sectionLabel}>
+                {t('mem.section-label')}
+                <span className={css.sectionCount}>{task.insights.length}</span>
+              </div>
+              <ul className={css.memList}>
+                {(task.insights as TaskInsight[]).map((ins) => (
+                  <li key={ins.id} className={css.memRow}>
+                    <div className={css.memTitle}>
+                      <span className={css.kindBadge}>{insightKindLabel(ins.kind, t)}</span>
+                      <span>{ins.title || ins.id}</span>
+                      {ins.draft && <span className={`${css.badge} ${css.badgeDraft}`}>{t('mem.draft')}</span>}
+                    </div>
+                    <div className={css.memActs}>
+                      {ins.draft && (
+                        <Button variant="outline" size="sm" disabled={syncing} onClick={() => onInsightAction('confirm', ins.id)}>
+                          {t('mem.confirm')}
+                        </Button>
+                      )}
+                      <Button variant="outline" size="sm" disabled={syncing} onClick={() => onInsightAction('promote', ins.id)}>
+                        {t('mem.promote')}
+                      </Button>
+                      <Button variant="outline" size="sm" disabled={syncing} onClick={() => onInsightAction('delete', ins.id)}>
+                        {t('mem.delete')}
+                      </Button>
+                    </div>
+                  </li>
+                ))}
               </ul>
             </div>
           )}
