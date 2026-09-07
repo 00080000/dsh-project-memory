@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.1 (unreleased)
+
+### Fixed
+
+- **Silent injection could crash every agent step (`next is not a function`)** — the `agent/pre-step` listener registered with the host waterfall arguments reversed (it consumed the event payload as the continuation, then called it). Signature corrected to the host contract `(payload, next)`; project root and session id now come from `payload.agent.session` (`header.cwd` / `id`).
+- **Silent injection crashed with `Cannot read properties of undefined (reading 'kind')`** — injected `[Memory Inject]` messages were bare `{ role, content }` objects, but the host reads `message.source.kind` while assembling requests. Injection now builds full host messages via `createUserMessage` with a plugin `source` (`form: notice`, the same pattern as the host's own plan-mode narration).
+- Both paths stay inert on any error or missing session cwd: they return the host's default decision and never break the request.
+
+### Changed (task panel editing)
+
+- **Click vs. double-click discrimination on card heads**: single-click expand/collapse waits ~250 ms to rule out a double-click, so double-click-to-rename no longer fights layout shifts (the first click no longer toggles before the second click lands, and a double-click no longer toggles twice).
+- **Auto-growing inline editors**: step and task-title editing switched from single-line inputs to content-sized textareas (capped, then internal scroll); Enter commits, Shift+Enter inserts a newline, Esc cancels.
+- Step content renders with `white-space: pre-wrap`, so committed multi-line text stays readable.
+
+### Files
+- src/auto-inject.js, src/client/TaskComponents.tsx, src/client/TaskPanel.module.css, client/client.js (+ map), package.json
+
 ## 0.5.0 (unreleased)
 
 ### Added — v0.5 tiered insight memory (lessons / decisions / procedures)
