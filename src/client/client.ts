@@ -20,7 +20,7 @@ const NS = 'dsh-project-memory'
 export const name = NS
 
 /** Required client services: slots registry, session scopes, commands remote (data 通道). */
-export const inject = ['slots', 'sessions', 'remote', 'remote.commands']
+export const inject = ['slots', 'sessions', 'remote', 'remote.commands', 'locale']
 
 export function apply(ctx: any): void {
   const slots = ctx?.slots
@@ -38,9 +38,9 @@ export function apply(ctx: any): void {
       () => createElement(TaskPanelEntry, { ctx })
     ))
 
-    // 会话内 /tasks、/task 命令节点：按命令名 key 接管渲染，
-    // 替换内置大段文本卡片（文本含 JSON 载荷，只有面板需要它）。
-    const nodeKeys = ['tasks', 'task']
+    // 会话内 /tasks、/task、/insight 命令节点：按命令名 key 接管渲染，
+    // 替换内置大段文本卡片（文本含 JSON 载荷，只有面板需要它），避免载荷刷屏对话。
+    const nodeKeys = ['tasks', 'task', 'insight']
     for (const key of nodeKeys) {
       slots.inject('conversation.chat.commandview', () => slots.register(
         { name: 'conversation.chat.commandview', key },

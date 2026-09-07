@@ -6,6 +6,7 @@ import { memoryRootFor } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { projectRootFor, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
 import { renderTaskSnapshot, buildTaskPayload } from './tasks.js'
+import { fireReflect } from '../reflection-pipeline.js'
 
 const VERBS = { switch: 'switch', archive: 'archive' }
 
@@ -127,6 +128,7 @@ export function taskCommandDefinition(config, ctx) {
         if (verb === VERBS.switch) {
           const task = store.getTask(taskId)
           if (!task) return { kind: 'error', text: `[task] 找不到任务: ${taskId}（/tasks 查看）` }
+          const prevBound = sid ? store.getBoundTaskId(sid) : null
           if (task.archived) task.archived = false
           if (sid) {
             store.setBinding(sid, task.id)
@@ -134,6 +136,10 @@ export function taskCommandDefinition(config, ctx) {
           task.updatedAt = new Date().toISOString()
           task.lastActiveAt = task.updatedAt
           store.save()
+          // 反思钩子：切走旧任务异步收割（默认关）
+          if (prevBound && prevBound !== task.id) {
+            fireReflect(config, { llm: ctx?.llm }, root, prevBound, 'switch-away')
+          }
           // 反向接管：切换成功后把任务步骤推成宿主 todo/write（dsh 清单跟随）
           if (shouldAdoptToHost(config)) {
             adoptStepsToSession(session, task)
@@ -149,6 +155,8 @@ export function taskCommandDefinition(config, ctx) {
           task.archived = true
           task.updatedAt = new Date().toISOString()
           store.save()
+          // 反思钩子：归档即收割（默认关）
+          fireReflect(config, { llm: ctx?.llm }, root, taskId, 'archive')
           const note = `已归档: ${describeTask(task)}（select_task 可恢复）`
           return withTaskSnapshot(config, cwd, sid, store, note)
         }

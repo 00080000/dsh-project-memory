@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+### Added — v0.5 tiered insight memory (lessons / decisions / procedures)
+
+- **Single insight entity across three scopes**: task (private drafts inside tasks.json) / project (.dsh-project-memory/insights.json) / global (~/.config/dsh-project-memory/global.json). One schema, one dedupe, one capacity policy.
+- **New model tool save_lesson** — write at any scope (explicit scope > task_id > bound task > project). Bidirectional token-overlap dedupe: >= 0.7 merges, 0.65~0.7 reinforces (task-hit accumulation, no content write).
+- **Promotion = scope change, not a copy**: the same insight hit by 2 tasks auto-promotes task → project, 3+ tasks project → global (sourceTaskIds accumulate; no double-write ever). Manual promote/demote available via panel.
+- **Soft archive**: archived:true hides from recall/injection and stays restorable; capacity decay (decayDays, hitCount==0) and overflow prune only archived entries.
+- **Secret filter on write**: token/private-key/password-shaped content is rejected before persisting.
+- **Non-destructive migration**: v0.4 experience.json notes are imported into insights.json once (kind: experience, source: migrate, migratedAt marker); legacy experience file keeps serving remember/forget/query_memory until the recall-unification PR retires it.
+- **Reflection pipeline (PR 1b)**: optional LLM reflection (reflection.enabled: false by default) that only writes task-level drafts (source: reflect) on task switch-away/archive with cooldown + content-digest gating and silent failure. reflectTaskAfter / isReflectDue / fireReflect + test.
+- **Silent injection engine (PR 2)**: entry resident block + relevance-gated injection; project-profile tags (package.json/go.mod/Cargo.toml); scope-tags intersection filter for global procedures; content fingerprint dedupe (60 s window); fully inert (returns the default decision) on any error or missing session cwd. Wired via the host's official **agent/pre-step** seam (`ctx.on('agent/pre-step', …)`, appending a plugin-source `[Memory Inject]` UserMessage to each step's `enter` messages) — patching `llm.stream` cannot intercept the host's internal reference. `installAutoInject` in index, `autoContext.enabled: true` default.
+- **TaskPanel memory views (PR 3)**: header button cycles Task / Project / Global; lists + actions confirm/promote/demote/archive/restore/delete/edit + create form (procedures carry an "as Skill" trigger); task cards now show their insights inline. New user command /insight (server side commands/insight-actions.js: list/save/edit/actions).
+- **New config groups**: insight.* (dedupOverlap 0.7, reinforceBand 0.65, maxProject 100, maxGlobalProcedures 200, promoteConfidence 0.7, globalPromoteTasks 3, decayDays 90, globalFile), reflection.* (enabled false, cooldownMs 1800000, maxLessonsPerReflect 3, maxDecisionsPerReflect 2), autoContext.* (enabled true, maxTokens 400, relevanceMin 0.25). select_task cards now include insights.
+
+### Files
+- src/similarity.js, src/insight-store.js, src/global-seed.js, src/types.js, src/tools/lesson-tools.js, src/reflection-pipeline.js, src/auto-inject.js, src/project-profile.js, src/commands/insight-actions.js, src/client/MemoryView.tsx
+- Changed: src/store.js, src/index.js, src/tools/task-tools.js, src/commands/tasks.js, src/commands/task-actions.js, src/client/{TaskPanel,TaskComponents,task-data-store,locales}.ts(x), TaskPanel.module.css, package.json
+- Tests: insight-store 11 / reflection-pipeline 5 / auto-inject 9 / insight-actions 7 (total 209, exit 0)
+
+### Notes
+- Design rationale, deviations (non-destructive migration; reflection triggers subset; auto-inject host verification) and the live-verification checklist live in PLAN-v0.5.0.md §10–§12.
+- Requires a dsh web restart to load the new server code and rebuilt client bundle.
+
+### Fixed
+- **/insight flooding the conversation**: `/insight list` returns a large JSON payload; it is now registered into `conversation.chat.commandview` (with `/tasks`, `/task`) and renders as a one-line summary, so switching memory views no longer dumps megabytes of JSON into the chat. Task-card memory labels localized (`mem.section-label`).
+- **Task panel "任务面板（点击重试）" crash (`Cannot read properties of undefined (reading 'filter')`)**: root cause was a latent BroadcastChannel bug — its handler used a functional updater but `setDataState` only accepted a plain object, so the first cross-tab sync replaced the store with a function and `data.tasks` became undefined. `setDataState` now accepts object or updater and always normalizes to the full shape; `TaskPanel` reads defensively (`Array.isArray(data.tasks)`).
+- **Memory view infinite refresh loop flooding the conversation**: `refresh`'s `useCallback` included `loading` in its deps while the effect re-ran it, so every `loading` toggle recreated `refresh` → effect → `/insight list` → … (each command execution appends a chat node). Now guarded by refs (`inflightRef` + 800 ms `lastRunRef`) with `loading` kept out of the dependency array; a memory view fetch happens once per scope change/mount only.
+
 ## 0.4.4 (2026-09-06)
 
 ### Added

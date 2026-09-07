@@ -25,6 +25,7 @@ export function buildTaskPayload(tasks, boundId, archived) {
       lastActiveAt: t.lastActiveAt,
       updatedAt: t.updatedAt,
       archived: t.archived || false,
+      insights: (t.insights || []).filter((i) => !i.archived).map((i) => ({ id: i.id, kind: i.kind || 'lesson', title: i.title || '', draft: i.draft === true })),
     })),
     boundId: boundId || null,
     archived,

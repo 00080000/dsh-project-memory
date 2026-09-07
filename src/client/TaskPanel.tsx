@@ -12,17 +12,20 @@ import {
   IconQuestionOutline14,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { createTranslate, zh, en } from './locales.ts'
-import { useTaskData, useTaskDataActions, parseTaskPayloadText, type TaskStep } from './task-data-store.ts'
+import { useTaskData, useTaskDataActions, taskDataStore, parseTaskPayloadText, type TaskStep } from './task-data-store.ts'
 import { useTaskUI, useTaskUIActions } from './task-ui-store.ts'
 import { MiniBar, TaskCard } from './TaskComponents.tsx'
+import { MemoryView, type InsightScope } from './MemoryView.tsx'
 import css from './TaskPanel.module.css'
 
 const NS = 'dsh-project-memory'
 
 const STATUS_CYCLE = ['pending', 'in_progress', 'completed'] as const
+const VIEW_CYCLE = ['task', 'project', 'global'] as const
+type PanelView = (typeof VIEW_CYCLE)[number]
 
-function getT() {
-  const locale = (typeof navigator !== 'undefined' && navigator.language.startsWith('zh')) ? zh : en
+function getT(ctx: any) {
+  const locale = ctx?.locale?.getSnapshot?.()?.active === 'zh' ? zh : en
   return createTranslate(locale)
 }
 
@@ -65,7 +68,7 @@ export function TaskPanelEntry({ ctx }: { ctx: any }) {
 }
 
 function TaskPanelView({ ctx }: { ctx: any }) {
-  const t = getT()
+  const t = getT(ctx)
   const data = useTaskData()
   const ui = useTaskUI()
   const sessionId = useSessionId(ctx)
@@ -73,12 +76,22 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   const [syncedAt, setSyncedAt] = useState(0)
   const [syncError, setSyncError] = useState<string | null>(null)
   const [showHints, setShowHints] = useState(true)
+  const [view, setView] = useState<PanelView>('task')
+  const cycleView = () => {
+    const i = VIEW_CYCLE.indexOf(view)
+    setView(VIEW_CYCLE[(i + 1) % VIEW_CYCLE.length])
+  }
+  const viewTitle =
+    view === 'task' ? t('panel.title')
+      : view === 'global' ? t('view.global')
+        : t('view.project')
 
   const dataActions = useTaskDataActions()
   const uiActions = useTaskUIActions()
 
-  const activeTasks = data.tasks.filter((task) => !task.archived)
-  const boundTask = data.boundTaskId ? data.tasks.find((task) => task.id === data.boundTaskId) ?? null : null
+  const tasks = Array.isArray(data.tasks) ? data.tasks : []
+  const activeTasks = tasks.filter((task) => !task.archived)
+  const boundTask = data.boundTaskId ? tasks.find((task) => task.id === data.boundTaskId) ?? null : null
 
   const applyPayload = (text?: string): boolean => {
     const parsed = parseTaskPayloadText(text)
@@ -118,7 +131,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     try {
       const prevBoundId = data.boundTaskId
       await runLine('/tasks')
-      const newBoundId = useTaskData.getSnapshot().boundTaskId
+      const newBoundId = taskDataStore.getSnapshot().boundTaskId
       if (newBoundId && newBoundId !== prevBoundId) {
         await runLine(`/task switch ${newBoundId}`)
       }
@@ -132,6 +145,18 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     setSyncing(true)
     try {
       await runLine(`/task ${verb} ${taskId}`)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  // v0.5：任务卡内联记忆动作（confirm/promote/delete 于 /insight task 层），随后刷新任务数据
+  const handleInsightTask = async (action: 'confirm' | 'promote' | 'delete', id: string): Promise<void> => {
+    if (syncing) return
+    setSyncing(true)
+    try {
+      await runLine(`/insight ${action} task ${id}`)
+      await refresh()
     } finally {
       setSyncing(false)
     }
@@ -297,14 +322,46 @@ function TaskPanelView({ ctx }: { ctx: any }) {
           >
             <IconFolderOpenOutline16 className={css.headerIcon} />
           </Button>
-          <h2 className={css.headerTitle}>{t('panel.title')}</h2>
+          <h2 className={css.headerTitle}>{viewTitle}</h2>
         </div>
         <div className={css.headerRight}>
-          <span className={css.counts}>
-            {activeTasks.length > 0
-              ? `${t('panel.active')} ${activeTasks.length} · ${doneCount}/${activeTasks.length}`
-              : ''}
-          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={cycleView}
+            aria-label={t('view.cycle')}
+            title={`${t('view.cycle')}（${view} → ${VIEW_CYCLE[(VIEW_CYCLE.indexOf(view) + 1) % VIEW_CYCLE.length]}）`}
+          >
+            {/* lucide notebook-tabs（视图循环图标） */}
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M2 6h4" />
+              <path d="M2 10h4" />
+              <path d="M2 14h4" />
+              <path d="M2 18h4" />
+              <rect width="16" height="20" x="4" y="2" rx="2" />
+              <path d="M15 2v20" />
+              <path d="M15 7h5" />
+              <path d="M15 12h5" />
+              <path d="M15 17h5" />
+            </svg>
+          </Button>
+          {view === 'task' && (
+            <span className={css.counts}>
+              {activeTasks.length > 0
+                ? `${t('panel.active')} ${activeTasks.length} · ${doneCount}/${activeTasks.length}`
+                : ''}
+            </span>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -338,7 +395,9 @@ function TaskPanelView({ ctx }: { ctx: any }) {
       {!sessionId && <div className={css.notice}>{t('panel.no-session')}</div>}
       {syncError && <div className={css.notice}>{t('panel.sync-failed')}: {syncError}</div>}
 
-      {activeTasks.length === 0 ? (
+      {view !== 'task' ? (
+        <MemoryView ctx={ctx} sessionId={sessionId} scope={view as InsightScope} boundTaskId={data.boundTaskId} t={t} />
+      ) : activeTasks.length === 0 ? (
         <div className={css.emptyState}>
           <p className={css.emptyTitle}>{t('panel.empty')}</p>
           <p className={css.emptyDesc}>{t('panel.empty-desc')}</p>
@@ -364,6 +423,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
                 onEditStep={(index, value) => commitStepText(task.id, index, value)}
                 onCycleStatus={(index) => cycleStatus(task.id, index)}
                 onReorderSteps={(from, to) => reorderSteps(task.id, from, to)}
+                onInsightAction={(action, id) => void handleInsightTask(action, id)}
                 showHints={showHints}
                 syncing={syncing}
                 t={t}

@@ -3,6 +3,7 @@ import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { truncate } from '../util/text.js'
 import { genTaskId, hash8, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
+import { fireReflect } from '../reflection-pipeline.js'
 import { createHash } from 'node:crypto'
 
 function sessionIdOf(exec) {
@@ -51,7 +52,7 @@ export function listTasksTool(config) {
   })
 }
 
-export function selectTaskTool(config) {
+export function selectTaskTool(config, host) {
   return defineTool({
     name: 'select_task',
     description:
@@ -68,6 +69,7 @@ export function selectTaskTool(config) {
       const sid = sessionIdOf(exec)
       const now = new Date().toISOString()
       const error = (msg) => truncate(JSON.stringify({ success: false, error: msg }), config.maxOutputChars)
+      const prevBound = sid ? store.getBoundTaskId(sid) : undefined
 
       if (!args.taskId && !args.title) {
         return error('需要 taskId 或 title（先 list_tasks；未绑定会话出现 todo 时会自动新建任务）')
@@ -133,11 +135,17 @@ export function selectTaskTool(config) {
         adoptStepsToSession(exec?.agent?.session || exec?.ctx?.session, task)
       }
 
+      // 反思钩子：切走旧任务时异步收割（默认关，零成本；失败只记日志）
+      if (prevBound && prevBound !== task.id) {
+        fireReflect(config, host, root, prevBound, 'switch-away')
+      }
+
       const card = {
         taskId: task.id,
         title: task.title,
         steps: task.steps,
         files: task.files,
+        insights: task.insights || [], // v0.5：任务级 lessons/decisions/procedures
         hint: hint + '；请据此用 todo_write 重建本会话清单',
       }
       return truncate(JSON.stringify(card), config.maxOutputChars)
@@ -164,7 +172,7 @@ export function showTaskPanelTool(config) {
   })
 }
 
-export function archiveTaskTool(config) {
+export function archiveTaskTool(config, host) {
   return defineTool({
     name: 'archive_task',
     description: 'Archive a task: hide from default views, exclude from capacity, stop syncing. Restore by selecting it again.',
@@ -182,6 +190,8 @@ export function archiveTaskTool(config) {
       task.archived = true
       task.updatedAt = new Date().toISOString()
       store.save()
+      // 反思钩子：归档即收割最终教训（默认关）
+      fireReflect(config, host, root, args.taskId, 'archive')
       return truncate(JSON.stringify({ success: true, archived: true, hint: '已归档，select_task 可恢复' }), config.maxOutputChars)
     },
   })
