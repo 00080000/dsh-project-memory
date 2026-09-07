@@ -15,3 +15,5 @@ tool-server.mjs
 tool-log.jsonl
 tool-runner.mjs
 pnpm-lock.yaml
+bench/
+RESUME_PROJECT.md
