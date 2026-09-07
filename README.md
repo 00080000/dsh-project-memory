@@ -235,7 +235,7 @@ These are deliberate scope choices.
 
 **Why:** Experience notes are low-stakes, high-volume, and retrieval-only. Aggressive deletion prevents stale noise from polluting search. For precision, delete by ID (shown in `query_memory` output).
 
-### 11. TypeScript enhancement is optional, lazy, and cached
+### 10. TypeScript enhancement is optional, lazy, and cached
 
 **We do:** L2 TS Compiler API enhancement runs async in a priority queue (P0 on `fs/observed`, P1 on `watch`, P2 on `index_repo`), results cached by content hash in `type-cache/`. Zero config — just `npm i -D typescript@5` or `typescript@6`. Falls back to L1 regex if TS absent or disabled.
 
@@ -301,7 +301,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test          # 177 tests (166 core + 11 TaskBridge)
+npm test          # 211 tests (166 core + 11 TaskBridge + 11 insight-store + 5 reflection + 9 auto-inject + 9 insight-actions)
 ```
 
 ## License

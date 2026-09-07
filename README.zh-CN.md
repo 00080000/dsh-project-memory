@@ -234,7 +234,7 @@ TaskPanel (Container)
 
 **为什么：** 经验笔记低风险、高量、仅检索。激进删除防止陈旧噪音污染搜索。精确删用 ID（`query_memory` 输出里有）。
 
-### 11. TS 增强可选、异步、缓存
+### 10. TS 增强可选、异步、缓存
 
 **我们做：** L2 TS Compiler API 在优先级队列异步跑（P0 `fs/observed`、P1 `watch`、P2 `index_repo`），结果按内容哈希缓存 `type-cache/`。零配置——`npm i -D typescript@5` 或 `npm i -D typescript@6` 即用。无 TS 或禁用时优雅回退 L1 正则。
 
@@ -300,7 +300,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test          # 177 项测试（核心 166 + TaskBridge 11）
+npm test          # 211 项测试（核心 166 + TaskBridge 11 + insight-store 11 + reflection 5 + auto-inject 9 + insight-actions 9）
 ```
 
 ## 许可证
