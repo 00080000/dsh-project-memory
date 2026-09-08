@@ -17,3 +17,12 @@ tool-runner.mjs
 pnpm-lock.yaml
 bench/
 RESUME_PROJECT.md
+
+# 本地测试脚手架（仅留本地，不进仓库）
+tool-server*.mjs
+tool-runner.mjs
+run-server.mjs
+manual-test.mjs
+test-query.mjs
+test-debug*.mjs
+tool-log*.jsonl
