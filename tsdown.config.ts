@@ -1,7 +1,11 @@
 import { defineConfig } from 'tsdown'
 import { readFile } from 'node:fs/promises'
-import { basename, dirname, resolve as resolvePath } from 'node:path'
+import { basename, dirname, relative, resolve as resolvePath } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { transform } from 'lightningcss'
+
+// 仓库根：虚拟 CSS 模块 id 用相对路径，避免 esbuild 把本机绝对路径写进产物
+const ROOT = dirname(fileURLToPath(import.meta.url))
 
 const id = '@yolk_vat-y/dsh-project-memory'
 
@@ -49,11 +53,13 @@ export default defineConfig([
       resolveId(source, importer) {
         if (!source.endsWith('.module.css')) return null
         const abs = importer !== undefined ? resolvePath(dirname(importer), source) : source
-        return CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
+        // 虚拟 id 存相对仓库根的路径（产物注释不再含本机绝对路径）
+        return CSS_VIRTUAL_PREFIX + relative(ROOT, abs) + CSS_VIRTUAL_SUFFIX
       },
       async load(this, virtualId) {
         if (!virtualId.startsWith(CSS_VIRTUAL_PREFIX)) return null
-        const fileId = virtualId.slice(CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
+        const relId = virtualId.slice(CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
+        const fileId = resolvePath(ROOT, relId)
         this.addWatchFile(fileId)
         const source = await readFile(fileId)
         const { code, exports: cssExports } = transform({
