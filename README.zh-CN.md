@@ -17,7 +17,7 @@
 ![alt text](docs/images/image-4.png)
 ## 特性
 
-- **TaskBridge：跨会话开发任务** — 监听会话内宿主 `todo_write` 维护的任务清单与 `tool/call` 读文件：进度快照（steps）与触碰文件自动同步进跨会话的任务实体。未绑定会话写 todo 时自动建档。新会话通过 `list_tasks` → `select_task`（绑定/改名/解归档）续接；`query_memory` 新增 `type:'task'`，`type:'all'` 结果尾部附任务计数提示。用户侧 `/tasks` 命令展示任务栈、步骤进度、涉及文件与当前会话绑定。标题由模型经 `select_task(title=…)` 命名（回退：取消息最后一个「：」后的任务段）。容量随项目体积自适应（fileCount/20，clamp 5–100）。存储：`.dsh-project-memory/tasks.json` + `binding.json`。自动同步需含会话事件与 `todo_write` 的 dsh（0.1.2-alpha.x 实测）；旧宿主下降级为纯记录。
+- **TaskBridge：跨会话开发任务** — 监听会话内宿主 `todo_write` 维护的任务清单与 `tool/call` 读文件：进度快照（steps）与触碰文件自动同步进跨会话的任务实体。未绑定会话写 todo 时自动建档。关联文件按**最近活跃排序（写过/编辑的排最前，任何读取不越过写过文件）**，续接时一眼看到该看哪些文件。新会话通过 `list_tasks` → `select_task`（绑定/改名/解归档）续接；`query_memory` 新增 `type:'task'`，`type:'all'` 结果尾部附任务计数提示。用户侧 `/tasks` 命令展示任务栈、步骤进度、涉及文件与当前会话绑定。标题由模型经 `select_task(title=…)` 命名（回退：取消息最后一个「：」后的任务段）。容量随项目体积自适应（fileCount/20，clamp 5–100）。存储：`.dsh-project-memory/tasks.json` + `binding.json`。自动同步需含会话事件与 `todo_write` 的 dsh（0.1.2-alpha.x 实测）；旧宿主下降级为纯记录。
 - **Task Panel（v0.4.2+）：dsh web 浮动任务面板** — 按 dsh web 0.1.2-rc.1 真实 client 插件契约落地（cordis inject + apply，注册进宿主 `shell.overlay` 槽）。卡片可拖拽、展开查看步骤/文件（点击复制路径）；折叠为可拖拽顶部迷你条；可彻底隐藏（输入 `/task` / `/tasks` 唤起）。渲染错误有边界兜底，面板崩溃不再拖垮宿主。
 - **任务面板行为** —
   - **默认隐藏**：dsh web 启动时面板不显示
@@ -264,7 +264,7 @@ TaskPanel (Container)
 | `enableTypeScript` | true | 设为 `false` 彻底禁用 L2 TS 增强（仅保留 L1 正则） |
 | `insight.*` | dedupOverlap `0.7` · reinforceBand `0.65` · maxProject `100` · maxGlobalProcedures `200` · promoteConfidence `0.7` · globalPromoteTasks `3` · decayDays `90` · `globalFile`（自动） | v0.5 insight 去重/强化/提升/容量/归档设置 |
 | `reflection.enabled` | false | v0.5 LLM 反思，**只写任务级草稿**（触发于任务切走/归档）。`cooldownMs` `1800000`、`maxLessonsPerReflect` `3`、`maxDecisionsPerReflect` `2` |
-| `autoContext.enabled` | true | v0.5 静默注入包装（entry 常驻块 + relevance）。宿主无法解析会话 cwd 时完全透传（零副作用）；`maxTokens` `400` |
+| `autoContext.enabled` | true | v0.5 静默注入包装（entry 常驻块 + relevance）。宿主无法解析会话 cwd 时完全透传（零副作用）；`maxTokens` `400`、`editedMax` `3`（resident 任务卡显示最近"编辑中"文件数）、`skipEchoSelfTodo` `true`（模型自己写/维护任务清单后、无新人类消息时不回声任务卡，省 token；相关 insights 仍注入） |
 
 ### 功能开关
 
