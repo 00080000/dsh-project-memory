@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.1 (unreleased)
+## 0.5.1 (2026-09-08)
 
 ### Fixed
 
@@ -17,7 +17,7 @@
 ### Files
 - src/auto-inject.js, src/client/TaskComponents.tsx, src/client/TaskPanel.module.css, client/client.js (+ map), package.json
 
-## 0.5.0 (unreleased)
+## 0.5.0 (2026-09-07)
 
 ### Added — v0.5 tiered insight memory (lessons / decisions / procedures)
 
