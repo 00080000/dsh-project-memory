@@ -8,6 +8,8 @@ import { findProjectRoot } from '../lazy.js'
 import { ProjectMemoryStore } from '../store.js'
 
 const FS_FILE_TOOLS = new Set(['read', 'write', 'edit', 'read_image'])
+const WRITE_TOOLS = new Set(['write', 'edit']) // 编辑/写入 = 高热点
+const READ_TOOLS = new Set(['read', 'read_image'])
 const MAX_FILES_PER_TASK = 100
 const TITLE_MAX = 24
 
@@ -100,7 +102,42 @@ function pickTitle(meta, todos) {
 }
 
 /**
- * 单条会话事件处理（导出便于测试）：user/message 记首条真人文本；
+ * 热点排序：写过(编辑)的文件永远排前；同是写过按 lastWriteAt 倒序；
+ * 纯读文件按 lastReadAt 倒序排在写区之后（任何读取都不会越过写过文件）。
+ */
+export function hotSortFiles(files, meta) {
+  const m = meta || {}
+  return (files || []).slice().sort((a, b) => {
+    const A = m[a]
+    const B = m[b]
+    const aw = A && A.lastWriteAt ? 1 : 0
+    const bw = B && B.lastWriteAt ? 1 : 0
+    if (aw !== bw) return bw - aw
+    if (aw) return String(B.lastWriteAt).localeCompare(String(A.lastWriteAt))
+    return String(B.lastReadAt || '').localeCompare(String(A.lastReadAt || ''))
+  })
+}
+
+/** 触碰文件后更新元数据并重排 task.files（写 vs 读分别记时间/次数）。 */
+export function touchTaskFile(task, rel, kind, now) {
+  task.fileMeta = task.fileMeta || {}
+  if (!task.files.includes(rel)) {
+    task.files.push(rel)
+    if (task.files.length > MAX_FILES_PER_TASK) {
+      const dropped = task.files.shift()
+      delete task.fileMeta[dropped]
+    }
+  }
+  const m = task.fileMeta[rel] || {}
+  m.n = (m.n || 0) + 1
+  if (kind === 'write') m.lastWriteAt = now
+  m.lastReadAt = now
+  task.fileMeta[rel] = m
+  task.files = hotSortFiles(task.files, task.fileMeta)
+}
+
+/**
+ * 单条会话事件处理（导出便于测试）：user/message 记首条真人文本并刷新 lastHumanAt；
  * todo/write → 已绑定则覆盖 steps，未绑定则自动新建任务并绑定；
  * tool/call（fs 工具）→ 绑定任务 files 并集。
  */
@@ -108,17 +145,35 @@ export function onSessionEvent(config, session, event, meta) {
   const sessionId = session?.id
   const type = event?.type
   if (!sessionId || !type) return
+  const now = new Date().toISOString()
 
+  // 人类消息：记首条真人文本 + 若已绑定任务则刷新 lastHumanAt（供“模型自维护不回声任务卡”判断）
   if (type === 'user/message') {
-    if (!meta.has(sessionId) && event.data?.source?.kind === 'user') {
+    if (event.data?.source?.kind === 'user') {
       const text = firstTextOf(event.data?.content)
-      if (text) meta.set(sessionId, { firstHuman: text })
+      const m = meta.get(sessionId) || {}
+      if (!m.firstHuman && text) m.firstHuman = text
+      m.lastHumanAt = now
+      meta.set(sessionId, m)
+      try {
+        const { store } = taskStoreFor(session?.header?.cwd, config)
+        store.commit((s) => {
+          const tid = s.getBoundTaskId(sessionId)
+          const task = tid ? s.getTask(tid) : null
+          if (task && !task.archived) {
+            task.lastHumanAt = now
+            task.updatedAt = now
+            s._dirtyTasks = true
+          }
+        })
+      } catch {
+        /* 人类消息戳记失败不影响主流程 */
+      }
     }
     return
   }
 
   const { root, store } = taskStoreFor(session?.header?.cwd, config)
-  const now = new Date().toISOString()
 
   if (type === 'todo/write') {
     const todos = event.data?.todos
@@ -136,6 +191,7 @@ export function onSessionEvent(config, session, event, meta) {
           title,
           steps: null,
           files: [],
+          fileMeta: {},
           archived: false,
           lastSessionId: sessionId,
           createdAt: now,
@@ -146,6 +202,7 @@ export function onSessionEvent(config, session, event, meta) {
         s.setBinding(sessionId, task.id)
       }
       task.steps = todos
+      task.lastTodoAt = now // 模型/todo 最近一次自维护时刻
       task.updatedAt = now
       task.lastActiveAt = now
       task.lastSessionId = sessionId
@@ -169,13 +226,12 @@ export function onSessionEvent(config, session, event, meta) {
     if (!raw) return
     const rel = normalizeRelFile(root, raw)
     if (!rel) return
+    const kind = WRITE_TOOLS.has(data.name) ? 'write' : READ_TOOLS.has(data.name) ? 'read' : null
+    if (!kind) return
     store.commit((s) => {
       const task = s.getTask(taskId)
       if (!task || task.archived) return
-      if (!task.files.includes(rel)) {
-        task.files.push(rel)
-        if (task.files.length > MAX_FILES_PER_TASK) task.files.shift()
-      }
+      touchTaskFile(task, rel, kind, now)
       task.lastActiveAt = now
       s._dirtyTasks = true
     })

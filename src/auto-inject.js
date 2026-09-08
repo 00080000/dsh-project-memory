@@ -25,6 +25,10 @@ export function cfgEngine(config) {
     maxTokens: typeof c.maxTokens === 'number' ? c.maxTokens : 400,
     entryMaxInsights: typeof c.entryMaxInsights === 'number' ? c.entryMaxInsights : 6,
     relevanceMin: typeof c.relevanceMin === 'number' ? c.relevanceMin : 0.25,
+    // resident 任务卡最多显示几个"编辑中"文件（纯写权重，最近写优先）
+    editedMax: typeof c.editedMax === 'number' ? c.editedMax : 3,
+    // 模型自己写/维护任务清单后、尚无新人类消息时，不把任务卡再回声给模型（省 token）
+    skipEchoSelfTodo: c.skipEchoSelfTodo !== false,
   }
 }
 
@@ -62,14 +66,39 @@ function linesOf(list) {
   return out
 }
 
+/** 任务卡上"编辑中"文件（写过、最近写优先，最多 max 个）。 */
+export function editedFiles(task, max) {
+  if (!task || !task.fileMeta) return []
+  const meta = task.fileMeta
+  // task.files 已由 taskbridge 保持热序（写过在前、按 lastWriteAt 倒序）
+  return (task.files || []).filter((f) => meta[f] && meta[f].lastWriteAt).slice(0, max)
+}
+
+/**
+ * 是否回声 resident 任务卡：最近一次推进是模型自己 todo 写步骤、且之后没有新人类消息时，
+ * 不回声（模型刚写的东西再喂回去 = 噪音/浪费 token）。保留相关 insights 注入不变。
+ */
+export function shouldEchoTaskCard(task, cfg) {
+  if (!task) return false
+  const c = cfg || {}
+  if (c.skipEchoSelfTodo === false) return true
+  const lt = task.lastTodoAt
+  const lh = task.lastHumanAt
+  if (lt && lh) return !(lt > lh)
+  return true
+}
+
 /** 任务卡 + 非草稿任务级 insights 摘要（常驻块主体）。 */
 export function buildEntryContent(task, cfg) {
   if (!task) return ''
+  const c = cfg || {}
   const steps = (task.steps || []).map((s) => (typeof s === 'string' ? s : s.content || s.text || '').slice(0, 80))
   const card = [`任务: ${task.title || '(untitled)'}`, `进度: ${steps.filter((s) => true).length ? `${steps.length} 步` : ''}`, ...steps.slice(0, 12).map((s, i) => `  ${i + 1}. ${s}`)]
   const insights = linesOf(task.insights)
+  const edited = editedFiles(task, c.editedMax || 3)
   const parts = [...card]
-  if (insights.length) parts.push(`任务记忆:`, ...insights.slice(0, cfg.entryMaxInsights || 6))
+  if (edited.length) parts.push(`  编辑中: ${edited.join(', ')}`)
+  if (insights.length) parts.push(`任务记忆:`, ...insights.slice(0, c.entryMaxInsights || 6))
   return parts.join('\n')
 }
 
@@ -123,7 +152,7 @@ export function buildInjection(opts) {
     if (parts.join('\n').length > budgetChars) break
   }
   // 常驻块文本（内容哈希由 wrapper 判“是否已注入过”）
-  const entry = task ? buildEntryContent(task, cfg) : ''
+  const entry = shouldEchoTaskCard(task, cfg) ? buildEntryContent(task, cfg) : ''
   const total = [entry, ...parts].filter(Boolean)
   if (!total.length) return { text: '', labels: [] }
   let text = total.join('\n')
