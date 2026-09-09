@@ -118,14 +118,22 @@ export function apply(ctx, config) {
   installAutoInject(ctx, config)
 
   if (config.autoIndexOnFirstUse) {
-    ctx.effect(async () => {
-      const root = process.cwd()
-      try {
-        watchManager.addRoot(root)
-        const report = await indexRepository(ctx, config, root)
-        console.log(`[dsh-project-memory] ${report}`)
-      } catch (err) {
-        console.error(`[dsh-project-memory] auto-index failed for ${root}: ${err.message}`)
+    // effect 回调必须同步并返回 disposer；异步体独立执行，用 cancelled 标志避免卸载后再写日志
+    ctx.effect(() => {
+      let cancelled = false
+      const run = async () => {
+        const root = process.cwd()
+        try {
+          watchManager.addRoot(root)
+          const report = await indexRepository(ctx, config, root)
+          if (!cancelled) console.log(`[dsh-project-memory] ${report}`)
+        } catch (err) {
+          if (!cancelled) console.error(`[dsh-project-memory] auto-index failed for ${root}: ${err.message}`)
+        }
+      }
+      run()
+      return () => {
+        cancelled = true
       }
     })
   }

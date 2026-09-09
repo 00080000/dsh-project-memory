@@ -1,10 +1,10 @@
 // PR 2 静默注入引擎（entry 常驻块 + relevance 门控）
 // 安全约定：
 //  - 纯函数 buildInjection 可单测；
-//  - wrapLlmStream 仅在 resolver 给出项目 root 时才会真正动 messages，
-//    任何异常/禁用/无 root → 原样透传（零副作用），绝不让宿主请求受影响。
-//  - “静默注入”文本带 [Memory Inject] 前缀，落在最后一条 user message 内容块里；
-//    指纹去重保证内容未变不重复追加（变更由宿主消息历史自然保留到压缩前）。
+//  - 唯一接线点是宿主 agent/pre-step 瀑布事件；任何异常/无会话 cwd → 交回合法决策，
+//    绝不让宿主请求受影响（宿主直接读 decision.kind，返回 undefined 会崩掉整步）。
+//  - “静默注入”文本带 [Memory Inject] 前缀，作为一条 plugin source 的 user 消息追加；
+//    按会话指纹去重，内容未变不重复追加。
 import { createHash } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { ProjectMemoryStore } from './store.js'
@@ -160,52 +160,6 @@ export function buildInjection(opts) {
   return { text, labels }
 }
 
-/**
- * 包装 llm.stream。resolver(ctx, config) 返回项目 root；返回 null → 完全透传。
- * opts.state 持有“当前注入指纹”（跨请求去重）。
- */
-export function wrapLlmStream(streamFn, config, { resolveRoot, state, llmName = 'llm' } = {}) {
-  const auto = (config && config.autoContext) || {}
-  if (auto.enabled === false) return streamFn
-  const orig = typeof streamFn === 'function' ? streamFn : () => {}
-  const cfg = cfgEngine(config)
-  const mem = state || {}
-  return async function* wrapped(params) {
-    try {
-      const resolved = resolveRoot ? resolveRoot(config) : null
-      const root = typeof resolved === 'string' ? resolved : (resolved && resolved.root) || null
-      const sessionId = resolved && typeof resolved === 'object' ? resolved.sessionId || null : null
-      if (root) {
-        const query = lastUserText(params && params.messages)
-        const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
-        const globalStore = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()
-        const sid = sessionId || null
-        const boundTaskId = sid && store.getBoundTaskId(sid) ? store.getBoundTaskId(sid) : null
-        const task = boundTaskId ? store.getTask(boundTaskId) : null
-        const built = buildInjection({ query, task, store, globalStore, projectTagsList: projectTags(root), cfg })
-        const fp = fingerprint(built.text)
-        if (built.text && fp !== mem.lastFp) {
-          const last = params.messages && params.messages[params.messages.length - 1]
-          if (last && last.role === 'user') {
-            const content = Array.isArray(last.content) ? last.content : []
-            content.push({ type: 'text', text: `\n\n${INJECT_MARK} ${llmName}\n${built.text}` })
-            last.content = content
-            mem.lastFp = fp
-            if (!mem.loggedFire) {
-              mem.loggedFire = true
-              console.log(`[dsh-project-memory] auto-context: FIRST injection fired (${built.text.length} chars, root=${root}${sessionId ? `, session=${sessionId}` : ''})`)
-            }
-          }
-        }
-      }
-    } catch (err) {
-      console.error(`[dsh-project-memory] auto-inject skipped: ${err?.message || err}`)
-    }
-    // 无论注入与否都原样走宿主 stream（异常同样原样传播）
-    yield* orig(params)
-  }
-}
-
 /** 注册 agent/pre-step 监听，向每步请求的 enter 决策追加记忆消息（默认开）。
  * 宿主瀑布事件签名为 (payload, next)：payload.agent.session 提供会话（header.cwd=项目根）。
  * 任何异常/无会话 cwd → 原样返回默认决策，零副作用，绝不让宿主请求受影响。
@@ -214,7 +168,9 @@ export function installAutoInject(ctx, config) {
   const auto = (config && config.autoContext) || {}
   if (auto.enabled === false) return
   const cfg = cfgEngine(config)
-  const mem = {}
+  // 每个会话一份“上次注入指纹”。用单个变量会让并发会话互相抑制注入。
+  const lastFpBySession = new Map()
+  const LAST_FP_MAX = 200
   ctx.on('agent/pre-step', async (payload, next) => {
     // 宿主契约是 waterfall(payload, next)，next 一定存在；但一旦宿主版本漂移、或事件被当
     // 普通事件调用，next 缺失会让本监听器 reject（历史事故正是 `next is not a function`）。
@@ -237,10 +193,11 @@ export function installAutoInject(ctx, config) {
       const task = boundTaskId ? store.getTask(boundTaskId) : null
       const built = buildInjection({ query: query || '', task, store, globalStore, projectTagsList: projectTags(root), cfg })
       const fp = fingerprint(built.text)
-      if (built.text && fp !== mem.lastFp) {
+      if (built.text && fp !== lastFpBySession.get(sessionId)) {
         // 以宿主 createUserMessage 构造的完整 user 消息追加（带 id/source，plan-mode narration 同款）。
         // 裸 {role,content} 消息缺 source 会让宿主逐条读 message.source.kind 时崩溃。
-        mem.lastFp = fp
+        lastFpBySession.set(sessionId, fp)
+        if (lastFpBySession.size > LAST_FP_MAX) lastFpBySession.delete(lastFpBySession.keys().next().value)
         const injectMessage = createUserMessage({
           content: [{ type: 'text', text: `\n\n${INJECT_MARK} auto-context\n${built.text}` }],
           source: { kind: 'plugin', plugin: 'dsh-project-memory', form: 'notice', summary: `记忆注入 ${built.text.length} 字符` },

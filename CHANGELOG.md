@@ -10,7 +10,7 @@
 
 ### Changed (cold-index I/O)
 
-- **Single-read indexing — cold index ~4× faster**: every indexing path read each file twice (`await sha256OfFile()` for the hash, then `readFileSync()` for the body) and paid a per-file `async readFile` thread-pool round-trip. New `readFileForIndex()` does one synchronous read and hands the same buffer to both `createHash('sha256')` and `toString('utf8')`; `index_repo`, `watch`, and lazy read-on-observe all use it. Unchanged files are still hashed without decoding. Synthetic 5,000-file corpus (WSL2, Node 24): cold index 1,093 ms → 272 ms (4.0×); the `read+hash` phase drops from 70% to 11% of the pipeline. 211 tests green.
+- **Single-read indexing — cold index ~4× faster**: every indexing path read each file twice (`await sha256OfFile()` for the hash, then `readFileSync()` for the body) and paid a per-file `async readFile` thread-pool round-trip. New `readFileForIndex()` does one synchronous read and hands the same buffer to both `createHash('sha256')` and `toString('utf8')`; `index_repo`, `watch`, and lazy read-on-observe all use it. Unchanged files are still hashed without decoding. Synthetic 5,000-file corpus (WSL2, Node 24): cold index 1,093 ms → 272 ms (4.0×); the `read+hash` phase drops from 70% to 11% of the pipeline. Tests green.
 
 ### Fixed (host-contract + watch robustness)
 
@@ -18,8 +18,14 @@
 - **Watch poll storms** — `start(NaN)` / `start(undefined)` produced `setInterval(fn, NaN)`, which Node silently rewrites to a 1 ms interval, saturating the event loop so the agent stopped responding; invalid intervals now fall back to 15 s. `poll()` had no re-entrancy guard, so a slow poll (large repo, or doc LLM summaries) overlapped the next tick and stacked concurrent indexing; a re-entrancy flag now skips overlapping ticks.
 - **`WatchManager.restorePersisted()` dropped persisted watch roots** — it ignored `load()`'s return value, so on a `storeCache` hit it iterated the empty new instance instead of the loaded one; it now uses the returned store.
 
+### Changed (injection + cache hygiene)
+
+- **Removed the unused `wrapLlmStream` helper** — silent injection is wired solely through the host's `agent/pre-step` seam; the `llm.stream` wrapper could never intercept the host's internal reference, so it was dead code (and its tests went with it).
+- **Per-session injection fingerprint** — the "already injected" fingerprint was one shared value, so concurrent sessions could suppress each other's injection; it is now keyed per session (bounded).
+- **Bounded store cache, synchronous effect** — `ProjectMemoryStore`'s cross-project cache is capped so long-running multi-project use cannot grow without bound; the optional `autoIndexOnFirstUse` effect is now a proper synchronous disposer instead of an async callback.
+
 ### Files
-- src/setup/taskbridge.js, src/auto-inject.js, src/util/fs.js, src/tools/index-repo.js, src/watch.js, src/lazy.js, test/host-contract.test.mjs, package.json
+- src/setup/taskbridge.js, src/auto-inject.js, src/util/fs.js, src/store.js, src/index.js, src/tools/index-repo.js, src/watch.js, src/lazy.js, test/auto-inject.test.mjs, test/host-contract.test.mjs, package.json, README.md, README.zh-CN.md
 
 ## 0.5.1 (2026-09-08)
 
