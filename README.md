@@ -38,7 +38,7 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 - **blindSpots-aware recall** — document summaries carry a `blindSpots` field (what the summary explicitly does NOT cover). When a query hits a blind spot, `query_memory` appends a warning pointing the model to read the source file, preventing hallucination from partial summaries.
 - **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches. The note store is bounded: capacity scales with project size (clamped to 100–2000), and the oldest notes are pruned when the limit is exceeded. **Supersede tightened to bidirectional 0.7 overlap** (was 0.6); **experience `problem` field now participates in CJK phrase boost** for long-tail query recall.
 - **v0.5 tiered insight memory (lessons / decisions / procedures)** — one `insight` entity across three scopes: `task` (private drafts in `tasks.json`), `project` (`.dsh-project-memory/insights.json`), `global` (`~/.config/dsh-project-memory/global.json`). `save_lesson` writes any scope; dedupe is bidirectional token overlap ≥ 0.7 (merge) with a 0.65–0.7 reinforce band; **promotion is a scope change, not a copy** — 2 tasks hitting the same insight promote it to project, 3+ to global. Archive is soft (`archived`), decay/capacity prune archived entries only; writes are filtered for secret/token-shaped content. LLM **reflection is off by default** and only ever writes task-level drafts (`source: reflect`) on task switch-away/archive. Panel gains a Task / Project / Global memory view with approve, promote/demote, archive/restore, delete, edit and a create form (procedures can carry an “as Skill” trigger). Old `experience.json` notes are imported into `insights.json` once, non-destructively. Defaults & rationale: `PLAN-v0.5.0.md`.
-- **Streaming TF + IDF caching** — query path caches IDF (term inverse frequency) per store version; on cache hit, single-pass streaming scores 20k entries in ~8 ms (5k files) / ~1 ms (1k files) with zero intermediate objects; write path is O(1) version bump.
+- **Streaming TF + IDF caching** — query path caches IDF (term inverse frequency) per store version; on cache hit, single-pass streaming scores 20k entries in ~3 ms (5k files) / ~0.6 ms (1k files) with zero intermediate objects; write path is O(1) version bump.
 - **Lock-free sync transactions** — all writes (index / watch / remember / forget / watch_repo) go through synchronous transactions `store.commit(fn)`; fn succeeds then atomic write; JS single-threaded event loop guarantees no interleaving; `remember`/`forget` never blocked by watch re-indexing.
 - **Minimal dependencies** — pure JavaScript; the only runtime dependency is `pdfjs-dist` (PDF text extraction), no native builds required.
 - **Negligible overhead** — pure in-process operation; cold start <100 ms (5k files), typical project query median 2–3 ms (p99 < 7 ms); bottleneck is LLM summarization and PDF parsing, not the plugin.
@@ -49,16 +49,16 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 
 | Scenario | Scale | Measured |
 |----------|-------|----------|
-| Full cold index | 5,000 files / 20k entries | 353 ms |
-| Cold load | 5,000 files | 82 ms |
+| Full cold index | 5,000 files / 20k entries | 272 ms |
+| Cold load | 5,000 files | 43 ms |
 | Hot lazy re-index (single file) | 5k files | median 2.3 ms / max 4.0 ms |
-| query_memory (cached) | 5k files / 20k entries | median 9.3 ms / p95 12.6 ms |
-| query_memory (cached) | 1k files / 4k entries | median 1.0 ms / p95 2.0 ms |
+| query_memory (cached) | 5k files / 20k entries | median 3.0 ms / p95 5.9 ms |
+| query_memory (cached) | 1k files / 4k entries | median 0.6 ms / p95 1.7 ms |
 | Full cold index | 10,000 files / 40k entries | 637 ms |
-| Cold load | 10,000 files | 144 ms |
+| Cold load | 10,000 files | 108 ms |
 | Hot lazy re-index (single file) | 10k files | median 4.5 ms / max 10.2 ms |
 
-> Synthetic benchmark: generated code (~8 symbols/file), Node 24, Linux native FS, SSD. Measures pure indexing overhead without LLM calls. query_memory benchmark uses IDF cache + precomputed searchText; first query after write rebuilds IDF (~150 ms), subsequent queries hit cache.
+> Synthetic benchmark: generated code (~4–5 symbols/file), Node 24, Linux, SSD. Measures pure indexing overhead without LLM calls. query_memory benchmark uses IDF cache + precomputed searchText; first query after write rebuilds IDF (~150 ms), subsequent queries hit cache.
 
 ### Real Project Storage
 
@@ -301,7 +301,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test          # 214 tests (166 core + 11 TaskBridge + 11 insight-store + 5 reflection + 6 auto-inject + 9 insight-actions + 6 host-contract)
+npm test          # 215 tests (166 core + 11 TaskBridge + 11 insight-store + 5 reflection + 7 auto-inject + 9 insight-actions + 6 host-contract)
 ```
 
 ## License
