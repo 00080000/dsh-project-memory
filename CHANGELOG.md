@@ -4,7 +4,7 @@
 
 ### Changed (file hotspot + resume info)
 
-- **Task files now stay in "hot" order (writes first)**: `task.files` is kept sorted by recency-weighted activity — written/edited files always precede read-only ones, ordered by last-write then last-read time; a read never outranks a written file. Every surface reads `task.files` in order, so `select_task` resume, `query_memory` task rows, `/tasks` and the task panel all surface the hottest files first. Per-file metadata (`fileMeta`: `lastWriteAt` / `lastReadAt` / `kind` / count) is additive and old tasks stay compatible.
+- **Task files now stay in "hot" order (writes first)**: `task.files` is kept sorted by recency-weighted activity — written/edited files always precede read-only ones, ordered by last-write then last-read time; a read never outranks a written file. Every surface reads `task.files` in order, so `select_task` resume, `query_memory` task rows, `/tasks` and the task panel all surface the hottest files first. Per-file metadata (`fileMeta`: `lastWriteAt` / `lastReadAt` / touch count `n`) is additive and old tasks stay compatible.
 - **Resident task card shows ≤3 "editing now" files**: the silent-injection task block appends `编辑中: a.ts, b.ts` for recently written files (`autoContext.editedMax`, default 3).
 - **No echo of the task card when the model maintains its own task list**: when the most recent progress is the model's own `todo_write` with no newer human message (`lastTodoAt > lastHumanAt`), the resident task card is suppressed (saves tokens) while relevant project/global insight injection is kept. `autoContext.skipEchoSelfTodo` toggles it (default on).
 
