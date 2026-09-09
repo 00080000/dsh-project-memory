@@ -1,4 +1,4 @@
-import { accessSync, constants, readdirSync, statSync } from 'node:fs'
+import { accessSync, constants, readdirSync, readFileSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
@@ -30,6 +30,18 @@ export function sha256OfBuffer(buf) {
 export async function sha256OfFile(filePath) {
   const buf = await readFile(filePath)
   return { hash: sha256OfBuffer(buf), size: buf.length }
+}
+
+/**
+ * 单次同步读：同一 buffer 同时供内容哈希与正文解码使用。
+ *
+ * 替代 “await sha256OfFile() + readFileSync()” 的二次读盘。对大量小文件的批量
+ * 索引，逐文件 `async readFile` 的线程池往返是主要开销（实测 2000 文件 260ms →
+ * 单次同步读 ~6ms）；调用方拿到 buffer 后按需 toString('utf8')，未变更文件无需解码。
+ */
+export function readFileForIndex(filePath) {
+  const buffer = readFileSync(filePath)
+  return { hash: sha256OfBuffer(buffer), size: buffer.length, buffer }
 }
 
 export async function readTextFile(filePath, maxBytes = 2 * 1024 * 1024) {

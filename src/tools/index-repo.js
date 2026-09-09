@@ -1,7 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
-import { readFileSync, statSync } from 'node:fs'
-import { isSupportedCode, isSupportedDoc, looksLikeDump, memoryRootFor, relativePath, sha256OfFile, storeKey, walkDir } from '../util/fs.js'
+import { statSync } from 'node:fs'
+import { isSupportedCode, isSupportedDoc, looksLikeDump, memoryRootFor, readFileForIndex, relativePath, storeKey, walkDir } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { scanSymbols } from '../symbols.js'
 import { linkEntries } from '../link.js'
@@ -38,8 +38,8 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
         continue
       }
 
-      // existing declared above before hash
-      const { hash } = await sha256OfFile(filePath)
+      // 单次读盘：同一 buffer 供哈希与正文使用（不再 sha256OfFile + readFileSync 读两遍）
+      const { hash, buffer } = readFileForIndex(filePath)
       if (!reindex && existing && existing.sha256 === hash) {
         skipped++
         continue
@@ -47,12 +47,11 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
 
       let entries
       if (isSupportedCode(ext)) {
-        const content = readFileSync(filePath, 'utf8')
-        entries = scanSymbols(rel, filePath, content)
+        entries = scanSymbols(rel, filePath, buffer.toString('utf8'))
         fileUpdates.push({ rel, expectedHash: existing?.sha256, hash, size, entries, type: 'code' })
         updated++
       } else {
-        const content = readFileSync(filePath, 'utf8')
+        const content = buffer.toString('utf8')
         if (looksLikeDump(content)) {
           fileUpdates.push({ rel, deleted: true })
           skipped++
