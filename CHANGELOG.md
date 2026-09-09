@@ -22,6 +22,7 @@
 
 - **Removed the unused `wrapLlmStream` helper** — silent injection is wired solely through the host's `agent/pre-step` seam; the `llm.stream` wrapper could never intercept the host's internal reference, so it was dead code (and its tests went with it).
 - **Per-session injection fingerprint** — the "already injected" fingerprint was one shared value, so concurrent sessions could suppress each other's injection; it is now keyed per session (bounded).
+- **Injection no longer re-fires on hotspot churn** — the dedupe fingerprint now covers only stable content (task title/steps/insights plus matched insights); the volatile `编辑中` file list still appears in the injected block but no longer triggers a re-injection on every file write.
 - **Bounded store cache, synchronous effect** — `ProjectMemoryStore`'s cross-project cache is capped so long-running multi-project use cannot grow without bound; the optional `autoIndexOnFirstUse` effect is now a proper synchronous disposer instead of an async callback.
 
 ### Files

@@ -89,7 +89,23 @@ const BASE_CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
   ok('buildInjection → 任务级 entry（常驻块）')
 }
 
-// --- 6. project-profile：tags 解析与缓存 ---
+// --- 6. 热点文件变化不改变去重指纹（不触发重新注入）---
+{
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'inject-hot-')), 'global.json')
+  const cfg = cfgEngine({})
+  const mkTask = () => ({
+    id: 'tsk_h', title: '重构 auth JWT', steps: [{ content: '接 jose' }], insights: [],
+    files: ['a.js'], fileMeta: { 'a.js': { lastWriteAt: '2024-01-01T00:00:00.000Z', lastReadAt: '2024-01-01T00:00:00.000Z' } },
+  })
+  const build = (task) => buildInjection({ query: '继续重构', task, globalStore: new GlobalStore(file).load(), projectTagsList: [], cfg })
+  const before = build(mkTask())
+  const after = build({ ...mkTask(), files: ['b.js', 'a.js'], fileMeta: { 'a.js': { lastWriteAt: '2024-01-01T00:00:00.000Z', lastReadAt: '2024-01-01T00:00:00.000Z' }, 'b.js': { lastWriteAt: '2024-02-02T00:00:00.000Z', lastReadAt: '2024-02-02T00:00:00.000Z' } } })
+  assert.notEqual(before.text, after.text, '热点文件变化后注入文本确实变了')
+  assert.equal(before.dedupeText, after.dedupeText, '但去重指纹文本保持稳定')
+  ok('热点文件变化不触发重新注入（dedupeText 稳定）')
+}
+
+// --- 7. project-profile：tags 解析与缓存 ---
 {
   const root = mkdtempSync(path.join(tmpdir(), 'profile-'))
   const { writeFileSync } = await import('node:fs')

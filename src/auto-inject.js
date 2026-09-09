@@ -88,8 +88,9 @@ export function shouldEchoTaskCard(task, cfg) {
   return true
 }
 
-/** 任务卡 + 非草稿任务级 insights 摘要（常驻块主体）。 */
-export function buildEntryContent(task, cfg) {
+/** 任务卡 + 非草稿任务级 insights 摘要（常驻块主体）。
+ * withEdited=false 用于去重指纹：排除随写文件高频变化的“编辑中”行。 */
+export function buildEntryContent(task, cfg, { withEdited = true } = {}) {
   if (!task) return ''
   const c = cfg || {}
   const steps = (task.steps || []).map((s) => (typeof s === 'string' ? s : s.content || s.text || '').slice(0, 80))
@@ -97,7 +98,7 @@ export function buildEntryContent(task, cfg) {
   const insights = linesOf(task.insights)
   const edited = editedFiles(task, c.editedMax || 3)
   const parts = [...card]
-  if (edited.length) parts.push(`  编辑中: ${edited.join(', ')}`)
+  if (withEdited && edited.length) parts.push(`  编辑中: ${edited.join(', ')}`)
   if (insights.length) parts.push(`任务记忆:`, ...insights.slice(0, c.entryMaxInsights || 6))
   return parts.join('\n')
 }
@@ -151,13 +152,16 @@ export function buildInjection(opts) {
     labels.push(label)
     if (parts.join('\n').length > budgetChars) break
   }
-  // 常驻块文本（内容哈希由 wrapper 判“是否已注入过”）
-  const entry = shouldEchoTaskCard(task, cfg) ? buildEntryContent(task, cfg) : ''
+  // 常驻块文本。去重指纹只看稳定内容（任务标题/步骤/insights + 相关 insights）：
+  // “编辑中”随每次写文件变化，若参与指纹会导致每写一个文件就重发整块（噪音 + token 浪费）。
+  const echo = shouldEchoTaskCard(task, cfg)
+  const entry = echo ? buildEntryContent(task, cfg) : ''
+  const entryStable = echo ? buildEntryContent(task, cfg, { withEdited: false }) : ''
   const total = [entry, ...parts].filter(Boolean)
   if (!total.length) return { text: '', labels: [] }
-  let text = total.join('\n')
-  if (text.length > budgetChars) text = text.slice(0, budgetChars) + '\n…(截断)'
-  return { text, labels }
+  const clamp = (t) => (t.length > budgetChars ? t.slice(0, budgetChars) + '\n…(截断)' : t)
+  const dedupeText = clamp([entryStable, ...parts].filter(Boolean).join('\n'))
+  return { text: clamp(total.join('\n')), labels, dedupeText }
 }
 
 /** 注册 agent/pre-step 监听，向每步请求的 enter 决策追加记忆消息（默认开）。
@@ -192,7 +196,7 @@ export function installAutoInject(ctx, config) {
       const boundTaskId = store.getBoundTaskId(sessionId) ? store.getBoundTaskId(sessionId) : null
       const task = boundTaskId ? store.getTask(boundTaskId) : null
       const built = buildInjection({ query: query || '', task, store, globalStore, projectTagsList: projectTags(root), cfg })
-      const fp = fingerprint(built.text)
+      const fp = fingerprint(built.dedupeText ?? built.text)
       if (built.text && fp !== lastFpBySession.get(sessionId)) {
         // 以宿主 createUserMessage 构造的完整 user 消息追加（带 id/source，plan-mode narration 同款）。
         // 裸 {role,content} 消息缺 source 会让宿主逐条读 message.source.kind 时崩溃。

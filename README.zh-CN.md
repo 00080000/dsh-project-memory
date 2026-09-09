@@ -39,7 +39,7 @@
 - **blindSpots 感知召回** — 文档摘要携带 `blindSpots` 字段（明确说明摘要未覆盖的内容）。查询命中盲区时，`query_memory` 追加提示引导模型去读原文，防止半截摘要误导。
 - **经验笔记** — 记录问题 → 方案；相似问题覆盖而非重复；笔记仅在检索命中时返回。笔记数量有界：容量随项目规模伸缩（钳制在 100–2000），超限时淘汰最旧的笔记。**覆盖阈值收紧为双向 0.7 重叠**（原 0.6）；**经验 `problem` 字段现参与 CJK 短语加分**，提升长尾问句召回。
 - **v0.5 分层 insight 记忆（教训 / 决策 / 流程）** — 一个 `insight` 实体贯穿三级：`task`（任务私有草稿，存 `tasks.json`）、`project`（`.dsh-project-memory/insights.json`）、`global`（`~/.config/dsh-project-memory/global.json`）。`save_lesson` 三级可写；去重采用双向 token overlap ≥ 0.7（合并）外加 0.65–0.7 近重复强化带；**提升 = scope 字段变更而非复制**——同一 insight 被 2 个任务命中升 project、3+ 升 global。归档为软删（`archived`），容量/衰减只清归档区；写盘前过滤密钥/token 形态内容。LLM **反思默认关闭**，且只产任务级草稿（`source: reflect`，触发于任务切走/归档时）。面板新增 Task / Project / Global 记忆视图：审核、提升/降级、归档/恢复、删除、编辑与新建表单（procedure 可带"作为 Skill"触发关键词）。旧 `experience.json` 笔记**非破坏**导入 `insights.json` 一次。默认值与设计说明见 `PLAN-v0.5.0.md`。
-- **流式 TF + IDF 缓存** — 查询路径按存储版本缓存 IDF（词逆频率）；命中时单次流式遍历 20k 条目仅需 ~8 ms（5k 文件） / ~1 ms（1k 文件），零中间对象；写入路径仅 O(1) 版本号递增。
+- **流式 TF + IDF 缓存** — 查询路径按存储版本缓存 IDF（词逆频率）；命中时单次流式遍历 20k 条目仅需 ~3 ms（5k 文件） / ~0.6 ms（1k 文件），零中间对象；写入路径仅 O(1) 版本号递增。
 - **无锁同步事务** — 不采用锁：所有写入（index / watch / remember / forget / watch_repo）统一走同步事务 `store.commit(fn)`，fn 成功后才一次落盘；JS 单线程事件循环保证事务间不交错，`remember`/`forget` 不会被 watch 重索引阻塞排队。多实例并发写入同一项目存储时，得益于 CAS 幂等更新与原子提交，自然具备幂等性，无数据损坏风险。
 - **依赖极简** — 纯 JavaScript；唯一运行时依赖是 `pdfjs-dist`（PDF 文本提取），无需原生构建。
 - **开销可忽略** — 纯进程内操作；冷启动 <100 ms（5k 文件），典型项目查询中位数 2–3 ms（p99 < 7 ms）；瓶颈在 LLM 摘要与 PDF 解析，插件本身不阻塞。
@@ -50,16 +50,16 @@
 
 | 场景 | 规模 | 实测 |
 |------|------|------|
-| 批量冷记忆构建 | 5,000 文件 / 20k 条目 | 353 ms |
-| 冷加载 | 5,000 文件 | 82 ms |
+| 批量冷记忆构建 | 5,000 文件 / 20k 条目 | 272 ms |
+| 冷加载 | 5,000 文件 | 43 ms |
 | 热路径懒记忆 | 单文件重记忆+落盘 | 中位数 2.3 ms / 最大 4.0 ms (5k) |
-| query_memory (缓存命中) | 5k 文件 / 20k 条目 | 中位数 9.3 ms / p95 12.6 ms |
-| query_memory (缓存命中) | 1k 文件 / 4k 条目 | 中位数 1.0 ms / p95 2.0 ms |
+| query_memory (缓存命中) | 5k 文件 / 20k 条目 | 中位数 3.0 ms / p95 5.9 ms |
+| query_memory (缓存命中) | 1k 文件 / 4k 条目 | 中位数 0.6 ms / p95 1.7 ms |
 | 批量冷记忆构建 | 10,000 文件 / 40k 条目 | 637 ms |
-| 冷加载 | 10,000 文件 | 144 ms |
+| 冷加载 | 10,000 文件 | 108 ms |
 | 热路径懒记忆 | 单文件重记忆+落盘 | 中位数 4.5 ms / 最大 10.2 ms (10k) |
 
-> 合成基准：生成代码（~8 符号/文件），Node 24，Linux 文件系统，SSD。测量纯索引开销，不含 LLM 调用。query_memory 基准使用 IDF 缓存 + 预计算 searchText；写入后首次查询重建 IDF（~150 ms），后续查询命中缓存。
+> 合成基准：生成代码（~4–5 符号/文件），Node 24，Linux 文件系统，SSD。测量纯索引开销，不含 LLM 调用。query_memory 基准使用 IDF 缓存 + 预计算 searchText；写入后首次查询重建 IDF（~150 ms），后续查询命中缓存。
 
 ### 真实项目存储体积
 
@@ -300,7 +300,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test          # 214 项测试（核心 166 + TaskBridge 11 + insight-store 11 + reflection 5 + auto-inject 6 + insight-actions 9 + host-contract 6）
+npm test          # 215 项测试（核心 166 + TaskBridge 11 + insight-store 11 + reflection 5 + auto-inject 7 + insight-actions 9 + host-contract 6）
 ```
 
 ## 许可证
