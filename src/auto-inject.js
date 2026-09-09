@@ -216,8 +216,14 @@ export function installAutoInject(ctx, config) {
   const cfg = cfgEngine(config)
   const mem = {}
   ctx.on('agent/pre-step', async (payload, next) => {
-    const decision = await next()
-    if (!decision || decision.kind !== 'enter') return decision
+    // 宿主契约是 waterfall(payload, next)，next 一定存在；但一旦宿主版本漂移、或事件被当
+    // 普通事件调用，next 缺失会让本监听器 reject（历史事故正是 `next is not a function`）。
+    // 更致命的是返回 undefined：宿主 agent.ts 直接读 `decision.kind`，会崩掉整步 → 无法回复。
+    // 因此两种情况都退化为一个合法的 enter 决策，绝不让宿主请求受影响。
+    const fallback = () => ({ kind: 'enter', messages: (payload && payload.messages) || [] })
+    const decision = typeof next === 'function' ? await next() : fallback()
+    if (!decision) return fallback()
+    if (decision.kind !== 'enter') return decision
     try {
       const agent = payload && payload.agent
       const session = agent && agent.session
