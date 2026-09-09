@@ -8,8 +8,12 @@
 - **Resident task card shows ≤3 "editing now" files**: the silent-injection task block appends `编辑中: a.ts, b.ts` for recently written files (`autoContext.editedMax`, default 3).
 - **No echo of the task card when the model maintains its own task list**: when the most recent progress is the model's own `todo_write` with no newer human message (`lastTodoAt > lastHumanAt`), the resident task card is suppressed (saves tokens) while relevant project/global insight injection is kept. `autoContext.skipEchoSelfTodo` toggles it (default on).
 
+### Changed (cold-index I/O)
+
+- **Single-read indexing — cold index ~4× faster**: every indexing path read each file twice (`await sha256OfFile()` for the hash, then `readFileSync()` for the body) and paid a per-file `async readFile` thread-pool round-trip. New `readFileForIndex()` does one synchronous read and hands the same buffer to both `createHash('sha256')` and `toString('utf8')`; `index_repo`, `watch`, and lazy read-on-observe all use it. Unchanged files are still hashed without decoding. Synthetic 5,000-file corpus (WSL2, Node 24): cold index 1,093 ms → 272 ms (4.0×); the `read+hash` phase drops from 70% to 11% of the pipeline. 211 tests green.
+
 ### Files
-- src/setup/taskbridge.js, src/auto-inject.js
+- src/setup/taskbridge.js, src/auto-inject.js, src/util/fs.js, src/tools/index-repo.js, src/watch.js, src/lazy.js
 
 ## 0.5.1 (2026-09-08)
 

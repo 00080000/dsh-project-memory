@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { tmpdir } from 'node:os'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfFile, storeKey } from './util/fs.js'
+import { existsSync, readdirSync, statSync } from 'node:fs'
+import { isSupportedCode, isSupportedDoc, memoryRootFor, readFileForIndex, relativePath, storeKey } from './util/fs.js'
 import { buildDocEntries } from './doc-pipeline.js'
 import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
@@ -88,12 +88,13 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
   const existing = store.fileRecord(rel)
   let hash
   let size
+  let buffer
   let entries
   try {
     if (isSupportedCode(ext) && config.maxFileSizeMb && statSync(filePath).size > config.maxFileSizeMb * 1024 * 1024) {
       return false
     }
-    ;({ hash, size } = await sha256OfFile(filePath))
+    ;({ hash, size, buffer } = readFileForIndex(filePath))
   } catch {
     return false
   }
@@ -105,7 +106,7 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
   }
 
   if (isSupportedCode(ext)) {
-    entries = scanSymbols(rel, filePath, readFileSync(filePath, 'utf8'))
+    entries = scanSymbols(rel, filePath, buffer.toString('utf8'))
     onFileObserved(store, rel, filePath, config, root)
     return store.commit((s) => {
       s.markFile(rel, { sha256: hash, size, type: 'code', indexedAt: new Date().toISOString() })

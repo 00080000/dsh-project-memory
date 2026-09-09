@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { isSupportedCode, isSupportedDoc, memoryRootFor, relativePath, sha256OfFile, storeKey, walkDir } from './util/fs.js'
+import { isSupportedCode, isSupportedDoc, memoryRootFor, readFileForIndex, relativePath, storeKey, walkDir } from './util/fs.js'
 import { buildDocEntries } from './doc-pipeline.js'
 import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
@@ -89,14 +89,15 @@ export class WatchManager {
         continue
       }
 
-      const { hash } = await sha256OfFile(filePath)
+      // 单次读盘：同一 buffer 供哈希与正文使用
+      const { hash, buffer } = readFileForIndex(filePath)
       const existing = state.store.fileRecord(rel)
       if (existing && existing.sha256 === hash) continue
 
       try {
         let entries
         if (isSupportedCode(ext)) {
-          entries = scanSymbols(rel, filePath, readFileSync(filePath, 'utf8'))
+          entries = scanSymbols(rel, filePath, buffer.toString('utf8'))
         } else {
           entries = await buildDocEntries(this.ctx.llm, rel, filePath, {
             chunkChars: this.config.chunkChars,
