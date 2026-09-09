@@ -13,13 +13,14 @@ export class WatchManager {
     this.config = config
     this.roots = new Map()
     this.timer = null
+    this._polling = false
   }
 
   restorePersisted() {
     const cwd = process.cwd()
-    const store = new ProjectMemoryStore(memoryRootFor(cwd, this.config.memoryDir))
+    // 用 load() 的返回值：storeCache 命中时 load() 返回的是缓存实例，忽略返回值会拿到空 store
+    const store = new ProjectMemoryStore(memoryRootFor(cwd, this.config.memoryDir)).load()
     if (existsSync(store.dir)) {
-      store.load()
       for (const root of store.watchlist) {
         if (typeof root === 'string' && root) this.addRoot(root)
       }
@@ -43,7 +44,11 @@ export class WatchManager {
 
   start(intervalMs = 15000) {
     if (this.timer) return
-    this.timer = setInterval(() => this.poll(), Math.max(intervalMs, 1000))
+    // NaN/undefined 会让 setInterval 退化成 1ms 轮询（Node 只发一条 TimeoutNaNWarning），
+    // 足以打满事件循环让 agent 无法响应；非法值回退到 15s。
+    const raw = Number(intervalMs)
+    const ms = Number.isFinite(raw) ? Math.max(raw, 1000) : 15000
+    this.timer = setInterval(() => this.poll(), ms)
     if (this.timer.unref) this.timer.unref()
   }
 
@@ -53,12 +58,20 @@ export class WatchManager {
   }
 
   async poll() {
-    for (const [root, state] of this.roots) {
-      try {
-        await this.pollRoot(root, state)
-      } catch (err) {
-        console.error(`[dsh-project-memory] watch poll failed for ${root}: ${err.message}`)
+    // setInterval 不等待上一轮：大仓库/文档 LLM 摘要让一轮 >interval 时，
+    // 轮询会叠加成并发索引，最终打满事件循环。用重入锁让慢轮询自然跳过。
+    if (this._polling) return
+    this._polling = true
+    try {
+      for (const [root, state] of this.roots) {
+        try {
+          await this.pollRoot(root, state)
+        } catch (err) {
+          console.error(`[dsh-project-memory] watch poll failed for ${root}: ${err.message}`)
+        }
       }
+    } finally {
+      this._polling = false
     }
   }
 
