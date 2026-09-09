@@ -14,6 +14,7 @@ const INSIGHTS_FILE = 'insights.json'
 const SHARDS_DIR = 'shards'
 
 const storeCache = new Map()
+const STORE_CACHE_MAX = 32
 
 function loadJson(filePath, fallback) {
   let raw
@@ -85,6 +86,12 @@ export class ProjectMemoryStore {
     this._loadSharded()
     this._loadInsights()
     storeCache.set(key, this)
+    // 只保留最近打开的项目：长期跨多项目运行时不至于无限增长（被逐出只是下次重新读盘）
+    while (storeCache.size > STORE_CACHE_MAX) {
+      const oldest = storeCache.keys().next().value
+      if (oldest === key) break
+      storeCache.delete(oldest)
+    }
     return this
   }
 

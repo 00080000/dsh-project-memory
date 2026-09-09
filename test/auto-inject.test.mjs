@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
 import { GlobalStore, cfgInsight } from '../src/insight-store.js'
-import { buildInjection, wrapLlmStream, cfgEngine, INJECT_MARK } from '../src/auto-inject.js'
+import { buildInjection, cfgEngine } from '../src/auto-inject.js'
 import { projectTags } from '../src/project-profile.js'
 
 let passed = 0
@@ -69,58 +69,7 @@ const BASE_CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
   ok('预算截断生效')
 }
 
-// --- 5. wrapper 禁用 → 原样透传 ---
-{
-  let captured = null
-  async function* orig(p) { captured = p; yield { type: 'finish' } }
-  const wrapped = wrapLlmStream(orig, { autoContext: { enabled: false } }, {})
-  assert.equal(wrapped, orig, '禁用时直接返回原函数')
-  const params = { messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] }
-  for await (const c of wrapped(params)) void c
-  assert.equal(captured.messages[0].content[0].text, 'hi')
-  ok('wrapper 禁用 → 透传原函数/原参数')
-}
-
-// --- 6. wrapper 无 root resolver → 零副作用 ---
-{
-  let captured = null
-  async function* orig(p) { captured = p; yield { type: 'finish' } }
-  const wrapped = wrapLlmStream(orig, {}, { resolveRoot: () => null })
-  const params = { messages: [{ role: 'user', content: [{ type: 'text', text: '发包' }] }] }
-  for await (const c of wrapped(params)) void c
-  assert.ok(!JSON.stringify(captured).includes(INJECT_MARK))
-  ok('无 root → 完全透传（零副作用）')
-}
-
-// --- 7. wrapper 命中 → 追加 [Memory Inject]，指纹去重不重复 ---
-{
-  const file = path.join(mkdtempSync(path.join(tmpdir(), 'inject-w-')), 'global.json')
-  const gs = new GlobalStore(file).load()
-  gs.doc.items.push({ ...PROCEDURE, id: 'proc_w', trigger: { keywords: ['发包', 'publish'] } }) // 无 scope → 不受画像过滤
-  gs.markDirty()
-  gs.commit()
-  let captured = []
-  async function* orig(p) { captured.push(p); yield { type: 'finish' } }
-  const state = {}
-  const cfg = { memoryDir: '.dsh-project-memory', autoContext: { enabled: true, maxTokens: 200 }, insight: { globalFile: file } }
-  const wrapped = wrapLlmStream(orig, cfg, { resolveRoot: () => file === file && process.cwd(), state })
-  // resolver 返回项目 root；global.json 的 procedure 与 query 匹配
-  const mkParams = () => ({ messages: [{ role: 'system', content: [{ type: 'text', text: 's' }] }, { role: 'user', content: [{ type: 'text', text: '请帮我发包到官方源' }] }] })
-  const p1 = mkParams()
-  for await (const c of wrapped(p1)) void c
-  const last1 = captured[0].messages[captured[0].messages.length - 1]
-  assert.ok(last1.content.some((b) => b.text.includes(INJECT_MARK)), '命中后注入 [Memory Inject]')
-  assert.ok(last1.content.some((b) => b.text.includes('npm config set registry')))
-  // 第二次同 query：内容未变 → 不再追加
-  const p2 = mkParams()
-  for await (const c of wrapped(p2)) void c
-  const last2 = captured[1].messages[captured[1].messages.length - 1]
-  const markers = last2.content.filter((b) => b.text.includes(INJECT_MARK)).length
-  assert.equal(markers, 0, '内容未变不重复追加')
-  ok('wrapper 命中注入 + 指纹去重')
-}
-
-// --- 9. wrapper 带 {root, sessionId} → 注入任务级 entry（常驻块） ---
+// --- 5. 任务级 entry（常驻块）---
 {
   const root = mkdtempSync(path.join(tmpdir(), 'inject-task-'))
   const dir = path.join(root, '.dsh-project-memory')
@@ -133,18 +82,14 @@ const BASE_CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
   task.insights = [{ id: 'ins_t', kind: 'lesson', scope: 'task', title: 'JWT 校验 exp', pattern: 'JWT 校验 exp', fix: '用 jose', draft: false, confidence: 0.8, sourceTaskIds: ['tsk_t'], createdAt: now, updatedAt: now }]
   store.setBinding('s1', 'tsk_t')
   store.commit(() => 0)
-  let captured = null
-  async function* orig(p) { captured = p; yield { type: 'finish' } }
   const cfg = { memoryDir: '.dsh-project-memory', autoContext: { enabled: true, maxTokens: 300 }, insight: { globalFile: file } }
-  const wrapped = wrapLlmStream(orig, cfg, { resolveRoot: () => ({ root, sessionId: 's1' }), state: {} })
-  const params = { messages: [{ role: 'user', content: [{ type: 'text', text: '继续重构' }] }] }
-  for await (const c of wrapped(params)) void c
-  const last = captured.messages[captured.messages.length - 1]
-  assert.ok(last.content.some((b) => b.text.includes('重构 auth JWT')), '注入任务卡（常驻块）')
-  ok('wrapper {root, sessionId} → 注入任务级 entry')
+  const out = buildInjection({ query: '继续重构', task, store, globalStore: new GlobalStore(file).load(), projectTagsList: [], cfg: cfgEngine(cfg) })
+  assert.ok(out.text.includes('重构 auth JWT'), '注入任务卡（常驻块）')
+  assert.ok(out.text.includes('JWT 校验 exp'), '注入任务级 insight')
+  ok('buildInjection → 任务级 entry（常驻块）')
 }
 
-// --- 10. project-profile：tags 解析与缓存 ---
+// --- 6. project-profile：tags 解析与缓存 ---
 {
   const root = mkdtempSync(path.join(tmpdir(), 'profile-'))
   const { writeFileSync } = await import('node:fs')
