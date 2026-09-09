@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.2 (2026-09-09)
 
 ### Changed (file hotspot + resume info)
 
