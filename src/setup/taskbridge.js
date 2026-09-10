@@ -87,7 +87,26 @@ export function shouldAdoptToHost(config) {
   return config?.tasklist?.syncHostOnAdopt !== false
 }
 
+/**
+ * 子代理会话判定：宿主 SessionHeader 对 in-process 子代理恒定写入
+ * `origin: 'subagent'` 与 `delegationDepth`（parent depth + 1）。
+ * 刻意不看 parentSession —— 那是 fork/seed 血缘，用户 fork 出来的顶层会话同样带它。
+ */
+export function isSubagentSession(session) {
+  const header = session?.header
+  if (!header) return false
+  if (header.origin === 'subagent') return true
+  return typeof header.delegationDepth === 'number' && header.delegationDepth > 0
+}
+
+/**
+ * 标题优先级：清单首条 > 首条真人消息 > 'Untitled Task'（0.5.3 反转前两者）。
+ * 真人消息只在清单没有可用文本时兜底：重启后 meta.firstHuman 是重启后的第一条消息
+ * （常常只是半途闲聊，如"刚刚你卡死了，注意点"），拿它命名会把任务带偏。
+ */
 function pickTitle(meta, todos) {
+  const firstTodo = todos?.[0]?.content
+  if (typeof firstTodo === 'string' && firstTodo.trim()) return firstTodo.trim().slice(0, 48)
   const firstHuman = meta?.firstHuman?.trim()
   if (firstHuman) {
     // 用户消息常带指令前缀（"用 todo_write 规划：…"），优先取最后一个"："后的任务段
@@ -96,8 +115,6 @@ function pickTitle(meta, todos) {
     if (seg.length >= 2 && seg.length <= 48) return seg
     return firstHuman.slice(0, 48)
   }
-  const firstTodo = todos?.[0]?.content
-  if (firstTodo && firstTodo.trim()) return firstTodo.trim().slice(0, 48)
   return 'Untitled Task'
 }
 
@@ -138,8 +155,8 @@ export function touchTaskFile(task, rel, kind, now) {
 
 /**
  * 单条会话事件处理（导出便于测试）：user/message 记首条真人文本并刷新 lastHumanAt；
- * todo/write → 已绑定则覆盖 steps，未绑定则自动新建任务并绑定；
- * tool/call（fs 工具）→ 绑定任务 files 并集。
+ * todo/write → 已绑定则覆盖 steps，未绑定则自动新建任务并绑定（子代理会话除外，
+ * 由 isSubagentSession 判定）；tool/call（fs 工具）→ 绑定任务 files 并集。
  */
 export function onSessionEvent(config, session, event, meta) {
   const sessionId = session?.id
@@ -183,6 +200,8 @@ export function onSessionEvent(config, session, event, meta) {
       if (!task || task.archived) {
         // 空写 = 清空清单：不自动建档（避免"未绑定会话清空 todo"误建垃圾任务）
         if (todos.length === 0) return
+        // 子代理会话不建档：否则每个子代理都铸一条项目任务（子代理任务融合另行设计）
+        if (isSubagentSession(session)) return
         const title = pickTitle(meta.get(sessionId), todos)
         task = {
           id: genTaskId(root, title),
