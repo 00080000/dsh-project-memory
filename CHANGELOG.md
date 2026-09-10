@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.3 (2026-09-10)
+
+### Changed (DSH 0.1.5-rc.1 compatibility)
+
+- **devDependencies aligned with the 0.1.5-rc.1 host**: `@deepseek-ai/dsh-tools` and `dsh-llm` moved from `0.1.1-rc.2`, and `dsh-client-locale` / `dsh-client-store` / `dsh-client-ui-primitives` / `dsh-client-ui-slots` from `0.1.2-rc.1`, all to `0.1.5-rc.1` — type-checking and bundling now run against the same declaration surface the host ships.
+- **Dropped `@deepseek-ai/dsh-client-runtime`** from `devDependencies`, `dsh.client.inject` and the client `CLIENT_EXTERNALS`: upstream deleted the package in 0.1.5 (`refactor(client): migrate consumers and remove Runtime`, npm stops at `0.1.1-rc.2`). The bundle only ever required `react`, `react/jsx-runtime` and `dsh-client-ui-primitives`, and the host skips unknown `inject` rows, so this is dead-config cleanup rather than a behaviour change — but a stale row would break any future re-bundle that treated it as an external.
+- **Added `@types/react` / `@types/react-dom` (^18.3) as devDependencies**: 0.1.5's `dsh-client-ui-primitives` no longer pulls `react`/`react-dom`, so a clean install left `tsconfig.client.json`'s `types: ["react","react-dom"]` unresolved.
+- **Regenerated `package-lock.json` via a clean install**: the old lock pinned an entire `0.1.1-rc.2` / `0.1.2-alpha.2` peer tree, which made `npm install` fail with ERESOLVE once the direct devDependencies moved to 0.1.5-rc.1.
+- **Rebuilt `client/client.js`** (99.96 kB, 23.4 kB gzip) against the new externals; the entry contract is unchanged (`window.__ModuleLoader__.load({ id, factory })` plus `exports.name` / `exports.inject`).
+- **Verified the consumed host surface is unchanged in 0.1.5-rc.1**: `defineTool`, `ctx.tools.register`, `BlockAssembler.push/message`, `createUserMessage`, `LlmRuntime.stream`, the `agent/pre-step` waterfall and its `{ kind: 'enter', messages }` decision, `fs/observed`, plugin message source `form: 'notice'`, and the client slots `shell.overlay` / `conversation.chat.commandview` with services `slots` / `sessions` / `remote` / `remote.commands` / `locale`. Suite green (219 checks).
+
+### Fixed (task auto-adoption)
+
+- **Subagent sessions no longer mint project tasks**: every delegated child runs `todo_write`, so the bridge's auto-adopt path created one project task per child, titled from the child's prompt — a multi-audit turn could add several. Auto-creation (and auto-binding) is now skipped when the host session header marks a delegated child (`origin: 'subagent'` or `delegationDepth > 0`); `parentSession` is deliberately *not* used as a signal because it is fork/seed lineage, and a user-forked top-level session still needs tasks. Merging subagent work back into the parent task is left to a future design.
+- **Auto-created task titles prefer the todo list**: `pickTitle` preferred `meta.firstHuman`, the first human message recorded *since the plugin started* — after a host restart that is a mid-conversation message, so an aside such as "刚刚你卡死了，注意点" could name a task whose steps belonged to something else. The first todo entry now wins and the human message (preferring the segment after the last `：` / `:`) is the fallback. `test/taskbridge.test.mjs` 11 → 15 checks.
+
+### Files
+- package.json, package-lock.json, tsdown.config.ts, client/client.js, src/setup/taskbridge.js, test/taskbridge.test.mjs, CHANGELOG.md
+
 ## 0.5.2 (2026-09-09)
 
 ### Changed (file hotspot + resume info)

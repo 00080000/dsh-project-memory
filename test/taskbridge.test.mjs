@@ -1,11 +1,11 @@
 // TaskBridge 单元测试：node test/taskbridge.test.mjs
-// 覆盖：store 任务持久化/容量裁剪、路径归一化、todo/write 自动建任务+绑定+快照覆盖、tool/call 文件跟踪、工具契约不在此测（需宿主 exec）。
+// 覆盖：store 任务持久化/容量裁剪、路径归一化、todo/write 自动建任务+绑定+快照覆盖（子代理不建档、标题取清单首条）、tool/call 文件跟踪、工具契约不在此测（需宿主 exec）。
 import { mkdtempSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
 import { ProjectMemoryStore } from '../src/store.js'
-import { normalizeRelFile, genTaskId, onSessionEvent, adoptStepsToSession, shouldAdoptToHost } from '../src/setup/taskbridge.js'
+import { normalizeRelFile, genTaskId, onSessionEvent, adoptStepsToSession, shouldAdoptToHost, isSubagentSession } from '../src/setup/taskbridge.js'
 
 const config = { memoryDir: '.dsh-project-memory', tasklist: { enabled: true } }
 const configNoAdopt = { memoryDir: '.dsh-project-memory', tasklist: { enabled: true, syncHostOnAdopt: false } }
@@ -70,7 +70,7 @@ const ev = (type, data) => ({ type, data })
   assert.equal(t1.archived, false)
   assert.equal(store.getBoundTaskId('sessA'), t1.id)
   assert.equal(t1.steps.length, 2)
-  assert.ok(t1.title.includes('支付重试'), `title 取自首条真人消息: ${t1.title}`)
+  assert.equal(t1.title, '读现状', '标题反转后优先取清单首条（而非真人消息）')
   // 第二次 todo/write → 同一任务快照覆盖
   onSessionEvent(config, session, ev('todo/write', { todos: [{ content: '读现状', status: 'completed' }, { content: '实现退避', status: 'in_progress' }] }), meta)
   tasks = store.getTasks()
@@ -154,6 +154,49 @@ const ev = (type, data) => ({ type, data })
   onSessionEvent(config, s2, ev('todo/write', { todos: [] }), meta)
   assert.equal(store.getTask(tid).steps.length, 0)
   ok('绑定会话收到空 todo/write → steps 清空、任务保留')
+}
+
+// --- 8. 标题优先级反转：清单首条 > 真人消息；清单无文本才回退 ---
+{
+  const { root, store } = newProject()
+  const meta = new Map()
+  const session = sess('sessJ', root)
+  onSessionEvent(config, session, ev('user/message', { source: { kind: 'user' }, content: '刚刚你卡死了，注意点' }), meta)
+  onSessionEvent(config, session, ev('todo/write', { todos: [{ content: '盘点插件 API 依赖面', status: 'in_progress' }] }), meta)
+  assert.equal(store.getTasks()[0].title, '盘点插件 API 依赖面')
+  ok('标题反转：清单首条优先于首条真人消息')
+
+  const { root: root2, store: store2 } = newProject()
+  const meta2 = new Map()
+  const s2 = sess('sessK', root2)
+  onSessionEvent(config, s2, ev('user/message', { source: { kind: 'user' }, content: '用 todo_write 规划：实现支付重试' }), meta2)
+  onSessionEvent(config, s2, ev('todo/write', { todos: [{ status: 'pending' }] }), meta2)
+  assert.equal(store2.getTasks()[0].title, '实现支付重试')
+  ok('标题兜底：清单首条无文本 → 取真人消息冒号后的任务段')
+}
+
+// --- 9. 子代理会话不自动建档（origin / delegationDepth）；普通会话与 fork 不受影响 ---
+{
+  for (const [label, header] of [
+    ['origin:subagent', { origin: 'subagent' }],
+    ['delegationDepth=1', { delegationDepth: 1 }],
+  ]) {
+    const { root, store } = newProject()
+    const s = { id: `sub-${label}`, header: { cwd: root, ...header } }
+    onSessionEvent(config, s, ev('todo/write', { todos: [{ content: '审计插件 API', status: 'in_progress' }] }), new Map())
+    assert.equal(store.getTasks().length, 0, `${label} 不应建档`)
+    assert.equal(store.getBoundTaskId(s.id) ?? null, null, `${label} 不应绑定`)
+  }
+  ok('子代理会话（origin:subagent / delegationDepth>0）不建档、不绑定')
+
+  // parentSession 只是 fork/seed 血缘：顶层 fork 会话仍应建档
+  const { root, store } = newProject()
+  const forked = { id: 'fork-1', header: { cwd: root, parentSession: 'session-parent' } }
+  assert.equal(isSubagentSession(forked), false)
+  onSessionEvent(config, forked, ev('todo/write', { todos: [{ content: 'fork 后继续', status: 'pending' }] }), new Map())
+  assert.equal(store.getTasks().length, 1)
+  assert.ok(store.getBoundTaskId('fork-1'))
+  ok('parentSession 的顶层 fork 会话仍正常建档')
 }
 
 console.log(`\nTaskBridge tests: ${passed} passed`)
