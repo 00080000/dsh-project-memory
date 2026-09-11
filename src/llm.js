@@ -1,4 +1,4 @@
-// 辅助 LLM 调用（**仅召回期 / 反思期，按需可选**；索引期零 LLM，见 de-TODO.md 铁律）。
+// 辅助 LLM 调用（**仅召回期 / 反思期，按需可选**；索引期不调用任何模型）。
 // chatText 是唯一的宿主调用出口：provider/model 必填，缺失时显式抛错，由调用方决定回退并记 degraded。
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { noteDegraded } from './llm-route.js'

@@ -146,8 +146,14 @@ export function touchTaskFile(task, rel, kind, now) {
     }
   }
   const m = task.fileMeta[rel] || {}
-  m.n = (m.n || 0) + 1
-  if (kind === 'write') m.lastWriteAt = now
+  m.n = (m.n || 0) + 1 // 兼容旧字段：读+写总数（保留，避免老任务语义漂移）
+  // 读/写分计数（先只采集，不消费 —— 排序与注入仍只用 lastWriteAt/lastReadAt）
+  if (kind === 'write') {
+    m.writes = (m.writes || 0) + 1
+    m.lastWriteAt = now
+  } else if (kind === 'read') {
+    m.reads = (m.reads || 0) + 1
+  }
   m.lastReadAt = now
   task.fileMeta[rel] = m
   task.files = hotSortFiles(task.files, task.fileMeta)

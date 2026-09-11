@@ -78,7 +78,9 @@ export function queryMemoryTool(ctx, config) {
                 summaryLine += `\n- ⚠️ 摘要未覆盖：${e.blindSpots.replace(/^\s*\/\/\s*未覆盖[:：]\s*/, '')}。建议读原文 ${absSource}`
               }
             }
-            lines.push(`### ${e.title} (score: ${rel})\n- source: ${absSource}\n${summaryLine}`)
+            // 条目状态占位（可证伪状态机落地前恒为 exact）。
+            // 先立字段，后续状态机到位时只改值、不改输出契约。
+            lines.push(`### ${e.title} (score: ${rel})\n- source: ${absSource}\n- status: ${e.status || 'exact'}\n${summaryLine}`)
             if (e.type === 'doc' && Array.isArray(e.linkedSymbols) && e.linkedSymbols.length) {
               const refs = e.linkedSymbols.slice(0, 5).map((id) => {
                 const s = symbolById.get(id)

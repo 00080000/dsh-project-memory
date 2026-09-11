@@ -204,7 +204,15 @@ export function installAutoInject(ctx, config) {
         if (lastFpBySession.size > LAST_FP_MAX) lastFpBySession.delete(lastFpBySession.keys().next().value)
         const injectMessage = createUserMessage({
           content: [{ type: 'text', text: `\n\n${INJECT_MARK} auto-context\n${built.text}` }],
-          source: { kind: 'plugin', plugin: 'dsh-project-memory', form: 'notice', summary: `记忆注入 ${built.text.length} 字符` },
+          // 这一块是「同一生产者后续快照会取代的当前状态」，不是一次性通知。
+          // 宿主 ContextFormed 是判别联合：snapshot 必须带 sections（notice 才需要 summary）。
+          // 通道不变（仍走 agent/pre-step 追加 user 消息），只修语义。
+          source: {
+            kind: 'plugin',
+            plugin: 'dsh-project-memory',
+            form: 'snapshot',
+            sections: [{ name: 'project-memory', text: built.text }],
+          },
         })
         return { ...decision, messages: [...decision.messages, injectMessage] }
       }

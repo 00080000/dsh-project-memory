@@ -158,7 +158,7 @@ export class ProjectMemoryStore {
   }
 
   // ---- v0.5 insights：project 级 insight 文档（任务级在 task.insights[]） ----
-  // 迁移语义（与初版方案的差异，见 PLAN §10 风险 / 收尾说明）：
+  // 迁移语义（旧版 store 的兼容策略）：
   // v0.4 experience.json 仍由 remember/forget/query_memory 服务，不删除；
   // 首次加载把旧笔记**复制导入** insights.json（kind: experience, source: migrate），
   // migratedAt 落盘保证跨进程/崩溃幂等。销毁式收敛放到 recall 统一 PR。

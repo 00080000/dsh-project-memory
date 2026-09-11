@@ -40,7 +40,7 @@ const JSON_BODY = JSON.stringify({
   decisions: [{ topic: '认证库选型', choice: 'jose', reason: 'RFC 7519 合规、零依赖', confidence: 0.9 }],
 })
 
-// D4：辅助 LLM 调用需要显式路由（真实路径来自会话 requestHeader / config.llm）
+// 辅助 LLM 调用需要显式路由（真实路径来自会话 requestHeader / config.llm）
 const ROUTE = { provider: 'test', model: 'test-model' }
 
 // --- 1. 默认关：零 LLM、零写入 ---

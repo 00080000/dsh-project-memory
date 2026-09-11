@@ -23,7 +23,7 @@ export async function extractTextFromFile(filePath, { maxFileSizeMb = 50, maxPdf
 }
 
 /**
- * 文档分片 → 记忆条目（**索引期零 LLM**，见 de-TODO.md 三条铁律第 1 条）。
+ * 文档分片 → 记忆条目（索引期不调用任何模型：纯规则、确定性、可重放）。
  *
  * 注入用 summary 与检索用 terms 分离：
  *   - summary：≤300 字符，进上下文，保持小预算；
