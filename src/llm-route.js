@@ -1,10 +1,9 @@
-// 辅助 LLM 调用的路由解析（D4 修复）。
+// 辅助 LLM 调用的路由解析（仅召回期可选：查询扩展 / 反思）。
 //
 // 背景：宿主 LlmRuntime.stream 要求 provider/model 必填，缺失即抛 NO_ADAPTER。
-// 插件此前不传这两个字段，异常被 catch 吞掉，于是文档摘要从未走过 LLM——
-// 静默降级（PLAN-v0.6.0 附录 A.3）。本模块负责：
+// 本模块负责：
 //   1) 从工具 exec / 会话 / 配置解析出 (provider, model)；
-//   2) 把「无法路由 / 调用失败」记成可见的 degraded 记录，而不是静默。
+//   2) 把「无法路由 / 调用失败」记成可见的 degraded 记录，而不是静默降级。
 //
 // 解析优先级（与宿主 compaction summarizer 同序，再补一条后台 hint）：
 //   config.llm 显式覆写 > exec 会话 requestHeader().config > exec agent options >
