@@ -54,10 +54,9 @@ const config = {
   expansionCount: 6,
   watch: true,
   watchInterval: 15,
-  // D4：辅助 LLM 调用需要显式路由；这里用 config 覆写（工具调用无 exec 时的兜底路径）
+  // 召回期可选 LLM（查询扩展/反思）需要显式路由；索引期零 LLM，与这里无关
   llm: { provider: 'test', model: 'test-model' },
 }
-const testRoute = config.llm
 
 const root = mkdtempSync(path.join(tmpdir(), 'pm-test-'))
 const docsDir = path.join(root, 'docs')
@@ -68,7 +67,7 @@ mkdirSync(srcDir, { recursive: true })
 const mdPath = path.join(docsDir, 'spec.md')
 writeFileSync(
   mdPath,
-  '# Overview\n\nThis project handles payments end to end.\n\n# Fees\n\nFees must stay under 1%.\n\n# Archived\n\nOld section that changed.',
+  '# Overview\n\nThis project handles payments end to end via PaymentService.\n\n# Fees\n\nFees must stay under 1%.\n\n# Archived\n\nOld section that changed.',
 )
 const pyPath = path.join(srcDir, 'payments.py')
 writeFileSync(pyPath, 'class PaymentService:\n    def charge(self, amount):\n        pass\n\ndef refund(tx):\n    pass\n')
@@ -411,28 +410,10 @@ console.log('\n== index_doc defaults to the project-root store ==')
   )
 }
 
-console.log('\n== LLM summary safety ==')
-const { summarizeText } = await import('../src/llm.js')
+console.log('\n== summary cap (no LLM) ==')
+const { summarizeText } = await import('../src/util/text.js')
 const huge = 'oops the model echoed the whole chunk back '.repeat(200)
-check('caps LLM-summary length', summarizeText(huge).length <= 300)
-const { extractDocEntry } = await import('../src/llm.js')
-const padStart = ctx
-const entryNoKw = await extractDocEntry(
-  {
-    async *stream() {
-      const body = JSON.stringify({ title: 'T', summary: 'S'.repeat(900), keywords: [] })
-      yield { type: 'block-start', index: 0, blockType: 'text' }
-      yield { type: 'text-delta', index: 0, text: body }
-      yield { type: 'block-end', index: 0, block: { type: 'text', text: body } }
-      yield { type: 'finish', reason: { kind: 'stop' } }
-    },
-  },
-  { title: 'Payment', text: 'x' },
-  'spec.md',
-  { route: testRoute },
-)
-check('truncates overlong LLM summary', entryNoKw.summary.length <= 300)
-check('falls back to title keywords when LLM returns empty list', entryNoKw.keywords.includes('payment'))
+check('caps summary length', summarizeText(huge).length <= 300)
 
 console.log('\n== index_repo ==')
 const repoTool = indexRepoTool(ctx, config)
@@ -455,7 +436,7 @@ check('dump file leaves no memory entries', dumpStore.stats().entries === 0)
 console.log('\n== query_memory ==')
 const queryTool = queryMemoryTool(ctx, config)
 out = await queryTool.execute({ root, query: 'payment fees constraint' })
-check('recalls doc summary with source', out.includes('Payment Module') && out.includes('spec.md') && out.includes('1%'))
+check('recalls doc summary with source', out.includes('spec.md') && out.includes('1%'))
 out = await queryTool.execute({ root, query: 'refund' })
 check('recalls code symbol', out.includes('refund') && out.includes('payments.py'))
 out = await queryTool.execute({ root, query: 'pdfjs import' })
@@ -477,10 +458,10 @@ console.log('\n== query_memory streaming path (IDF cache) ==')
   await streamRepoTool.execute({ root: streamRoot })
   // First query builds IDF cache
   out = await streamTool.execute({ root: streamRoot, query: 'payment fees' })
-  check('streaming query returns results', out.includes('Payment Module') && out.includes('fees'))
+  check('streaming query returns results', out.includes('API') && out.includes('constraint'))
   // Second query uses cached IDF
   out = await streamTool.execute({ root: streamRoot, query: 'constraint' })
-  check('cached IDF query returns results', out.includes('Payment Module') && out.toLowerCase().includes('constraint'))
+  check('cached IDF query returns results', out.includes('API') && out.toLowerCase().includes('constraint'))
 }
 
 console.log('\n== no-hit introspection & stats tool ==')
@@ -603,7 +584,7 @@ console.log('\n== CJK query: phrase boost + synonyms ==')
 console.log('\n== doc <-> symbol cross-linking ==')
 const linked = linkEntries(new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load())
 check('links doc entries to mentioned symbols', linked > 0)
-out = await queryTool.execute({ root, query: 'payment' })
+out = await queryTool.execute({ root, query: 'payments' })
 check('query shows references to linked symbols', out.includes('references:') && out.includes('PaymentService'))
 
 console.log('\n== link hygiene ==')
@@ -717,7 +698,9 @@ console.log('\n== watch reloads store each poll (external writes preserved) ==')
   const extWm = new WatchManager({ llm: countingLLM }, config)
   extWm.addRoot(extRoot)
   await extWm.poll()
-  check('initial poll indexes the doc once', llmCalls === 1)
+  check('initial poll indexes the doc with zero LLM calls', llmCalls === 0)
+  const firstStore = new ProjectMemoryStore(memoryRootFor(extRoot, config.memoryDir)).load()
+  check('watch wrote the doc entry', (firstStore.entries['docs/a.md'] || []).length >= 1)
 
   // external writer (index_doc / lazy path) indexes a second doc straight to disk
   const memDir = memoryRootFor(extRoot, config.memoryDir)
@@ -730,13 +713,13 @@ console.log('\n== watch reloads store each poll (external writes preserved) ==')
     s.setEntries('docs/b.md', [
       {
         id: 'ext-b', type: 'doc', sourcePath: 'docs/b.md', sourceLine: 1,
-        title: 'Doc B', summary: 'External beta entry.', keywords: ['beta'],
+        title: 'Doc B', summary: 'External beta entry.', keywords: ['beta'], terms: 'beta content',
       },
     ])
   })
 
   await extWm.poll()
-  check('watch skips externally indexed doc (no repeat LLM)', llmCalls === 1)
+  check('watch skips externally indexed doc (no repeat LLM)', llmCalls === 0)
   const afterExt = new ProjectMemoryStore(memDir).load()
   check('external entry survives watch save', afterExt.fileRecord('docs/b.md')?.type === 'doc' && afterExt.entries['docs/b.md']?.[0]?.id === 'ext-b')
   extWm.stop()
@@ -881,13 +864,13 @@ check('keys untouched on case-sensitive platforms', storeKey('Docs/Readme.MD', '
 const { buildDocEntries } = await import('../src/doc-pipeline.js')
 const docDumpFile = path.join(docsDir, 'dump.txt')
 writeFileSync(docDumpFile, '=== Assembly-CSharp loaded: Assembly-CSharp, Version=1.0.0.0\n\n== TYPE Foo : base=Object\n')
-check('buildDocEntries returns null for a dump', (await buildDocEntries(fakeLLM, docDumpFile, {})) === null)
+check('buildDocEntries returns null for a dump', (await buildDocEntries('dump.txt', docDumpFile, {})) === null)
 
 const bigPdf = path.join(mkdtempSync(path.join(tmpdir(), 'pm-pdf-')), 'big.pdf')
 writeFileSync(bigPdf, Buffer.alloc(2048, 0x41))
 let pdfErr = null
 try {
-  await buildDocEntries(fakeLLM, bigPdf, { maxFileSizeMb: 0.001 })
+  await buildDocEntries('big.pdf', bigPdf, { maxFileSizeMb: 0.001 })
 } catch (err) {
   pdfErr = err
 }
@@ -898,39 +881,20 @@ writeFileSync(smallTxt, '# Note\n\nhello world content.')
 let zeroRes = null
 let zeroErr = null
 try {
-  zeroRes = await buildDocEntries(fakeLLM, smallTxt, { maxFileSizeMb: 0 })
+  zeroRes = await buildDocEntries('note.txt', smallTxt, { maxFileSizeMb: 0 })
 } catch (err) {
   zeroErr = err
 }
 check('maxFileSizeMb=0 means unlimited for text docs', zeroErr === null && zeroRes !== null && zeroRes.length === 1)
 
-console.log('\n== doc summarization concurrency ==')
+console.log('\n== doc entries are structural (zero-LLM index) ==')
 {
   const concRoot = mkdtempSync(path.join(tmpdir(), 'pm-conc-'))
   const multiMd = path.join(concRoot, 'multi.md')
-  writeFileSync(multiMd, Array.from({ length: 6 }, (_, i) => `# S${i}\n\nsection ${i} body text.\n`).join('\n'))
-  let active = 0
-  let peak = 0
-  const echoLLM = {
-    async *stream({ messages }) {
-      active++
-      peak = Math.max(peak, active)
-      try {
-        const prompt = messages[1].content.map((b) => b.text).join('\n')
-        const m = prompt.match(/Section: S(\d+)/)
-        const body = JSON.stringify({ title: `T${m ? m[1] : 'X'}`, summary: `sum ${m ? m[1] : ''}`, keywords: [] })
-        yield { type: 'block-start', index: 0, blockType: 'text' }
-        yield { type: 'text-delta', index: 0, text: body }
-        yield { type: 'block-end', index: 0, block: { type: 'text', text: body } }
-        yield { type: 'finish', reason: { kind: 'stop' } }
-      } finally {
-        active--
-      }
-    },
-  }
-  const entriesConc = await buildDocEntries(echoLLM, multiMd, { route: testRoute })
-  check('chunks summarized concurrently within the pool cap', entriesConc.length === 6 && peak <= 4 && peak >= 2)
-  check('entries keep document order', entriesConc.every((e, i) => e.title === `T${i}`))
+  writeFileSync(multiMd, Array.from({ length: 6 }, (_, i) => `# S${i}\n\nsection ${i} body marker${i}.\n`).join('\n'))
+  const entriesConc = await buildDocEntries('multi.md', multiMd, {})
+  check('one entry per section, document order kept', entriesConc.length === 6 && entriesConc.every((e, i) => e.title === `S${i}`))
+  check('each entry carries full-chunk terms', entriesConc.every((e, i) => e.terms.includes(`marker${i}`)))
 }
 
 console.log('\n== lazy queue ordering ==')
@@ -1093,34 +1057,13 @@ const boomLLM = {
   },
 }
 const noExpandTool = queryMemoryTool({ llm: boomLLM }, { ...config, llmQueryExpansion: false })
-out = await noExpandTool.execute({ root, query: 'payment' })
-check('query works without any LLM call', out.includes('PaymentService') || out.includes('Payment Module'))
+out = await noExpandTool.execute({ root, query: 'fees' })
+check('query works without any LLM call', out.includes('spec.md') && out.includes('1%'))
 
 console.log('\n== CJK query respects llmQueryExpansion off ==')
 await remTool.execute({ root, problem: '构建脚本在 Windows 下路径分隔符报错', solution: '统一使用 path.join 拼接' })
 out = await noExpandTool.execute({ root, query: '构建脚本 路径分隔符报错' })
 check('chinese query hits chinese note without any llm call', out.includes('path.join'))
-
-console.log('\n== bilingual keyword instruction ==')
-{
-  let systemText = ''
-  const captureLLM = {
-    async *stream({ messages }) {
-      systemText = messages[0].content.map((b) => b.text).join('\n')
-      const body = JSON.stringify({ title: 'T', summary: 'S', keywords: ['payment', '支付'] })
-      yield { type: 'block-start', index: 0, blockType: 'text' }
-      yield { type: 'text-delta', index: 0, text: body }
-      yield { type: 'block-end', index: 0, block: { type: 'text', text: body } }
-      yield { type: 'finish', reason: { kind: 'stop' } }
-    },
-  }
-  const entryBi = await extractDocEntry(captureLLM, { title: 'Payment', text: 'x' }, 'spec.md', { route: testRoute })
-  check(
-    'index prompt requires own-language and English keywords',
-    /english/i.test(systemText) && /own language/i.test(systemText),
-  )
-  check('bilingual keywords pass through', entryBi.keywords.includes('payment') && entryBi.keywords.includes('支付'))
-}
 
 console.log('\n== bundle patch references the real package name ==')
 {

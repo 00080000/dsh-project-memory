@@ -30,9 +30,10 @@ export const Config = Schema.object({
   maxPdfPages: Schema.number().default(1000),
   llmQueryExpansion: Schema.boolean().default(false),
   expansionCount: Schema.number().default(6),
-  // D4：辅助 LLM 调用（doc 摘要 / 查询扩展 / 反思）的路由覆写。
-  // 未设置时：工具调用取当前会话 header 的 provider/model；后台 watch/lazy 取最近一次会话路由。
-  // 两者都拿不到时明确走非 LLM 回退并记录 degraded（不静默）。
+  // 辅助 LLM 调用的路由覆写 —— **索引期零 LLM**，这里的路由只服务于召回期可选项
+  // （llmQueryExpansion 查询扩展）与反思期（reflection.enabled）。
+  // 未设置时：工具调用取当前会话 header 的 provider/model；后台路径取最近一次会话路由（request/header）。
+  // 两者都拿不到时明确走回退并记录 degraded（不静默）。
   llm: Schema.object({
     provider: Schema.string(),
     model: Schema.string(),
@@ -96,7 +97,7 @@ export function apply(ctx, config) {
 
   // TaskBridge：任务实体 + 宿主 todo 同步
   setupTaskbridge(ctx, config)
-  // D4：跟踪会话路由（request/header 事件），为 watch/lazy 等无会话上下文的后台索引兜底
+  // 跟踪会话路由（request/header 事件），为无会话上下文的召回期可选 LLM（查询扩展 / 反思）兜底
   ctx.on('session/event', (session, event) => {
     if (event?.type === 'request/header') rememberRoute(session)
   })

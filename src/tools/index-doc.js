@@ -5,15 +5,14 @@ import { buildDocEntries } from '../doc-pipeline.js'
 import { linkEntries } from '../link.js'
 import { ProjectMemoryStore } from '../store.js'
 import { findProjectRoot } from '../lazy.js'
-import { resolveRoute } from '../llm-route.js'
 
 export function indexDocTool(ctx, config) {
   return defineTool({
     name: 'index_doc',
     description:
       'Index a project document (PDF, Markdown, txt) into persistent project memory: split into sections, ' +
-      'summarize each with the LLM, and store cited summaries (path + line) for later query_memory recall. ' +
-      'Re-indexing the same unchanged file is a no-op (content-hash skip).',
+      'store a short cited summary plus a full-chunk literal term index (no LLM at index time), for later ' +
+      'query_memory recall. Re-indexing the same unchanged file is a no-op (content-hash skip).',
     parameters: {
       file_path: {
         type: 'string',
@@ -29,7 +28,7 @@ export function indexDocTool(ctx, config) {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
-    async execute(args, exec) {
+    async execute(args) {
       const filePath = assertReadableFile(args.file_path, config.maxFileSizeMb)
       const root = path.resolve(args.root && args.root.trim() ? args.root : findProjectRoot(filePath))
       const memoryDir = memoryRootFor(root, config.memoryDir)
@@ -43,12 +42,11 @@ export function indexDocTool(ctx, config) {
         return `Skipped (unchanged): ${rel}\nAlready indexed with ${(store.entries[rel] || []).length} entry/entries.`
       }
 
-      const entries = await buildDocEntries(ctx.llm, rel, filePath, {
+      const entries = await buildDocEntries(rel, filePath, {
         chunkChars: config.chunkChars,
         maxChunks: config.maxChunksPerFile,
         maxFileSizeMb: config.maxFileSizeMb,
         maxPdfPages: config.maxPdfPages,
-        route: resolveRoute(exec, config),
       })
       if (entries === null) {
         return store.commit((s) => {

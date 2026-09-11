@@ -3,11 +3,11 @@ import { tmpdir } from 'node:os'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { isSupportedCode, isSupportedDoc, memoryRootFor, readFileForIndex, relativePath, storeKey } from './util/fs.js'
 import { buildDocEntries } from './doc-pipeline.js'
+import { docEntriesNeedBackfill } from './doc-index.js'
 import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileObserved } from './enhancer.js'
-import { resolveRoute } from './llm-route.js'
 
 const STRONG_MARKERS = ['.git', '.hg', '.svn']
 
@@ -99,7 +99,8 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
   } catch {
     return false
   }
-  if (existing && existing.sha256 === hash) return false
+  // 旧 store 的 doc 条目缺 terms → 一次性回填（即使哈希未变）
+  if (existing && existing.sha256 === hash && !(isSupportedDoc(ext) && docEntriesNeedBackfill(store.entries[rel]))) return false
 
   if (watchManager) {
     watchManager.addRoot(root)
@@ -116,12 +117,11 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
       return true
     })
   } else {
-    entries = await buildDocEntries(ctx.llm, rel, filePath, {
+    entries = await buildDocEntries(rel, filePath, {
       chunkChars: config.chunkChars,
       maxChunks: config.maxChunksPerFile,
       maxFileSizeMb: config.maxFileSizeMb,
       maxPdfPages: config.maxPdfPages,
-      route: resolveRoute(undefined, config),
     })
     if (entries === null) {
       return store.commit((s) => {

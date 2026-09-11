@@ -28,7 +28,8 @@ export function linkEntries(store) {
   let links = 0
   for (const doc of docs) {
     const linked = new Set()
-    const haystack = `${doc.title || ''} ${doc.summary || ''} ${doc.keywords ? doc.keywords.join(' ') : ''}`.toLowerCase()
+    // 结构词项也参与链接：terms 覆盖整个 chunk，符号在后半段被提及时同样能链上（与检索同源）
+    const haystack = `${doc.title || ''} ${doc.summary || ''} ${doc.terms || ''} ${doc.keywords ? doc.keywords.join(' ') : ''}`.toLowerCase()
     for (const [, entry] of symbolByName) {
       const hit = entry.re ? entry.re.test(haystack) : haystack.includes(entry.lower)
       for (const s of entry.syms) {

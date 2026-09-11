@@ -2,9 +2,10 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { stat } from 'node:fs/promises'
 import { looksLikeDump, readTextFile } from './util/fs.js'
+import { summarizeText } from './util/text.js'
 import { parsePdf } from './parsers/pdfjs-parser.js'
 import { chunkText } from './chunker.js'
-import { extractDocEntry } from './llm.js'
+import { extractKeywords, extractTermText } from './doc-index.js'
 
 export async function extractTextFromFile(filePath, { maxFileSizeMb = 50, maxPdfPages = 1000 } = {}) {
   const ext = path.extname(filePath).toLowerCase()
@@ -21,39 +22,33 @@ export async function extractTextFromFile(filePath, { maxFileSizeMb = 50, maxPdf
   return readTextFile(filePath, maxFileSizeMb ? maxFileSizeMb * 1024 * 1024 : Infinity)
 }
 
-const DOC_CONCURRENCY = 4
-
-export async function buildDocEntries(llm, a, b, c) {
-  // Backward compatible: old signature (llm, filePath, opts) or new (llm, relPath, filePath, opts)
-  const [relPath, filePath, opts] = c === undefined ? [a, a, b] : [a, b, c]
+/**
+ * 文档分片 → 记忆条目（**索引期零 LLM**，见 de-TODO.md 三条铁律第 1 条）。
+ *
+ * 注入用 summary 与检索用 terms 分离：
+ *   - summary：≤300 字符，进上下文，保持小预算；
+ *   - terms：整个 chunk 的字面词项，只进 BM25 检索文本，不进注入。
+ * 于是「chunk 只有前 300 字符可检索」的旧限制被移除，且没有任何 LLM 调用。
+ * 函数签名里刻意没有 llm —— 索引期零 LLM 由构造保证，而不是靠 catch。
+ */
+export async function buildDocEntries(relPath, filePath, opts = {}) {
   const text = await extractTextFromFile(filePath, opts)
   if (looksLikeDump(text)) return null
-  
+
   // Compute content hash for update detection
   const hash = createHash('sha256').update(text).digest('hex').slice(0, 16)
-  
+
   const chunks = chunkText(text, opts.chunkChars, opts.maxChunks)
-  const metas = new Array(chunks.length)
-  let cursor = 0
-  await Promise.all(
-    Array.from({ length: Math.min(DOC_CONCURRENCY, chunks.length) }, () =>
-      (async () => {
-        while (cursor < chunks.length) {
-          const i = cursor++
-          metas[i] = await extractDocEntry(llm, chunks[i], filePath, { route: opts.route })
-        }
-      })(),
-    ),
-  )
-  return metas.map((meta, i) => ({
+  return chunks.map((chunk, i) => ({
     id: `${relativeId(relPath)}#${i}`,
     sourcePath: relPath,
-    sourceLine: chunks[i].line,
+    sourceLine: chunk.line,
     type: 'doc',
-    title: meta.title,
-    summary: meta.summary,
-    blindSpots: meta.blindSpots || '',
-    keywords: meta.keywords,
+    title: chunk.title || relPath,
+    summary: summarizeText(chunk.text),
+    blindSpots: '',
+    keywords: extractKeywords(chunk.title, chunk.text),
+    terms: extractTermText(chunk.text),
     hash,
   }))
 }
