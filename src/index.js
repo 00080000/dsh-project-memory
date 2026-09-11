@@ -60,7 +60,7 @@ export const Config = Schema.object({
     decayDays: Schema.number().default(90),
     globalFile: Schema.string(),
   }).default({}),
-  // PR 1b：反思管线（LLM 消费点，默认关）。产出只写 task 级草稿，见 PLAN §3
+  // 反思管线（召回期可选 LLM 消费点，默认关）。产出只写 task 级草稿。
   reflection: Schema.object({
     enabled: Schema.boolean().default(false),
     cooldownMs: Schema.number().default(1800000),

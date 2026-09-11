@@ -1,4 +1,4 @@
-// 文档索引的结构化词项（方案 A）：索引期零 LLM + 检索词项与注入摘要分离。
+// 文档索引的结构化词项：索引期不调用模型 + 检索词项与注入摘要分离。
 //   node test/doc-index.test.mjs
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync } from 'node:fs'

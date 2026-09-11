@@ -1,4 +1,4 @@
-// 文档索引的结构化词项（零 LLM，索引期铁律见 de-TODO.md「零 LLM 索引期」）。
+// 文档索引的结构化词项（纯规则、确定性；索引期不调用任何模型）。
 //
 // 动机：检索只吃 title/keywords/summary/sourcePath（util/search.js 的 weightedFieldText），
 // 而 summary 为了注入预算被压到 300 字符 —— 一个 3000 字符的 chunk 有九成内容检索不到。

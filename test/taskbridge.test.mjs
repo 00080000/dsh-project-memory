@@ -91,6 +91,15 @@ const ev = (type, data) => ({ type, data })
   onSessionEvent(config, session, ev('tool/call', { name: 'grep', arguments: JSON.stringify({ pattern: 'x' }) }), meta) // 非文件工具忽略
   const files = store.getTask(taskId).files
   assert.deepEqual(files, ['src/payment.ts'])
+  // 读/写分计数（只采集，不消费）；n 保留为读+写总数
+  onSessionEvent(config, session, ev('tool/call', { name: 'write', arguments: JSON.stringify({ file_path: 'src/payment.ts' }) }), meta)
+  onSessionEvent(config, session, ev('tool/call', { name: 'read', arguments: JSON.stringify({ file_path: 'src/payment.ts' }) }), meta)
+  const fm = store.getTask(taskId).fileMeta['src/payment.ts']
+  assert.equal(fm.reads, 2, 'read 计数')
+  assert.equal(fm.writes, 1, 'write 计数')
+  assert.equal(fm.n, 3, 'n 仍为读+写总数（旧字段兼容）')
+  assert.ok(fm.lastWriteAt && fm.lastReadAt)
+  ok('tool/call：reads/writes 分计数，n 保留兼容')
   // 未绑定会话读文件 → 无任务不跟踪不报错
   onSessionEvent(config, sess('sessC', root), ev('tool/call', { name: 'read', arguments: JSON.stringify({ file_path: 'a.ts' }) }), meta)
   assert.equal(store.getTasks().length, 1)
