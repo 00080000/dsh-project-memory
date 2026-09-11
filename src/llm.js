@@ -1,5 +1,6 @@
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { tokenize } from './util/search.js'
+import { noteDegraded } from './llm-route.js'
 
 function systemMessage(text) {
   return { role: 'system', content: [{ type: 'text', text }] }
@@ -25,12 +26,19 @@ export function summarizeText(text, max = MAX_SUMMARY) {
   return lastBreak > clip * 0.4 ? clipped.slice(0, lastBreak + 1) : clipped + '…'
 }
 
-export async function chatText(llm, system, user, { timeoutMs = 120000 } = {}) {
+export async function chatText(llm, system, user, { timeoutMs = 120000, route } = {}) {
+  // D4：provider/model 是宿主 GenerateOptions 的必填项，缺失时 LlmRuntime 抛 NO_ADAPTER。
+  // 这里显式失败（由调用方决定回退并记 degraded），不让异常悄悄消失。
+  if (!route?.provider || !route?.model) {
+    throw new Error('auxiliary LLM call requires an explicit provider/model route')
+  }
   const assembler = new BlockAssembler()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
     for await (const chunk of llm.stream({
+      provider: route.provider,
+      model: route.model,
       messages: [systemMessage(system), createUserMessage({ content: [{ type: 'text', text: user }] })],
       signal: controller.signal,
     })) {
@@ -72,8 +80,12 @@ function parseJson(text, validate) {
   return null
 }
 
-export async function expandQuery(llm, query, count = 6) {
+export async function expandQuery(llm, query, count = 6, { route } = {}) {
   if (!llm) return [query]
+  if (!route) {
+    noteDegraded('llm.expand.no-route', 'no provider/model route for query expansion; search uses the raw query')
+    return [query]
+  }
   const system =
     'You are a search-query expander for a codebase/document memory search engine. ' +
     'Given a user query, return a STRICT JSON array of alternative search queries that ' +
@@ -81,19 +93,19 @@ export async function expandQuery(llm, query, count = 6) {
     'code identifier guesses, and narrower/longer phrasings. Include the original query first. ' +
     'Output only the JSON array of strings, no fences, no commentary.'
   try {
-    const raw = await chatText(llm, system, `Query: "${query}"\n\nReturn the JSON array.`)
+    const raw = await chatText(llm, system, `Query: "${query}"\n\nReturn the JSON array.`, { route })
     const parsed = parseJsonArray(raw)
     if (Array.isArray(parsed) && parsed.length) {
       const variants = parsed.map(String).filter((s) => s.trim()).slice(0, count)
       if (variants.length) return variants
     }
-  } catch {
-    // fall through to the raw query
+  } catch (err) {
+    noteDegraded('llm.expand.failed', `query expansion LLM call failed: ${err?.message || err}`)
   }
   return [query]
 }
 
-export async function extractDocEntry(llm, chunk, sourcePath) {
+export async function extractDocEntry(llm, chunk, sourcePath, { route } = {}) {
   const system =
     'You are a project-documentation indexer. Given a chunk of a project document, ' +
     'return a STRICT JSON object with exactly four fields: ' +
@@ -119,9 +131,13 @@ export async function extractDocEntry(llm, chunk, sourcePath) {
   })
 
   if (!llm) return fallback()
+  if (!route) {
+    noteDegraded('llm.doc.no-route', `no provider/model route for doc summary (${sourcePath}); using the truncated fallback`)
+    return fallback()
+  }
 
   try {
-    const raw = await chatText(llm, system, user)
+    const raw = await chatText(llm, system, user, { route })
     const parsed = parseStructuredJson(raw)
     if (!parsed || typeof parsed.summary !== 'string' || !parsed.summary.trim()) return fallback()
     const kw = Array.isArray(parsed.keywords) ? parsed.keywords.map(String).filter((k) => k).slice(0, 8) : []
@@ -131,7 +147,8 @@ export async function extractDocEntry(llm, chunk, sourcePath) {
       blindSpots: typeof parsed.blindSpots === 'string' ? parsed.blindSpots.trim() : '',
       keywords: kw.length ? kw : tokenize(chunk.title).slice(0, 5),
     }
-  } catch {
+  } catch (err) {
+    noteDegraded('llm.doc.failed', `doc summary LLM call failed for ${sourcePath}: ${err?.message || err}`)
     return fallback()
   }
 }

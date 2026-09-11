@@ -3,6 +3,7 @@ import path from 'node:path'
 import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
 import { expandQuery } from '../llm.js'
+import { resolveRoute } from '../llm-route.js'
 import { rankEntriesMergedScored, rankExperienceScored, rankEntriesStreaming } from '../util/search.js'
 import { truncate } from '../util/text.js'
 
@@ -49,7 +50,7 @@ export function queryMemoryTool(ctx, config) {
       const limit = Math.max(1, Math.min(Number(args.limit) || 8, 20))
 
       const queries = config.llmQueryExpansion
-        ? await expandQuery(ctx.llm, args.query, config.expansionCount)
+        ? await expandQuery(ctx.llm, args.query, config.expansionCount, { route: resolveRoute(exec, config) })
         : [args.query]
       const symbolById = new Map()
       for (const e of store.allEntries()) {

@@ -10,6 +10,7 @@ import { ProjectMemoryStore } from './store.js'
 import { memoryRootFor } from './util/fs.js'
 import { cfgInsight, saveInsight, GlobalStore, defaultGlobalFile } from './insight-store.js'
 import { chatText, parseStructuredJson } from './llm.js'
+import { noteDegraded } from './llm-route.js'
 
 export const REFLECT_SYSTEM =
   'You distill task work into durable lessons and decisions for project memory. ' +
@@ -57,7 +58,7 @@ function normalizeList(arr, max) {
  * 对某任务做一次反思（可归档任务照做——归档正是收割时机）。
  * 全程 try/catch：调用方 fire-and-forget 即可。
  */
-export async function reflectTaskAfter({ config, llm, root, taskId, reason = 'transition' }) {
+export async function reflectTaskAfter({ config, llm, root, taskId, reason = 'transition', route = null }) {
   const rc = (config && config.reflection) || {}
   const fallback = { ok: false, skipped: 'disabled' }
   if (!rc.enabled) return fallback
@@ -67,6 +68,11 @@ export async function reflectTaskAfter({ config, llm, root, taskId, reason = 'tr
     const task = store.getTask(taskId)
     const gate = isReflectDue(config, task)
     if (!gate.due) return { ok: false, skipped: gate.reason }
+    // 路由检查放在门控之后：未到期/内容未变时不应留下 no-route 降级噪声
+    if (!route) {
+      noteDegraded('llm.reflect.no-route', 'no provider/model route for reflection; skipping this reflection')
+      return { ok: false, skipped: 'no-route' }
+    }
 
     const snap = taskReflectionSnapshot(task)
     const user =
@@ -75,7 +81,7 @@ export async function reflectTaskAfter({ config, llm, root, taskId, reason = 'tr
       (snap.files ? `Files touched:\n${snap.files.slice(0, 1000)}\n` : '') +
       `Trigger: ${reason}\n\nReturn the JSON object.`
 
-    const raw = await chatText(llm, REFLECT_SYSTEM, user, { timeoutMs: 90000 })
+    const raw = await chatText(llm, REFLECT_SYSTEM, user, { timeoutMs: 90000, route })
     const parsed = parseStructuredJson(raw)
     if (!parsed) return { ok: false, skipped: 'unparsable' }
 
@@ -136,10 +142,10 @@ export async function reflectTaskAfter({ config, llm, root, taskId, reason = 'tr
 }
 
 /** 工具/命令层 fire-and-forget：默认关时立刻廉价返回，绝不让错误上抛。 */
-export function fireReflect(config, host, root, taskId, reason) {
+export function fireReflect(config, host, root, taskId, reason, route = null) {
   const rc = (config && config.reflection) || {}
   if (!rc.enabled) return Promise.resolve({ ok: false, skipped: 'disabled' })
-  return reflectTaskAfter({ config, llm: host?.llm, root, taskId, reason }).catch((err) => {
+  return reflectTaskAfter({ config, llm: host?.llm, root, taskId, reason, route }).catch((err) => {
     console.error(`[dsh-project-memory] fireReflect error: ${err?.message || err}`)
     return { ok: false, skipped: 'error' }
   })

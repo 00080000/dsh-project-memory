@@ -13,6 +13,7 @@ import { setupTaskbridge } from './setup/taskbridge.js'
 import { listTasksTool, selectTaskTool, archiveTaskTool, showTaskPanelTool } from './tools/task-tools.js'
 import { lessonTool } from './tools/lesson-tools.js'
 import { installAutoInject } from './auto-inject.js'
+import { rememberRoute } from './llm-route.js'
 import { tasksCommandDefinition } from './commands/tasks.js'
 import { taskCommandDefinition } from './commands/task-actions.js'
 import { insightCommandDefinition } from './commands/insight-actions.js'
@@ -29,6 +30,13 @@ export const Config = Schema.object({
   maxPdfPages: Schema.number().default(1000),
   llmQueryExpansion: Schema.boolean().default(false),
   expansionCount: Schema.number().default(6),
+  // D4：辅助 LLM 调用（doc 摘要 / 查询扩展 / 反思）的路由覆写。
+  // 未设置时：工具调用取当前会话 header 的 provider/model；后台 watch/lazy 取最近一次会话路由。
+  // 两者都拿不到时明确走非 LLM 回退并记录 degraded（不静默）。
+  llm: Schema.object({
+    provider: Schema.string(),
+    model: Schema.string(),
+  }).default({}),
   lazyIndexing: Schema.boolean().default(true),
   autoIndexOnFirstUse: Schema.boolean().default(false),
   watch: Schema.boolean().default(true),
@@ -88,6 +96,10 @@ export function apply(ctx, config) {
 
   // TaskBridge：任务实体 + 宿主 todo 同步
   setupTaskbridge(ctx, config)
+  // D4：跟踪会话路由（request/header 事件），为 watch/lazy 等无会话上下文的后台索引兜底
+  ctx.on('session/event', (session, event) => {
+    if (event?.type === 'request/header') rememberRoute(session)
+  })
   ctx.tools.register(listTasksTool(config))
   ctx.tools.register(selectTaskTool(config, { llm: ctx.llm, ctx }))
   ctx.tools.register(archiveTaskTool(config, { llm: ctx.llm, ctx }))

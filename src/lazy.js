@@ -7,6 +7,7 @@ import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileObserved } from './enhancer.js'
+import { resolveRoute } from './llm-route.js'
 
 const STRONG_MARKERS = ['.git', '.hg', '.svn']
 
@@ -120,6 +121,7 @@ export async function indexFile(ctx, config, filePath, watchManager = null) {
       maxChunks: config.maxChunksPerFile,
       maxFileSizeMb: config.maxFileSizeMb,
       maxPdfPages: config.maxPdfPages,
+      route: resolveRoute(undefined, config),
     })
     if (entries === null) {
       return store.commit((s) => {

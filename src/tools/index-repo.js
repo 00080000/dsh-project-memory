@@ -7,10 +7,12 @@ import { scanSymbols } from '../symbols.js'
 import { linkEntries } from '../link.js'
 import { ProjectMemoryStore } from '../store.js'
 import { onFileIndexed, isTypeScriptFile } from '../enhancer.js'
+import { resolveRoute } from '../llm-route.js'
 
-export async function indexRepository(ctx, config, root, { reindex = false } = {}) {
+export async function indexRepository(ctx, config, root, { reindex = false, route = null } = {}) {
   const memoryDir = memoryRootFor(root, config.memoryDir)
   const store = new ProjectMemoryStore(memoryDir).load()
+  const effectiveRoute = route ?? resolveRoute(undefined, config)
 
   const files = walkDir(root)
   const seen = new Set()
@@ -62,6 +64,7 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
           maxChunks: config.maxChunksPerFile,
           maxFileSizeMb: config.maxFileSizeMb,
           maxPdfPages: config.maxPdfPages,
+          route: effectiveRoute,
         })
         if (entries === null) {
           fileUpdates.push({ rel, deleted: true })
@@ -141,9 +144,12 @@ export function indexRepoTool(ctx, config) {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
-    async execute(args) {
+    async execute(args, exec) {
       const root = path.resolve(args.root)
-      return indexRepository(ctx, config, root, { reindex: Boolean(args.reindex) })
+      return indexRepository(ctx, config, root, {
+        reindex: Boolean(args.reindex),
+        route: resolveRoute(exec, config),
+      })
     },
   })
 }

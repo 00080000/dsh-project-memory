@@ -40,6 +40,9 @@ const JSON_BODY = JSON.stringify({
   decisions: [{ topic: '认证库选型', choice: 'jose', reason: 'RFC 7519 合规、零依赖', confidence: 0.9 }],
 })
 
+// D4：辅助 LLM 调用需要显式路由（真实路径来自会话 requestHeader / config.llm）
+const ROUTE = { provider: 'test', model: 'test-model' }
+
 // --- 1. 默认关：零 LLM、零写入 ---
 {
   const { root, store } = newProject()
@@ -57,7 +60,7 @@ const JSON_BODY = JSON.stringify({
   const { root } = newProject()
   const counter = {}
   const config = { memoryDir: '.dsh-project-memory', reflection: { enabled: true, cooldownMs: 3600000 }, insight: { globalFile: path.join(root, 'global.json') } }
-  const res = await reflectTaskAfter({ config, llm: llmReturning(JSON_BODY, counter), root, taskId: 'tsk_r', reason: 'archive' })
+  const res = await reflectTaskAfter({ config, llm: llmReturning(JSON_BODY, counter), root, taskId: 'tsk_r', reason: 'archive', route: ROUTE })
   assert.equal(res.ok, true)
   assert.equal(res.written.length, 2)
   assert.equal(counter.calls, 1)
@@ -81,8 +84,8 @@ const JSON_BODY = JSON.stringify({
   const { root } = newProject()
   const counter = {}
   const config = { memoryDir: '.dsh-project-memory', reflection: { enabled: true, cooldownMs: 0 }, insight: { globalFile: path.join(root, 'global.json') } }
-  await reflectTaskAfter({ config, llm: llmReturning(JSON_BODY, counter), root, taskId: 'tsk_r' })
-  const again = await reflectTaskAfter({ config, llm: llmReturning(JSON_BODY, counter), root, taskId: 'tsk_r' })
+  await reflectTaskAfter({ config, llm: llmReturning(JSON_BODY, counter), root, taskId: 'tsk_r', route: ROUTE })
+  const again = await reflectTaskAfter({ config, llm: llmReturning(JSON_BODY, counter), root, taskId: 'tsk_r', route: ROUTE })
   assert.equal(again.skipped, 'unchanged')
   assert.equal(counter.calls, 1, '摘要未变不再调 LLM')
   const store = new ProjectMemoryStore(path.join(root, '.dsh-project-memory')).load()
@@ -95,12 +98,12 @@ const JSON_BODY = JSON.stringify({
   const { root, store } = newProject()
   const counter = {}
   const config = { memoryDir: '.dsh-project-memory', reflection: { enabled: true, cooldownMs: 3600000 }, insight: { globalFile: path.join(root, 'global.json') } }
-  await reflectTaskAfter({ config, llm: llmReturning(JSON_BODY, counter), root, taskId: 'tsk_r' })
+  await reflectTaskAfter({ config, llm: llmReturning(JSON_BODY, counter), root, taskId: 'tsk_r', route: ROUTE })
   store.updateTask('tsk_r', { steps: [{ content: '接 jose', status: 'completed' }, { content: '补失效 token 测试', status: 'pending' }] })
   store.commit(() => 0)
   const gate = isReflectDue(config, store.getTask('tsk_r'))
   assert.equal(gate.reason, 'cooldown')
-  const res = await reflectTaskAfter({ config, llm: llmReturning(JSON_BODY, counter), root, taskId: 'tsk_r' })
+  const res = await reflectTaskAfter({ config, llm: llmReturning(JSON_BODY, counter), root, taskId: 'tsk_r', route: ROUTE })
   assert.equal(res.skipped, 'cooldown')
   assert.equal(counter.calls, 1)
   ok('冷却：摘要已变但未过冷却期 → 跳过')
@@ -111,7 +114,7 @@ const JSON_BODY = JSON.stringify({
   const { root } = newProject()
   const config = { memoryDir: '.dsh-project-memory', reflection: { enabled: true }, insight: { globalFile: path.join(root, 'global.json') } }
   const boom = { async *stream() { throw new Error('network down') } }
-  const res = await reflectTaskAfter({ config, llm: boom, root, taskId: 'tsk_r' })
+  const res = await reflectTaskAfter({ config, llm: boom, root, taskId: 'tsk_r', route: ROUTE })
   assert.equal(res.ok, false)
   assert.ok(['error', 'unparsable'].includes(res.skipped) || res.skipped === 'error')
   const res2 = await reflectTaskAfter({ config, llm: null, root, taskId: 'tsk_r' })
