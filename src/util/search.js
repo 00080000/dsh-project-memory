@@ -131,6 +131,8 @@ export function weightedFieldText(entry) {
   for (let i = 0; i < 5; i++) parts.push(entry.title || '')
   parts.push((entry.keywords || []).join(' '))
   parts.push(entry.summary || '')
+  // 结构词项：覆盖整个 chunk 的字面词项，把「只有前 300 字符可检索」补回来（索引期零 LLM）
+  parts.push(entry.terms || '')
   parts.push(entry.sourcePath || '')
   return parts.join(' ')
 }

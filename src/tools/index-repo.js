@@ -3,16 +3,15 @@ import path from 'node:path'
 import { statSync } from 'node:fs'
 import { isSupportedCode, isSupportedDoc, looksLikeDump, memoryRootFor, readFileForIndex, relativePath, storeKey, walkDir } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
+import { docEntriesNeedBackfill } from '../doc-index.js'
 import { scanSymbols } from '../symbols.js'
 import { linkEntries } from '../link.js'
 import { ProjectMemoryStore } from '../store.js'
 import { onFileIndexed, isTypeScriptFile } from '../enhancer.js'
-import { resolveRoute } from '../llm-route.js'
 
-export async function indexRepository(ctx, config, root, { reindex = false, route = null } = {}) {
+export async function indexRepository(ctx, config, root, { reindex = false } = {}) {
   const memoryDir = memoryRootFor(root, config.memoryDir)
   const store = new ProjectMemoryStore(memoryDir).load()
-  const effectiveRoute = route ?? resolveRoute(undefined, config)
 
   const files = walkDir(root)
   const seen = new Set()
@@ -42,7 +41,9 @@ export async function indexRepository(ctx, config, root, { reindex = false, rout
 
       // 单次读盘：同一 buffer 供哈希与正文使用（不再 sha256OfFile + readFileSync 读两遍）
       const { hash, buffer } = readFileForIndex(filePath)
-      if (!reindex && existing && existing.sha256 === hash) {
+      // 旧 store 的 doc 条目缺 terms → 即使哈希未变也重抽一次（一次性回填）
+      const needsBackfill = isSupportedDoc(ext) && docEntriesNeedBackfill(store.entries[rel])
+      if (!reindex && existing && existing.sha256 === hash && !needsBackfill) {
         skipped++
         continue
       }
@@ -59,12 +60,11 @@ export async function indexRepository(ctx, config, root, { reindex = false, rout
           skipped++
           continue
         }
-        entries = await buildDocEntries(ctx.llm, rel, filePath, {
+        entries = await buildDocEntries(rel, filePath, {
           chunkChars: config.chunkChars,
           maxChunks: config.maxChunksPerFile,
           maxFileSizeMb: config.maxFileSizeMb,
           maxPdfPages: config.maxPdfPages,
-          route: effectiveRoute,
         })
         if (entries === null) {
           fileUpdates.push({ rel, deleted: true })
@@ -126,7 +126,8 @@ export function indexRepoTool(ctx, config) {
   return defineTool({
     name: 'index_repo',
     description:
-      'Index a whole project into persistent memory. Documents (PDF/Markdown/txt) are summarized by the LLM; ' +
+      'Index a whole project into persistent memory. Documents (PDF/Markdown/txt) get a short cited summary plus ' +
+      'a full-chunk literal term index (no LLM at index time); ' +
       'code files get a zero-token symbol table (function/class names with line numbers). Incremental: only changed ' +
       'files are re-extracted (content-hash), deleted files are removed from memory. Call once per project, then query_memory.',
     parameters: {
@@ -144,12 +145,9 @@ export function indexRepoTool(ctx, config) {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
-    async execute(args, exec) {
+    async execute(args) {
       const root = path.resolve(args.root)
-      return indexRepository(ctx, config, root, {
-        reindex: Boolean(args.reindex),
-        route: resolveRoute(exec, config),
-      })
+      return indexRepository(ctx, config, root, { reindex: Boolean(args.reindex) })
     },
   })
 }

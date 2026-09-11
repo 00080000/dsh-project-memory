@@ -2,11 +2,11 @@ import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { isSupportedCode, isSupportedDoc, memoryRootFor, readFileForIndex, relativePath, storeKey, walkDir } from './util/fs.js'
 import { buildDocEntries } from './doc-pipeline.js'
+import { docEntriesNeedBackfill } from './doc-index.js'
 import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileChanged, isTypeScriptFile } from './enhancer.js'
-import { resolveRoute } from './llm-route.js'
 
 export class WatchManager {
   constructor(ctx, config) {
@@ -80,8 +80,6 @@ export class WatchManager {
     const files = walkDir(root)
     const seen = new Set()
     let changed = 0
-    // watch 轮询没有会话上下文：路由取 config.llm 覆写或最近一次会话路由（llm-route.js）
-    const route = resolveRoute(undefined, this.config)
 
     // First pass: collect all file info and compute hashes/entries (async work outside commit)
     const fileUpdates = []
@@ -108,19 +106,20 @@ export class WatchManager {
       // 单次读盘：同一 buffer 供哈希与正文使用
       const { hash, buffer } = readFileForIndex(filePath)
       const existing = state.store.fileRecord(rel)
-      if (existing && existing.sha256 === hash) continue
+      // 旧 store 的 doc 条目缺 terms → 一次性回填（即使哈希未变）
+      const needsBackfill = isSupportedDoc(ext) && docEntriesNeedBackfill(state.store.entries[rel])
+      if (existing && existing.sha256 === hash && !needsBackfill) continue
 
       try {
         let entries
         if (isSupportedCode(ext)) {
           entries = scanSymbols(rel, filePath, buffer.toString('utf8'))
         } else {
-          entries = await buildDocEntries(this.ctx.llm, rel, filePath, {
+          entries = await buildDocEntries(rel, filePath, {
             chunkChars: this.config.chunkChars,
             maxChunks: this.config.maxChunksPerFile,
             maxFileSizeMb: this.config.maxFileSizeMb,
             maxPdfPages: this.config.maxPdfPages,
-            route,
           })
           if (entries === null) {
             // Dump file - update snapshot so we don't re-hash next poll, but don't index
