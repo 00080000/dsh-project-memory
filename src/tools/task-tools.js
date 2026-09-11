@@ -4,6 +4,7 @@ import { ProjectMemoryStore } from '../store.js'
 import { truncate } from '../util/text.js'
 import { genTaskId, hash8, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
 import { fireReflect } from '../reflection-pipeline.js'
+import { resolveRoute } from '../llm-route.js'
 import { createHash } from 'node:crypto'
 
 function sessionIdOf(exec) {
@@ -137,7 +138,7 @@ export function selectTaskTool(config, host) {
 
       // 反思钩子：切走旧任务时异步收割（默认关，零成本；失败只记日志）
       if (prevBound && prevBound !== task.id) {
-        fireReflect(config, host, root, prevBound, 'switch-away')
+        fireReflect(config, host, root, prevBound, 'switch-away', resolveRoute(exec, config))
       }
 
       const card = {
@@ -191,7 +192,7 @@ export function archiveTaskTool(config, host) {
       task.updatedAt = new Date().toISOString()
       store.save()
       // 反思钩子：归档即收割最终教训（默认关）
-      fireReflect(config, host, root, args.taskId, 'archive')
+      fireReflect(config, host, root, args.taskId, 'archive', resolveRoute(exec, config))
       return truncate(JSON.stringify({ success: true, archived: true, hint: '已归档，select_task 可恢复' }), config.maxOutputChars)
     },
   })

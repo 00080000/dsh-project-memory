@@ -7,6 +7,7 @@ import { ProjectMemoryStore } from '../store.js'
 import { projectRootFor, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
 import { renderTaskSnapshot, buildTaskPayload } from './tasks.js'
 import { fireReflect } from '../reflection-pipeline.js'
+import { resolveRoute } from '../llm-route.js'
 
 const VERBS = { switch: 'switch', archive: 'archive' }
 
@@ -138,7 +139,7 @@ export function taskCommandDefinition(config, ctx) {
           store.save()
           // 反思钩子：切走旧任务异步收割（默认关）
           if (prevBound && prevBound !== task.id) {
-            fireReflect(config, { llm: ctx?.llm }, root, prevBound, 'switch-away')
+            fireReflect(config, { llm: ctx?.llm }, root, prevBound, 'switch-away', resolveRoute(session ? { agent: { session } } : undefined, config))
           }
           // 反向接管：切换成功后把任务步骤推成宿主 todo/write（dsh 清单跟随）
           if (shouldAdoptToHost(config)) {
@@ -156,7 +157,7 @@ export function taskCommandDefinition(config, ctx) {
           task.updatedAt = new Date().toISOString()
           store.save()
           // 反思钩子：归档即收割（默认关）
-          fireReflect(config, { llm: ctx?.llm }, root, taskId, 'archive')
+          fireReflect(config, { llm: ctx?.llm }, root, taskId, 'archive', resolveRoute(session ? { agent: { session } } : undefined, config))
           const note = `已归档: ${describeTask(task)}（select_task 可恢复）`
           return withTaskSnapshot(config, cwd, sid, store, note)
         }

@@ -40,7 +40,7 @@ export async function buildDocEntries(llm, a, b, c) {
       (async () => {
         while (cursor < chunks.length) {
           const i = cursor++
-          metas[i] = await extractDocEntry(llm, chunks[i], filePath)
+          metas[i] = await extractDocEntry(llm, chunks[i], filePath, { route: opts.route })
         }
       })(),
     ),

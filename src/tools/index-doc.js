@@ -5,6 +5,7 @@ import { buildDocEntries } from '../doc-pipeline.js'
 import { linkEntries } from '../link.js'
 import { ProjectMemoryStore } from '../store.js'
 import { findProjectRoot } from '../lazy.js'
+import { resolveRoute } from '../llm-route.js'
 
 export function indexDocTool(ctx, config) {
   return defineTool({
@@ -28,7 +29,7 @@ export function indexDocTool(ctx, config) {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
-    async execute(args) {
+    async execute(args, exec) {
       const filePath = assertReadableFile(args.file_path, config.maxFileSizeMb)
       const root = path.resolve(args.root && args.root.trim() ? args.root : findProjectRoot(filePath))
       const memoryDir = memoryRootFor(root, config.memoryDir)
@@ -47,6 +48,7 @@ export function indexDocTool(ctx, config) {
         maxChunks: config.maxChunksPerFile,
         maxFileSizeMb: config.maxFileSizeMb,
         maxPdfPages: config.maxPdfPages,
+        route: resolveRoute(exec, config),
       })
       if (entries === null) {
         return store.commit((s) => {

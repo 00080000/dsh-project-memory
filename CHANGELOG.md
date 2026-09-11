@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.4 (2026-09-11)
+
+### Fixed (auxiliary LLM routing — D4 silent degradation)
+
+- **The auxiliary LLM path never actually ran; document summaries were always the truncated fallback.** `src/llm.js` called `llm.stream({ messages, signal })` without `provider`/`model`, but the host's `GenerateOptions` requires both (`packages/llm/llm/src/types.ts:419-422`; required since 0.1.2-rc.1). `LlmRuntime.stream` therefore threw `NO_ADAPTER` (`packages/llm/llm/src/index.ts:1017,964-966`) and the plugin's `catch` swallowed it. Measured fingerprint of the project store (220 doc entries): **0** with non-empty `blindSpots`, **0** with more than 5 `keywords`, 208 with `keywords` exactly equal to the first five title tokens — i.e. every entry carried the fallback signature, and `git log -S'provider' -- src/llm.js` is empty across all commits, so this was never a 0.1.5 regression. `query_memory`'s "⚠️ summary does not cover" hint could never fire because `blindSpots` was always `''`.
+- **Auxiliary calls now carry the session route.** New `src/llm-route.js` resolves `provider`/`model` with the same precedence the host uses for compaction summarization (configured override → session `requestHeader().config` → agent options), plus a last-known route captured from `request/header` events so background `watch`/`lazy` indexing — which has no tool execution context — still routes while a session is live. `index_doc`, `index_repo`, `query_memory` (query expansion), `select_task`/`archive_task` and `/task` reflection all pass the resolved route through.
+- **New `config.llm.provider` / `config.llm.model` override** for genuinely headless runs (no session, no prior route).
+- **Degradation is now visible instead of silent.** When no route can be resolved (or the call fails), the fallback path is taken *without* calling the host, and a one-time `[dsh-project-memory] degraded <code>` warning plus a `degradedList()` record is left behind (`llm.doc.no-route`, `llm.expand.no-route`, `llm.reflect.no-route`, `llm.doc.failed`, `llm.expand.failed`). The D4 lesson is not "never catch" but "a catch must be observable".
+- **New regression test `test/llm-route.test.mjs` (9 checks, H2):** a strict host stub that throws `NO_ADAPTER` unless `provider`/`model` are present. It fails on the pre-fix code with the original `NO_ADAPTER` stack and passes after the fix; it also covers route precedence, the no-route fallback + degraded record, `buildDocEntries` per-chunk routing, and an end-to-end `index_doc` run that asserts non-empty `blindSpots` and >5 `keywords`. Suite 219 → 228 checks.
+
+### Files
+- src/llm.js, src/llm-route.js (new), src/doc-pipeline.js, src/index.js, src/watch.js, src/lazy.js, src/reflection-pipeline.js, src/tools/index-doc.js, src/tools/index-repo.js, src/tools/query-memory.js, src/tools/task-tools.js, src/commands/task-actions.js, test/llm-route.test.mjs (new), test/run-test.mjs, test/reflection-pipeline.test.mjs, package.json, CHANGELOG.md
+
 ## 0.5.3 (2026-09-10)
 
 ### Changed (DSH 0.1.5-rc.1 compatibility)

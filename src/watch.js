@@ -6,6 +6,7 @@ import { scanSymbols } from './symbols.js'
 import { linkEntries } from './link.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileChanged, isTypeScriptFile } from './enhancer.js'
+import { resolveRoute } from './llm-route.js'
 
 export class WatchManager {
   constructor(ctx, config) {
@@ -79,6 +80,8 @@ export class WatchManager {
     const files = walkDir(root)
     const seen = new Set()
     let changed = 0
+    // watch 轮询没有会话上下文：路由取 config.llm 覆写或最近一次会话路由（llm-route.js）
+    const route = resolveRoute(undefined, this.config)
 
     // First pass: collect all file info and compute hashes/entries (async work outside commit)
     const fileUpdates = []
@@ -117,6 +120,7 @@ export class WatchManager {
             maxChunks: this.config.maxChunksPerFile,
             maxFileSizeMb: this.config.maxFileSizeMb,
             maxPdfPages: this.config.maxPdfPages,
+            route,
           })
           if (entries === null) {
             // Dump file - update snapshot so we don't re-hash next poll, but don't index

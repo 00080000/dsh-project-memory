@@ -54,7 +54,10 @@ const config = {
   expansionCount: 6,
   watch: true,
   watchInterval: 15,
+  // D4：辅助 LLM 调用需要显式路由；这里用 config 覆写（工具调用无 exec 时的兜底路径）
+  llm: { provider: 'test', model: 'test-model' },
 }
+const testRoute = config.llm
 
 const root = mkdtempSync(path.join(tmpdir(), 'pm-test-'))
 const docsDir = path.join(root, 'docs')
@@ -426,6 +429,7 @@ const entryNoKw = await extractDocEntry(
   },
   { title: 'Payment', text: 'x' },
   'spec.md',
+  { route: testRoute },
 )
 check('truncates overlong LLM summary', entryNoKw.summary.length <= 300)
 check('falls back to title keywords when LLM returns empty list', entryNoKw.keywords.includes('payment'))
@@ -924,7 +928,7 @@ console.log('\n== doc summarization concurrency ==')
       }
     },
   }
-  const entriesConc = await buildDocEntries(echoLLM, multiMd, {})
+  const entriesConc = await buildDocEntries(echoLLM, multiMd, { route: testRoute })
   check('chunks summarized concurrently within the pool cap', entriesConc.length === 6 && peak <= 4 && peak >= 2)
   check('entries keep document order', entriesConc.every((e, i) => e.title === `T${i}`))
 }
@@ -1110,7 +1114,7 @@ console.log('\n== bilingual keyword instruction ==')
       yield { type: 'finish', reason: { kind: 'stop' } }
     },
   }
-  const entryBi = await extractDocEntry(captureLLM, { title: 'Payment', text: 'x' }, 'spec.md')
+  const entryBi = await extractDocEntry(captureLLM, { title: 'Payment', text: 'x' }, 'spec.md', { route: testRoute })
   check(
     'index prompt requires own-language and English keywords',
     /english/i.test(systemText) && /own language/i.test(systemText),

@@ -17,7 +17,7 @@
     "url": "https://github.com/00080000/dsh-project-memory.git"
   },
   "scripts": {
-    "test": "node test/run-test.mjs && node test/taskbridge.test.mjs && node test/insight-store.test.mjs && node test/reflection-pipeline.test.mjs && node test/auto-inject.test.mjs && node test/insight-actions.test.mjs && node test/host-contract.test.mjs",
+    "test": "node test/run-test.mjs && node test/taskbridge.test.mjs && node test/insight-store.test.mjs && node test/reflection-pipeline.test.mjs && node test/auto-inject.test.mjs && node test/insight-actions.test.mjs && node test/host-contract.test.mjs && node test/llm-route.test.mjs",
     "build:client": "tsdown"
   },
   "keywords": [
