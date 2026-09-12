@@ -301,7 +301,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test          # 231 tests (165 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 7 doc-index + 7 auto-inject + 7 host-contract + 5 reflection + 4 llm-route)
+npm test          # 235 tests (169 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 7 doc-index + 7 auto-inject + 7 host-contract + 5 reflection + 4 llm-route)
 ```
 
 ## License
