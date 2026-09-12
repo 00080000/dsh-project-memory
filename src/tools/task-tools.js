@@ -80,7 +80,7 @@ export function selectTaskTool(config, host) {
       let hint = ''
       if (args.taskId) {
         task = store.getTask(args.taskId)
-        if (!task) return error(`Task not found: ${args.taskId}`)
+        if (!task || task.projectRoot !== root) return error(`Task not found: ${args.taskId}`)
         if (task.archived) {
           task.archived = false
           hint = '已解归档'
@@ -186,7 +186,7 @@ export function archiveTaskTool(config, host) {
       const root = resolveIndexRoot(exec, args.root)
       const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
       const task = store.getTask(args.taskId)
-      if (!task) return truncate(JSON.stringify({ success: false, error: 'Task not found' }), config.maxOutputChars)
+      if (!task || task.projectRoot !== root) return truncate(JSON.stringify({ success: false, error: 'Task not found' }), config.maxOutputChars)
       if (task.archived) return truncate(JSON.stringify({ success: false, error: 'Already archived' }), config.maxOutputChars)
       task.archived = true
       task.updatedAt = new Date().toISOString()
