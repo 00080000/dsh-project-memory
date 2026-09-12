@@ -22,13 +22,25 @@ export class WatchManager {
     // 用 load() 的返回值：storeCache 命中时 load() 返回的是缓存实例，忽略返回值会拿到空 store
     const store = new ProjectMemoryStore(memoryRootFor(cwd, this.config.memoryDir)).load()
     if (existsSync(store.dir)) {
-      for (const root of store.watchlist) {
-        if (typeof root === 'string' && root) this.addRoot(root)
+      let dropped = 0
+      for (const root of [...store.watchlist]) {
+        if (typeof root !== 'string' || !root) continue
+        // 已不存在的根直接自愈剔除：它只会每轮白跑，并把目录重新 mkdir 出来
+        if (!existsSync(root)) {
+          store.removeWatch(root)
+          dropped++
+          continue
+        }
+        this.addRoot(root)
       }
+      if (dropped) store.save()
     }
   }
 
   addRoot(root) {
+    // 根目录不存在就拒绝：否则每轮 poll 都会 commit → save → mkdirSync，
+    // 把一条历史遗留、已被删除的 watchlist 条目重新「创建」出来。
+    if (!existsSync(root)) return false
     if (!this.roots.has(root)) {
       this.roots.set(root, {
         store: new ProjectMemoryStore(memoryRootFor(root, this.config.memoryDir)).load(),

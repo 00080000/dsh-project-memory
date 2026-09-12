@@ -300,7 +300,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test          # 231 项测试（核心 165 + TaskBridge 16 + insight-store 11 + insight-actions 9 + doc-index 7 + auto-inject 7 + host-contract 7 + reflection 5 + llm-route 4）
+npm test          # 235 项测试（核心 169 + TaskBridge 16 + insight-store 11 + insight-actions 9 + doc-index 7 + auto-inject 7 + host-contract 7 + reflection 5 + llm-route 4）
 ```
 
 ## 许可证

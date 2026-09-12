@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed (watch / save hot path)
+
+- **A no-op `save()` no longer rewrites the store.** `commit()` always called `save()`, and `save()` ran `mkdirSync`, bumped `_version` and cleared the IDF cache even when nothing had changed. Since `watch` calls `commit()` for every watched root every 15 s, this (a) wiped the query-side IDF cache on every poll — cancelling the v0.3.4 IDF-reuse optimization whenever `watch` was on — and (b) **re-created the memory directory of any persisted watch root that no longer existed**, so a deleted root came back every 15 s. `save()` now returns before touching the disk unless something is dirty; stale `*.tmp` cleanup still runs unconditionally.
+- **Dead watch roots are dropped instead of re-created.** `WatchManager.addRoot()` now refuses a root that does not exist, `restorePersisted()` removes such roots from the persisted watchlist on startup, and `watch_repo` rejects a non-existent root rather than persisting it.
+- **Tests:** suite 231 → **235** checks. New: `no-op save() keeps the IDF cache` / `dirty save() invalidates the IDF cache`, plus `restorePersisted skips a root that no longer exists`, `a dead root is dropped from the persisted watchlist` and `addRoot refuses a non-existent root`.
+
 ## 0.5.4 (2026-09-12)
 
 ### Changed (indexing: model-free by design; whole-chunk retrieval terms)

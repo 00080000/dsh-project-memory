@@ -315,10 +315,17 @@ console.log('\n== IDF caching & streaming TF ==')
   const idf2 = store.getIdfCache()
   check('IDF cache hit on same version', idf2 === idf1)
 
-  // Test version bump on save invalidates cache
+  // A no-op save() must keep the cache: watch polls commit→save every 15s even when
+  // nothing changed, which used to bump the version and wipe the IDF cache on each poll.
   store.save()
   const idf3 = store.getIdfCache()
-  check('save() bumps version and invalidates IDF cache', idf3 !== idf1)
+  check('no-op save() keeps the IDF cache', idf3 === idf1)
+
+  // A save() with real changes still invalidates it.
+  store.addExperience({ problem: 'idf cache probe', solution: 'dirty the store' })
+  store.save()
+  const idf4 = store.getIdfCache()
+  check('dirty save() invalidates the IDF cache', idf4 !== idf1)
 
   // Test streaming rank function directly
   const { rankEntriesStreaming } = await import('../src/util/search.js')
@@ -799,8 +806,10 @@ wmClamp.stop()
 
 console.log('\n== watch restore (persisted roots) ==')
 const restoreRoot = mkdtempSync(path.join(tmpdir(), 'pm-restore-'))
+const ghostRoot = path.join(tmpdir(), `pm-ghost-${Date.now()}-missing`)
 const restoreStore = new ProjectMemoryStore(memoryRootFor(restoreRoot, config.memoryDir))
 restoreStore.addWatch(restoreRoot)
+restoreStore.addWatch(ghostRoot)
 restoreStore.save()
 const restoreCwd = process.cwd
 process.cwd = () => restoreRoot
@@ -808,6 +817,12 @@ const restoreWm = new WatchManager(ctx, config)
 restoreWm.restorePersisted()
 process.cwd = restoreCwd
 check('restorePersisted resumes a persisted watch root', restoreWm.roots.has(restoreRoot))
+check('restorePersisted skips a root that no longer exists', !restoreWm.roots.has(ghostRoot))
+check(
+  'a dead root is dropped from the persisted watchlist',
+  !new ProjectMemoryStore(memoryRootFor(restoreRoot, config.memoryDir)).load().watchlist.includes(ghostRoot),
+)
+check('addRoot refuses a non-existent root', new WatchManager(ctx, config).addRoot(ghostRoot) === false)
 restoreWm.stop()
 
 console.log('\n== code size limit ==')

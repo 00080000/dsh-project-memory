@@ -244,8 +244,22 @@ export class ProjectMemoryStore {
   }
 
   save() {
-    mkdirSync(this.dir, { recursive: true })
+    // 没有脏数据就不落盘。watch 每轮对每个根都无条件 commit → save；照旧执行的话，
+    // 末尾的 `_version++` + `_idfCache = null` 会打在跨实例共享的 store 上，
+    // 等于每 15 秒清空一次 IDF 缓存，废掉查询侧的 IDF 复用（v0.3.4 的 20x）。
+    const dirty =
+      this._dirtyShards.size > 0 ||
+      this._removedShards.size > 0 ||
+      this._dirtyExperience ||
+      this._dirtyInsights ||
+      this._dirtyTasks ||
+      this._dirtyBinding ||
+      this._dirtyWatch ||
+      !this._formatWritten
+    if (dirty) mkdirSync(this.dir, { recursive: true })
+    // 崩溃遗留的 *.tmp 无论有没有脏数据都顺手清掉（两次 readdir，自带 try/catch）
     this.cleanStaleTmp()
+    if (!dirty) return
     if (!this._formatWritten) {
       writeJsonAtomic(path.join(this.dir, FORMAT_FILE), { version: 2, layout: 'sharded' })
       this._formatWritten = true

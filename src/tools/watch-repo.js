@@ -1,5 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
+import { existsSync } from 'node:fs'
 import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 
@@ -27,6 +28,10 @@ export function watchRepoTool(watchManager, config) {
     },
     async execute(args, exec) {
       const root = path.resolve(args.root)
+      // 不存在的根不写进 watchlist：watch 每轮会 commit → save → mkdirSync，把它重新造出来
+      if (args.watch !== false && !existsSync(root)) {
+        return `Not watching: ${root} does not exist.`
+      }
       const memoryDir = memoryRootFor(root, config.memoryDir)
       const sessionRoot = resolveIndexRoot(exec)
       const sessionMemoryDir = memoryRootFor(sessionRoot, config.memoryDir)
