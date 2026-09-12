@@ -53,6 +53,12 @@ Done items → CHANGELOG.
 - Multi-line signatures for remaining languages
 - Symbol scanner edge cases
 
+## Next (v0.6.0)
+
+- [ ] **Verifiable memory** — an entry stores a claim plus how to verify it; stale entries move through an explicit state machine instead of being trusted silently
+- [ ] **Write-time information gain** — decide what is worth remembering instead of storing everything
+- [ ] **Outcome-based retention** — use task results to decide which entries to keep, demote or retire
+
 ## Candidates (v0.6.0+)
 
 - Dictionary max-match (50KB vocab)
