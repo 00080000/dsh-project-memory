@@ -27,7 +27,7 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
   - **Collapse to mini-bar**: click ↓ to keep draggable top bar; click bar to expand
 - **Bidirectional task-list sync (host ↔ plugin tasks, v0.4.2+)** — `select_task` or `/task switch` pushes task steps to host `todo/write` so dsh's rendered task list mirrors the plugin's task entity. Config `tasklist.syncHostOnAdopt` (default on) to toggle. Empty `todo/write` means "clear": unbound session clears list without creating junk tasks; bound session clears that task's steps (task retained). Panel edits (step text/status) = write back bound task + push host list, sharing one code path with model `todo_write`. `/task` subcommands: `switch`, `archive`, `unbind`, `rename`, `todos` (invoked by panel buttons/clicks, not the model); `unbind` also clears the host task list above the input.
 - **Panel editing & themes (v0.4.2+)** — bound cards: double-click title/step for inline edit (input auto-grows); click step status icon to cycle todo→in-progress→done. Non-bound cards read-only. **Four visual themes** (click folder icon left of title, persisted locally): Native / Glassmorphism / Brutalist / Terminal monospace — only material, geometry, typeface, density change; colors always use dsw alias tokens, follow host light/dark and theme plugins.
-- **Document memorization** — PDF, Markdown, and plain text files are chunked and summarized by the LLM; each entry carries a `path:line` citation back to the source.
+- **Document memorization** — PDF, Markdown, and plain text files are chunked and summarized **without any model call**: each entry keeps a ≤300-character `summary` for injection plus a whole-chunk `terms` set for retrieval, and a `path:line` citation back to the source.
 - **Code symbol memory** — function, class, and method names with full type signatures (generics, parameters, return types, overloads) are extracted by a dependency-free source scanner (string/comment masking, multi-line signature joining, indentation-aware Python, class-method context), without LLM token usage.
 - **L1 Enhanced Regex** — zero-dep regex scanner now extracts generics, parameter/return types, overloads, interfaces, and type aliases for all supported languages, producing one-line identity signatures `fn(a: A, b: B): R — file.ts:42`.
 - **Optional TypeScript semantic enhancement (L2/L3)** — when `typescript` is installed in the user project (`npm i -D typescript`), the plugin automatically activates a second layer (L2) that uses the TS Compiler API to infer return types, resolve generics, extract interfaces and type aliases, and enrich arrow functions — all asynchronously in a priority queue (P0 on `fs/observed`, P1 on `watch`, P2 on `index_repo`). Results are cached on disk keyed by file content hash (L3) for instant cold-start reuse. Zero config: just install TS (5.x or 6.x) and restart dsh. Fully optional; if TS is absent or disabled via `enableTypeScript: false`, the plugin falls back to L1 regex-only extraction.
@@ -35,13 +35,13 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 - **Read-time memorization** — files are memorized the moment the model actually reads them (`fs/observed`), so the memory is a byproduct of normal work, not a separate upfront scan. Files that are never read are never indexed. The project root is detected by markers (`.git`, `package.json`, …), a README plus source directories, or the file's own directory as a last resort.
 - **Doc ↔ code cross-linking** — when a document mentions a symbol, the match is recorded as a `reference`; querying a symbol also surfaces the documents that describe it.
 - **BM25 memory recall** — ranked search over documents, symbols, and experience notes, with optional LLM query expansion to handle vocabulary mismatch. **CJK-optimized**: precise phrase boost (3+ char phrases ×1.5 score on title/keywords match), synonym table (e.g. 数据库连接池 ↔ 连接池 ↔ DB pool), and CJK-aware word boundaries for doc↔symbol linking.
-- **blindSpots-aware recall** — document summaries carry a `blindSpots` field (what the summary explicitly does NOT cover). When a query hits a blind spot, `query_memory` appends a warning pointing the model to read the source file, preventing hallucination from partial summaries.
+- **Whole-chunk retrieval terms** — every doc chunk also stores `terms`: a bounded (≤160), deterministic, stop-word-filtered literal term set covering the **entire chunk**. `summary` stays ≤300 characters for the injection budget and `terms` is search-only, so recall finds content anywhere in the chunk rather than only in its opening lines. (The `blindSpots` field and its "summary does not cover …" warning are retained for compatibility, but are empty for newly indexed documents, since indexing does not call a model.)
 - **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches. The note store is bounded: capacity scales with project size (clamped to 100–2000), and the oldest notes are pruned when the limit is exceeded. **Supersede tightened to bidirectional 0.7 overlap** (was 0.6); **experience `problem` field now participates in CJK phrase boost** for long-tail query recall.
-- **v0.5 tiered insight memory (lessons / decisions / procedures)** — one `insight` entity across three scopes: `task` (private drafts in `tasks.json`), `project` (`.dsh-project-memory/insights.json`), `global` (`~/.config/dsh-project-memory/global.json`). `save_lesson` writes any scope; dedupe is bidirectional token overlap ≥ 0.7 (merge) with a 0.65–0.7 reinforce band; **promotion is a scope change, not a copy** — 2 tasks hitting the same insight promote it to project, 3+ to global. Archive is soft (`archived`), decay/capacity prune archived entries only; writes are filtered for secret/token-shaped content. LLM **reflection is off by default** and only ever writes task-level drafts (`source: reflect`) on task switch-away/archive. Panel gains a Task / Project / Global memory view with approve, promote/demote, archive/restore, delete, edit and a create form (procedures can carry an “as Skill” trigger). Old `experience.json` notes are imported into `insights.json` once, non-destructively. Defaults & rationale: `PLAN-v0.5.0.md`.
+- **v0.5 tiered insight memory (lessons / decisions / procedures)** — one `insight` entity across three scopes: `task` (private drafts in `tasks.json`), `project` (`.dsh-project-memory/insights.json`), `global` (`~/.config/dsh-project-memory/global.json`). `save_lesson` writes any scope; dedupe is bidirectional token overlap ≥ 0.7 (merge) with a 0.65–0.7 reinforce band; **promotion is a scope change, not a copy** — 2 tasks hitting the same insight promote it to project, 3+ to global. Archive is soft (`archived`), decay/capacity prune archived entries only; writes are filtered for secret/token-shaped content. LLM **reflection is off by default** and only ever writes task-level drafts (`source: reflect`) on task switch-away/archive. Panel gains a Task / Project / Global memory view with approve, promote/demote, archive/restore, delete, edit and a create form (procedures can carry an “as Skill” trigger). Old `experience.json` notes are imported into `insights.json` once, non-destructively.
 - **Streaming TF + IDF caching** — query path caches IDF (term inverse frequency) per store version; on cache hit, single-pass streaming scores 20k entries in ~3 ms (5k files) / ~0.6 ms (1k files) with zero intermediate objects; write path is O(1) version bump.
 - **Lock-free sync transactions** — all writes (index / watch / remember / forget / watch_repo) go through synchronous transactions `store.commit(fn)`; fn succeeds then atomic write; JS single-threaded event loop guarantees no interleaving; `remember`/`forget` never blocked by watch re-indexing.
 - **Minimal dependencies** — pure JavaScript; the only runtime dependency is `pdfjs-dist` (PDF text extraction), no native builds required.
-- **Negligible overhead** — pure in-process operation; cold start <100 ms (5k files), typical project query median 2–3 ms (p99 < 7 ms); bottleneck is LLM summarization and PDF parsing, not the plugin.
+- **Negligible overhead** — pure in-process operation; cold start <100 ms (5k files), typical project query median 2–3 ms (p99 < 7 ms); bottleneck is PDF extraction and disk I/O, not the plugin's scoring.
 
 ## Performance
 
@@ -75,7 +75,7 @@ The design follows four principles:
 
 - **Volatility** — context is ephemeral; it is lost when a session is compacted.
 - **Persistence** — the **memory** is stored on disk and survives compaction and new sessions.
-- **Compactness** — only summaries are stored; the **memory** runs around 0.5% the size of the source it covers (8.8 MB of source → 49 KB of index in the example project), so **recall** replaces re-reading the full file.
+- **Compactness** — the code layer stores one declaration line per symbol, so code-heavy projects stay near **0.5% of the source** (8.8 MB of source → 49 KB of index in the example project), and **recall** replaces re-reading the full file. The document layer is heavier by design: each chunk keeps a ≤300-char injected `summary`, a bounded `terms` set covering the whole chunk for retrieval, and a precomputed `searchText`. Measured on a docs-only corpus (179 chunks / 225 KB of Markdown): `terms` ≈ **27.5%** of source and the on-disk store ≈ **166%** of source — so on doc-heavy projects budget for roughly the docs themselves, not 0.5%.
 - **Verifiability** — **recalls** carry a `path:line` citation where applicable, so the agent can confirm details against the source.
 
 Building the **memory** does not require an upfront scan: files are memorized as the model reads them, so the **memory** grows to cover exactly what has been worked with. Re-reading a file that has not changed is a no-op (content hash), so the **memory** stays fresh with minimal ongoing overhead.
@@ -112,8 +112,8 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 
 | Tool | Purpose |
 |---|---|
-| `index_doc file_path` | Index one document (PDF/MD/txt): chunk → LLM summary → store with `path:line`. Unchanged files are skipped. |
-| `index_repo root` | Index a whole project: docs get LLM summaries, code files get a zero-token symbol table. Incremental, cleans up deleted files, cross-links docs to symbols. |
+| `index_doc file_path` | Index one document (PDF/MD/txt): chunk → deterministic `summary` + whole-chunk `terms` → store with `path:line`. Unchanged files are skipped. |
+| `index_repo root` | Index a whole project: docs get deterministic summaries + whole-chunk terms, code files get a zero-token symbol table. Incremental, cleans up deleted files, cross-links docs to symbols. |
 | `watch_repo root` | Enable automatic refresh: a background poll detects new/changed files (mtime + content hash) and re-indexes only those. Watched roots persist across plugin restarts. |
 | `memory_stats root` | Show what the store contains: totals (files / entries / experience notes), last index time, and the per-file list sorted by recency. |
 | `query_memory query` | BM25 search over docs + symbols + experience, optionally query-expanded by the LLM. Returns ranked hits with relative scores, sources, and doc→symbol references. |
@@ -146,7 +146,7 @@ Stores created before v0.2.0 (single `entries.json` / `index.json`) migrate auto
 
 - **Incremental** — content hash per file; only changed files are re-extracted.
 - **Cross-linking** — after indexing, doc summaries are matched against symbol names; matches are attached to the doc entry as `references` and surfaced by `query_memory`.
-- **Query expansion** — when `llmQueryExpansion` is on, `query_memory` asks `ctx.llm` to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and merges BM25 scores across variants; when off, queries never touch the LLM. Cross-language recall (a Chinese question hitting English content) comes from index time instead: doc keywords are required to cover the document's own language AND English, and doc↔symbol links surface English symbol names from Chinese hits.
+- **Query expansion** — when `llmQueryExpansion` is on, `query_memory` asks `ctx.llm` to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and merges BM25 scores across variants; when off, queries never touch the LLM. Indexing itself is model-free: keywords are rule-derived (title-weighted top terms), and doc↔symbol links surface English symbol names from Chinese hits.
 - **Consistency** — the fact layer follows the codebase (hash re-extract / remove-on-delete); the experience layer is retrieval-only with supersede and `forget`. Store writes are serialized per memory directory; the lock is in-process, so avoid running multiple dsh instances against the same project store concurrently.
 
 ## Architecture (Task Panel)
@@ -173,11 +173,11 @@ These are deliberate scope choices.
 
 ### 2. Watch: compute outside, commit inside
 
-**We do:** Heavy work (mtime/hash/scan/LLM summary) runs outside the transaction; a single `commit` applies all changes atomically. On failure, the snapshot rolls back so the next poll retries automatically.
+**We do:** Heavy work (mtime/hash/scan/parse/PDF extraction) runs outside the transaction; a single `commit` applies all changes atomically. On failure, the snapshot rolls back so the next poll retries automatically.
 
-**We don't:** Hold a lock during LLM calls, or use `fs.watch` events.
+**We don't:** Hold a lock during parsing, or use `fs.watch` events.
 
-**Why:** LLM summarization takes seconds — holding a lock would block `remember`/`forget`/`query_memory`. Polling with mtime+content-hash is platform-agnostic (works on network drives, Docker volumes, WSL) and avoids the "double fire / missed events" nightmare of `fs.watch`.
+**Why:** PDF extraction and large-file parsing take time — holding a lock would block `remember`/`forget`/`query_memory`. Polling with mtime+content-hash is platform-agnostic (works on network drives, Docker volumes, WSL) and avoids the "double fire / missed events" nightmare of `fs.watch`.
 
 ### 3. Corrupt files are quarantined, not auto-repaired
 
@@ -193,15 +193,15 @@ These are deliberate scope choices.
 
 **We don't:** Vector embeddings, dense retrieval, rerankers, or hybrid search.
 
-**Why:** Vectors require an embedding model (local = heavy, remote = latency + cost + privacy), a vector index (HNSW/IVF = memory + build time), and reranking (another LLM call). For code + docs + experience notes, lexical BM25 with our enhancements already achieves >90% recall on real queries. The marginal gain from semantic search doesn't justify the 10x complexity/cost increase.
+**Why:** Vectors require an embedding model (local = heavy, remote = latency + cost + privacy), a vector index (HNSW/IVF = memory + build time), and reranking (another LLM call). For the queries this plugin targets, lexical BM25 is already sufficient and measurable: on our benchmark suite (29 queries over a real Vue project) file-level hit@5 is **96.6%**, and 28 of the 29 are exact symbol lookups that lexical search answers essentially always. Whole-chunk `terms` took document-term coverage from **27.3% to 100%** while queries that already worked kept their ranking (MRR **0.958** vs **0.955**). The marginal gain from semantic search doesn't justify the 10x complexity/cost increase.
 
-### 5. Cross-language recall at index time, not query time
+### 5. Indexing is deterministic and model-free
 
-**We do:** Doc keywords *must* cover both the document's language AND English. Doc↔symbol links surface English symbol names from Chinese queries. With `llmQueryExpansion: false`, queries never touch the LLM.
+**We do:** Derive keywords with a rule (title-weighted top terms) and build a whole-chunk `terms` set — both deterministic and reproducible. Doc↔symbol links surface English symbol names from Chinese queries, and CJK tokenization keeps cross-language hits working. With `llmQueryExpansion: false`, queries never touch the LLM.
 
-**We don't:** Translate queries at search time, or use multilingual embeddings.
+**We don't:** Call a model at index time to translate or paraphrase a document, and we don't translate queries at search time.
 
-**Why:** Query-time translation adds latency, token cost, and failure modes (bad translation = zero recall). Index-time bilingual keywords are a one-time cost per document; the LLM already summarizes the doc, so extracting English keywords is free. This also works offline and deterministically.
+**Why:** An index-time model call makes indexing slower, non-deterministic and unverifiable — the same document can index differently on two runs. Query-time translation adds latency and a hard failure mode (a bad translation means zero recall). Rules plus symbol linking cover the common cases, work offline, and keep indexing at zero model calls.
 
 ### 6. Explicit `remember` over implicit learning
 
@@ -217,7 +217,7 @@ These are deliberate scope choices.
 
 **We don't:** Return a minimal index first, then require a second tool call for details.
 
-**Why:** Returning full entries preserves **verifiability** — the agent sees the exact source line for every claim. It also avoids a round-trip per useful hit. Our entries are already compact (~300 chars summary + citation); the token cost is lower than a second tool call + context switch.
+**Why:** Returning full entries preserves **verifiability** — the agent sees the exact source line for every claim. It also avoids a round-trip per useful hit. Our entries are already compact (~300-char summary + citation, plus a search-only `terms` field that never enters the prompt); the token cost is lower than a second tool call + context switch.
 
 ### 8. Symbol extraction focused on what developers search for
 
@@ -301,7 +301,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test          # 215 tests (166 core + 11 TaskBridge + 11 insight-store + 5 reflection + 7 auto-inject + 9 insight-actions + 6 host-contract)
+npm test          # 231 tests (165 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 7 doc-index + 7 auto-inject + 7 host-contract + 5 reflection + 4 llm-route)
 ```
 
 ## License
