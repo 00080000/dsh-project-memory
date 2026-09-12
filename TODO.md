@@ -2,7 +2,7 @@
 
 Done items → CHANGELOG.
 
-## Near-term (v0.3.x)
+## Completed v0.3.x
 
 - [x] **C1: CJK Retrieval Enhancement** — phrase boost, synonyms, link boundaries
 - [x] **C2: doc↔symbol CJK Precision** — with C1
@@ -13,8 +13,8 @@ Done items → CHANGELOG.
 - [x] **L2 TS Compiler API** — inference, generics instantiation, implicit returns (v0.3.2)
 - [x] **L3 Disk Cache** — type-cache/ keyed by content hash (v0.3.2)
 - [x] **Symbol Layer Refactor** — one-line identity `fn(a:A,b:B):R — file.ts:42`, no `summary`/`sig` (v0.3.3)
-- [x] **Doc Layer Refactor** — blindSpots, hash, answer-level summary (v0.3.3)
-- [x] **Doc retrieval: blindSpots-aware logic in query_memory** (v0.3.3)
+- [x] **Doc Layer Refactor** — hash + answer-level summary (v0.3.3); the self-reported `blindSpots` part was dropped in v0.5.4 (index-time stays model-free)
+- [x] **Doc retrieval: blindSpots-aware logic in query_memory** (v0.3.3) — superseded in v0.5.4 by whole-chunk `terms` retrieval
 
 ## Completed v0.4.x (TaskBridge + TaskPanel)
 
@@ -31,6 +31,17 @@ Done items → CHANGELOG.
 - [x] **TaskPanel Memory Views** — Task/Project/Global tabs, inline insights on task cards, `/insight` command with actions (confirm/promote/demote/archive/restore/delete/edit/create) (v0.5.0)
 - [x] **Silent Injection crash fixes** — agent/pre-step signature fix, message source.kind fix, both paths inert on error (v0.5.1)
 - [x] **TaskPanel editing UX** — click vs double-click discrimination (~250ms), auto-growing textareas, pre-wrap step rendering (v0.5.1)
+
+## Completed v0.5.2–v0.5.4 (File Hotspots, Zero-Model Indexing, Snapshot Injection)
+
+- [x] **File hotspot ordering + resume info** — `task.files` kept hot (writes first), per-file `lastWriteAt`/`lastReadAt`, resident card shows ≤3 "editing now" files, self-todo echo suppression (v0.5.2)
+- [x] **Cold-index I/O** — one read per file (hash + body from the same buffer); synthetic 5k-file cold index 1,093 ms → 272 ms (v0.5.2)
+- [x] **Watch / host-contract robustness** — invalid poll interval falls back to 15 s, re-entrancy guard, `agent/pre-step` never crashes a step, persisted watch roots restored (v0.5.2)
+- [x] **DSH 0.1.5-rc.1 compatibility** — devDeps moved to 0.1.5-rc.1, dropped the upstream-deleted `dsh-client-runtime`, client bundle rebuilt (v0.5.3)
+- [x] **Subagent sessions no longer mint project tasks**; auto task titles prefer the todo list (v0.5.3)
+- [x] **Index-time stays model-free by construction** — `buildDocEntries` takes no `llm`; whole-chunk `terms` split from the injected `summary`; existing stores back-fill automatically (v0.5.4)
+- [x] **Recall-time LLM routed explicitly** and leaves a visible `degraded` record instead of failing silently (v0.5.4)
+- [x] **Injection declares `form: 'snapshot'`**; per-file `reads`/`writes` counters; `query_memory` `status:` placeholder (v0.5.4)
 
 ## Mid-term (Trigger-based)
 
