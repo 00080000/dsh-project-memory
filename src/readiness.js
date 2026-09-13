@@ -144,6 +144,27 @@ export function backfillDerivedTriggers(doc) {
   return changed
 }
 
+/**
+ * 提示通道的查询文本：剔除 1–2 个字符的拉丁 token。
+ *
+ * 为什么：`PR` / `CI` / `OS` 这类缩写太短、歧义太大，一个巧合命中就能当上该层最高分，
+ * 于是以 `relative:1.00` 混进上下文（实测：人类消息里的 "PR" 把一条 task-tools 越权 lesson
+ * 顶到了提示位）。内容词（≥3 字符的拉丁标识符、CJK 词）不受影响；
+ * authored trigger 通道完全不走这里，确定性匹配保持字面语义。
+ * @param {string} text - 人类消息或工具参数。
+ * @returns {string} 过滤后的查询文本。
+ */
+export function hintQueryText(text) {
+  return String(text || '')
+    .split(/\s+/)
+    // 路径形态的 token 原样保留（src/util/fs.js 里的 fs / js 是有效证据），
+    // 只对独立词做缩写剔除。
+    .map((w) => (/[/.]/.test(w) ? w : w.replace(/\b[A-Za-z0-9_]{1,2}\b/g, ' ')))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 /** glob（只支持 `*`）→ 正则。 */
 function globToRegExp(pattern) {
   const escaped = String(pattern).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')

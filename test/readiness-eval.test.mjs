@@ -67,6 +67,15 @@ const CASES = [
     expect: ['h_strong'],
   },
   {
+    name: '缩写巧合（PR）不得命中',
+    insights: [
+      L('a_pr', { title: '自动安全 PR 扫描：横向越权', fix: 'authz 检查' }),
+      L('a_pub', { title: '公开作品仓库的公开面', fix: '内部文档写进 .gitignore' }),
+    ],
+    ctx: { humanText: 'PR 提交前检查公开面', actionText: '' },
+    expect: ['a_pub'],
+  },
+  {
     name: '无关内容零注入',
     insights: [L('h_none', { title: 'JWT 未校验 exp', fix: '用 jose 校验' })],
     ctx: { humanText: '数据库迁移怎么做', actionText: '' },
