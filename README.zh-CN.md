@@ -140,7 +140,7 @@ dsh plugin --profile web add /path/to/dsh-project-memory.tgz
 | `index_repo root` | 索引整个项目：文档生成确定性摘要 + 整 chunk 词项，代码文件生成零 token 符号表。增量更新、清理已删除文件、文档与符号交叉链接。 |
 | `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件（mtime + 内容哈希），仅重抽这些文件。监听的项目在插件重启后自动恢复。 |
 | `memory_stats root` | 查看记忆库内容：总量（文件 / 条目 / 经验笔记）、最近索引时间，以及按时间排序的逐文件清单。 |
-| `query_memory query` | 对文档、符号、经验执行 BM25 检索，可选 LLM 查询扩展。返回带相对分数（0-100）、引用与文档→符号链接的排序结果。 |
+| `query_memory query` | 对文档、符号、经验与 insight（教训/决策/流程）执行 BM25 检索，可选 LLM 查询扩展。`type` 选择层（`all` / `doc` / `symbol` / `experience` / `insight` / `task`）。返回带相对分数（0-100）、引用或 insight id、以及文档→符号链接的排序结果。 |
 | `list_tasks` | 列出本项目任务记录（含归档，带标记）。新会话/续接前先调用。 |
 | `select_task` | 将会话绑定到某任务（此后 todo 清单与读文件同步进该任务）。按 `taskId` 精确绑定，或按 `title` 完全匹配（多个同名返回候选；无则新建）。带 title 可改名；自动解归档。 |
 | `archive_task` | 归档任务（隐藏默认视图、不占容量、停止同步）。`select_task` 可恢复。 |
@@ -332,7 +332,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test          # 238 项测试（核心 169 + TaskBridge 16 + insight-store 11 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 7 + reflection 5 + llm-route 4 + client-hints 2）
+npm test          # 246 项测试（核心 169 + TaskBridge 16 + insight-store 11 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 7 + reflection 5 + llm-route 4 + client-hints 2 + recall 8）
 ```
 
 ## 许可证

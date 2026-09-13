@@ -4,9 +4,9 @@ import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
 import { expandQuery } from '../llm.js'
 import { resolveRoute } from '../llm-route.js'
-import { rankEntriesMergedScored, rankExperienceScored, rankEntriesStreaming } from '../util/search.js'
+import { GlobalStore, cfgInsight, defaultGlobalFile } from '../insight-store.js'
+import { recallItems } from '../recall.js'
 import { truncate } from '../util/text.js'
-
 function toAbs(root, rel) {
   return path.isAbsolute(rel) ? rel : path.join(root, rel)
 }
@@ -15,9 +15,10 @@ export function queryMemoryTool(ctx, config) {
   return defineTool({
     name: 'query_memory',
     description:
-      'Search persistent project memory: doc summaries and code symbol tables (indexed via index_doc/index_repo) ' +
-      'plus experience notes (problem -> solution, saved via remember). Every hit returns its source path and line so ' +
-      'you can verify by reading the real file. Docs are cross-linked to the code symbols they mention. ' +
+      'Search persistent project memory: doc summaries and code symbol tables (indexed via index_doc/index_repo), ' +
+      'experience notes (problem -> solution, saved via remember) and insights (lessons / decisions / procedures, ' +
+      'saved via save_lesson). Every hit returns its source path and line, or its insight id, so you can verify. ' +
+      'Docs are cross-linked to the code symbols they mention. ' +
       'Use BEFORE grepping when you need orientation, a spec constraint, or a past decision.',
     parameters: {
       query: {
@@ -31,8 +32,8 @@ export function queryMemoryTool(ctx, config) {
       },
       type: {
         type: 'string',
-        enum: ['all', 'doc', 'symbol', 'experience', 'task'],
-        description: 'Which memory layer to search. Default "all". "task" searches task records (title/steps/files).',
+        enum: ['all', 'doc', 'symbol', 'experience', 'insight', 'task'],
+        description: 'Which memory layer to search. Default "all". "insight" searches lessons / decisions / procedures; "task" searches task records.',
       },
       limit: {
         type: 'number',
@@ -57,18 +58,40 @@ export function queryMemoryTool(ctx, config) {
         if (e.type === 'symbol') symbolById.set(e.id, e)
       }
 
-      const idf = store.getIdfCache()
+      // 会话绑定决定 task 级 insight 的可见性；global 级始终可见。
+      const sessionId = exec?.agent?.session?.id
+      const boundTaskId = sessionId && typeof store.getBoundTaskId === 'function' ? store.getBoundTaskId(sessionId) : null
+      const globalStore = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()
+      const wantMemory = type === 'all' || type === 'doc' || type === 'symbol'
+      const wantInsight = type === 'all' || type === 'insight'
+      // 一次 recall 覆盖全部层：doc/symbol/experience/insight 共用同一个检索核心（src/recall.js）。
+      const recalled = recallItems({
+        store,
+        globalStore,
+        queries,
+        boundTaskId,
+        limit,
+        layers: [
+          ...(wantMemory ? (type === 'symbol' ? ['symbol'] : type === 'doc' ? ['doc'] : ['doc', 'symbol']) : []),
+          ...(wantInsight ? ['insight'] : []),
+          ...(type === 'all' || type === 'experience' ? ['experience'] : []),
+        ],
+      })
 
       const lines = []
-      if (type === 'all' || type === 'doc' || type === 'symbol') {
-        const pool = type === 'all' ? store.allEntries() : store.allEntries().filter((e) => e.type === type)
-        const scored = rankEntriesStreaming(pool, queries, idf, limit)
-        if (scored.length) {
-          const top = scored[0].score || 1
+      if (wantMemory) {
+        // doc/symbol 同源同尺度：合并后按加权分排序（规范段提权已计入 weightedScore）
+        const memHits = recalled.layers
+          .filter((l) => l.layer === 'doc' || l.layer === 'symbol')
+          .flatMap((l) => l.hits)
+          .sort((a, b) => b.weightedScore - a.weightedScore)
+          .slice(0, limit)
+        if (memHits.length) {
+          const top = memHits[0].weightedScore || 1
           lines.push(`## Memory (${type === 'all' ? 'docs + symbols' : type})`)
-          for (const { entry: e, score } of scored) {
+          for (const { item: e, weightedScore } of memHits) {
             const absSource = e.sourceLine ? `${toAbs(root, e.sourcePath)}:${e.sourceLine}` : toAbs(root, e.sourcePath)
-            const rel = Math.round((score / top) * 100)
+            const rel = Math.round((weightedScore / top) * 100)
             let summaryLine = `- ${e.summary}`
             if (e.type === 'doc' && e.blindSpots) {
               const queryTokens = queries.flatMap(q => q.split(/[\s\-_]+/)).map(t => t.toLowerCase()).filter(Boolean)
@@ -91,15 +114,28 @@ export function queryMemoryTool(ctx, config) {
           }
         }
       }
+      if (wantInsight) {
+        const bucket = recalled.layers.find((l) => l.layer === 'insight')
+        if (bucket && bucket.hits.length) {
+          lines.push('## Insights (lessons / decisions / procedures)')
+          for (const { item: e, rel } of bucket.hits) {
+            const scope = e.scope ? `, scope: ${e.scope}` : ''
+            const files = e.files && e.files.length ? `\n- files: ${e.files.map((f) => toAbs(root, f)).join(', ')}` : ''
+            const conf = typeof e.confidence === 'number' ? `\n- confidence: ${e.confidence}` : ''
+            lines.push(
+              `### ${e.title} (score: ${Math.round(rel * 100)}, kind: ${e.kind}${scope}, id: ${e.insightId})\n- ${e.summary}${files}${conf}`,
+            )
+          }
+        }
+      }
       if (type === 'all' || type === 'experience') {
-        const scoredExp = rankExperienceScored(store.experience, queries, limit)
-        if (scoredExp.length) {
-          const expTop = scoredExp[0].score || 1
+        const expBucket = recalled.layers.find((l) => l.layer === 'experience')
+        if (expBucket && expBucket.hits.length) {
           lines.push(`## Experience (past problems -> solutions)`)
-          for (const { item: e, score } of scoredExp) {
+          for (const { item: e, rel } of expBucket.hits) {
             const source = e.sourceFile ? ` (source: ${toAbs(root, e.sourceFile)})` : ''
             lines.push(
-              `### Problem: ${e.problem} (score: ${Math.round((score / expTop) * 100)}, id: ${e.id})\n- solution: ${e.solution}${source}\n- updated: ${e.updatedAt}`,
+              `### Problem: ${e.problem} (score: ${Math.round(rel * 100)}, id: ${e.id})\n- solution: ${e.solution}${source}\n- updated: ${e.updatedAt}`,
             )
           }
         }
@@ -135,9 +171,11 @@ export function queryMemoryTool(ctx, config) {
         const hint =
           type === 'experience'
             ? 'Note a fix with remember so it can be recalled next time.'
-            : type === 'all'
-              ? 'Index it first with index_repo / index_doc, or note a fix with remember.'
-              : 'Index it first with index_repo / index_doc.'
+            : type === 'insight'
+              ? 'Save a lesson / decision / procedure with save_lesson so it can be recalled next time.'
+              : type === 'all'
+                ? 'Index it first with index_repo / index_doc, or note a fix with remember or save_lesson.'
+                : 'Index it first with index_repo / index_doc.'
         const tail =
           overview.files === 0
             ? '. The store has never been indexed.'

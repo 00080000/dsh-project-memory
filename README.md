@@ -139,7 +139,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | `index_repo root` | Index a whole project: docs get deterministic summaries + whole-chunk terms, code files get a zero-token symbol table. Incremental, cleans up deleted files, cross-links docs to symbols. |
 | `watch_repo root` | Enable automatic refresh: a background poll detects new/changed files (mtime + content hash) and re-indexes only those. Watched roots persist across plugin restarts. |
 | `memory_stats root` | Show what the store contains: totals (files / entries / experience notes), last index time, and the per-file list sorted by recency. |
-| `query_memory query` | BM25 search over docs + symbols + experience, optionally query-expanded by the LLM. Returns ranked hits with relative scores, sources, and doc→symbol references. |
+| `query_memory query` | BM25 search over docs + symbols + experience + insights (lessons / decisions / procedures), optionally query-expanded by the LLM. `type` selects a layer (`all` / `doc` / `symbol` / `experience` / `insight` / `task`). Returns ranked hits with relative scores, sources or insight ids, and doc→symbol references. |
 | `list_tasks` | List task records for the project (archived marked). Call first in a new session before continuing work. |
 | `select_task` | Bind the session to a task so its todo list and file reads sync into it. Exact `taskId`, or exact `title` (multiple matches return candidates; no match creates a new task). Pass `title` with `taskId` to rename. Auto-unarchives. |
 | `archive_task` | Archive a task (hide from default views, exclude from capacity, stop syncing). `select_task` restores it. |
@@ -333,7 +333,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test          # 238 tests (169 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 7 host-contract + 5 reflection + 4 llm-route + 2 client-hints)
+npm test          # 246 tests (169 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 7 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall)
 ```
 
 ## License
