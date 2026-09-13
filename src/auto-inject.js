@@ -15,9 +15,15 @@ import { cfgInsight, GlobalStore, defaultGlobalFile } from './insight-store.js'
 import { projectTags } from './project-profile.js'
 import { rankEntriesMergedScored } from './util/search.js'
 import { insightToEntry } from './recall.js'
-import { buildReadinessContext, matchTrigger, relativeHits } from './readiness.js'
+import { buildReadinessContext, hintQueryText, matchTrigger, relativeHits } from './readiness.js'
 
 export const INJECT_MARK = '[Memory Inject]'
+
+/**
+ * 注入正文的最小可用长度：预算塞不下这么多就宁可不注入（记 dropped）。
+ * 与其输出 `- [ins_xxx] procedure ` 这种 stub，不如保持沉默——stub 只消耗 token 不传递信息。
+ */
+const MIN_BODY_CHARS = { trigger: 48, hint: 120 }
 
 /** 注入引擎配置：insight 默认之上叠加 autoContext 预算/门控参数。 */
 export function cfgEngine(config) {
@@ -47,16 +53,20 @@ function textOf(message) {
     .join('\n')
 }
 
-function lastUserText(messages) {
+export function lastUserText(messages) {
   if (!Array.isArray(messages)) return ''
+  let fallback = ''
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
-    if (m && m.role === 'user') {
-      const t = textOf(m)
-      if (t.trim()) return t.trim()
-    }
+    if (!m || m.role !== 'user') continue
+    const t = textOf(m)
+    if (!t.trim()) continue
+    // 真人消息优先：本插件注入的块也是 role=user，若按"最后一条 user"取，
+    // 上一步的注入块会变成这一步的就绪查询（自激：拿自己注入的内容再检索一遍）。
+    if (m.source && m.source.kind === 'user') return t.trim()
+    if (!fallback) fallback = t.trim() // 无 source 的消息（老宿主 / 测试）兜底
   }
-  return ''
+  return fallback
 }
 
 function fingerprint(text) {
@@ -134,9 +144,9 @@ function insightBody(it) {
     : `- [${it.id}] ${it.title}${it.fix || it.solution || it.choice ? ` — ${it.fix || it.solution || it.choice}` : ''}`
 }
 
-/** 把正文塞进剩余预算：放不下就截断，绝不超过预算。 */
-function fitBody(body, remaining) {
-  if (remaining <= 24) return null
+/** 把正文塞进剩余预算：放不下就截断；连"有用前缀"都留不下就返回 null（由调用方记 dropped）。 */
+export function fitBody(body, remaining, min = MIN_BODY_CHARS.hint) {
+  if (remaining <= min) return null
   if (body.length <= remaining) return body
   return `${body.slice(0, remaining - 1)}…`
 }
@@ -192,9 +202,10 @@ export function buildInjection(opts) {
       hints.sort((a, b) => b.score - a.score)
     } else {
       const byId = new Map(hintCands.map((it) => [it.id, it]))
+      // 提示查询先剔除 1–2 字符的拉丁缩写（PR/CI/OS）：它们一个巧合命中就能当上该层最高分。
       const scored = rankEntriesMergedScored(
         hintCands.map(insightToEntry),
-        [ctx.humanText, ctx.actionText].filter(Boolean),
+        [hintQueryText(ctx.humanText), hintQueryText(ctx.actionText)].filter(Boolean),
         hintCands.length,
       )
       for (const r of relativeHits(scored, { ratioMin: cfg.signalMinRatio })) {
@@ -212,7 +223,7 @@ export function buildInjection(opts) {
   let used = entry.length
 
   for (const { it, why } of triggered) {
-    const body = fitBody(insightBody(it), budgetChars - used)
+    const body = fitBody(insightBody(it), budgetChars - used, MIN_BODY_CHARS.trigger)
     if (body === null) {
       dropped.push({ id: it.id, channel: 'trigger', reason: 'budget' })
       continue
@@ -223,7 +234,7 @@ export function buildInjection(opts) {
     reasons.push({ id: it.id, channel: 'trigger', why })
   }
   for (const { it, why } of hints) {
-    const body = fitBody(insightBody(it), budgetChars - used)
+    const body = fitBody(insightBody(it), budgetChars - used, MIN_BODY_CHARS.hint)
     if (body === null) {
       dropped.push({ id: it.id, channel: 'hint', reason: 'budget' })
       continue
