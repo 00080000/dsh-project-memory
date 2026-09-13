@@ -1,7 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
 import { statSync } from 'node:fs'
-import { isSupportedCode, isSupportedDoc, looksLikeDump, memoryRootFor, readFileForIndex, relativePath, storeKey, walkDir } from '../util/fs.js'
+import { assertIndexRoot, isSupportedCode, isSupportedDoc, looksLikeDump, memoryRootFor, readFileForIndex, relativePath, storeKey, walkDir } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { docEntriesNeedBackfill } from '../doc-index.js'
 import { scanSymbols } from '../symbols.js'
@@ -10,6 +10,9 @@ import { ProjectMemoryStore } from '../store.js'
 import { onFileIndexed, isTypeScriptFile } from '../enhancer.js'
 
 export async function indexRepository(ctx, config, root, { reindex = false } = {}) {
+  // 先校验根目录：缺了它，下面 `new ProjectMemoryStore(...).load()` 的 save() 会把
+  // 不存在的 root 连同 .dsh-project-memory 一起 mkdirSync 出来。
+  assertIndexRoot(root)
   const memoryDir = memoryRootFor(root, config.memoryDir)
   const store = new ProjectMemoryStore(memoryDir).load()
 
@@ -147,6 +150,9 @@ export function indexRepoTool(ctx, config) {
     },
     async execute(args) {
       const root = path.resolve(args.root)
+      // 透传原始入参：Windows 风格路径在 POSIX 上会被 resolve 成 <cwd>/D:\...，
+      // 报错时要点明这是路径风格问题，而不是“目录被删了”。
+      assertIndexRoot(root, args.root)
       return indexRepository(ctx, config, root, { reindex: Boolean(args.reindex) })
     },
   })
