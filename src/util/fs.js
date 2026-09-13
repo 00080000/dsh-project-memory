@@ -23,6 +23,33 @@ export function assertReadableFile(filePath, maxFileSizeMb) {
   return filePath
 }
 
+/** Windows-style absolute path (`D:\dir`, `C:/dir`) — not absolute on POSIX. */
+const WINDOWS_ABSOLUTE_PATH = /^[A-Za-z]:[\\/]/
+
+/**
+ * 校验索引根目录：必须存在且是目录。
+ *
+ * 之前 `index_repo` / `autoIndexOnFirstUse` 只做 `path.resolve()`：在 Linux/macOS 上传入
+ * Windows 风格路径（如 `D:\project\foo`）会被解析成相对路径 `<cwd>/D:\project\foo`，
+ * 随后 store 的 `mkdirSync` 把这个字面量目录（连同其 `.dsh-project-memory`）真的建出来。
+ * 这里在写盘前拒绝不存在的根；`requested` 只用于在报错里点明“这看起来是 Windows 路径”。
+ */
+export function assertIndexRoot(root, requested = root) {
+  let stats
+  try {
+    stats = statSync(root)
+  } catch {
+    const hint = process.platform !== 'win32' && WINDOWS_ABSOLUTE_PATH.test(String(requested))
+      ? ` The argument looks like a Windows path, which is not absolute on ${process.platform}.`
+      : ''
+    throw new Error(`Index root does not exist: ${root}.${hint}`)
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(`Index root is not a directory: ${root}`)
+  }
+  return root
+}
+
 export function sha256OfBuffer(buf) {
   return createHash('sha256').update(buf).digest('hex')
 }
