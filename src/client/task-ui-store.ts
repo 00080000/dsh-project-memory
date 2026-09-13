@@ -1,5 +1,5 @@
 /**
- * Task UI Store — 仅管本地 UI 状态（closed、minimized、position、expandedIds、theme）
+ * Task UI Store — 仅管本地 UI 状态（closed、minimized、position、expandedIds、theme、showHints）
  * - 持久化到 localStorage（key: dsh-pm-task-panel-ui）
  * - 不跨标签页同步（每个标签页独立）
  * - 启动/刷新强制 closed: true，面板默认不显示
@@ -14,6 +14,8 @@ interface TaskUIState {
   minimized: boolean
   closed: boolean
   theme: string
+  /** 是否显示悬停提示信息（title 气泡）；false 时面板内所有功能提示都不弹出。 */
+  showHints: boolean
 }
 
 function defaultPosition(): { x: number; y: number } {
@@ -40,6 +42,7 @@ function getDefaultUIState(): TaskUIState {
           minimized: parsed.minimized !== false,
           closed: true,
           theme: typeof parsed.theme === 'string' ? parsed.theme : 'native',
+          showHints: parsed.showHints !== false,
         }
       }
     } catch { /* corrupt state — fall through to defaults */ }
@@ -50,6 +53,7 @@ function getDefaultUIState(): TaskUIState {
     minimized: true,
     closed: true,
     theme: 'native',
+    showHints: true,
   }
 }
 
@@ -102,6 +106,12 @@ export const taskUIStore = {
     },
     setTheme(theme: string): void {
       setUIState({ ...uiState, theme })
+    },
+    toggleHints(): void {
+      setUIState({ ...uiState, showHints: !uiState.showHints })
+    },
+    setShowHints(showHints: boolean): void {
+      setUIState({ ...uiState, showHints })
     },
     reset(): void {
       setUIState(getDefaultUIState())

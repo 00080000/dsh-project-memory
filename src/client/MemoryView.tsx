@@ -75,12 +75,14 @@ export function MemoryView({
   sessionId,
   scope,
   boundTaskId,
+  showHints,
   t,
 }: {
   ctx: any
   sessionId: string | null
   scope: InsightScope
   boundTaskId: string | null
+  showHints: boolean
   t: any
 }) {
   const [payload, setPayload] = useState<ListPayload | null>(null)
@@ -258,7 +260,7 @@ export function MemoryView({
           {scope !== 'task' && !showNew && (
             <Button variant="outline" size="sm" disabled={busy} onClick={() => { setShowNew(true); setEditingId(null); setError(null) }}>{t('mem.new')}</Button>
           )}
-          <Button variant="outline" size="sm" onClick={() => void refresh(true)} disabled={loading} title={t('panel.refresh')} aria-label={t('panel.refresh')}>
+          <Button variant="outline" size="sm" onClick={() => void refresh(true)} disabled={loading} title={showHints ? t('panel.refresh') : undefined} aria-label={t('panel.refresh')}>
             ↻
           </Button>
         </span>
@@ -329,7 +331,7 @@ export function MemoryView({
                 {scope === 'project' && (
                   <>
                     <Button variant="outline" size="sm" disabled={busy} onClick={() => void act('promote', row.id)}>{t('mem.promote')}</Button>
-                    <Button variant="outline" size="sm" disabled={busy || !canDemoteToTask} title={!canDemoteToTask ? t('mem.needs-bound') : undefined} onClick={() => void act('demote', row.id)}>{t('mem.demote')}</Button>
+                    <Button variant="outline" size="sm" disabled={busy || !canDemoteToTask} title={showHints && !canDemoteToTask ? t('mem.needs-bound') : undefined} onClick={() => void act('demote', row.id)}>{t('mem.demote')}</Button>
                   </>
                 )}
                 {scope === 'global' && (

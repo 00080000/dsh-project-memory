@@ -83,6 +83,13 @@
   gap: 2px;
   margin-left: auto;
 }
+/* 提示信息开关处于「已隐藏」状态：图标变暗，给出无需悬停的可见反馈 */
+.hintsOff {
+  opacity: 0.45;
+}
+.hintsOff:hover {
+  opacity: 0.75;
+}
 .counts {
   font-size: 11px;
   line-height: 16px;
