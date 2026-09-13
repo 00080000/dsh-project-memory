@@ -14,23 +14,7 @@ A persistent **project development memory** for [DeepSeek Harness](https://githu
 ![alt text](docs/images/image.png)
 The workflow panel is collapsible, automatically adapts to dsh and theme plugin styles, and offers four card style options to switch between.
 ![alt text](docs/images/image-4.png)
-
-## Quick start
-
-```bash
-# web profile; npm package — checkout/tarball forms are in Installation
-dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
-```
-
-1. **Install** the plugin (command above; other forms in [Installation](#installation)).
-2. **Keep working.** Indexing is lazy: every file the agent reads is memorized (`lazyIndexing`, on by default) and changed files are re-indexed in the background. To backfill a project up front, just ask — "index this project" (`index_repo`).
-3. **Ask questions.** "What does the auth module do?" → `query_memory` returns ranked hits with `path:line` citations, so the agent can verify every claim against the source.
-
-That is the whole core: **index → recall, with citations**. The rest of this README either measures that core or documents optional layers you can configure later.
-
 ## Features
-
-### Tasks and the task panel (native to dsh)
 
 - **TaskBridge: cross-session development tasks** — the plugin watches each session's live todo list (`todo_write` events) and file reads (`tool/call`): progress snapshots (`steps`) and touched files sync into durable per-project task entities. An unbound session that writes a todo auto-creates a task. Associated files are kept in **recency-weighted order (written/edited first; a read never outranks a written file)** so a resumed session sees at a glance where to look. New sessions continue by `list_tasks` → `select_task` (bind / rename / unarchive); `query_memory` gains `type: 'task'` and appends a task-count hint to `type: 'all'` results. The user-side `/tasks` command shows the task stack, step progress, involved files, and the current session binding. Titles are chosen by the model via `select_task(title=…)` (fallback: the part of your message after the last colon). Capacity is project-size adaptive (`fileCount/20`, clamped 5–100). Storage: `.dsh-project-memory/tasks.json` + `binding.json`. Auto-sync requires a dsh build with session events + `todo_write` (verified on 0.1.2-alpha.x); on older hosts the task tools still work as a plain record list.
 - **Task Panel (v0.4.2+): Floating task panel in dsh web** — built on the real dsh web 0.1.2-rc.1 client plugin contract (cordis inject + apply, registered into host `shell.overlay` slot). Draggable cards show steps/files (click to copy path); collapse to a draggable mini-bar; hide completely (summon with `/task` / `/tasks`). Render errors have error boundaries — panel crash no longer takes down the host.
@@ -44,8 +28,6 @@ That is the whole core: **index → recall, with citations**. The rest of this R
   - **Hide hints**: click ? to suppress every hover tooltip in the panel (drag handle, style/view/minimize/close, rename, step status, copy path, mini-bar, memory view); the preference is stored in localStorage and survives a refresh; the button dims while hints are off — click again to restore
 - **Bidirectional task-list sync (host ↔ plugin tasks, v0.4.2+)** — `select_task` or `/task switch` pushes task steps to host `todo/write` so dsh's rendered task list mirrors the plugin's task entity. Config `tasklist.syncHostOnAdopt` (default on) to toggle. Empty `todo/write` means "clear": unbound session clears list without creating junk tasks; bound session clears that task's steps (task retained). Panel edits (step text/status) = write back bound task + push host list, sharing one code path with model `todo_write`. `/task` subcommands: `switch`, `archive`, `unbind`, `rename`, `todos` (invoked by panel buttons/clicks, not the model); `unbind` also clears the host task list above the input.
 - **Panel editing & themes (v0.4.2+)** — bound cards: double-click title/step for inline edit (input auto-grows); click step status icon to cycle todo→in-progress→done. Non-bound cards read-only. **Four visual themes** (click folder icon left of title, persisted locally): Native / Glassmorphism / Brutalist / Terminal monospace — only material, geometry, typeface, density change; colors always use dsw alias tokens, follow host light/dark and theme plugins.
-### Core memory (index → recall)
-
 - **Document memorization** — PDF, Markdown, and plain text files are chunked and summarized **without any model call**: each entry keeps a ≤300-character `summary` for injection plus a whole-chunk `terms` set for retrieval, and a `path:line` citation back to the source.
 - **Code symbol memory** — function, class, and method names with full type signatures (generics, parameters, return types, overloads) are extracted by a dependency-free source scanner (string/comment masking, multi-line signature joining, indentation-aware Python, class-method context), without LLM token usage.
 - **L1 Enhanced Regex** — zero-dep regex scanner now extracts generics, parameter/return types, overloads, interfaces, and type aliases for all supported languages, producing one-line identity signatures `fn(a: A, b: B): R — file.ts:42`.
@@ -56,11 +38,7 @@ That is the whole core: **index → recall, with citations**. The rest of this R
 - **BM25 memory recall** — ranked search over documents, symbols, and experience notes, with optional LLM query expansion to handle vocabulary mismatch. **CJK-optimized**: precise phrase boost (3+ char phrases ×1.5 score on title/keywords match), synonym table (e.g. 数据库连接池 ↔ 连接池 ↔ DB pool), and CJK-aware word boundaries for doc↔symbol linking.
 - **Whole-chunk retrieval terms** — every doc chunk also stores `terms`: a bounded (≤160), deterministic, stop-word-filtered literal term set covering the **entire chunk**. `summary` stays ≤300 characters for the injection budget and `terms` is search-only, so recall finds content anywhere in the chunk rather than only in its opening lines. (The `blindSpots` field and its "summary does not cover …" warning are retained for compatibility, but are empty for newly indexed documents, since indexing does not call a model.)
 - **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches. The note store is bounded: capacity scales with project size (clamped to 100–2000), and the oldest notes are pruned when the limit is exceeded. **Supersede tightened to bidirectional 0.7 overlap** (was 0.6); **experience `problem` field now participates in CJK phrase boost** for long-tail query recall.
-### Advanced memory (v0.5, opt-in)
-
 - **v0.5 tiered insight memory (lessons / decisions / procedures)** — one `insight` entity across three scopes: `task` (private drafts in `tasks.json`), `project` (`.dsh-project-memory/insights.json`), `global` (`~/.config/dsh-project-memory/global.json`). `save_lesson` writes any scope; dedupe is bidirectional token overlap ≥ 0.7 (merge) with a 0.65–0.7 reinforce band; **promotion is a scope change, not a copy** — 2 tasks hitting the same insight promote it to project, 3+ to global. Archive is soft (`archived`), decay/capacity prune archived entries only; writes are filtered for secret/token-shaped content. LLM **reflection is off by default** and only ever writes task-level drafts (`source: reflect`) on task switch-away/archive. Panel gains a Task / Project / Global memory view with approve, promote/demote, archive/restore, delete, edit and a create form (procedures can carry an “as Skill” trigger). Old `experience.json` notes are imported into `insights.json` once, non-destructively. Every kind can carry an authored `trigger` (`keywords` / `symbols` / `actions` / `paths`): a hit injects the entry **before the action**, deterministically — procedure-only in v0.5, all kinds since the readiness layer.
-### Implementation notes (why it stays cheap)
-
 - **Streaming TF + IDF caching** — query path caches IDF (term inverse frequency) per store version; on cache hit, single-pass streaming scores 20k entries in ~3 ms (5k files) / ~0.6 ms (1k files) with zero intermediate objects; write path is O(1) version bump.
 - **Lock-free sync transactions** — all writes (index / watch / remember / forget / watch_repo) go through synchronous transactions `store.commit(fn)`; fn succeeds then atomic write; JS single-threaded event loop guarantees no interleaving; `remember`/`forget` never blocked by watch re-indexing.
 - **Minimal dependencies** — pure JavaScript; the only runtime dependency is `pdfjs-dist` (PDF text extraction), no native builds required.
@@ -268,10 +246,6 @@ These are deliberate scope choices.
 
 ## Configuration
 
-The keys split into a **core** group that shapes indexing and recall, and an **advanced** layer (task sync, v0.5 insights, silent injection) you can leave at its defaults until you need it.
-
-### Core (indexing and recall)
-
 | Key | Default | Meaning |
 |---|---|---|
 | `memoryDir` | `.dsh-project-memory` | store directory inside each indexed root |
@@ -279,6 +253,8 @@ The keys split into a **core** group that shapes indexing and recall, and an **a
 | `maxChunksPerFile` | 40 | max chunks per document |
 | `maxFileSizeMb` | 50 | skip documents (incl. PDF) and code files larger than this (MB) |
 | `maxOutputChars` | 8000 | cap for `query_memory` result text (chars) |
+| `tasklist.enabled` | true | enable TaskBridge auto-sync (task entities from the session todo list and file reads) |
+| `tasklist.syncHostOnAdopt` | true | when `select_task`/`/task switch` binds a task, push its steps to host `todo/write` so dsh's task list mirrors the task |
 | `maxPdfPages` | 1000 | PDF page cap when pages are not otherwise limited |
 | `llmQueryExpansion` | false | expand queries via `ctx.llm` before BM25 (off by default to save tokens) |
 | `expansionCount` | 6 | max expansion variants |
@@ -288,13 +264,6 @@ The keys split into a **core** group that shapes indexing and recall, and an **a
 | `watchInterval` | 15 | poll interval (seconds) |
 | `tsPath` | (auto) | optional absolute path to a specific `typescript` install; if omitted, resolves from project cwd → plugin node_modules |
 | `enableTypeScript` | true | set `false` to disable L2 TS enhancement entirely (L1 regex only) |
-
-### Advanced (optional layer)
-
-| Key | Default | Meaning |
-|---|---|---|
-| `tasklist.enabled` | true | enable TaskBridge auto-sync (task entities from the session todo list and file reads) |
-| `tasklist.syncHostOnAdopt` | true | when `select_task`/`/task switch` binds a task, push its steps to host `todo/write` so dsh's task list mirrors the task |
 | `insight.*` | dedupOverlap `0.7` · reinforceBand `0.65` · maxProject `100` · maxGlobalProcedures `200` · promoteConfidence `0.7` · globalPromoteTasks `3` · decayDays `90` · `globalFile` (auto) | v0.5 insight dedupe / reinforce / promotion / capacity / archive settings |
 | `reflection.enabled` | false | v0.5 LLM reflection, **draft-only at task level** (fires on task switch-away / archive). `cooldownMs` `1800000`, `maxLessonsPerReflect` `3`, `maxDecisionsPerReflect` `2` |
 | `autoContext.enabled` | true | v0.5 silent injection wrapper (entry block + relevance). Inert (full passthrough) until the host exposes a resolvable session cwd; `maxTokens` `400`, `editedMax` `3` (how many recently-written "editing now" files the resident task card shows), `signalMinRatio` `0.5` (a hint must reach half of its layer's top score), `skipEchoSelfTodo` `true` (don't echo the task card back when the model itself maintains the task list with no newer human message; relevant insights still inject) |
