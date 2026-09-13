@@ -117,13 +117,14 @@ function InlineEditor({ value, className, maxRows = 8, onValueChange, onCommit, 
 interface MiniBarProps {
   label: string
   hint: string
+  showHints: boolean
   position: { x: number; y: number }
   theme: string
   onMove: (pos: { x: number; y: number }) => void
   open: () => void
 }
 
-export function MiniBar({ label, hint, position, theme, onMove, open }: MiniBarProps) {
+export function MiniBar({ label, hint, showHints, position, theme, onMove, open }: MiniBarProps) {
   const barRef = useRef<HTMLDivElement>(null)
   const down = useRef<{ dx: number; dy: number; sx: number; sy: number; moved: boolean } | null>(null)
 
@@ -163,7 +164,7 @@ export function MiniBar({ label, hint, position, theme, onMove, open }: MiniBarP
       data-theme={theme === 'native' ? undefined : theme}
       onMouseDown={onMouseDown}
       role="button"
-      title={hint}
+      title={showHints ? hint : undefined}
       aria-label={hint}
     >
       <IconFolderOpenOutline16 className={css.miniIcon} />
@@ -293,7 +294,7 @@ export function TaskCard({
             <span
               data-card-title
               className={`${css.cardTitle}${isBound ? ` ${css.cardTitleEditable}` : ''}`}
-              title={isBound ? t('task.title-edit') : undefined}
+              title={isBound && showHints ? t('task.title-edit') : undefined}
               onDoubleClick={(e) => {
                 e.preventDefault()
                 e.stopPropagation()
@@ -350,7 +351,7 @@ export function TaskCard({
                             className={css.stepToggle}
                             disabled={syncing}
                             onClick={(e) => { e.stopPropagation(); onCycleStatus(i) }}
-                            title={`${t('step.completed')}/${t('step.in-progress')}/${t('step.pending')}`}
+                            title={showHints ? `${t('step.completed')}/${t('step.in-progress')}/${t('step.pending')}` : undefined}
                           >
                             <StepIcon status={step.status} />
                           </button>
@@ -423,7 +424,7 @@ export function TaskCard({
                     <button
                       className={css.fileRow}
                       onClick={() => navigator.clipboard?.writeText(file.path)}
-                      title={`${t('file.copy')}: ${file.path}${file.line ? `:${file.line}` : ''}`}
+                      title={showHints ? `${t('file.copy')}: ${file.path}${file.line ? `:${file.line}` : ''}` : undefined}
                     >
                       <span className={css.fileDot} />
                       <span className={css.filePath}>{file.path}</span>
@@ -476,7 +477,7 @@ export function TaskCard({
               {t('task.switch')}
             </Button>
             {isBound && (
-              <Button variant="outline" size="sm" disabled={syncing} onClick={onUnbind} title={t('task.unbind')}>
+              <Button variant="outline" size="sm" disabled={syncing} onClick={onUnbind} title={showHints ? t('task.unbind') : undefined}>
                 {t('task.unbind')}
               </Button>
             )}
