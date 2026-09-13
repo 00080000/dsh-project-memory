@@ -252,6 +252,8 @@ export function installAutoInject(ctx, config) {
   // 每个会话一份“上次注入指纹”。用单个变量会让并发会话互相抑制注入。
   const lastFpBySession = new Map()
   const LAST_FP_MAX = 200
+  // 每个会话一份"上次预算丢弃指纹"：预算把条目挤出去时必须留痕一次，而不是静默（degraded 可见性）。
+  const lastDroppedBySession = new Map()
   // 反应窗口：本会话最近观察到的 tool/call（参数里有 git commit / npm publish / 改动的路径）。
   // 宿主没有"工具执行前拦截"钩子，所以这是 pre-step 之外唯一能拿到的动作事实。
   const observedBySession = new Map()
@@ -305,12 +307,14 @@ export function installAutoInject(ctx, config) {
       })
       const built = buildInjection({ query: query || '', readiness, task, store, globalStore, projectTagsList: projectTags(root), cfg })
       const fp = fingerprint(built.dedupeText ?? built.text)
-      if (built.text && fp !== lastFpBySession.get(sessionId)) {
+      const shouldInject = Boolean(built.text) && fp !== lastFpBySession.get(sessionId)
+      let injectMessage = null
+      if (shouldInject) {
         // 以宿主 createUserMessage 构造的完整 user 消息追加（带 id/source，plan-mode narration 同款）。
         // 裸 {role,content} 消息缺 source 会让宿主逐条读 message.source.kind 时崩溃。
         lastFpBySession.set(sessionId, fp)
         if (lastFpBySession.size > LAST_FP_MAX) lastFpBySession.delete(lastFpBySession.keys().next().value)
-        const injectMessage = createUserMessage({
+        injectMessage = createUserMessage({
           content: [{ type: 'text', text: `\n\n${INJECT_MARK} auto-context\n${built.text}` }],
           // 这一块是「同一生产者后续快照会取代的当前状态」，不是一次性通知。
           // 宿主 ContextFormed 是判别联合：snapshot 必须带 sections（notice 才需要 summary）。
@@ -322,8 +326,22 @@ export function installAutoInject(ctx, config) {
             sections: [{ name: 'project-memory', text: built.text }],
           },
         })
-        return { ...decision, messages: [...decision.messages, injectMessage] }
       }
+      // 未注入 ≠ 无事发生：因预算被挤掉的条目留一条 degraded 记录（每个会话同一组合只记一次）。
+      if (built.dropped && built.dropped.length) {
+        const sig = built.dropped.map((d) => `${d.id}:${d.reason}`).join(',')
+        if (lastDroppedBySession.get(sessionId) !== sig) {
+          lastDroppedBySession.set(sessionId, sig)
+          while (lastDroppedBySession.size > LAST_FP_MAX) {
+            lastDroppedBySession.delete(lastDroppedBySession.keys().next().value)
+          }
+          console.error(
+            `[dsh-project-memory] auto-inject degraded: ${built.dropped.length} insight(s) kept out by budget — `
+            + built.dropped.map((d) => `${d.id}(${d.reason})`).join(', '),
+          )
+        }
+      }
+      if (injectMessage) return { ...decision, messages: [...decision.messages, injectMessage] }
     } catch (err) {
       console.error(`[dsh-project-memory] auto-inject skipped: ${err?.message || err}`)
     }

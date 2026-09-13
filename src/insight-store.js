@@ -98,10 +98,12 @@ export function normalizeInsight(raw, extra = {}) {
     if (Array.isArray(raw[f]) && raw[f].length) ins[f] = [...new Set(raw[f].map((x) => String(x)))]
   }
   if (raw.trigger && typeof raw.trigger === 'object') {
-    const tr = { keywords: Array.isArray(raw.trigger.keywords) ? raw.trigger.keywords.map(String) : [] }
-    if (Array.isArray(raw.trigger.symbols)) tr.symbols = raw.trigger.symbols.map(String)
-    if (Array.isArray(raw.trigger.scope)) tr.scope = raw.trigger.scope.map(String)
-    if (tr.keywords.length) ins.trigger = tr
+    // 所有 kind 通用：keywords / symbols / actions / paths / scope（actions/paths 见 src/readiness.js）
+    const tr = {}
+    for (const f of ['keywords', 'symbols', 'actions', 'paths', 'scope']) {
+      if (Array.isArray(raw.trigger[f]) && raw.trigger[f].length) tr[f] = raw.trigger[f].map(String)
+    }
+    if (Object.keys(tr).length) ins.trigger = tr
   }
   return ins
 }

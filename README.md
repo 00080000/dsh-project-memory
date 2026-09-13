@@ -149,7 +149,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | `/insight` (typed by the user, not the model) | v0.5 memory view actions (panel buttons): `list [task|project|global]`, `confirm` / `promote` / `demote` / `archive` / `restore` / `delete` `<scope> <id>`, `save <scope> <json>`, `edit <scope> <id> <json>`. |
 | `remember problem solution` | Save an experience note. Similar problems supersede instead of duplicating. |
 | `forget id_or_query` | Delete stale experience notes. |
-| `save_lesson` (agent tool) | Save a lesson/decision/procedure at task/project/global scope (single insight entity). Near-duplicates merge (≥ 0.7 overlap) or reinforce (0.65–0.7); 2+ tasks hitting the same insight auto-promote task → project, 3+ → global. Params: `title`, `kind`, `scope`, `pattern`/`fix` or `choice`/`reason` or `steps`/`trigger`, `task_id`, `files`, `symbols`, `confidence`, `root`. |
+| `save_lesson` (agent tool) | Save a lesson/decision/procedure at task/project/global scope (single insight entity). Near-duplicates merge (≥ 0.7 overlap) or reinforce (0.65–0.7); 2+ tasks hitting the same insight auto-promote task → project, 3+ → global. Params: `title`, `kind`, `scope`, `pattern`/`fix` or `choice`/`reason` or `steps`, `trigger` (`keywords`/`symbols`/`actions`/`paths`/`scope` — any kind; a hit injects the entry before the action), `task_id`, `files`, `symbols`, `confidence`, `root`. |
 
 ## Design
 
@@ -333,7 +333,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test          # 256 tests (169 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 7 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 10 readiness)
+npm test          # 266 tests (169 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 7 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 10 readiness + 6 insight-derive + 4 readiness-eval)
 ```
 
 ## License
