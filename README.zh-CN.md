@@ -15,7 +15,23 @@
 工作流卡片可收起，自动适应dsh及主题插件风格，提供四种卡片风格切换。
 
 ![alt text](docs/images/image-4.png)
+
+## 快速开始
+
+```bash
+# web profile；npm 包形式 —— 本地检出 / tarball 形式见「安装」
+dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
+```
+
+1. **安装**（命令如上；其他形式见[安装](#安装)）。
+2. **正常干活。** 索引是懒的：模型读过的每个文件都会被记忆（`lazyIndexing` 默认开），变更文件在后台重索引。想先对整个项目做一次回填，直接说「给这个项目建个索引」（`index_repo`）。
+3. **直接提问。**「auth 模块是干嘛的？」→ `query_memory` 返回带 `路径:行号` 引用的排序结果，每条都能回源核实。
+
+以上就是全部核心：**索引 → 带引用的召回**。后面的章节要么在度量这个核心，要么在介绍稍后再配的可选层。
+
 ## 特性
+
+### 任务与任务面板（原生融合 dsh）
 
 - **TaskBridge：跨会话开发任务** — 监听会话内宿主 `todo_write` 维护的任务清单与 `tool/call` 读文件：进度快照（steps）与触碰文件自动同步进跨会话的任务实体。未绑定会话写 todo 时自动建档。关联文件按**最近活跃排序（写过/编辑的排最前，任何读取不越过写过文件）**，续接时一眼看到该看哪些文件。新会话通过 `list_tasks` → `select_task`（绑定/改名/解归档）续接；`query_memory` 新增 `type:'task'`，`type:'all'` 结果尾部附任务计数提示。用户侧 `/tasks` 命令展示任务栈、步骤进度、涉及文件与当前会话绑定。标题由模型经 `select_task(title=…)` 命名（回退：取消息最后一个「：」后的任务段）。容量随项目体积自适应（fileCount/20，clamp 5–100）。存储：`.dsh-project-memory/tasks.json` + `binding.json`。自动同步需含会话事件与 `todo_write` 的 dsh（0.1.2-alpha.x 实测）；旧宿主下降级为纯记录。
 - **Task Panel（v0.4.2+）：dsh web 浮动任务面板** — 按 dsh web 0.1.2-rc.1 真实 client 插件契约落地（cordis inject + apply，注册进宿主 `shell.overlay` 槽）。卡片可拖拽、展开查看步骤/文件（点击复制路径）；折叠为可拖拽顶部迷你条；可彻底隐藏（输入 `/task` / `/tasks` 唤起）。渲染错误有边界兜底，面板崩溃不再拖垮宿主。
@@ -26,8 +42,11 @@
   - **刷新页面**：面板保持隐藏（UI 状态 `closed` 不持久化）
   - **手动关闭**：点击 × 彻底隐藏（无迷你条）；重新打开需显式唤起
   - **折叠迷你条**：点击 ↓ 仅保留顶部可拖拽迷你条；点击迷你条展开
+  - **隐藏提示信息**：点击 ? 关闭面板内所有悬停提示气泡（含拖拽把手、风格/视图/收起/关闭、双击改名、步骤状态、复制路径、迷你条与记忆视图），偏好写入 localStorage，刷新后保持；关闭态按钮变暗，再点恢复
 - **任务清单双向同步（宿主 ↔ 插件任务，v0.4.2+）** — `select_task` 或 `/task switch` 绑定任务时，将任务 steps 推给宿主 `todo/write`，dsh 渲染的任务清单跟随我们维护的任务实体。配置 `tasklist.syncHostOnAdopt`（默认开）可关。空 `todo/write` 语义定为「清空」：未绑定会话清空清单不再误建垃圾任务；已绑定则清空该任务 steps（任务保留）。面板编辑（改步骤文本/状态）= 写回绑定任务并推宿主清单，与模型 `todo_write` 共用一套逻辑，无第二套同步。`/task` 新增 `switch` / `archive` / `unbind` / `rename` / `todos`（均由面板按钮/双击调用，不经模型）；`unbind` 同时清掉输入框上方的宿主任务清单。
 - **面板编辑与风格（v0.4.2+）** — 绑定卡片：双击标题/步骤行内编辑（输入框随内容自动增高），点步骤状态图标循环 待办→进行中→已完成；非绑定卡片只读。**四档外观风格**（点标题左侧文件夹图标切换，本地记忆）：原生 / 玻璃拟态 / 粗野主义 / 终端等宽——只改材质、几何、字型与密度，颜色始终取自 dsw 别名令牌，跟随宿主明暗与主题插件。
+### 核心记忆（索引 → 召回）
+
 - **文档记忆** — PDF、Markdown、纯文本按块切分并生成摘要，**索引期不调用任何模型**：每条记忆保留 ≤300 字符的 `summary` 供注入、一个覆盖整个 chunk 的 `terms` 供检索，并携带 `路径:行号` 引用回源文件。
 - **代码符号记忆** — 通过零依赖的源码扫描器提取函数、类与方法名及完整类型签名（泛型、参数类型、返回类型、重载签名），包含字符串/注释掩码、多行签名续行、Python 缩进感知、类方法上下文，不使用 LLM token。
 - **L1 增强正则** — 零依赖正则扫描器现可提取泛型、参数/返回类型、重载、接口、类型别名，产出单行身份签名 `fn(a: A, b: B): R — file.ts:42`。
@@ -38,7 +57,11 @@
 - **BM25 记忆召回** — 对文档、符号与经验笔记进行排序召回，可选 LLM 查询扩展以应对表述不一致。**CJK 增强**：精确短语乘法加分（3+ 字短语在标题/关键词命中 ×1.5）、同义词表（如 数据库连接池 ↔ 连接池 ↔ DB pool）、CJK 感知的文档↔符号链接边界。
 - **整 chunk 检索词项** — 每个文档块还存 `terms`：有界（≤160）、确定性、去停用词的字面词项集合，覆盖**整个 chunk**。`summary` 仍 ≤300 字符专供注入，`terms` 只用于检索——于是召回能命中 chunk 任意位置的内容，而不只是开头几行。（`blindSpots` 字段与「摘要未覆盖…」提示为兼容保留，但新索引的文档恒为空，因为索引期不调用模型。）
 - **经验笔记** — 记录问题 → 方案；相似问题覆盖而非重复；笔记仅在检索命中时返回。笔记数量有界：容量随项目规模伸缩（钳制在 100–2000），超限时淘汰最旧的笔记。**覆盖阈值收紧为双向 0.7 重叠**（原 0.6）；**经验 `problem` 字段现参与 CJK 短语加分**，提升长尾问句召回。
+### 进阶记忆（v0.5，可选）
+
 - **v0.5 分层 insight 记忆（教训 / 决策 / 流程）** — 一个 `insight` 实体贯穿三级：`task`（任务私有草稿，存 `tasks.json`）、`project`（`.dsh-project-memory/insights.json`）、`global`（`~/.config/dsh-project-memory/global.json`）。`save_lesson` 三级可写；去重采用双向 token overlap ≥ 0.7（合并）外加 0.65–0.7 近重复强化带；**提升 = scope 字段变更而非复制**——同一 insight 被 2 个任务命中升 project、3+ 升 global。归档为软删（`archived`），容量/衰减只清归档区；写盘前过滤密钥/token 形态内容。LLM **反思默认关闭**，且只产任务级草稿（`source: reflect`，触发于任务切走/归档时）。面板新增 Task / Project / Global 记忆视图：审核、提升/降级、归档/恢复、删除、编辑与新建表单（procedure 可带"作为 Skill"触发关键词）。旧 `experience.json` 笔记**非破坏**导入 `insights.json` 一次。
+### 实现要点（为什么这么省）
+
 - **流式 TF + IDF 缓存** — 查询路径按存储版本缓存 IDF（词逆频率）；命中时单次流式遍历 20k 条目仅需 ~3 ms（5k 文件） / ~0.6 ms（1k 文件），零中间对象；写入路径仅 O(1) 版本号递增。
 - **无锁同步事务** — 不采用锁：所有写入（index / watch / remember / forget / watch_repo）统一走同步事务 `store.commit(fn)`，fn 成功后才一次落盘；JS 单线程事件循环保证事务间不交错，`remember`/`forget` 不会被 watch 重索引阻塞排队。多实例并发写入同一项目存储时，得益于 CAS 幂等更新与原子提交，自然具备幂等性，无数据损坏风险。
 - **依赖极简** — 纯 JavaScript；唯一运行时依赖是 `pdfjs-dist`（PDF 文本提取），无需原生构建。
@@ -244,6 +267,10 @@ TaskPanel (Container)
 
 ## 配置
 
+配置分两组：塑造**核心**索引与召回的键，以及**进阶**层（任务同步、v0.5 insights、静默注入）——后者可以先全部用默认值。
+
+### 核心（索引与召回）
+
 | 键 | 默认值 | 含义 |
 |---|---|---|
 | `memoryDir` | `.dsh-project-memory` | 每个被索引根目录内的存储目录 |
@@ -251,8 +278,6 @@ TaskPanel (Container)
 | `maxChunksPerFile` | 40 | 每文档最大块数 |
 | `maxFileSizeMb` | 50 | 大于该值（MB）的文档（含 PDF）/代码文件跳过 |
 | `maxOutputChars` | 8000 | `query_memory` 返回文本上限（字符） |
-| `tasklist.enabled` | true | 启用 TaskBridge 自动同步（由会话 todo 清单与文件读取沉淀任务实体） |
-| `tasklist.syncHostOnAdopt` | true | `select_task`/`/task switch` 绑定任务时，将其 steps 推给宿主 `todo/write`，使 dsh 任务清单镜像任务实体 |
 | `maxPdfPages` | 1000 | 未另行限制时 PDF 的页数上限 |
 | `llmQueryExpansion` | false | BM25 检索前通过 `ctx.llm` 扩展查询（默认关闭，节省 token） |
 | `expansionCount` | 6 | 扩展变体上限 |
@@ -262,6 +287,13 @@ TaskPanel (Container)
 | `watchInterval` | 15 | 轮询间隔（秒） |
 | `tsPath` | (自动) | 可选：强制指定特定 `typescript` 安装路径；省略时按项目 cwd → 插件 node_modules 向上解析 |
 | `enableTypeScript` | true | 设为 `false` 彻底禁用 L2 TS 增强（仅保留 L1 正则） |
+
+### 进阶（可选层）
+
+| 键 | 默认值 | 含义 |
+|---|---|---|
+| `tasklist.enabled` | true | 启用 TaskBridge 自动同步（由会话 todo 清单与文件读取沉淀任务实体） |
+| `tasklist.syncHostOnAdopt` | true | `select_task`/`/task switch` 绑定任务时，将其 steps 推给宿主 `todo/write`，使 dsh 任务清单镜像任务实体 |
 | `insight.*` | dedupOverlap `0.7` · reinforceBand `0.65` · maxProject `100` · maxGlobalProcedures `200` · promoteConfidence `0.7` · globalPromoteTasks `3` · decayDays `90` · `globalFile`（自动） | v0.5 insight 去重/强化/提升/容量/归档设置 |
 | `reflection.enabled` | false | v0.5 LLM 反思，**只写任务级草稿**（触发于任务切走/归档）。`cooldownMs` `1800000`、`maxLessonsPerReflect` `3`、`maxDecisionsPerReflect` `2` |
 | `autoContext.enabled` | true | v0.5 静默注入包装（entry 常驻块 + relevance）。宿主无法解析会话 cwd 时完全透传（零副作用）；`maxTokens` `400`、`editedMax` `3`（resident 任务卡显示最近"编辑中"文件数）、`skipEchoSelfTodo` `true`（模型自己写/维护任务清单后、无新人类消息时不回声任务卡，省 token；相关 insights 仍注入） |
@@ -300,7 +332,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test          # 235 项测试（核心 169 + TaskBridge 16 + insight-store 11 + insight-actions 9 + doc-index 7 + auto-inject 7 + host-contract 7 + reflection 5 + llm-route 4）
+npm test          # 238 项测试（核心 169 + TaskBridge 16 + insight-store 11 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 7 + reflection 5 + llm-route 4 + client-hints 2）
 ```
 
 ## 许可证
