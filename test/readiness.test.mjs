@@ -176,4 +176,46 @@ const PUBLIC_FACE = {
   ok('兼容：显式 relevanceMin 仍走绝对 overlap 判据')
 }
 
+// ---- 11. 就绪查询只取真人消息（注入块不得成为查询） ----
+{
+  const { lastUserText } = await import('../src/auto-inject.js')
+  const human = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '你顺便提交一下' }] }
+  const injected = { role: 'user', source: { kind: 'plugin', plugin: 'dsh-project-memory' }, content: [{ type: 'text', text: '[Memory Inject] auto-context\n任务: x\n进度: 8 步' }] }
+  assert.equal(lastUserText([human, injected]), '你顺便提交一下', '上一步的注入块不得成为这一步的查询（自激）')
+  assert.equal(lastUserText([{ role: 'user', content: [{ type: 'text', text: 'hi' }] }]), 'hi', '无 source 的消息仍兜底（老宿主/测试）')
+  ok('就绪查询只取真人消息，注入块不参与（防自激）')
+}
+
+// ---- 12. 1–2 字符拉丁缩写不作为提示证据 ----
+{
+  assert.ok(readiness, 'src/readiness.js 不存在')
+  const acronym = { id: 'ins_pr', kind: 'lesson', scope: 'global', title: '自动安全 PR 扫描：横向越权', fix: 'authz 检查', confidence: 1, archived: false }
+  const content = { id: 'ins_pub2', kind: 'lesson', scope: 'global', title: '公开作品仓库的公开面', fix: '内部文档写进 .gitignore', confidence: 1, archived: false }
+  const gs = globalWith([acronym, content])
+  const human = 'PR 提交前检查公开面'
+  const out = buildInjection({ query: human, readiness: { humanText: human, actionText: '' }, globalStore: gs, cfg: CFG })
+  const ids = out.reasons.map((r) => r.id)
+  assert.ok(ids.includes('ins_pub2'), `内容命中必须进：${JSON.stringify(out.reasons)}`)
+  assert.ok(!ids.includes('ins_pr'), '仅靠 "PR" 这种缩写命中的条目不得作为提示注入')
+  assert.equal(readiness.hintQueryText('PR src/a.js 提交'), 'src/a.js 提交', '只剔除独立缩写，路径 token 原样保留')
+  ok('提示证据：1–2 字符拉丁缩写被忽略，避免缩写巧合命中')
+}
+
+// ---- 13. 预算塞不下"有用前缀"时宁可丢弃，也不输出 stub ----
+{
+  const { fitBody } = await import('../src/auto-inject.js')
+  assert.equal(fitBody('x'.repeat(300), 100, 120), null, '剩余预算 < 最小可用长度 → 丢弃')
+  assert.equal(fitBody('short body', 200, 120), 'short body', '放得下就原样')
+  assert.equal(fitBody('y'.repeat(500), 400, 120).length, 400, '截断不超过剩余预算')
+  const many = []
+  for (let i = 0; i < 4; i++) many.push({ id: `ins_stub_${i}`, kind: 'lesson', scope: 'global', title: '公开面检查清单', fix: 'x'.repeat(280), confidence: 1, archived: false })
+  const gs = globalWith(many)
+  const out = buildInjection({ query: '公开面', globalStore: gs, cfg: cfgEngine({ insight: {}, autoContext: { maxTokens: 200 } }) })
+  for (const line of out.text.split('\n')) {
+    if (!line.startsWith('- [')) continue
+    assert.ok(line.length >= 120, `提示正文不得是 stub：${JSON.stringify(line)}`)
+  }
+  ok('预算压力下：宁可丢弃也不输出无意义的截断 stub')
+}
+
 console.log(`\nreadiness tests: ${passed} passed`)

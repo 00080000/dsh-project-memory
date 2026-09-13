@@ -54,6 +54,14 @@
   The shipped default sits in the safe zone with margin, and 0.20 visibly admits a weak match — so the number is justified by data rather than chosen by feel. It lives under `test/` (CI-enforced, shipped) rather than the git-ignored `bench/`, deliberately: a threshold that only exists on one machine is not a threshold.
 - **Tests:** new `test/insight-derive.test.mjs` (6 checks) and `test/readiness-eval.test.mjs` (4 checks, including the sweep table); suite 256 → **266**.
 
+### Fixed (readiness hint precision: query source, acronym noise, stub truncation)
+
+- **The readiness query is the last *human* message again.** `lastUserText()` accepted any `role: 'user'` message — and the injection itself is appended as a user message, so the previous step's injected block became the next step's query (**self-query**). Visible symptom: the injected set kept changing in a way the human message could not explain. It now prefers `source.kind === 'user'` and keeps the sourceless fallback for older hosts and tests.
+- **A 1–2 character latin token is no longer hint evidence.** Measured on this repository's own store, the message "PR 干嘛…" put an unrelated "automatic security PR" lesson at the top of the insight layer on the strength of the acronym `PR` alone, i.e. `relative:1.00`. `hintQueryText()` drops *standalone* 1–2 character latin tokens; path-shaped tokens are preserved so `src/util/fs.js` still contributes `src`/`util`. Authored triggers are untouched: deterministic matching stays literal.
+- **No stub truncations.** A body that cannot fit its channel's useful minimum (trigger 48 chars, hint 120 chars) is dropped and recorded instead of emitting `- [ins_…] procedure ` — a fragment that costs tokens and conveys nothing.
+- **Eval set grew to 9 cases** (added "缩写巧合（PR）不得命中"). The shipped `signalMinRatio 0.5` still scores `precision 1.00 / recall 1.00`; the `0.20` column now shows two *genuine* weak matches (`h-weak`, and `a-pr` on 检查), which is precisely the evidence that 0.5 — not 0.2 — is the right shipped point. Measured after the fix on the real store, the same message yields `[trigger:重启, hint:提交]` instead of `[trigger:重启, hint:PR, hint:提交]`.
+- **Tests:** `test/readiness.test.mjs` 10 → 13 checks; suite 266 → **269**.
+
 ## 0.5.4 (2026-09-12)
 
 ### Changed (indexing: model-free by design; whole-chunk retrieval terms)
