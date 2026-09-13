@@ -8,6 +8,16 @@
 - **Dead watch roots are dropped instead of re-created.** `WatchManager.addRoot()` now refuses a root that does not exist, `restorePersisted()` removes such roots from the persisted watchlist on startup, and `watch_repo` rejects a non-existent root rather than persisting it.
 - **Tests:** suite 231 → **235** checks. New: `no-op save() keeps the IDF cache` / `dirty save() invalidates the IDF cache`, plus `restorePersisted skips a root that no longer exists`, `a dead root is dropped from the persisted watchlist` and `addRoot refuses a non-existent root`.
 
+### Fixed (Task Panel / 「隐藏提示信息」开关)
+
+- **The hints toggle now hides every hover tooltip, not just two.** `showHints` was only wired to the step-edit hint and the drag-cancel button; the drag handle, panel-style / view-cycle / minimize / close buttons, card title rename hint, step status tooltip, file-path copy hint, mini-bar hint and the memory-view hints all ignored it — so clicking the button changed almost nothing. Every `title` hint in the panel now honours the switch (the toggle's own tooltip is kept so it stays discoverable).
+- **The preference lives in the UI store and persists.** `showHints` moved from component-local state to `dsh-pm-task-panel-ui` (localStorage, default on), so it survives refreshes and remounts instead of silently resetting to “show”; the button dims and sets `aria-pressed` while hints are off, giving feedback without hovering.
+
+### Fixed (index_repo root validation)
+
+- **`index_repo` no longer builds a store for a root that does not exist.** Both the tool and `autoIndexOnFirstUse` only ran `path.resolve()` first: on Linux/macOS a Windows-style path such as `D:\project\foo` resolved to the relative `<cwd>/D:\project\foo`, and the store's `mkdirSync` then created that literal directory together with its `.dsh-project-memory` (verified: `new ProjectMemoryStore(dir).load().commit(…)` creates every missing parent). `assertIndexRoot()` (`src/util/fs.js`) now rejects a missing or non-directory root before anything is written, and names the Windows-path case in the error message. `index_doc`'s file check and `watch_repo`'s `existsSync` guard are unchanged.
+- **Tests:** `test/doc-index.test.mjs` gains 1 check (suite 7 → 8, total 237 → **238**): a missing root and a Windows-style path are both rejected with zero filesystem side effects.
+
 ## 0.5.4 (2026-09-12)
 
 ### Changed (indexing: model-free by design; whole-chunk retrieval terms)
