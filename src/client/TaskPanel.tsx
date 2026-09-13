@@ -75,7 +75,8 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   const [syncing, setSyncing] = useState(false)
   const [syncedAt, setSyncedAt] = useState(0)
   const [syncError, setSyncError] = useState<string | null>(null)
-  const [showHints, setShowHints] = useState(true)
+  // 提示信息开关落在 UI store（持久化）：关掉后面板内所有悬停 title 气泡都不再弹出。
+  const showHints = ui.showHints
   const [view, setView] = useState<PanelView>('task')
   const cycleView = () => {
     const i = VIEW_CYCLE.indexOf(view)
@@ -288,6 +289,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
       <MiniBar
         label={label}
         hint={t('minibar.click-expand')}
+        showHints={showHints}
         position={ui.panelPosition}
         theme={style}
         onMove={uiActions.setPanelPosition}
@@ -308,7 +310,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
       style={{ left: ui.panelPosition.x, top: ui.panelPosition.y }}
       data-theme={style === 'native' ? undefined : style}
     >
-      <div className={css.dragHandle} onMouseDown={handleDragStart} title={t('task.drag')}>
+      <div className={css.dragHandle} onMouseDown={handleDragStart} title={showHints ? t('task.drag') : undefined}>
         <div className={css.handleGrip} />
       </div>
       <header className={css.header}>
@@ -317,7 +319,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
             type="button"
             className={css.headerIconBtn}
             onClick={cycleTheme}
-            title={styleLabel}
+            title={showHints ? styleLabel : undefined}
             aria-label={styleLabel}
           >
             <IconFolderOpenOutline16 className={css.headerIcon} />
@@ -330,7 +332,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
             size="sm"
             onClick={cycleView}
             aria-label={t('view.cycle')}
-            title={`${t('view.cycle')}（${view} → ${VIEW_CYCLE[(VIEW_CYCLE.indexOf(view) + 1) % VIEW_CYCLE.length]}）`}
+            title={showHints ? `${t('view.cycle')}（${view} → ${VIEW_CYCLE[(VIEW_CYCLE.indexOf(view) + 1) % VIEW_CYCLE.length]}）` : undefined}
           >
             {/* lucide notebook-tabs（视图循环图标） */}
             <svg
@@ -365,7 +367,9 @@ function TaskPanelView({ ctx }: { ctx: any }) {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setShowHints(!showHints)}
+            className={showHints ? undefined : css.hintsOff}
+            onClick={() => uiActions.toggleHints()}
+            aria-pressed={!showHints}
             aria-label={showHints ? t('panel.hints-off') : t('panel.hints-on')}
             title={showHints ? t('panel.hints-off') : t('panel.hints-on')}
           >
@@ -376,7 +380,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
             size="sm"
             onClick={() => uiActions.minimize()}
             aria-label={t('panel.minimize')}
-            title={t('panel.minimize')}
+            title={showHints ? t('panel.minimize') : undefined}
           >
             <IconChevronDownOutline14 />
           </Button>
@@ -385,7 +389,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
             size="sm"
             onClick={() => uiActions.close()}
             aria-label={t('panel.close')}
-            title={t('panel.close')}
+            title={showHints ? t('panel.close') : undefined}
           >
             <IconCloseOutline16 />
           </Button>
@@ -396,7 +400,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
       {syncError && <div className={css.notice}>{t('panel.sync-failed')}: {syncError}</div>}
 
       {view !== 'task' ? (
-        <MemoryView ctx={ctx} sessionId={sessionId} scope={view as InsightScope} boundTaskId={data.boundTaskId} t={t} />
+        <MemoryView ctx={ctx} sessionId={sessionId} scope={view as InsightScope} boundTaskId={data.boundTaskId} showHints={showHints} t={t} />
       ) : activeTasks.length === 0 ? (
         <div className={css.emptyState}>
           <p className={css.emptyTitle}>{t('panel.empty')}</p>
