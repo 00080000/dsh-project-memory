@@ -27,6 +27,15 @@
 - **Invariants held:** indexing still never calls a model (no index-time LLM), recall adds no LLM call (`llmQueryExpansion` remains opt-in, default off), and the plugin still has exactly one runtime dependency.
 - **Tests:** new `test/recall.test.mjs` (8 checks); suite 238 → **246**.
 
+### Added (readiness: triggers for every insight kind, two windows — PR2)
+
+- **`trigger` is no longer procedure-only.** Any lesson / decision / procedure may carry `trigger: { keywords, symbols, actions, paths, scope }`. A hit injects the entry **before the action**, in full, at priority 1 — deterministic, auditable (`reasons[].why`), and independent of wording. `actions` are normalized ids (`git-commit`, `npm-publish`, `go-public`, …) matched by a small lexicon that also reads **human intent** ("提交 / 发包 / 公开"), so the block arrives while the model is still planning instead of after it acted.
+- **Two windows, one matcher.** The pre-emptive window matches the turn's human text; the reactive window matches `tool/call` arguments observed through `session/event`. DSH has no pre-tool interceptor (`tool/call` is appended after the call is decided), so these are the only two honest windows — both feed one `ReadinessContext`.
+- **The hint gate became scale-free.** It used to be `normalizedTokenOverlap(humanMessage, insight) >= 0.25`, normalized by the **larger** token set, so a real message measured 0.014–0.057 and could never fire. It is now the recall core's BM25 plus a **relative** threshold (`autoContext.signalMinRatio`, default `0.5` = at least half of the layer's top score), with zero-score candidates always dropped. The old judgement stays reachable only by explicitly setting `relevanceMin` (undocumented knob; profiles that set it keep the old behaviour).
+- **Budget is a schedule, not a number.** Resident task card → trigger hits (full) → hints (truncated). Every decision is recorded as `reasons` (why injected) or `dropped` (why not), so silence is never the only signal. Procedures still inject **only** through the trigger channel, so a statistical hit cannot bypass `trigger.scope` profile filtering.
+- **Measured against this repository's own store:** the original commit-turn message ("…你顺便提交一下…") now injects the public-face lesson via `hint:relative:1.00`; reworded and relying on an observed `git commit`, only an authored `trigger.actions` reaches it (`trigger:action:git-commit`) — the two channels are complementary, not redundant.
+- **Tests:** new `test/readiness.test.mjs` (10 checks); suite 246 → **256**.
+
 ## 0.5.4 (2026-09-12)
 
 ### Changed (indexing: model-free by design; whole-chunk retrieval terms)
