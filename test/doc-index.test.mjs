@@ -1,7 +1,7 @@
 // 文档索引的结构化词项：索引期不调用模型 + 检索词项与注入摘要分离。
 //   node test/doc-index.test.mjs
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -10,7 +10,7 @@ import { extractTerms, extractKeywords, extractTermText, MAX_TERMS } from '../sr
 import { weightedFieldText, rankEntriesMergedScored } from '../src/util/search.js'
 import { summarizeText } from '../src/util/text.js'
 import { indexDocTool } from '../src/tools/index-doc.js'
-import { indexRepository } from '../src/tools/index-repo.js'
+import { indexRepoTool, indexRepository } from '../src/tools/index-repo.js'
 import { ProjectMemoryStore } from '../src/store.js'
 import { memoryRootFor, sha256OfFile } from '../src/util/fs.js'
 
@@ -122,6 +122,25 @@ const CONFIG = { memoryDir: '.dsh-project-memory', chunkChars: 3000, maxChunksPe
   assert.ok(summarizeText('x'.repeat(900)).length <= 300)
   assert.equal(summarizeText('  a   b  '), 'a b')
   ok('summarizeText：无 LLM、封顶 300、压平空白')
+}
+
+// ---- 7. 根目录校验：不存在的根被拒绝，且零文件系统副作用 ----
+{
+  const base = mkdtempSync(path.join(tmpdir(), 'pm-di-badroot-'))
+  const missing = path.join(base, 'does-not-exist')
+  await assert.rejects(() => indexRepository({}, CONFIG, missing, {}), /does not exist/)
+  assert.equal(existsSync(missing), false, '不得创建不存在的根')
+  assert.equal(existsSync(memoryRootFor(missing, CONFIG.memoryDir)), false, '更不得创建根下的 store')
+
+  if (process.platform !== 'win32') {
+    // Windows 风格路径在 POSIX 上会被 resolve 成 <cwd>/D:\project\ghost —— 之前它会被
+    // 当作正常目录建出来（仓库根那个 `D:\project\dsh-project-memory` 就是这么来的）。
+    const winStyle = 'D:\\project\\ghost'
+    const tool = indexRepoTool({}, CONFIG)
+    await assert.rejects(() => tool.execute({ root: winStyle }), /Windows path/)
+    assert.equal(existsSync(path.resolve(winStyle)), false, '不得造出字面量 D:\\ 目录')
+  }
+  ok('不存在的索引根 / Windows 风格路径被拒绝，且零文件系统副作用')
 }
 
 console.log(`\ndoc-index tests: ${passed} passed`)
