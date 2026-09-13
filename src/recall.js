@@ -71,12 +71,16 @@ export function insightBodyText(ins) {
  * @returns {object} 检索条目（额外字段仅供渲染，不参与打分）。
  */
 export function insightToEntry(ins) {
+  const derived = ins?.triggerDerived || {}
   const keywords = [
     ins?.kind,
     ins?.scope,
     ...(Array.isArray(ins?.files) ? ins.files : []),
     ...(Array.isArray(ins?.symbols) ? ins.symbols : []),
     ...(Array.isArray(ins?.tags) ? ins.tags : []),
+    // 派生信号（PR3）：只提升召回，不参与强制注入
+    ...(Array.isArray(derived.keywords) ? derived.keywords : []),
+    ...(Array.isArray(derived.actions) ? derived.actions : []),
   ].filter(Boolean)
   return {
     id: `insight:${ins?.id}`,
@@ -90,7 +94,7 @@ export function insightToEntry(ins) {
     title: String(ins?.title || '(untitled)'),
     summary: insightBodyText(ins).slice(0, 300),
     // 检索用词项：pattern/problem/reason 是"症状"侧词汇，fix 已在 summary 里（title×5 之外单算 1 份）。
-    terms: [ins?.pattern, ins?.problem, ins?.reason].filter(Boolean).join(' '),
+    terms: [ins?.pattern, ins?.problem, ins?.reason, ...(Array.isArray(derived.paths) ? derived.paths : [])].filter(Boolean).join(' '),
     keywords,
     sourcePath: Array.isArray(ins?.files) && ins.files.length ? ins.files[0] : '',
     status: 'exact',

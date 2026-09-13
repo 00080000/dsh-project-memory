@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { rankEntries, rankExperience, tokenize, tokenizeRaw, extractCjkPhrases, makeSearchText } from './util/search.js'
+import { backfillDerivedTriggers } from './readiness.js'
 
 const FORMAT_FILE = 'format.json'
 const INDEX_FILE = 'index.json'
@@ -166,6 +167,8 @@ export class ProjectMemoryStore {
     const doc = loadJson(path.join(this.dir, INSIGHTS_FILE), null)
     this.insights = doc && typeof doc === 'object' && Array.isArray(doc.items) ? doc : { version: 1, migratedAt: null, items: [] }
     this._migrateExperienceToInsights()
+    // PR3：v1 → v2 懒回填派生 trigger（纯确定性、幂等；不调用模型，不改写已有字段）
+    if (backfillDerivedTriggers(this.insights)) this._dirtyInsights = true
   }
 
   _migrateExperienceToInsights() {
@@ -286,6 +289,8 @@ export class ProjectMemoryStore {
       this._dirtyExperience = false
     }
     if (this._dirtyInsights) {
+      // PR3：落盘即把格式标记推到 v2（v1 → v2 是纯增量：只多一个可选的 triggerDerived）
+      if (this.insights && this.insights.version !== 2) this.insights.version = 2
       writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights)
       this._dirtyInsights = false
     }
