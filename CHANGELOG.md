@@ -36,6 +36,24 @@
 - **Measured against this repository's own store:** the original commit-turn message ("…你顺便提交一下…") now injects the public-face lesson via `hint:relative:1.00`; reworded and relying on an observed `git commit`, only an authored `trigger.actions` reaches it (`trigger:action:git-commit`) — the two channels are complementary, not redundant.
 - **Tests:** new `test/readiness.test.mjs` (10 checks); suite 246 → **256**.
 
+### Added (write path + measurement: derived triggers, v1→v2, degraded, labeled eval — PR3)
+
+- **Derived triggers are additive and never force-inject.** `deriveTrigger()` builds `{ keywords, actions, paths }` from an entry's own text with the same deterministic lexicon and path scanner the readiness matcher uses (bounded: ≤ 6 / ≤ 4 / ≤ 6), and stores it as `triggerDerived`. It only feeds the entry's search text, so it improves recall; whether an entry is injected **deterministically** is still decided solely by the authored `trigger`. This is the "explicit over implicit" trade-off carried through to injection.
+- **`insights.json` v1 → v2, lazily and idempotently.** On load, entries without `triggerDerived` are back-filled in memory (pure, model-free, no field rewriting); the next commit writes `version: 2`. A second pass is a no-op.
+- **The write path accepts the full trigger.** `normalizeInsight` no longer whitelists `keywords`/`symbols`/`scope` only — it keeps `actions` and `paths` too, and a trigger consisting *only* of `actions`/`paths` is no longer dropped. `save_lesson`'s schema exposes both, and its descriptions now say "any kind", not "procedure".
+- **Silence is not the only signal.** When the budget keeps entries out, `installAutoInject` logs one `degraded` record per session and drop-set (`… kept out by budget — id(reason), …`) instead of silently shrinking the injection.
+- **The relative threshold is now a measured parameter, and the measurement ships.** `test/readiness-eval.test.mjs` holds a labeled set (8 cases: trigger-on-intent, trigger-on-observed-action, path glob, keywords, procedure scope filter, strong-vs-weak hint, no-match, budget scheduling) and sweeps `signalMinRatio`:
+
+  | signalMinRatio | precision | recall |
+  |---|---|---|
+  | 0.20 | 0.86 | 1.00 |
+  | 0.35 | 1.00 | 1.00 |
+  | 0.50 (shipped) | 1.00 | 1.00 |
+  | 0.70 | 1.00 | 1.00 |
+
+  The shipped default sits in the safe zone with margin, and 0.20 visibly admits a weak match — so the number is justified by data rather than chosen by feel. It lives under `test/` (CI-enforced, shipped) rather than the git-ignored `bench/`, deliberately: a threshold that only exists on one machine is not a threshold.
+- **Tests:** new `test/insight-derive.test.mjs` (6 checks) and `test/readiness-eval.test.mjs` (4 checks, including the sweep table); suite 256 → **266**.
+
 ## 0.5.4 (2026-09-12)
 
 ### Changed (indexing: model-free by design; whole-chunk retrieval terms)

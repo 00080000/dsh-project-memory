@@ -83,6 +83,67 @@ export function buildReadinessContext(input = {}) {
   return { humanText, actionText, actions: [...actions], paths: [...paths] }
 }
 
+/**
+ * 派生 trigger 的意图词表（有界、确定性）。派生信号**只进提示通道**：它能提升召回，
+ * 但永不强制注入——"自动学出来的东西"不该污染上下文。
+ */
+export const ACTION_WORDS = [
+  '提交', '公开', '泄漏', '发布', '发包', '发版', '上线', '部署', '迁移', '删除', '清理', '回滚',
+  '推送', '打包', '构建', '依赖', '密钥', '权限', '并发', '超时', '内存', '性能', '安全', '面试',
+]
+
+/** 无扩展名但明确是文件名的裸词（README / CHANGELOG / …），当关键词用。 */
+const BARE_FILE_NAMES = /\b(?:README|CHANGELOG|LICENSE|AGENTS|CONTRIBUTING|Dockerfile|Makefile)\b/g
+
+const DERIVED_MAX_KEYWORDS = 6
+const DERIVED_MAX_ACTIONS = 4
+const DERIVED_MAX_PATHS = 6
+
+/**
+ * 从一条 insight 的正文确定性派生触发信号（零模型、可重放）。
+ * 结果只写进 `triggerDerived`，供提示通道（检索文本）使用；是否强制注入只由 authored `trigger` 决定。
+ * @param {object} ins - 归一化后的 insight 条目。
+ * @returns {{ keywords: string[], actions: string[], paths: string[] }}
+ */
+export function deriveTrigger(ins) {
+  const text = [
+    ins?.title,
+    ins?.pattern,
+    ins?.fix,
+    ins?.choice,
+    ins?.reason,
+    ins?.problem,
+    ins?.solution,
+    ins?.topic,
+    ins?.body,
+    ...(Array.isArray(ins?.steps) ? ins.steps : []),
+  ].filter(Boolean).join('\n')
+  const bare = text.match(BARE_FILE_NAMES) || []
+  const keywords = [...new Set([...ACTION_WORDS.filter((w) => text.includes(w)), ...bare])].slice(0, DERIVED_MAX_KEYWORDS)
+  const actions = detectActions(text).slice(0, DERIVED_MAX_ACTIONS)
+  const paths = extractPaths(text).slice(0, DERIVED_MAX_PATHS)
+  return { keywords, actions, paths }
+}
+
+/**
+ * insights 文档的懒回填：给缺少 `triggerDerived` 的条目补上派生信号（增量、幂等）。
+ * 只改内存；是否落盘由调用方的 commit 决定。
+ * @param {{ items?: object[] }} doc - insights 文档。
+ * @returns {boolean} 是否发生了变更（用于置 dirty）。
+ */
+export function backfillDerivedTriggers(doc) {
+  if (!doc || !Array.isArray(doc.items)) return false
+  let changed = false
+  for (const it of doc.items) {
+    if (!it || it.triggerDerived) continue
+    const derived = deriveTrigger(it)
+    if (!derived.keywords.length && !derived.actions.length && !derived.paths.length) continue
+    it.triggerDerived = derived
+    changed = true
+  }
+  return changed
+}
+
 /** glob（只支持 `*`）→ 正则。 */
 function globToRegExp(pattern) {
   const escaped = String(pattern).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')

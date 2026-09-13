@@ -11,7 +11,7 @@ function sessionIdOf(exec) {
 }
 
 export function lessonTool(config) {
-  const kindDesc = `insight 语义：lesson(曾踩坑/纠偏, pattern→fix) | decision(权衡选型, choice→reason) | procedure(多步指南, steps+可选 trigger) | experience(problem→solution，v0.4 兼容)。默认 lesson。`
+  const kindDesc = `insight 语义：lesson(曾踩坑/纠偏, pattern→fix) | decision(权衡选型, choice→reason) | procedure(多步指南, steps) | experience(problem→solution，v0.4 兼容)。默认 lesson。所有 kind 都可带 trigger：命中即在动手前确定性注入。`
   const scopeDesc =
     '作用域：task(任务私有，随任务归档，不进共享注入) | project(项目资产) | global(个人能力库，跨项目，建议配 trigger 关键词以便将来技能命中)。' +
     '解析顺序：显式 scope > task_id > 当前绑定任务 > project。'
@@ -37,9 +37,14 @@ export function lessonTool(config) {
         properties: {
           keywords: { type: 'array', items: { type: 'string' } },
           symbols: { type: 'array', items: { type: 'string' } },
+          actions: { type: 'array', items: { type: 'string' } },
+          paths: { type: 'array', items: { type: 'string' } },
           scope: { type: 'array', items: { type: 'string' } },
         },
-        description: 'kind=procedure: "作为 Skill" 的触发关键词（keywords/symbols + scope tags）',
+        description:
+          'authored trigger（所有 kind 通用）：命中即在**动手前**确定性注入本条。' +
+          'keywords/symbols 匹配人类消息与工具参数；actions 用归一 id（git-commit / npm-publish / go-public / deploy / delete / migrate …）；' +
+          'paths 用 glob（README* / CHANGELOG* / .gitignore）；scope 按项目画像 tags 过滤。留空则只可能作为统计提示注入。',
       },
       task_id: { type: 'string', description: '目标任务 id（scope 缺省时优先于绑定任务）' },
       files: { type: 'array', items: { type: 'string' }, description: '关联文件（项目相对路径）' },

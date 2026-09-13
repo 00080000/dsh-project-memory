@@ -150,7 +150,7 @@ dsh plugin --profile web add /path/to/dsh-project-memory.tgz
 | `/insight`（用户输入，不经模型） | v0.5 记忆视图动作（面板按钮触发）：`list [task|project|global]`、`confirm` / `promote` / `demote` / `archive` / `restore` / `delete` `<scope> <id>`、`save <scope> <json>`、`edit <scope> <id> <json>`。 |
 | `remember problem solution` | 保存经验笔记。相似问题覆盖而非重复。 |
 | `forget id_or_query` | 删除过期经验笔记。 |
-| `save_lesson`（模型工具） | 在 task/project/global 任一作用域保存教训/决策/流程（单一 insight 实体）。近重复按双向 overlap ≥ 0.7 合并、0.65–0.7 强化；同一 insight 被 2+ 任务命中自动 task→project、3+ → global。参数：`title`、`kind`、`scope`、`pattern`/`fix` 或 `choice`/`reason` 或 `steps`/`trigger`、`task_id`、`files`、`symbols`、`confidence`、`root`。 |
+| `save_lesson`（模型工具） | 在 task/project/global 任一作用域保存教训/决策/流程（单一 insight 实体）。近重复按双向 overlap ≥ 0.7 合并、0.65–0.7 强化；同一 insight 被 2+ 任务命中自动 task→project、3+ → global。参数：`title`、`kind`、`scope`、`pattern`/`fix` 或 `choice`/`reason` 或 `steps`、`trigger`（`keywords`/`symbols`/`actions`/`paths`/`scope`，所有 kind 通用，命中即在动手前注入）、`task_id`、`files`、`symbols`、`confidence`、`root`。 |
 
 ## 设计
 
@@ -332,7 +332,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test          # 256 项测试（核心 169 + TaskBridge 16 + insight-store 11 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 7 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 10）
+npm test          # 266 项测试（核心 169 + TaskBridge 16 + insight-store 11 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 7 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 10 + insight-derive 6 + readiness-eval 4）
 ```
 
 ## 许可证
