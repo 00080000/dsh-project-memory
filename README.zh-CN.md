@@ -330,7 +330,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test          # 276 项测试（核心 176 + TaskBridge 16 + insight-store 11 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 7 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 13 + insight-derive 6 + readiness-eval 4）
+npm test          # 280 项测试（核心 180 + TaskBridge 16 + insight-store 11 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 7 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 13 + insight-derive 6 + readiness-eval 4）
 npm run bench -- /你的/项目路径   # 对任意项目量索引/查询性能，不需要 dsh
 ```
 

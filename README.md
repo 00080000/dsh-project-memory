@@ -331,7 +331,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test          # 276 tests (176 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 7 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 13 readiness + 6 insight-derive + 4 readiness-eval)
+npm test          # 280 tests (180 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 7 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 13 readiness + 6 insight-derive + 4 readiness-eval)
 npm run bench -- /path/to/project   # index/query performance on any project — no dsh needed
 ```
 

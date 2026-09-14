@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed (the silent-injection hint gate was dead in production)
+
+- **A config schema default pinned the `legacy` hint gate on, making the shipped relative threshold dead code.** `autoContext.relevanceMin` carried `default(0.25)`, so `cfgEngine()` always saw a number and therefore always chose the legacy branch — `normalizedTokenOverlap >= 0.25`, the very judgement PR2 replaced because natural-language messages measure 0.014–0.057 against an insight and can never pass it. The documented default (`signalMinRatio: 0.5`, BM25 relative to the layer's top score) was unreachable in a real host, so only authored triggers could ever inject. The default is removed (the key remains, for explicitly opting back into the old behaviour), and `entryMaxInsights` / `signalMinRatio` / `editedMax` / `skipEchoSelfTodo` are now declared in the schema rather than being read by the engine but absent from it. The test suite could not catch this because every readiness test builds its config object by hand and never goes through `Config`.
+- **Regression:** 4 new checks asserting that the *resolved default* config yields `relevanceMin: null` and `signalMinRatio: 0.5`, that an explicit `relevanceMin` still restores the legacy gate, and that the engine-only keys round-trip through the schema. Suite 276 → **280**.
+
 ### Added (standalone benchmark — `scripts/bench.mjs`)
 
 - **`npm run bench -- <projectPath>` measures the shipped index/query path on a real project, with no dsh instance, no network and no model calls.** It walks the project, builds its store in a temp directory (never the project's own `.dsh-project-memory`), and reports: cold index split into read+hash / extract / commit; cold load measured from a *copied* store (so the in-process store cache cannot fake it); IDF rebuild, cold and hot query latency through the real scorer (p50/p95/max over `--samples`, default 100); single-file hot re-index sampled **evenly across file sizes**; store size and bytes/entry; and whole-chunk `terms` versus the ≤300-char summary. Flags: `--json`, `--no-pdf`, `--keep`, `--max-files` (default 20000), `--queries <labeled-set.json>` (runs the hit@5 / hit@10 / MRR method on your own corpus).

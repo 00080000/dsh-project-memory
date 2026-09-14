@@ -874,6 +874,24 @@ check('query expansion off by default', defaults.llmQueryExpansion === false)
 check('lazy indexing on by default', defaults.lazyIndexing === true)
 check('full auto-index off by default', defaults.autoIndexOnFirstUse === false)
 
+// 回归：Schema 默认值不得把引擎的「相对阈值」分支钉死成旧的绝对 overlap 判据
+const { cfgEngine } = await import('../src/auto-inject.js')
+const defaultEngine = cfgEngine(new Config({}))
+check('default config leaves the legacy absolute gate off', defaultEngine.relevanceMin === null)
+check('default config uses the relative hint threshold', defaultEngine.signalMinRatio === 0.5)
+check(
+  'an explicit relevanceMin still restores the legacy gate',
+  cfgEngine(new Config({ autoContext: { relevanceMin: 0.25 } })).relevanceMin === 0.25,
+)
+check(
+  'engine keys are declarable through the config schema',
+  (() => {
+    const c = new Config({ autoContext: { signalMinRatio: 0.4, editedMax: 5, skipEchoSelfTodo: false, entryMaxInsights: 4 } })
+    const e = cfgEngine(c)
+    return e.signalMinRatio === 0.4 && e.editedMax === 5 && e.skipEchoSelfTodo === false && e.entryMaxInsights === 4
+  })(),
+)
+
 console.log('\n== dump detection ==')
 const { looksLikeDump } = await import('../src/util/fs.js')
 check(
