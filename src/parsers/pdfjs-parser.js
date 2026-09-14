@@ -25,6 +25,9 @@ const PDFJS_OPTIONS = {
   isEvalSupported: false,
   useWorkerFetch: false,
   useWorker: false,
+  // 0 = ERRORS。损坏/线性化缺失的 PDF 会让 pdf.js 打 "Warning: Indexing all PDF objects"
+  // 之类的告警——那是它自己的恢复路径，对使用者没有可操作性，静音。
+  verbosity: 0,
 }
 
 function buildMarkdown(pages) {

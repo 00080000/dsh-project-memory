@@ -1,6 +1,7 @@
 import { accessSync, constants, readdirSync, readFileSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
+import os from 'node:os'
 import path from 'node:path'
 
 export function assertReadableFile(filePath, maxFileSizeMb) {
@@ -142,6 +143,19 @@ export function storeKey(rel, platform = process.platform) {
 
 export function memoryRootFor(indexRoot, memoryDir) {
   return path.join(indexRoot, memoryDir)
+}
+
+/**
+ * 不该整体当「项目根」监听的目录：文件系统根，以及共享的 OS 临时目录。
+ * 监听后者会把无关程序（以及插件自己的测试夹具）的临时文件全扫进来，而且只要读过
+ * `/tmp` 下任意一个文件，findProjectRoot 的兜底就会把根解析成 `/tmp` 并自我固化。
+ * 根的**子目录**不受影响——项目放在临时目录的子目录里照常可监听。
+ */
+export function isUnwatchableRoot(root) {
+  if (typeof root !== 'string' || !root) return true
+  const abs = path.resolve(root)
+  if (abs === path.parse(abs).root) return true
+  return abs === path.resolve(os.tmpdir())
 }
 
 export function resolveIndexRoot(exec, explicitRoot) {

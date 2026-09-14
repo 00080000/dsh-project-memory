@@ -1,7 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
-import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
+import { isUnwatchableRoot, memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 
 export function watchRepoTool(watchManager, config) {
@@ -31,6 +31,10 @@ export function watchRepoTool(watchManager, config) {
       // 不存在的根不写进 watchlist：watch 每轮会 commit → save → mkdirSync，把它重新造出来
       if (args.watch !== false && !existsSync(root)) {
         return `Not watching: ${root} does not exist.`
+      }
+      // 文件系统根 / 共享临时目录不整体监听（子目录允许）：会把无关程序和测试夹具的临时文件全扫进来
+      if (args.watch !== false && isUnwatchableRoot(root)) {
+        return `Refusing to watch ${root}: it is the filesystem root or the shared temp directory. Pass a project subdirectory instead.`
       }
       const memoryDir = memoryRootFor(root, config.memoryDir)
       const sessionRoot = resolveIndexRoot(exec)
