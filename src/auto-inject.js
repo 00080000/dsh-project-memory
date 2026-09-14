@@ -42,6 +42,16 @@ export function cfgEngine(config) {
     editedMax: typeof c.editedMax === 'number' ? c.editedMax : 3,
     // 模型自己写/维护任务清单后、尚无新人类消息时，不把任务卡再回声给模型（省 token）
     skipEchoSelfTodo: c.skipEchoSelfTodo !== false,
+    // 预算审计日志级别（stderr）。默认 off：预算挤掉低优先级条目是正常降级，不是故障，
+    // 而终端是用户可见面——默认打印会让一次启动刷出多行，代价远大于那点可观测性收益。
+    //   off  : 永不打印（默认）
+    //   once : 每个会话最多一行（首次出现预算丢弃时），够定位又不刷屏
+    //   all  : 丢弃组合每变化一次打一行（作者排查用）
+    budgetLog: ['off', 'once', 'all'].includes(c.budgetLog) ? c.budgetLog : 'off',
+    // 同一条 insight 在本会话里重复注入的冷却（单位：pre-step 步数）。
+    // 0（默认）= 内容没变就不再注入：注入消息会留在会话历史里（宿主不压缩历史），
+    // 整块重发同一条 1200 字 procedure 只是重复占位。>0 用于历史可能被外部裁剪的场景。
+    reinjectItemsAfter: typeof c.reinjectItemsAfter === 'number' && c.reinjectItemsAfter >= 0 ? c.reinjectItemsAfter : 0,
   }
 }
 
@@ -144,6 +154,11 @@ function insightBody(it) {
     : `- [${it.id}] ${it.title}${it.fix || it.solution || it.choice ? ` — ${it.fix || it.solution || it.choice}` : ''}`
 }
 
+/** 条目级去重键：注入正文的指纹（正文变了才允许再注入一次，见 cfg.reinjectItemsAfter）。 */
+export function insightItemHash(it) {
+  return createHash('sha256').update(insightBody(it)).digest('hex').slice(0, 12)
+}
+
 /** 把正文塞进剩余预算：放不下就截断；连"有用前缀"都留不下就返回 null（由调用方记 dropped）。 */
 export function fitBody(body, remaining, min = MIN_BODY_CHARS.hint) {
   if (remaining <= min) return null
@@ -157,7 +172,9 @@ export function fitBody(body, remaining, min = MIN_BODY_CHARS.hint) {
  * 交付契约：**authored trigger（所有 kind）= 确定性全文注入，优先级 1；统计信号 = 截断提示，
  * 优先级 2**。预算排程为：常驻任务卡 → trigger 命中 → 提示。每一步都记 `reasons`（为什么注入）
  * 与 `dropped`（为什么没注入），让"注入/未注入"可审计——而不是只有静默的门槛。
- * @param {object} opts { query, readiness, task, store, globalStore, projectTagsList, cfg }
+ * @param {object} opts { query, readiness, task, store, globalStore, projectTagsList, cfg, skipItem? }
+ * @param {(it: object) => boolean} [opts.skipItem] 条目级去重：返回 true 的条目直接退出排程
+ *   （本会话已注入过且正文未变）。在排程前过滤，省下的预算留给新条目。
  * @returns {{ text: string, labels: string[], reasons: object[], dropped: object[] }}
  */
 export function buildInjection(opts) {
@@ -171,7 +188,8 @@ export function buildInjection(opts) {
   const parts = []
   const budgetChars = (cfg.maxTokens || 400) * 3
 
-  const cands = insightCandidates(store, globalStore, task)
+  const skipItem = typeof opts.skipItem === 'function' ? opts.skipItem : null
+  const cands = insightCandidates(store, globalStore, task).filter((it) => !(skipItem && skipItem(it)))
 
   // 通道 1：authored trigger —— 确定性、全文、优先级 1。procedure 先于其它 kind（步骤更完整）。
   const triggered = []
@@ -231,7 +249,7 @@ export function buildInjection(opts) {
     used += body.length + 1
     parts.push(body)
     labels.push(it.kind === 'procedure' ? 'procedure' : it.kind)
-    reasons.push({ id: it.id, channel: 'trigger', why })
+    reasons.push({ id: it.id, channel: 'trigger', why, hash: insightItemHash(it) })
   }
   for (const { it, why } of hints) {
     const body = fitBody(insightBody(it), budgetChars - used, MIN_BODY_CHARS.hint)
@@ -242,7 +260,7 @@ export function buildInjection(opts) {
     used += body.length + 1
     parts.push(body)
     labels.push('hint')
-    reasons.push({ id: it.id, channel: 'hint', why })
+    reasons.push({ id: it.id, channel: 'hint', why, hash: insightItemHash(it) })
   }
 
   const total = [entry, ...parts].filter(Boolean)
@@ -265,6 +283,14 @@ export function installAutoInject(ctx, config) {
   const LAST_FP_MAX = 200
   // 每个会话一份"上次预算丢弃指纹"：预算把条目挤出去时必须留痕一次，而不是静默（degraded 可见性）。
   const lastDroppedBySession = new Map()
+  // 条目级去重记忆：sessionId → Map(insightId → { hash, step })。注入的消息留在会话历史里
+  // （宿主只追加、不压缩），所以"整块指纹变了"不等于"内容都是新的"——同一份 procedure 会因为
+  // 滑动工具窗口、任务卡更新、预算截断边界变化被整块重发（实测 66 步注入 20 次，其中同一份
+  // 1732 字 procedure 重发 3 次、另一份 1008 字的 6 次）。这里按条目记账，正文没变就不再排程。
+  const injectedBySession = new Map()
+  const INJECTED_ITEMS_MAX = 600
+  // 会话步数：为 reinjectItemsAfter 提供时间轴（>0 时才用得上）。
+  const stepBySession = new Map()
   // 反应窗口：本会话最近观察到的 tool/call（参数里有 git commit / npm publish / 改动的路径）。
   // 宿主没有"工具执行前拦截"钩子，所以这是 pre-step 之外唯一能拿到的动作事实。
   const observedBySession = new Map()
@@ -288,7 +314,11 @@ export function installAutoInject(ctx, config) {
     }
   })
   if (typeof ctx.effect === 'function') {
-    ctx.effect(() => () => observedBySession.clear())
+    ctx.effect(() => () => {
+      observedBySession.clear()
+      injectedBySession.clear()
+      stepBySession.clear()
+    })
   }
   ctx.on('agent/pre-step', async (payload, next) => {
     // 宿主契约是 waterfall(payload, next)，next 一定存在；但一旦宿主版本漂移、或事件被当
@@ -316,7 +346,25 @@ export function installAutoInject(ctx, config) {
         humanText: query || '',
         actionText: observed.map((c) => `${c.name} ${c.arguments}`).join('\n'),
       })
-      const built = buildInjection({ query: query || '', readiness, task, store, globalStore, projectTagsList: projectTags(root), cfg })
+      // 条目级去重：本会话已注入过、且正文未变的条目不再参与排程（cfg.reinjectItemsAfter=0 时永久，
+      // >0 时走冷却步数，用于历史可能被外部裁剪的场景）。正文变了（编辑过 insight）立刻允许重发。
+      const stepNo = (stepBySession.get(sessionId) || 0) + 1
+      stepBySession.set(sessionId, stepNo)
+      while (stepBySession.size > LAST_FP_MAX) stepBySession.delete(stepBySession.keys().next().value)
+      const seen = injectedBySession.get(sessionId) || new Map()
+      injectedBySession.set(sessionId, seen)
+      while (injectedBySession.size > LAST_FP_MAX) injectedBySession.delete(injectedBySession.keys().next().value)
+      const cooldown = cfg.reinjectItemsAfter || 0
+      const skipItem = cooldown === 0
+        ? (it) => {
+            const rec = seen.get(it.id)
+            return Boolean(rec) && rec.hash === insightItemHash(it)
+          }
+        : (it) => {
+            const rec = seen.get(it.id)
+            return Boolean(rec) && rec.hash === insightItemHash(it) && stepNo - rec.step < cooldown
+          }
+      const built = buildInjection({ query: query || '', readiness, task, store, globalStore, projectTagsList: projectTags(root), cfg, skipItem })
       const fp = fingerprint(built.dedupeText ?? built.text)
       const shouldInject = Boolean(built.text) && fp !== lastFpBySession.get(sessionId)
       let injectMessage = null
@@ -325,6 +373,11 @@ export function installAutoInject(ctx, config) {
         // 裸 {role,content} 消息缺 source 会让宿主逐条读 message.source.kind 时崩溃。
         lastFpBySession.set(sessionId, fp)
         if (lastFpBySession.size > LAST_FP_MAX) lastFpBySession.delete(lastFpBySession.keys().next().value)
+        // 只记真的进了上下文的那几条：dropped 的没被看到，不能记账（否则以后永远不再注入）。
+        for (const r of built.reasons) {
+          if (r && r.id && r.hash) seen.set(r.id, { hash: r.hash, step: stepNo })
+        }
+        while (seen.size > INJECTED_ITEMS_MAX) seen.delete(seen.keys().next().value)
         injectMessage = createUserMessage({
           content: [{ type: 'text', text: `\n\n${INJECT_MARK} auto-context\n${built.text}` }],
           // 这一块是「同一生产者后续快照会取代的当前状态」，不是一次性通知。
@@ -338,18 +391,23 @@ export function installAutoInject(ctx, config) {
           },
         })
       }
-      // 未注入 ≠ 无事发生：因预算被挤掉的条目留一条 degraded 记录（每个会话同一组合只记一次）。
-      if (built.dropped && built.dropped.length) {
+      // 未注入 ≠ 无事发生：因预算被挤掉的条目按 cfg.budgetLog 留痕（默认 off，见 cfgEngine）。
+      // 留痕仍然记账（去重 + 上限），只是默认不外泄到用户的终端。
+      if (built.dropped && built.dropped.length && cfg.budgetLog !== 'off') {
         const sig = built.dropped.map((d) => `${d.id}:${d.reason}`).join(',')
         if (lastDroppedBySession.get(sessionId) !== sig) {
+          const seenBefore = lastDroppedBySession.has(sessionId)
           lastDroppedBySession.set(sessionId, sig)
           while (lastDroppedBySession.size > LAST_FP_MAX) {
             lastDroppedBySession.delete(lastDroppedBySession.keys().next().value)
           }
-          console.error(
-            `[dsh-project-memory] auto-inject degraded: ${built.dropped.length} insight(s) kept out by budget — `
-            + built.dropped.map((d) => `${d.id}(${d.reason})`).join(', '),
-          )
+          // once：只有本会话第一次丢弃出声，之后继续记账但保持安静。
+          if (cfg.budgetLog === 'all' || !seenBefore) {
+            console.error(
+              `[dsh-project-memory] auto-inject degraded: ${built.dropped.length} insight(s) kept out by budget — `
+              + built.dropped.map((d) => `${d.id}(${d.reason})`).join(', '),
+            )
+          }
         }
       }
       if (injectMessage) return { ...decision, messages: [...decision.messages, injectMessage] }

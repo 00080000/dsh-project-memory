@@ -83,6 +83,13 @@ export const Config = Schema.object({
     // 一旦有默认值就会永远走旧的绝对 overlap 判据——而它对长消息实测只有 0.014~0.057，
     // 必然过不了，相对阈值 signalMinRatio 就变成死代码。只有用户显式配置才保留旧行为。
     relevanceMin: Schema.number(),
+    // 预算审计日志（stderr）**默认 off**：终端是用户可见面，而"预算挤掉低优先级条目"是
+    // 正常降级、不是故障——默认打印会让一次 dsh web 启动刷出多行，用户的第一反应是卸载插件。
+    // off（默认，永不打印）/ once（每个会话最多一行，首次出现丢弃时）/ all（丢弃组合每变化一次一行，作者排查）
+    budgetLog: Schema.union(['off', 'once', 'all']).default('off'),
+    // 同一条 insight 在本会话里重复注入的冷却（pre-step 步数）。0（默认）= 正文没变就不再注入：
+    // 注入消息留在会话历史里（宿主只追加不压缩），整块重发只是重复占位。>0 用于外部裁剪历史的场景。
+    reinjectItemsAfter: Schema.number().default(0),
   }).default({}),
 })
 

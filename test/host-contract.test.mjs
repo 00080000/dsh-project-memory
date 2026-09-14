@@ -8,6 +8,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { installAutoInject } from '../src/auto-inject.js'
+import { GlobalStore } from '../src/insight-store.js'
 import { WatchManager } from '../src/watch.js'
 import { ProjectMemoryStore } from '../src/store.js'
 
@@ -125,6 +126,90 @@ const ok = (name) => {
   assert.equal(injected.source.sections[0].name, 'project-memory')
   assert.ok(injected.source.sections[0].text.includes('注入语义验证'), 'sections.text 是模型看到的那份贡献')
   ok('注入 source 声明为 snapshot + sections（通道不变）')
+}
+
+// ---- 4. 条目级去重：同一份 procedure 不得因"整块指纹变了"被重复注入 ----
+// 实测背景：一次 66 步的真实会话注入了 20 次，其中同一份 1732 字 procedure 重发 3 次、
+// 另一份 1008 字的重发 6 次。原因是去重指纹只认"整块文本"，而整块会因为任务卡推进、
+// 滑动工具窗口、预算截断边界变化而改变 —— 尾巴一变，老条目就跟着重发一遍。
+{
+  const root = mkdtempSync(path.join(tmpdir(), 'inject-dedupe-'))
+  const globalFile = path.join(mkdtempSync(path.join(tmpdir(), 'inject-dedupe-g-')), 'global.json')
+  const gs = new GlobalStore(globalFile).load()
+  gs.doc.items.push({
+    id: 'ins_big_procedure',
+    kind: 'procedure',
+    scope: 'global',
+    title: '大 procedure（只该注入一次）',
+    steps: ['第一步', '第二步', '第三步'],
+    trigger: { keywords: ['重构'] },
+    confidence: 1,
+    archived: false,
+  })
+  gs.commit(() => 0)
+
+  const store = new ProjectMemoryStore(path.join(root, '.dsh-project-memory')).load()
+  const now = new Date().toISOString()
+  store.addTask({
+    id: 'tsk_dedupe', title: '去重验证', projectRoot: root,
+    steps: [{ content: '第一步', status: 'in_progress' }], files: [], archived: false,
+    createdAt: now, updatedAt: now, lastActiveAt: now,
+  })
+  store.setBinding('sessDedupe', 'tsk_dedupe')
+  store.commit(() => 0)
+
+  const mount = (autoContext) => {
+    let handler
+    const ctx = { on: (event, fn) => { if (event === 'agent/pre-step') handler = fn } }
+    installAutoInject(ctx, { memoryDir: '.dsh-project-memory', autoContext, insight: { globalFile } })
+    return async (sessionId) => {
+      const payload = {
+        agent: { session: { id: sessionId, header: { cwd: root } } },
+        messages: [{ role: 'user', content: [{ type: 'text', text: '继续重构' }] }],
+      }
+      const decision = await handler(payload, async () => ({ kind: 'enter', messages: payload.messages }))
+      const last = decision.messages[decision.messages.length - 1]
+      return last && last.source && last.source.plugin === 'dsh-project-memory'
+        ? last.content.map((b) => b.text).join('\n')
+        : null
+    }
+  }
+
+  const step = mount({ enabled: true, maxTokens: 400 })
+  const first = await step('sessDedupe')
+  assert.ok(first && first.includes('大 procedure'), '首次应注入 procedure')
+  assert.ok(first.includes('去重验证'), '首次应带常驻任务卡')
+
+  // 推进任务卡 → 整块指纹必然变化；旧行为会把同一份 procedure 整块重发
+  store.updateTask('tsk_dedupe', { steps: [{ content: '第一步', status: 'done' }, { content: '第二步', status: 'in_progress' }] })
+  store.commit(() => 0)
+  const second = await step('sessDedupe')
+  assert.ok(second && second.includes('去重验证'), '任务卡变了仍要注入（常驻块是快照）')
+  assert.ok(!second.includes('大 procedure'), '同一份 procedure 不得因整块指纹变化而重发')
+
+  // 任务卡与条目都没变 → 整步零注入（历史里已经有这两块）
+  assert.equal(await step('sessDedupe'), null, '内容全未变时必须零注入')
+  ok('条目级去重：同一份 procedure 只注入一次（整块指纹变化不再重发）')
+
+  // 冷却档：>0 时允许 N 步后再注入一次（留给"历史可能被外部裁剪"的场景）
+  gs.doc.items.push({
+    id: 'ins_cooled', kind: 'lesson', scope: 'global',
+    title: '冷却条目', fix: 'x'.repeat(10), trigger: { keywords: ['重构'] }, confidence: 1, archived: false,
+  })
+  gs.commit(() => 0)
+  // 同样绑定任务卡：冷却重发只有在"整块与上次注入的不同"时才可见（块完全一致＝历史里已有，
+  // 再发一遍仍是重复；这正是最后一层指纹要拦的东西）。
+  store.setBinding('sessCooldown', 'tsk_dedupe')
+  store.commit(() => 0)
+  const cd = mount({ enabled: true, maxTokens: 400, reinjectItemsAfter: 2 })
+  const c1 = await cd('sessCooldown')
+  assert.ok(c1 && c1.includes('大 procedure'), '冷却档首次照常注入')
+  const c2 = await cd('sessCooldown') // 第 2 步：未到冷却，procedure 不重发
+  assert.ok(c2 && c2.includes('去重验证'), '第 2 步只发任务卡')
+  assert.ok(!c2.includes('大 procedure'), '冷却未到不重发 procedure')
+  const c3 = await cd('sessCooldown') // 第 3 步：差 2 步，允许重发一次
+  assert.ok(c3 && c3.includes('大 procedure'), 'reinjectItemsAfter=2 时第 3 步应重发一次')
+  ok('reinjectItemsAfter：>0 时按步数冷却重发（0 为默认，本会话只注入一次）')
 }
 
 console.log(`\nhost-contract tests: ${passed} passed`)
