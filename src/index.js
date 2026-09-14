@@ -72,7 +72,17 @@ export const Config = Schema.object({
     enabled: Schema.boolean().default(true),
     entryOn: Schema.boolean().default(true),
     maxTokens: Schema.number().default(400),
-    relevanceMin: Schema.number().default(0.25),
+    entryMaxInsights: Schema.number().default(6),
+    // 提示通道的相对阈值（层内最高分的比例）——出厂判据
+    signalMinRatio: Schema.number().default(0.5),
+    // resident 任务卡最多显示几个「编辑中」文件
+    editedMax: Schema.number().default(3),
+    // 模型自己维护清单且之后没有新人类消息时，不把任务卡回声给模型
+    skipEchoSelfTodo: Schema.boolean().default(true),
+    // ⚠️ 旧兼容闸门，**刻意不给默认值**：cfgEngine 以「relevanceMin 是否为 number」选分支，
+    // 一旦有默认值就会永远走旧的绝对 overlap 判据——而它对长消息实测只有 0.014~0.057，
+    // 必然过不了，相对阈值 signalMinRatio 就变成死代码。只有用户显式配置才保留旧行为。
+    relevanceMin: Schema.number(),
   }).default({}),
 })
 
