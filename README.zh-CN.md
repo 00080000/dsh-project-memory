@@ -294,7 +294,7 @@ TaskPanel (Container)
 | `enableTypeScript` | true | 设为 `false` 彻底禁用 L2 TS 增强（仅保留 L1 正则） |
 | `insight.*` | dedupOverlap `0.7` · reinforceBand `0.65` · maxProject `100` · maxGlobalProcedures `200` · promoteConfidence `0.7` · globalPromoteTasks `3` · decayDays `90` · `globalFile`（自动） | v0.5 insight 去重/强化/提升/容量/归档设置 |
 | `reflection.enabled` | false | v0.5 LLM 反思，**只写任务级草稿**（触发于任务切走/归档）。`cooldownMs` `1800000`、`maxLessonsPerReflect` `3`、`maxDecisionsPerReflect` `2` |
-| `autoContext.enabled` | true | v0.5 静默注入包装（entry 常驻块 + relevance）。宿主无法解析会话 cwd 时完全透传（零副作用）；`maxTokens` `400`、`editedMax` `3`（resident 任务卡显示最近"编辑中"文件数）、`signalMinRatio` `0.5`（提示至少要达到该层最高分的一半）、`skipEchoSelfTodo` `true`（模型自己写/维护任务清单后、无新人类消息时不回声任务卡，省 token；相关 insights 仍注入） |
+| `autoContext.enabled` | true | v0.5 静默注入包装（entry 常驻块 + relevance）。宿主无法解析会话 cwd 时完全透传（零副作用）；`maxTokens` `400`、`editedMax` `3`（resident 任务卡显示最近"编辑中"文件数）、`signalMinRatio` `0.5`（提示至少要达到该层最高分的一半）、`skipEchoSelfTodo` `true`（模型自己写/维护任务清单后、无新人类消息时不回声任务卡，省 token；相关 insights 仍注入）、`budgetLog` `off`（预算丢弃审计写到 stderr：`off` 静默 / `once` 每会话最多一行 / `all` 丢弃组合每变化一次一行。注入按优先级排程，预算不够时丢掉低优先级条目属于**正常降级而非故障**，所以默认不占用用户终端）、`reinjectItemsAfter` `0`（同一条 insight 重复注入的冷却步数；`0` = 正文没变就不在本会话内再注入——注入消息留在会话历史里，重发只是重复占位） |
 
 ### 功能开关
 
@@ -311,6 +311,8 @@ TaskPanel (Container)
     watch: true                 # 开启：被监听根目录后台保持新鲜（默认）
     watchInterval: 15           # 轮询间隔（秒）
     enableTypeScript: true      # 开启：装了 TS 时启用 L2 语义增强（默认）
+    # budgetLog: once           # 调试用：注入被预算挤掉时在 stderr 留痕（默认 off 静默）
+    # reinjectItemsAfter: 20    # 调试用：同一条 insight 隔 N 步才允许重发（默认 0 = 本会话只发一次）
     # tsPath: /custom/path/to/typescript  # 可选：强制指定 TS 安装路径
 ```
 
