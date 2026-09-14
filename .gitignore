@@ -8,3 +8,7 @@ lib/
 pnpm-lock.yaml
 bench/
 RELEASE-NOTES-*.md
+
+# 内部计划 / 恢复文档（仅留本地，不公开；也防止再次被当垃圾清理掉）
+de-TODO.md
+PLAN-*.md
