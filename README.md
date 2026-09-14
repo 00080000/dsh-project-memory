@@ -16,8 +16,8 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 ![alt text](docs/images/image-4.png)
 ## Features
 
-- **TaskBridge: cross-session development tasks** — the plugin watches each session's live todo list (`todo_write` events) and file reads (`tool/call`): progress snapshots (`steps`) and touched files sync into durable per-project task entities. An unbound session that writes a todo auto-creates a task. Associated files are kept in **recency-weighted order (written/edited first; a read never outranks a written file)** so a resumed session sees at a glance where to look. New sessions continue by `list_tasks` → `select_task` (bind / rename / unarchive); `query_memory` gains `type: 'task'` and appends a task-count hint to `type: 'all'` results. The user-side `/tasks` command shows the task stack, step progress, involved files, and the current session binding. Titles are chosen by the model via `select_task(title=…)` (fallback: the part of your message after the last colon). Capacity is project-size adaptive (`fileCount/20`, clamped 5–100). Storage: `.dsh-project-memory/tasks.json` + `binding.json`. Auto-sync requires a dsh build with session events + `todo_write` (verified on 0.1.2-alpha.x); on older hosts the task tools still work as a plain record list.
-- **Task Panel (v0.4.2+): Floating task panel in dsh web** — built on the real dsh web 0.1.2-rc.1 client plugin contract (cordis inject + apply, registered into host `shell.overlay` slot). Draggable cards show steps/files (click to copy path); collapse to a draggable mini-bar; hide completely (summon with `/task` / `/tasks`). Render errors have error boundaries — panel crash no longer takes down the host.
+- **TaskBridge: cross-session development tasks** — the plugin watches each session's live todo list (`todo_write` events) and file reads (`tool/call`): progress snapshots (`steps`) and touched files sync into durable per-project task entities. An unbound session that writes a todo auto-creates a task. Associated files are kept in **recency-weighted order (written/edited first; a read never outranks a written file)** so a resumed session sees at a glance where to look. New sessions continue by `list_tasks` → `select_task` (bind / rename / unarchive); `query_memory` gains `type: 'task'` and appends a task-count hint to `type: 'all'` results. The user-side `/tasks` command shows the task stack, step progress, involved files, and the current session binding. A task named by the model via `select_task(title=…)` keeps that title; one **auto-created** by the first `todo_write` is titled from its **first list entry** (≤48 chars), falling back to the first human message (the part after the last colon), then `Untitled Task`. Sessions spawned as **subagents** are excluded from auto-creation (`origin: 'subagent'` / `delegationDepth > 0`); merging delegated work back into a task is deliberately unbuilt — see §11 in Design tradeoffs. Capacity is project-size adaptive (`fileCount/20`, clamped 5–100). Storage: `.dsh-project-memory/tasks.json` + `binding.json`. Auto-sync requires a dsh build with session events + `todo_write` (verified on 0.1.2-alpha.x, re-verified against the 0.1.5-rc.1 host surface); on older hosts the task tools still work as a plain record list.
+- **Task Panel (v0.4.2+): Floating task panel in dsh web** — built on the real dsh web 0.1.5-rc.1 client plugin contract (cordis inject + apply, registered into host `shell.overlay` slot). Draggable cards show steps/files (click to copy path); collapse to a draggable mini-bar; hide completely (summon with `/task` / `/tasks`). Render errors have error boundaries — panel crash no longer takes down the host.
 - **Task Panel Behavior** —
   - **Default hidden**: panel does not show on dsh web startup
   - **Explicit summon**: type `/tasks` or `/task` (list form) to open; model calls `show_task_panel` tool to open
@@ -28,19 +28,17 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
   - **Hide hints**: click ? to suppress every hover tooltip in the panel (drag handle, style/view/minimize/close, rename, step status, copy path, mini-bar, memory view); the preference is stored in localStorage and survives a refresh; the button dims while hints are off — click again to restore
 - **Bidirectional task-list sync (host ↔ plugin tasks, v0.4.2+)** — `select_task` or `/task switch` pushes task steps to host `todo/write` so dsh's rendered task list mirrors the plugin's task entity. Config `tasklist.syncHostOnAdopt` (default on) to toggle. Empty `todo/write` means "clear": unbound session clears list without creating junk tasks; bound session clears that task's steps (task retained). Panel edits (step text/status) = write back bound task + push host list, sharing one code path with model `todo_write`. `/task` subcommands: `switch`, `archive`, `unbind`, `rename`, `todos` (invoked by panel buttons/clicks, not the model); `unbind` also clears the host task list above the input.
 - **Panel editing & themes (v0.4.2+)** — bound cards: double-click title/step for inline edit (input auto-grows); click step status icon to cycle todo→in-progress→done. Non-bound cards read-only. **Four visual themes** (click folder icon left of title, persisted locally): Native / Glassmorphism / Brutalist / Terminal monospace — only material, geometry, typeface, density change; colors always use dsw alias tokens, follow host light/dark and theme plugins.
-- **Document memorization** — PDF, Markdown, and plain text files are chunked and summarized **without any model call**: each entry keeps a ≤300-character `summary` for injection plus a whole-chunk `terms` set for retrieval, and a `path:line` citation back to the source.
-- **Code symbol memory** — function, class, and method names with full type signatures (generics, parameters, return types, overloads) are extracted by a dependency-free source scanner (string/comment masking, multi-line signature joining, indentation-aware Python, class-method context), without LLM token usage.
-- **L1 Enhanced Regex** — zero-dep regex scanner now extracts generics, parameter/return types, overloads, interfaces, and type aliases for all supported languages, producing one-line identity signatures `fn(a: A, b: B): R — file.ts:42`.
+- **Document memorization** — PDF, Markdown, and plain text files are chunked and summarized **without any model call**: each entry keeps a ≤300-character `summary` for injection, a bounded (≤160) deterministic, stop-word-filtered `terms` set that covers the **entire chunk** (search-only, so recall is not limited to the opening lines), and a `path:line` citation back to the source. The legacy `blindSpots` field is always empty now that indexing never calls a model; it is kept only so stores written by older versions still load.
+- **Code symbol memory (L1 regex)** — a dependency-free scanner extracts functions, classes and methods with full signatures (generics, parameter/return types, overloads) plus interfaces and type aliases across 8 languages, producing one-line identity signatures `fn(a: A, b: B): R — file.ts:42`. It masks strings/comments, joins multi-line signatures, is indentation-aware for Python and carries class-method context — with zero LLM tokens.
 - **Optional TypeScript semantic enhancement (L2/L3)** — when `typescript` is installed in the user project (`npm i -D typescript`), the plugin automatically activates a second layer (L2) that uses the TS Compiler API to infer return types, resolve generics, extract interfaces and type aliases, and enrich arrow functions — all asynchronously in a priority queue (P0 on `fs/observed`, P1 on `watch`, P2 on `index_repo`). Results are cached on disk keyed by file content hash (L3) for instant cold-start reuse. Zero config: just install TS (5.x or 6.x) and restart dsh. Fully optional; if TS is absent or disabled via `enableTypeScript: false`, the plugin falls back to L1 regex-only extraction.
 - **Automatic refresh** — a background poll (`watch_repo`) detects new or changed files by content hash and re-memorizes only those.
 - **Read-time memorization** — files are memorized the moment the model actually reads them (`fs/observed`), so the memory is a byproduct of normal work, not a separate upfront scan. Files that are never read are never indexed. The project root is detected by markers (`.git`, `package.json`, …), a README plus source directories, or the file's own directory as a last resort.
 - **Doc ↔ code cross-linking** — when a document mentions a symbol, the match is recorded as a `reference`; querying a symbol also surfaces the documents that describe it.
 - **BM25 memory recall** — ranked search over documents, symbols, and experience notes, with optional LLM query expansion to handle vocabulary mismatch. **CJK-optimized**: precise phrase boost (3+ char phrases ×1.5 score on title/keywords match), synonym table (e.g. 数据库连接池 ↔ 连接池 ↔ DB pool), and CJK-aware word boundaries for doc↔symbol linking.
-- **Whole-chunk retrieval terms** — every doc chunk also stores `terms`: a bounded (≤160), deterministic, stop-word-filtered literal term set covering the **entire chunk**. `summary` stays ≤300 characters for the injection budget and `terms` is search-only, so recall finds content anywhere in the chunk rather than only in its opening lines. (The `blindSpots` field and its "summary does not cover …" warning are retained for compatibility, but are empty for newly indexed documents, since indexing does not call a model.)
 - **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches. The note store is bounded: capacity scales with project size (clamped to 100–2000), and the oldest notes are pruned when the limit is exceeded. **Supersede tightened to bidirectional 0.7 overlap** (was 0.6); **experience `problem` field now participates in CJK phrase boost** for long-tail query recall.
 - **v0.5 tiered insight memory (lessons / decisions / procedures)** — one `insight` entity across three scopes: `task` (private drafts in `tasks.json`), `project` (`.dsh-project-memory/insights.json`), `global` (`~/.config/dsh-project-memory/global.json`). `save_lesson` writes any scope; dedupe is bidirectional token overlap ≥ 0.7 (merge) with a 0.65–0.7 reinforce band; **promotion is a scope change, not a copy** — 2 tasks hitting the same insight promote it to project, 3+ to global. Archive is soft (`archived`), decay/capacity prune archived entries only; writes are filtered for secret/token-shaped content. LLM **reflection is off by default** and only ever writes task-level drafts (`source: reflect`) on task switch-away/archive. Panel gains a Task / Project / Global memory view with approve, promote/demote, archive/restore, delete, edit and a create form (procedures can carry an “as Skill” trigger). Old `experience.json` notes are imported into `insights.json` once, non-destructively. Every kind can carry an authored `trigger` (`keywords` / `symbols` / `actions` / `paths`): a hit injects the entry **before the action**, deterministically — procedure-only in v0.5, all kinds since the readiness layer.
-- **Streaming TF + IDF caching** — query path caches IDF (term inverse frequency) per store version; on cache hit, single-pass streaming scores 20k entries in ~3 ms (5k files) / ~0.6 ms (1k files) with zero intermediate objects; write path is O(1) version bump.
-- **Lock-free sync transactions** — all writes (index / watch / remember / forget / watch_repo) go through synchronous transactions `store.commit(fn)`; fn succeeds then atomic write; JS single-threaded event loop guarantees no interleaving; `remember`/`forget` never blocked by watch re-indexing.
+- **Streaming TF + IDF caching** — query path caches IDF (term inverse frequency) per store version; on cache hit, single-pass streaming scores 20k entries in ~3 ms (5k files) / ~0.6 ms (1k files) with zero intermediate objects. Only a **dirty** write bumps the version and drops the cache — a no-op `save()` returns before touching the disk, so the 15 s watch poll can never clear the cache a query just built.
+- **Lock-free sync transactions** — all writes (index / watch / remember / forget / watch_repo) go through synchronous transactions `store.commit(fn)`; fn succeeds then atomic write; the JS single-threaded event loop guarantees no interleaving (**in-process only** — see Consistency); `remember`/`forget` are never blocked by watch re-indexing.
 - **Minimal dependencies** — pure JavaScript; the only runtime dependency is `pdfjs-dist` (PDF text extraction), no native builds required.
 - **Negligible overhead** — pure in-process operation; cold start <100 ms (5k files), typical project query median 2–3 ms (p99 < 7 ms); bottleneck is PDF extraction and disk I/O, not the plugin's scoring.
 
@@ -59,7 +57,7 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 | Cold load | 10,000 files | 108 ms |
 | Hot lazy re-index (single file) | 10k files | median 4.5 ms / max 10.2 ms |
 
-> Synthetic benchmark: generated code (~4–5 symbols/file), Node 24, Linux, SSD. Measures pure indexing overhead without LLM calls. query_memory benchmark uses IDF cache + precomputed searchText; first query after write rebuilds IDF (~150 ms), subsequent queries hit cache.
+> Synthetic benchmark: generated code (~4–5 symbols/file), Node 24, Linux, SSD. Measures pure indexing overhead without LLM calls. query_memory benchmark uses IDF cache + precomputed searchText; the first query after a write rebuilds IDF (~120–150 ms, scale-dependent; ~122 ms measured at 40k entries), subsequent queries hit cache.
 
 ### Real Project Storage
 
@@ -69,6 +67,27 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 | Vue 3 + Vite frontend | 289 | 2,141 | 1.0 MB | ~0.5 KB |
 
 > Real projects (Java + Vue), tested on Linux file system (Node 24). Real project entries are smaller than synthetic benchmarks due to lower symbol density and shorter declarations.
+
+### Reproduce it on your own project
+
+Rather than asking you to trust the numbers above, the measurement itself ships with the repository. It needs **no dsh instance, no network and no model calls**, and it never touches your project's own store — results go to a temp directory and are removed when it finishes:
+
+```bash
+npm run bench -- /path/to/your/project
+# or, with options:
+node scripts/bench.mjs /path/to/your/project [--json] [--samples 100] [--no-pdf] [--keep]
+```
+
+It reports the cold index split into read+hash / extract / commit, cold load, IDF rebuild, cold and hot query latency (p50/p95/max over 100 sampled queries through the shipped scorer), single-file hot re-index, store size and bytes per entry. Example — our internal Vue project (289 files / 2,141 entries, Node 24, 20 CPU, Linux):
+
+```
+cold index   249 ms   (read+hash 8 ms · extract 224 ms · commit 15 ms)
+store        1.10 MB · 538 bytes/entry · cold load 4.3 ms
+hot query    p50 0.75 ms · p95 1.06 ms          (2,141 entries)
+re-index 1 file  p50 0.31 ms
+```
+
+Two caveats we would rather state than hide: `read+hash` depends on the OS page cache (the first run over a corpus is slower than the second — say which run you quote), and **real projects score slower than the synthetic table above** — on a 3,000-file slice of a large TypeScript repository (15,594 entries) hot queries were p50 7.5 ms, because real declaration text is longer than generated stubs. Pass `--queries your-queries.json` to run the same labeled-set method (hit@5 / hit@10 / MRR) against your own project.
 
 ## How it works
 
@@ -114,8 +133,8 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | Tool | Purpose |
 |---|---|
 | `index_doc file_path` | Index one document (PDF/MD/txt): chunk → deterministic `summary` + whole-chunk `terms` → store with `path:line`. Unchanged files are skipped. |
-| `index_repo root` | Index a whole project: docs get deterministic summaries + whole-chunk terms, code files get a zero-token symbol table. Incremental, cleans up deleted files, cross-links docs to symbols. |
-| `watch_repo root` | Enable automatic refresh: a background poll detects new/changed files (mtime + content hash) and re-indexes only those. Watched roots persist across plugin restarts. |
+| `index_repo root` | Index a whole project: docs get deterministic summaries + whole-chunk terms, code files get a zero-token symbol table. Incremental, cleans up deleted files, cross-links docs to symbols. A root that does not exist — including a Windows-style path resolved on Linux/macOS — is rejected before anything is written. |
+| `watch_repo root` | Enable automatic refresh: a background poll detects new/changed files (mtime + content hash) and re-indexes only those. Watched roots persist across plugin restarts; a non-existent root, the filesystem root and the shared temp directory are all refused, and roots that disappear are dropped instead of being re-created. |
 | `memory_stats root` | Show what the store contains: totals (files / entries / experience notes), last index time, and the per-file list sorted by recency. |
 | `query_memory query` | BM25 search over docs + symbols + experience + insights (lessons / decisions / procedures), optionally query-expanded by the LLM. `type` selects a layer (`all` / `doc` / `symbol` / `experience` / `insight` / `task`). Returns ranked hits with relative scores, sources or insight ids, and doc→symbol references. |
 | `list_tasks` | List task records for the project (archived marked). Call first in a new session before continuing work. |
@@ -194,7 +213,7 @@ These are deliberate scope choices.
 
 **We don't:** Vector embeddings, dense retrieval, rerankers, or hybrid search.
 
-**Why:** Vectors require an embedding model (local = heavy, remote = latency + cost + privacy), a vector index (HNSW/IVF = memory + build time), and reranking (another LLM call). For the queries this plugin targets, lexical BM25 is already sufficient and measurable: on our benchmark suite (29 queries over a real Vue project) file-level hit@5 is **96.6%**, and 28 of the 29 are exact symbol lookups that lexical search answers essentially always. Whole-chunk `terms` took document-term coverage from **27.3% to 100%** while queries that already worked kept their ranking (MRR **0.958** vs **0.955**). The marginal gain from semantic search doesn't justify the 10x complexity/cost increase.
+**Why:** Vectors require an embedding model (local = heavy, remote = latency + cost + privacy), a vector index (HNSW/IVF = memory + build time), and reranking (another LLM call). For the queries this plugin targets, lexical BM25 is already sufficient and measurable: on our benchmark suite (29 queries over a real Vue project) file-level hit@5 is **96.6%**, and 28 of the 29 are exact symbol lookups that lexical search answers essentially always. Whole-chunk `terms` took document-term coverage from **27.3% to 100%** while queries that already worked kept their ranking (MRR **0.958** vs **0.955**). Those figures come from an internal Vue project with a hand-labeled 29-query set, so they are not reproducible outside it — but the **method** now ships as `scripts/bench.mjs --queries <your-set.json>`, so you can run the identical measurement on your own project. The marginal gain from semantic search doesn't justify the 10x complexity/cost increase.
 
 ### 5. Indexing is deterministic and model-free
 
@@ -204,13 +223,15 @@ These are deliberate scope choices.
 
 **Why:** An index-time model call makes indexing slower, non-deterministic and unverifiable — the same document can index differently on two runs. Query-time translation adds latency and a hard failure mode (a bad translation means zero recall). Rules plus symbol linking cover the common cases, work offline, and keep indexing at zero model calls.
 
-### 6. Explicit `remember` over implicit learning
+### 6. Model-facing memory: the agent writes, and no human has to be in the loop
 
-**We do:** Users (or the agent) explicitly call `remember(problem, solution)`. Supersede uses bidirectional token overlap ≥0.7 to deduplicate.
+**We do:** Treat the agent as a first-class writer. `remember` / `save_lesson` write **any scope at any time** (`task` / `project` / `global`) with no human step, and promotion is deterministic and runs inside the ordinary write path: cross-task token-overlap dedupe accumulates `sourceTaskIds`, then `promoteAllTasksToProject` / `promoteProjectToGlobal` move an entry up once its corroboration counts are met (≥2 tasks for project, ≥ `globalPromoteTasks` — 3 by default — for global). Nothing waits on the task panel: a user who never opens the UI still gets a memory that fills, dedupes and graduates.
 
-**We don't:** Automatically extract "lessons" from user corrections, or infer rules from conversation history.
+**We do (labeling):** Keep inferred content distinguishable from recorded content. The v0.5 `reflection` path (opt-in, **off by default**) is the only writer that infers rather than records: it writes task-scoped drafts stamped `draft: true` / `source: 'reflect'`, and `recall` plus silent injection skip `draft` entries while they remain drafts.
 
-**Why:** Implicit learning is unpredictable — it hallucinates, captures noise, and pollutes the memory with unverifiable entries. Explicit `remember` creates an auditable, user-controlled knowledge base. The cost (one tool call) is negligible; the benefit (trust, verifiability, no silent corruption) is decisive.
+**We don't:** Require human approval for memory to become useful, or make the UI a step in the write path. `draft` is a **provenance label plus a corroboration threshold**, not an approval queue.
+
+**Why:** The agent is the consumer and it is usually headless — memory that only graduates when a human clicks a card is memory that never graduates. Labeling keeps the useful half of the caution (inferred ≠ recorded, and unreviewed single-task inference stays out of the prompt) without taxing the normal path. A draft graduates on corroboration: a second task matching it through the model's own writes, or the model writing the same knowledge at project scope, which links the existing entry instead of duplicating it.
 
 ### 7. Full entries returned directly
 
@@ -243,6 +264,14 @@ These are deliberate scope choices.
 **We don't:** Mandatory TS, blocking enhancement, or full-program type checking.
 
 **Why:** Mandatory TS would break installs for non-TS projects. Blocking enhancement would stall `index_repo` on large codebases. Full-program checking is 10x slower and memory-heavy. Our design: enhance what's read, cache it, never block the hot path.
+
+### 11. Subagent sessions are out of scope for now
+
+**We do:** Exclude sessions spawned as subagents (`origin: 'subagent'` / `delegationDepth > 0`) from auto-creating or binding a task. Their `todo_write` events do not create tasks, and they inherit no task binding.
+
+**We don't:** Merge a delegated run's steps and files back into the task that spawned it. That is **not designed yet**: there is no parent-link model for delegated work, and the naive version mints one project task per subagent.
+
+**Why:** Every subagent that writes a todo would otherwise create its own task entity, so one fan-out run would flood the task list with ephemeral entries nobody resumes. Excluding them keeps the task list equal to the work the user actually owns. The cost is that a delegation's progress is invisible in the task record; merging it properly (child steps folded into the parent, or a separate delegated-work view) is future work.
 
 ## Configuration
 
@@ -302,7 +331,8 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test          # 269 tests (169 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 7 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 13 readiness + 6 insight-derive + 4 readiness-eval)
+npm test          # 276 tests (176 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 7 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 13 readiness + 6 insight-derive + 4 readiness-eval)
+npm run bench -- /path/to/project   # index/query performance on any project — no dsh needed
 ```
 
 ## License

@@ -49,7 +49,7 @@ export const Config = Schema.object({
     // 任务成为会话绑定（select_task / /task switch）时，把任务步骤推成宿主 todo/write 快照
     syncHostOnAdopt: Schema.boolean().default(true),
   }).default({}),
-  // v0.5 单一 insight 实体：分层去重/强化/提升/容量/归档（详见 PLAN-v0.5.0.md）
+  // v0.5 单一 insight 实体：分层去重/强化/提升/容量/归档
   insight: Schema.object({
     dedupOverlap: Schema.number().default(0.7),
     reinforceBand: Schema.number().default(0.65),

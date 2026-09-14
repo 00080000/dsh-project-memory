@@ -771,18 +771,30 @@ console.log('\n== watch failure retries ==')
   writeFileSync(path.join(failRoot, 'broken.pdf'), 'definitely not a pdf payload')
   const failWm = new WatchManager(ctx, config)
   failWm.addRoot(failRoot)
-  await failWm.poll()
-  check(
-    'failed index rolls back snapshot so next poll retries',
-    !('broken.pdf' in failWm.roots.get(failRoot).snapshot),
-  )
-  writeFileSync(
-    path.join(failRoot, 'skip.txt'),
-    '=== Assembly-CSharp loaded: Assembly-CSharp, Version=1.0.0.0\n\n== TYPE Foo : base=Object\n',
-  )
-  await failWm.poll()
+  const errs = []
+  const origError = console.error
+  console.error = (...a) => errs.push(a.join(' '))
+  try {
+    await failWm.poll()
+    check(
+      'failed index rolls back snapshot so next poll retries',
+      !('broken.pdf' in failWm.roots.get(failRoot).snapshot),
+    )
+    writeFileSync(
+      path.join(failRoot, 'skip.txt'),
+      '=== Assembly-CSharp loaded: Assembly-CSharp, Version=1.0.0.0\n\n== TYPE Foo : base=Object\n',
+    )
+    await failWm.poll()
+    await failWm.poll()
+  } finally {
+    console.error = origError
+  }
   const snap = failWm.roots.get(failRoot).snapshot
   check('dump-skip path keeps snapshot (no re-hash churn)', snap['skip.txt'] !== undefined && !('broken.pdf' in snap))
+  check(
+    'a permanently failing file is reported once, not every poll',
+    errs.filter((l) => l.includes('re-index failed for broken.pdf')).length === 1,
+  )
   failWm.stop()
 }
 
@@ -798,6 +810,11 @@ out = await watchTool.execute({ root, watch: false }, execMock)
 check('watch_repo stops watching', out.includes('Stopped watching'))
 const sessionStoreAfter = new ProjectMemoryStore(memoryRootFor(sessionCwd, config.memoryDir)).load()
 check('watch removed from session cwd watchlist', !sessionStoreAfter.watchlist.includes(root))
+const tmpRefusal = await watchTool.execute({ root: tmpdir() }, execMock)
+check('watch_repo refuses the shared temp dir', tmpRefusal.includes('Refusing to watch'))
+check('watch_repo refusal does not persist the root', !new ProjectMemoryStore(memoryRootFor(sessionCwd, config.memoryDir)).load().watchlist.includes(path.resolve(tmpdir())))
+check('addRoot refuses the shared temp dir', new WatchManager(ctx, config).addRoot(tmpdir()) === false)
+check('addRoot refuses the filesystem root', new WatchManager(ctx, config).addRoot(path.parse(process.cwd()).root) === false)
 
 const wmClamp = new WatchManager(ctx, config)
 wmClamp.start(0)
@@ -810,6 +827,7 @@ const ghostRoot = path.join(tmpdir(), `pm-ghost-${Date.now()}-missing`)
 const restoreStore = new ProjectMemoryStore(memoryRootFor(restoreRoot, config.memoryDir))
 restoreStore.addWatch(restoreRoot)
 restoreStore.addWatch(ghostRoot)
+restoreStore.addWatch(path.resolve(tmpdir()))
 restoreStore.save()
 const restoreCwd = process.cwd
 process.cwd = () => restoreRoot
@@ -823,6 +841,11 @@ check(
   !new ProjectMemoryStore(memoryRootFor(restoreRoot, config.memoryDir)).load().watchlist.includes(ghostRoot),
 )
 check('addRoot refuses a non-existent root', new WatchManager(ctx, config).addRoot(ghostRoot) === false)
+check('restorePersisted skips the shared temp dir', !restoreWm.roots.has(path.resolve(tmpdir())))
+check(
+  'an unwatchable root is dropped from the persisted watchlist',
+  !new ProjectMemoryStore(memoryRootFor(restoreRoot, config.memoryDir)).load().watchlist.includes(path.resolve(tmpdir())),
+)
 restoreWm.stop()
 
 console.log('\n== code size limit ==')
