@@ -1,6 +1,6 @@
 import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { isSupportedCode, isSupportedDoc, memoryRootFor, readFileForIndex, relativePath, storeKey, walkDir } from './util/fs.js'
+import { isSupportedCode, isSupportedDoc, isUnwatchableRoot, memoryRootFor, readFileForIndex, relativePath, storeKey, walkDir } from './util/fs.js'
 import { buildDocEntries } from './doc-pipeline.js'
 import { docEntriesNeedBackfill } from './doc-index.js'
 import { scanSymbols } from './symbols.js'
@@ -25,8 +25,9 @@ export class WatchManager {
       let dropped = 0
       for (const root of [...store.watchlist]) {
         if (typeof root !== 'string' || !root) continue
-        // 已不存在的根直接自愈剔除：它只会每轮白跑，并把目录重新 mkdir 出来
-        if (!existsSync(root)) {
+        // 自愈剔除两类条目：已不存在的根（每轮白跑，还会把目录重新 mkdir 出来），
+        // 以及不该整体监听的文件系统根 / 共享临时目录（会把别人和测试的临时文件全扫进来）。
+        if (!existsSync(root) || isUnwatchableRoot(root)) {
           store.removeWatch(root)
           dropped++
           continue
@@ -41,10 +42,14 @@ export class WatchManager {
     // 根目录不存在就拒绝：否则每轮 poll 都会 commit → save → mkdirSync，
     // 把一条历史遗留、已被删除的 watchlist 条目重新「创建」出来。
     if (!existsSync(root)) return false
+    // 文件系统根 / 共享临时目录不整体监听（子目录允许）。
+    if (isUnwatchableRoot(root)) return false
     if (!this.roots.has(root)) {
       this.roots.set(root, {
         store: new ProjectMemoryStore(memoryRootFor(root, this.config.memoryDir)).load(),
         snapshot: {},
+        // rel → 上次已上报的错误信息。坏文件每轮都会重试，逐轮打印会刷屏。
+        failures: new Map(),
       })
       return true
     }
@@ -137,15 +142,22 @@ export class WatchManager {
             // Dump file - update snapshot so we don't re-hash next poll, but don't index
             fileUpdates.push({ rel, expectedHash: state.store.fileRecord(rel)?.sha256, deleted: true, _sig: sig })
             changed++
+            state.failures?.delete(rel)
             continue
           }
         }
         fileUpdates.push({ rel, expectedHash: state.store.fileRecord(rel)?.sha256, hash, size: stats.size, entries, type: isSupportedCode(ext) ? 'code' : 'doc', _sig: sig })
         changed++
+        state.failures?.delete(rel)
       } catch (err) {
         // Index failed - rollback snapshot so next poll retries
         delete state.snapshot[rel]
-        console.error(`[dsh-project-memory] re-index failed for ${rel}: ${err.message}`)
+        // 同一个文件的同一个错误只上报一次：坏文件每轮都会重试，逐轮 console.error 会刷屏
+        if (!state.failures) state.failures = new Map()
+        if (state.failures.get(rel) !== err.message) {
+          state.failures.set(rel, err.message)
+          console.error(`[dsh-project-memory] re-index failed for ${rel}: ${err.message}`)
+        }
         continue
       }
     }

@@ -5,17 +5,6 @@ lib/
 .env
 *.log
 *.tgz
-de-TODO.md
-test/simulate-agent.mjs
-test/gen-queries.mjs
-test/queries.json
-test/ablation.mjs
-test/ablation-results.json
-test/doc-coverage.mjs
-test/doc-coverage-results.json
-tool-server.mjs
-tool-log.jsonl
-tool-runner.mjs
 pnpm-lock.yaml
 bench/
 RESUME_PROJECT.md
@@ -23,12 +12,3 @@ RESUME_PROJECT.md
 # 内部规划 / 面试材料（仅留本地，不公开）
 docs/面试演示-*.md
 RELEASE-NOTES-*.md
-
-# 本地测试脚手架（仅留本地，不进仓库）
-tool-server*.mjs
-tool-runner.mjs
-run-server.mjs
-manual-test.mjs
-test-query.mjs
-test-debug*.mjs
-tool-log*.jsonl
