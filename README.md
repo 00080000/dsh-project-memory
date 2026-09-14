@@ -295,7 +295,7 @@ These are deliberate scope choices.
 | `enableTypeScript` | true | set `false` to disable L2 TS enhancement entirely (L1 regex only) |
 | `insight.*` | dedupOverlap `0.7` · reinforceBand `0.65` · maxProject `100` · maxGlobalProcedures `200` · promoteConfidence `0.7` · globalPromoteTasks `3` · decayDays `90` · `globalFile` (auto) | v0.5 insight dedupe / reinforce / promotion / capacity / archive settings |
 | `reflection.enabled` | false | v0.5 LLM reflection, **draft-only at task level** (fires on task switch-away / archive). `cooldownMs` `1800000`, `maxLessonsPerReflect` `3`, `maxDecisionsPerReflect` `2` |
-| `autoContext.enabled` | true | v0.5 silent injection wrapper (entry block + relevance). Inert (full passthrough) until the host exposes a resolvable session cwd; `maxTokens` `400`, `editedMax` `3` (how many recently-written "editing now" files the resident task card shows), `signalMinRatio` `0.5` (a hint must reach half of its layer's top score), `skipEchoSelfTodo` `true` (don't echo the task card back when the model itself maintains the task list with no newer human message; relevant insights still inject) |
+| `autoContext.enabled` | true | v0.5 silent injection wrapper (entry block + relevance). Inert (full passthrough) until the host exposes a resolvable session cwd; `maxTokens` `400`, `editedMax` `3` (how many recently-written "editing now" files the resident task card shows), `signalMinRatio` `0.5` (a hint must reach half of its layer's top score), `skipEchoSelfTodo` `true` (don't echo the task card back when the model itself maintains the task list with no newer human message; relevant insights still inject), `budgetLog` `off` (budget-drop audit on stderr: `off` silent / `once` at most one line per session / `all` one line per changed dropped set. Injection is priority-scheduled, so dropping low-priority entries when the budget runs out is **normal degradation, not a failure** — hence the default keeps the user's terminal clean), `reinjectItemsAfter` `0` (cooldown, in pre-steps, before the same insight may be injected again; `0` = an unchanged item is never re-injected in the same session, because the injected message stays in the session history) |
 
 ### Toggling features
 
@@ -312,6 +312,8 @@ Settings live in the plugin's config object. To change them, add an override ent
     watch: true                 # on: background refresh for watched roots (default)
     watchInterval: 15           # poll interval in seconds
     enableTypeScript: true      # on: L2 TS enhancement when TS is installed (default)
+    # budgetLog: once           # debugging: log budget drops to stderr (default off = silent)
+    # reinjectItemsAfter: 20    # debugging: allow the same insight again after N steps (default 0 = once per session)
     # tsPath: /custom/path/to/typescript  # optional: force specific TS install
 ```
 

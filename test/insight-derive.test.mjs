@@ -118,12 +118,17 @@ const CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
   ok('写入路径：normalizeInsight 与 save_lesson schema 都接受 actions / paths')
 }
 
-// ---- 6. degraded：因预算丢弃注入必须可见，而不是静默 ----
+// ---- 6. 预算丢弃留痕：默认静默，显式开启才出声 ----
+// 默认必须静默：预算挤掉低优先级条目是**正常降级**，不是故障。终端是用户可见面，
+// 一次 dsh web 启动刷出多行 degraded，代价远大于那点可观测性收益（真实反馈：用户会直接卸载）。
+// 留痕能力不删——只是从"默认对所有人喊"改成"作者按需打开"。
 {
   const root = mkdtempSync(path.join(tmpdir(), 'derive-deg-'))
   const file = path.join(root, 'global.json')
   const gs = new GlobalStore(file).load()
-  for (let i = 0; i < 30; i++) {
+  // 29 条走 action trigger（"提交"），1 条走 keyword trigger（alpha）：
+  // 同一个会话两步的丢弃组合必然不同，用来区分 once 与 all。
+  for (let i = 0; i < 29; i++) {
     gs.doc.items.push({
       id: `ins_deg_${i}`,
       kind: 'lesson',
@@ -135,23 +140,48 @@ const CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
       archived: false,
     })
   }
+  gs.doc.items.push({
+    id: 'ins_deg_alpha',
+    kind: 'lesson',
+    scope: 'global',
+    title: 'alpha 专用检查',
+    fix: 'y'.repeat(300),
+    trigger: { keywords: ['alpha'] },
+    confidence: 1,
+    archived: false,
+  })
   gs.commit(() => 0)
 
-  let handler
-  const ctx = { on: (event, fn) => { if (event === 'agent/pre-step') handler = fn } }
-  installAutoInject(ctx, { memoryDir: '.dsh-project-memory', autoContext: { enabled: true, maxTokens: 40 }, insight: { globalFile: file } })
-  const payload = { agent: { session: { id: 's_deg', header: { cwd: root } } }, messages: [{ role: 'user', content: [{ type: 'text', text: '你顺便提交一下' }] }] }
-  const logs = []
-  const orig = console.error
-  console.error = (...a) => logs.push(a.join(' '))
-  try {
-    const decision = await handler(payload, async () => ({ kind: 'enter', messages: payload.messages }))
-    assert.equal(decision.kind, 'enter')
-  } finally {
-    console.error = orig
+  // maxTokens 16 → 预算 48 字符 ≤ trigger 的最小可用长度，于是命中的每一条都会被丢弃（必然留痕）。
+  const run = async (autoContext) => {
+    let handler
+    const ctx = { on: (event, fn) => { if (event === 'agent/pre-step') handler = fn } }
+    installAutoInject(ctx, { memoryDir: '.dsh-project-memory', autoContext, insight: { globalFile: file } })
+    const logs = []
+    const orig = console.error
+    console.error = (...a) => logs.push(a.join(' '))
+    try {
+      const step = async (text) => {
+        const payload = {
+          agent: { session: { id: 's_deg', header: { cwd: root } } },
+          messages: [{ role: 'user', content: [{ type: 'text', text }] }],
+        }
+        const decision = await handler(payload, async () => ({ kind: 'enter', messages: payload.messages }))
+        assert.equal(decision.kind, 'enter')
+      }
+      await step('alpha') // 丢弃组合 A：1 条
+      await step('alpha 你顺便提交一下') // 丢弃组合 B：30 条（签名变化）
+    } finally {
+      console.error = orig
+    }
+    return logs.filter((l) => /degraded/.test(l) && /budget/.test(l))
   }
-  assert.ok(logs.some((l) => /degraded/.test(l) && /budget/.test(l)), `预算丢弃必须留下 degraded 记录：${JSON.stringify(logs)}`)
-  ok('degraded：预算丢弃注入时留下可见记录（不静默）')
+
+  assert.equal((await run({ enabled: true, maxTokens: 16 })).length, 0, '默认（未配置 budgetLog）必须对终端静默')
+  assert.equal((await run({ enabled: true, maxTokens: 16, budgetLog: 'off' })).length, 0, "budgetLog:'off' 必须静默")
+  assert.ok((await run({ enabled: true, maxTokens: 16, budgetLog: 'all' })).length >= 2, "budgetLog:'all' 每个丢弃组合留一行")
+  assert.equal((await run({ enabled: true, maxTokens: 16, budgetLog: 'once' })).length, 1, "budgetLog:'once' 每个会话最多一行")
+  ok('预算丢弃默认静默；once/all 才留痕（可观测性与终端噪音解耦）')
 }
 
 console.log(`\ninsight-derive tests: ${passed} passed`)

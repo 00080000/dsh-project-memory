@@ -892,6 +892,25 @@ check(
   })(),
 )
 
+// 回归：预算审计日志必须**默认静默**（终端是用户可见面），且开关要走 schema 而不是被引擎忽略
+check('default config keeps the budget audit silent', defaultEngine.budgetLog === 'off')
+check('default config does not repeat an injected item in the same session', defaultEngine.reinjectItemsAfter === 0)
+check(
+  'an explicit budgetLog survives the schema and reaches the engine',
+  cfgEngine(new Config({ autoContext: { budgetLog: 'once' } })).budgetLog === 'once',
+)
+check(
+  'an unknown budgetLog value is rejected by the schema',
+  (() => {
+    try {
+      new Config({ autoContext: { budgetLog: 'loud' } })
+      return false
+    } catch {
+      return true
+    }
+  })(),
+)
+
 console.log('\n== dump detection ==')
 const { looksLikeDump } = await import('../src/util/fs.js')
 check(
