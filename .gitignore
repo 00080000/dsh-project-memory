@@ -7,8 +7,4 @@ lib/
 *.tgz
 pnpm-lock.yaml
 bench/
-RESUME_PROJECT.md
-
-# 内部规划 / 面试材料（仅留本地，不公开）
-docs/面试演示-*.md
 RELEASE-NOTES-*.md
