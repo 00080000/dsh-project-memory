@@ -37,27 +37,27 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 - **BM25 memory recall** — ranked search over documents, symbols, and experience notes, with optional LLM query expansion to handle vocabulary mismatch. **CJK-optimized**: precise phrase boost (3+ char phrases ×1.5 score on title/keywords match), synonym table (e.g. 数据库连接池 ↔ 连接池 ↔ DB pool), and CJK-aware word boundaries for doc↔symbol linking.
 - **Experience notes** — problems → solutions; similar problems supersede instead of duplicating, and notes are returned only when a search matches. The note store is bounded: capacity scales with project size (clamped to 100–2000), and the oldest notes are pruned when the limit is exceeded. **Supersede tightened to bidirectional 0.7 overlap** (was 0.6); **experience `problem` field now participates in CJK phrase boost** for long-tail query recall.
 - **v0.5 tiered insight memory (lessons / decisions / procedures)** — one `insight` entity across three scopes: `task` (private drafts in `tasks.json`), `project` (`.dsh-project-memory/insights.json`), `global` (`~/.config/dsh-project-memory/global.json`). `save_lesson` writes any scope; dedupe is bidirectional token overlap ≥ 0.7 (merge) with a 0.65–0.7 reinforce band; **promotion is a scope change, not a copy** — 2 tasks hitting the same insight promote it to project, 3+ to global. Archive is soft (`archived`), decay/capacity prune archived entries only; writes are filtered for secret/token-shaped content. LLM **reflection is off by default** and only ever writes task-level drafts (`source: reflect`) on task switch-away/archive. Panel gains a Task / Project / Global memory view with approve, promote/demote, archive/restore, delete, edit and a create form (procedures can carry an “as Skill” trigger). Old `experience.json` notes are imported into `insights.json` once, non-destructively. Every kind can carry an authored `trigger` (`keywords` / `symbols` / `actions` / `paths`): a hit injects the entry **before the action**, deterministically — procedure-only in v0.5, all kinds since the readiness layer.
-- **Streaming TF + IDF caching** — query path caches IDF (term inverse frequency) per store version; on cache hit, single-pass streaming scores 20k entries in ~3 ms (5k files) / ~0.6 ms (1k files) with zero intermediate objects. Only a **dirty** write bumps the version and drops the cache — a no-op `save()` returns before touching the disk, so the 15 s watch poll can never clear the cache a query just built.
+- **Streaming TF + IDF caching** — query path caches IDF (term inverse frequency) per store version; on cache hit, single-pass streaming scores 20k entries (5k files) in p50 2.6 ms / p95 5.4 ms — and 4k entries (1k files) in p50 0.6 ms / p95 1.6 ms — with zero intermediate objects. Only a **dirty** write bumps the version and drops the cache — a no-op `save()` returns before touching the disk, so the 15 s watch poll can never clear the cache a query just built.
 - **Lock-free sync transactions** — all writes (index / watch / remember / forget / watch_repo) go through synchronous transactions `store.commit(fn)`; fn succeeds then atomic write; the JS single-threaded event loop guarantees no interleaving (**in-process only** — see Consistency); `remember`/`forget` are never blocked by watch re-indexing.
 - **Minimal dependencies** — pure JavaScript; the only runtime dependency is `pdfjs-dist` (PDF text extraction), no native builds required.
-- **Negligible overhead** — pure in-process operation; cold start <100 ms (5k files), typical project query median 2–3 ms (p99 < 7 ms); bottleneck is PDF extraction and disk I/O, not the plugin's scoring.
+- **Negligible overhead** — pure in-process operation; a 5k-file store loads in 40 ms, and a cached query over 20k entries is p50 2.6 ms / p95 5.4 ms (4k entries: p50 0.6 ms / p95 1.6 ms); the bottleneck is PDF extraction and disk I/O, not the plugin's scoring.
 
 ## Performance
 
-### Synthetic Benchmark (isolated environment, Node 24, Linux)
+### Synthetic Benchmark (Node 24.19, WSL2 on 20 vCPU, Linux file system)
 
 | Scenario | Scale | Measured |
 |----------|-------|----------|
-| Full cold index | 5,000 files / 20k entries | 272 ms |
-| Cold load | 5,000 files | 43 ms |
-| Hot lazy re-index (single file) | 5k files | median 2.3 ms / max 4.0 ms |
-| query_memory (cached) | 5k files / 20k entries | median 3.0 ms / p95 5.9 ms |
-| query_memory (cached) | 1k files / 4k entries | median 0.6 ms / p95 1.7 ms |
-| Full cold index | 10,000 files / 40k entries | 637 ms |
-| Cold load | 10,000 files | 108 ms |
-| Hot lazy re-index (single file) | 10k files | median 4.5 ms / max 10.2 ms |
+| Full cold index | 5,000 files / 20k entries | 269 ms avg (p50 267) |
+| Cold load | 5,000 files | 40 ms |
+| Hot lazy re-index (single file) | 5k files | p50 2.4 ms / max 5.5 ms |
+| query_memory (cached) | 5k files / 20k entries | p50 2.6 ms / p95 5.4 ms |
+| query_memory (cached) | 1k files / 4k entries | p50 0.6 ms / p95 1.6 ms |
+| Full cold index | 10,000 files / 40k entries | 551 ms avg (p50 528) |
+| Cold load | 10,000 files | 90 ms |
+| Hot lazy re-index (single file) | 10k files | p50 5.4 ms / max 9.2 ms |
 
-> Synthetic benchmark: generated code (~4–5 symbols/file), Node 24, Linux, SSD. Measures pure indexing overhead without LLM calls. query_memory benchmark uses IDF cache + precomputed searchText; the first query after a write rebuilds IDF (~120–150 ms, scale-dependent; ~122 ms measured at 40k entries), subsequent queries hit cache.
+> Synthetic benchmark: generated code (~4–5 symbols/file), Node 24.19 on WSL2 / 20 vCPU / Linux file system, measured 2026-09-14. Reproduce with `npm run bench:synthetic -- 5000` (harness: `scripts/bench-synthetic.mjs`). Measures pure indexing overhead without LLM calls. query_memory uses the IDF cache + precomputed searchText; the first query after a write rebuilds IDF (**106 ms at 40k entries**, 57 ms at 20k, 12 ms at 4k), subsequent queries hit the cache.
 
 ### Real Project Storage
 
@@ -81,13 +81,13 @@ node scripts/bench.mjs /path/to/your/project [--json] [--samples 100] [--no-pdf]
 It reports the cold index split into read+hash / extract / commit, cold load, IDF rebuild, cold and hot query latency (p50/p95/max over 100 sampled queries through the shipped scorer), single-file hot re-index, store size and bytes per entry. Example — our internal Vue project (289 files / 2,141 entries, Node 24, 20 CPU, Linux):
 
 ```
-cold index   249 ms   (read+hash 8 ms · extract 224 ms · commit 15 ms)
-store        1.10 MB · 538 bytes/entry · cold load 4.3 ms
-hot query    p50 0.75 ms · p95 1.06 ms          (2,141 entries)
-re-index 1 file  p50 0.31 ms
+cold index   253 ms   (read+hash 9 ms · extract 229 ms · commit 13 ms)   ← 2nd, warm-cache run
+store        1.10 MB · 538 bytes/entry · cold load 4.6 ms
+hot query    p50 0.80 ms · p95 1.35 ms          (2,141 entries)
+re-index 1 file  p50 0.33 ms
 ```
 
-Two caveats we would rather state than hide: `read+hash` depends on the OS page cache (the first run over a corpus is slower than the second — say which run you quote), and **real projects score slower than the synthetic table above** — on a 3,000-file slice of a large TypeScript repository (15,594 entries) hot queries were p50 7.5 ms, because real declaration text is longer than generated stubs. Pass `--queries your-queries.json` to run the same labeled-set method (hit@5 / hit@10 / MRR) against your own project.
+Two caveats we would rather state than hide: `read+hash` depends on the OS page cache — on that corpus the first run spent 787 ms and the second 253 ms, so say which run you quote — and **real projects score slower than the synthetic table above** — on a 3,000-file slice of a large TypeScript repository (15,594 entries) hot queries were p50 7.5 ms, because real declaration text is longer than generated stubs. Pass `--queries your-queries.json` to run the same labeled-set method (hit@5 / hit@10 / MRR) against your own project.
 
 ## How it works
 
