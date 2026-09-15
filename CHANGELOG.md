@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.5.5 (2026-09-15)
+
+### Fixed (the README promised a benchmark the npm package did not contain)
+
+- **`scripts/` was missing from `package.json`'s `files` whitelist, so the published tarball shipped a README that told users to run a script it did not include.** `README.md` / `README.zh-CN.md` are inside the package, and their *Performance → Reproduce it on your own project* section (plus the Development block) documents `npm run bench -- /path/to/your/project` and `node scripts/bench.mjs` — but `npm pack` contained only `src/`, `client/`, `cordis.patch.yml` and the three documents: no `scripts/bench.mjs`, no `scripts/bench-synthetic.mjs`. Anyone installing the plugin from npm and following the reproduce instructions found the file absent, which is exactly the "trust the numbers" position that section exists to avoid. `scripts` is now in `files`, so both harnesses ship with the package; they still need no dsh instance, no network and no model calls, since they import only `src/`. Verified with `npm pack --dry-run` (tarball now lists `scripts/bench.mjs`, `scripts/bench-synthetic.mjs`, `scripts/bench-store.mjs`).
+- **`bench/` stays local-only** — it is git-ignored and has never been tracked. It holds the raw measurement logs (`bench/results/`) and the scratch profilers; the synthetic harness it used to contain is `scripts/bench-synthetic.mjs`. Note this is a *packaging* fix only: those harnesses were already on GitHub, so "the README references a script that is not in the repository" was never true for the git remote — it was true only for the npm tarball.
+- **Both READMEs advertised a stale test count.** They still said `280 tests` (the pre-0.5.5 number) while the three unreleased fixes above took the suite to **286**; the figures are now the measured ones (core 180 → 184, host-contract 7 → 9, everything else unchanged).
 
 ### Fixed (silent injection re-sent memory that was already in context)
 
