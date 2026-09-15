@@ -70,7 +70,7 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 
 ### Reproduce it on your own project
 
-Rather than asking you to trust the numbers above, the measurement itself ships with the repository. It needs **no dsh instance, no network and no model calls**, and it never touches your project's own store — results go to a temp directory and are removed when it finishes:
+Rather than asking you to trust the numbers above, the measurement itself ships with the repository **and with the published npm package** (`scripts/` is part of the tarball). It needs **no dsh instance, no network and no model calls**, and it never touches your project's own store — results go to a temp directory and are removed when it finishes:
 
 ```bash
 npm run bench -- /path/to/your/project
@@ -333,7 +333,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test          # 280 tests (180 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 7 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 13 readiness + 6 insight-derive + 4 readiness-eval)
+npm test          # 286 tests (184 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 9 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 13 readiness + 6 insight-derive + 4 readiness-eval)
 npm run bench -- /path/to/project   # index/query performance on any project — no dsh needed
 ```
 

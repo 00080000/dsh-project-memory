@@ -71,7 +71,7 @@
 
 ### 自己复现这些数字
 
-与其让你相信上面的表格，不如把测量本身一起发布。脚本**不需要 dsh 实例、不需要网络、不调用任何模型**，也**不碰被测项目自己的 store**——结果写进临时目录，跑完删除：
+与其让你相信上面的表格，不如把测量本身一起发布——它随仓库发布，**也随 npm 包一起发布**（`scripts/` 已包含在 tarball 中）。脚本**不需要 dsh 实例、不需要网络、不调用任何模型**，也**不碰被测项目自己的 store**——结果写进临时目录，跑完删除：
 
 ```bash
 npm run bench -- /你的/项目路径
@@ -332,7 +332,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test          # 280 项测试（核心 180 + TaskBridge 16 + insight-store 11 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 7 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 13 + insight-derive 6 + readiness-eval 4）
+npm test          # 286 项测试（核心 184 + TaskBridge 16 + insight-store 11 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 9 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 13 + insight-derive 6 + readiness-eval 4）
 npm run bench -- /你的/项目路径   # 对任意项目量索引/查询性能，不需要 dsh
 ```
 
