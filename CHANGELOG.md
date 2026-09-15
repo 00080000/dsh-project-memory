@@ -89,12 +89,12 @@
 
   | signalMinRatio | precision | recall |
   |---|---|---|
-  | 0.20 | 0.86 | 1.00 |
+  | 0.20 | 0.78 | 1.00 |
   | 0.35 | 1.00 | 1.00 |
   | 0.50 (shipped) | 1.00 | 1.00 |
   | 0.70 | 1.00 | 1.00 |
 
-  The shipped default sits in the safe zone with margin, and 0.20 visibly admits a weak match — so the number is justified by data rather than chosen by feel. It lives under `test/` (CI-enforced, shipped) rather than the git-ignored `bench/`, deliberately: a threshold that only exists on one machine is not a threshold.
+  The shipped default sits in the safe zone with margin, and 0.20 visibly admits weak matches — so the number is justified by data rather than chosen by feel. The table is the **9-case** set measured after the hint-precision fix below (the `0.20` figure was 0.86 on the earlier 8-case set; adding "缩写巧合（PR）不得命中" turns one more row into a genuine weak match, `7/9 = 0.78`). It lives under `test/` (CI-enforced, shipped) rather than the git-ignored `bench/`, deliberately: a threshold that only exists on one machine is not a threshold.
 - **Tests:** new `test/insight-derive.test.mjs` (6 checks) and `test/readiness-eval.test.mjs` (4 checks, including the sweep table); suite 256 → **266**.
 
 ### Fixed (readiness hint precision: query source, acronym noise, stub truncation)
