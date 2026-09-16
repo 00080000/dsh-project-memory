@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — injection admission (lessons/decisions/procedures stop arriving by coincidence)
+## 0.5.6 (2026-09-16) — injection admission (lessons/decisions/procedures stop arriving by coincidence)
 
 ### Changed (only what you are about to *do* can trigger an injection)
 

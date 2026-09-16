@@ -357,6 +357,8 @@ npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的
 npm run bench -- /你的/项目路径   # 对任意项目量索引/查询性能，不需要 dsh
 ```
 
+发布说明见 [`CHANGELOG.md`](CHANGELOG.md) 与 [GitHub Releases](https://github.com/00080000/dsh-project-memory/releases)。
+
 ## 许可证
 
 MIT
