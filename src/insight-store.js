@@ -98,10 +98,30 @@ export function normalizeInsight(raw, extra = {}) {
     if (Array.isArray(raw[f]) && raw[f].length) ins[f] = [...new Set(raw[f].map((x) => String(x)))]
   }
   if (raw.trigger && typeof raw.trigger === 'object') {
-    // 所有 kind 通用：keywords / symbols / actions / paths / scope（actions/paths 见 src/readiness.js）
+    // 所有 kind 通用。准入化 schema：when（唯一触发面）/ guard（只收窄）/ prevents（准入条件）；
+    // 旧字段 keywords / symbols / actions / paths / scope 继续接受（readiness 会内存内迁移）。
     const tr = {}
     for (const f of ['keywords', 'symbols', 'actions', 'paths', 'scope']) {
       if (Array.isArray(raw.trigger[f]) && raw.trigger[f].length) tr[f] = raw.trigger[f].map(String)
+    }
+    const when = raw.trigger.when
+    if (when && typeof when === 'object') {
+      const w = {}
+      for (const f of ['ops', 'writes', 'intents']) {
+        if (Array.isArray(when[f]) && when[f].length) w[f] = when[f].map(String)
+      }
+      if (Object.keys(w).length) tr.when = w
+    }
+    const guard = raw.trigger.guard
+    if (guard && typeof guard === 'object') {
+      const g = {}
+      for (const f of ['paths', 'not_paths', 'hosts', 'tags']) {
+        if (Array.isArray(guard[f]) && guard[f].length) g[f] = guard[f].map(String)
+      }
+      if (Object.keys(g).length) tr.guard = g
+    }
+    if (typeof raw.trigger.prevents === 'string' && raw.trigger.prevents.trim()) {
+      tr.prevents = raw.trigger.prevents.trim()
     }
     if (Object.keys(tr).length) ins.trigger = tr
   }

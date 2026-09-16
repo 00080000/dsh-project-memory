@@ -118,6 +118,31 @@ const CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
   ok('写入路径：normalizeInsight 与 save_lesson schema 都接受 actions / paths')
 }
 
+// ---- 5b. save_lesson 接受准入化新 schema（when / guard / prevents）----
+{
+  const root = mkdtempSync(path.join(tmpdir(), 'derive-tool-new-'))
+  const config = { memoryDir: '.dsh-project-memory', insight: { globalFile: path.join(root, 'global.json') } }
+  const tool = lessonTool(config)
+  const exec = { agent: { session: { id: 's_new_schema', header: { cwd: root } } } }
+  await tool.execute({
+    title: '发版前先 bump package.json',
+    kind: 'lesson',
+    fix: 'npm version patch 之后再 publish',
+    trigger: {
+      when: { ops: ['npm-publish'], writes: ['package.json'] },
+      guard: { paths: ['package.json'] },
+      prevents: '不 bump package.json 就发版会重发旧版本号',
+    },
+  }, exec)
+  const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+  const item = store.insightItems()[0]
+  assert.deepEqual(item.trigger?.when?.ops, ['npm-publish'], 'when.ops 必须落盘')
+  assert.deepEqual(item.trigger?.when?.writes, ['package.json'], 'when.writes 必须落盘')
+  assert.deepEqual(item.trigger?.guard?.paths, ['package.json'], 'guard.paths 必须落盘')
+  assert.equal(item.trigger?.prevents, '不 bump package.json 就发版会重发旧版本号')
+  ok('写入路径：save_lesson 接受 when / guard / prevents（准入化新 schema 能落盘）')
+}
+
 // ---- 6. 预算丢弃留痕：默认静默，显式开启才出声 ----
 // 默认必须静默：预算挤掉低优先级条目是**正常降级**，不是故障。终端是用户可见面，
 // 一次 dsh web 启动刷出多行 degraded，代价远大于那点可观测性收益（真实反馈：用户会直接卸载）。
