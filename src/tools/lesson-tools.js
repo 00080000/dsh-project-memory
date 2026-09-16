@@ -35,16 +35,38 @@ export function lessonTool(config) {
         type: 'object',
         additionalProperties: false,
         properties: {
-          keywords: { type: 'array', items: { type: 'string' } },
+          when: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              ops: { type: 'array', items: { type: 'string' }, description: '归一动作 id：file-write / file-delete / shell-run / git-commit / git-push / release / npm-publish / deploy / migrate / render-doc / index-doc / read-image / fetch-web / run-bench / query-memory。' },
+              writes: { type: 'array', items: { type: 'string' }, description: '本次要【写】的项目相对路径（禁扩展名/泛名 glob）。' },
+              intents: { type: 'array', items: { type: 'string' }, description: '人类消息里剥离引用后的意图词（CJK ≥2 字、拉丁 ≥5 字符且不含 _ . /）。' },
+            },
+            description: '唯一触发面：三者取或。',
+          },
+          guard: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              paths: { type: 'array', items: { type: 'string' }, description: '收窄：写目标必须命中其中之一（自己不能触发）。' },
+              not_paths: { type: 'array', items: { type: 'string' } },
+              hosts: { type: 'array', items: { type: 'string' }, description: '例如 wsl（命令里出现 /mnt/* 或 powershell.exe）。' },
+              tags: { type: 'array', items: { type: 'string' }, description: '项目画像 tag 交集（画像未知时不过滤）。' },
+            },
+            description: '收窄条件：全部满足才注入。',
+          },
+          prevents: { type: 'string', description: '准入条件：不知道这条，这一步会做错什么。写不出来 → 不该进自动注入。' },
+          keywords: { type: 'array', items: { type: 'string' }, description: '【旧字段】降级为 intents 与被动召回排序。' },
           symbols: { type: 'array', items: { type: 'string' } },
-          actions: { type: 'array', items: { type: 'string' } },
-          paths: { type: 'array', items: { type: 'string' } },
-          scope: { type: 'array', items: { type: 'string' } },
+          actions: { type: 'array', items: { type: 'string' }, description: '【旧字段】映射为 when.ops；死值丢弃并计入自检。' },
+          paths: { type: 'array', items: { type: 'string' }, description: '【旧字段】具体文件映射为 when.writes；扩展名/泛名 glob 丢弃。' },
+          scope: { type: 'array', items: { type: 'string' }, description: '【旧字段】默认忽略（值不在项目画像 tag 空间里）。' },
         },
         description:
-          'authored trigger（所有 kind 通用）：命中即在**动手前**确定性注入本条。' +
-          'keywords/symbols 匹配人类消息与工具参数；actions 用归一 id（git-commit / npm-publish / go-public / deploy / delete / migrate …）；' +
-          'paths 用 glob（README* / CHANGELOG* / .gitignore）；scope 按项目画像 tags 过滤。留空则只可能作为统计提示注入。',
+          'authored trigger：命中即在**动手前**确定性注入。' +
+          'when = 唯一触发面（ops / writes / intents 取或）；guard 只能收窄；prevents 是准入条件。' +
+          '没有 when 的条目不会自动推送，只出现在记忆目录里供按需拉取。',
       },
       task_id: { type: 'string', description: '目标任务 id（scope 缺省时优先于绑定任务）' },
       files: { type: 'array', items: { type: 'string' }, description: '关联文件（项目相对路径）' },

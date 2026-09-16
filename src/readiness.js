@@ -16,6 +16,9 @@
  * @module dsh-project-memory/readiness
  */
 
+import { FALLBACK_OPS, WEAK_OPS, activityFromText, opForLegacyAction } from './ops.js'
+import { CJK_RANGE, tokenize } from './util/search.js'
+
 /**
  * 动作词典：动作 id → 匹配模式。命令形态与人类意图词都归一成同一套 id，
  * 于是"你顺便提交一下"与 `git commit -m x` 对 trigger 是同一件事。
@@ -80,7 +83,26 @@ export function buildReadinessContext(input = {}) {
   const actionText = String(input.actionText || '')
   const actions = new Set([...(input.actions || []), ...detectActions(humanText), ...detectActions(actionText)])
   const paths = new Set([...(input.paths || []), ...extractPaths(actionText), ...extractPaths(humanText)])
-  return { humanText, actionText, actions: [...actions], paths: [...paths] }
+  // 动作平面（S1）：结构化调用优先；没有结构化调用时对 actionText 跑一遍 shell 规则兜底。
+  const fromText = activityFromText(actionText)
+  const ops = new Set([...(input.ops || []), ...fromText.ops])
+  for (const a of actions) {
+    const op = opForLegacyAction(a)
+    if (op) ops.add(op)
+  }
+  const targets = new Set([...(input.targets || []), ...fromText.targets])
+  const hosts = new Set([...(input.hosts || []), ...fromText.hosts])
+  return {
+    humanText,
+    actionText,
+    actions: [...actions],
+    paths: [...paths],
+    ops: [...ops],
+    targets: [...targets],
+    hosts: [...hosts],
+    intent: intentText(humanText),
+    tags: Array.isArray(input.tags) ? [...input.tags] : [],
+  }
 }
 
 /**
@@ -145,12 +167,12 @@ export function backfillDerivedTriggers(doc) {
 }
 
 /**
- * 提示通道的查询文本：剔除 1–2 个字符的拉丁 token。
+ * 提示通道的查询文本：剔除 1–3 个字符的拉丁 token。
  *
- * 为什么：`PR` / `CI` / `OS` 这类缩写太短、歧义太大，一个巧合命中就能当上该层最高分，
- * 于是以 `relative:1.00` 混进上下文（实测：人类消息里的 "PR" 把一条 task-tools 越权 lesson
- * 顶到了提示位）。内容词（≥3 字符的拉丁标识符、CJK 词）不受影响；
- * authored trigger 通道完全不走这里，确定性匹配保持字面语义。
+ * 为什么：`PR` / `CI` / `OS` / `WSL` / `npm` 这类缩写太短、歧义太大，一个巧合命中就能当上
+ * 该层最高分，于是以 `relative:1.00` 混进上下文（实测：人类消息里的 "PR" 把一条 task-tools
+ * 越权 lesson 顶到了提示位；"wsl" 又把一条 pnpm lesson 顶到了"改文件时间戳"的任务里）。
+ * 内容词（≥4 字符的拉丁标识符、CJK 词）不受影响；authored trigger 通道完全不走这里。
  * @param {string} text - 人类消息或工具参数。
  * @returns {string} 过滤后的查询文本。
  */
@@ -159,7 +181,7 @@ export function hintQueryText(text) {
     .split(/\s+/)
     // 路径形态的 token 原样保留（src/util/fs.js 里的 fs / js 是有效证据），
     // 只对独立词做缩写剔除。
-    .map((w) => (/[/.]/.test(w) ? w : w.replace(/\b[A-Za-z0-9_]{1,2}\b/g, ' ')))
+    .map((w) => (/[/.]/.test(w) ? w : w.replace(/\b[A-Za-z0-9_]{1,3}\b/g, ' ')))
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -172,40 +194,262 @@ function globToRegExp(pattern) {
 }
 
 /**
- * trigger 命中判定（确定性，无打分）。
- * @param {object|null} trigger - `{ keywords?, symbols?, actions?, paths?, scope? }`。
- * @param {object} ctx - {@link buildReadinessContext} 的结果。
- * @returns {string|null} 命中原因（`keyword:…` / `symbol:…` / `action:…` / `path:…`），未命中为 null。
+ * 剥离**引用内容**：代码块、行内代码、引号内的路径/文件名、裸路径。
+ *
+ * 为什么必须剥：人类消息里的文件名是**数据**，不是意图。实测中"石啸天-LLM记忆方向调研.pptx"
+ * 这个文件名让一条"做调研要先扫 curated 列表"的经验在改文件时间戳的任务里被注入。
+ * @param {string} text - 人类消息原文
+ * @returns {string} 只保留意图文字的版本
+ */
+export function intentText(text) {
+  return String(text || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`]*`/g, ' ')
+    .replace(/"[^"\n]*"/g, ' ')
+    .replace(/“[^”\n]*”/g, ' ')
+    .replace(/[A-Za-z]:\\[^\s"']*/g, ' ')
+    .replace(/(?:[A-Za-z0-9_.@-]+\/)+[A-Za-z0-9_.@-]+/g, ' ')
+    // 仓库里的裸文件名（README / CHANGELOG …）也是语料，不是意图
+    .replace(/\b(?:README|CHANGELOG|LICENSE|AGENTS|CONTRIBUTING|Dockerfile|Makefile)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * 意图词是否值得作为触发信号（S2 的准入过滤）。
+ *
+ * 规则来自实测：`rm` 命中 `dcterms`、`ppt` 命中 `pptx`、`ms` 命中任何含 ms 的词——短拉丁词
+ * 是假阳性制造机；含 `_`/`.`/`/` 的是标识符或路径，属于语料平面，不是意图。
+ */
+export function isIntentWord(word) {
+  const s = String(word || '').trim()
+  if (!s) return false
+  if (CJK_RANGE.test(s)) return s.length >= 2
+  if (s.length < 5) return false
+  if (/[_./\\*]/.test(s)) return false
+  if (/\s/.test(s)) return s.length >= 8
+  return true
+}
+
+const GLOB_RE = /\*/
+/** 扩展名 glob（`*.pptx`）与泛名 glob（`README*`）：只能撒谎，不能收窄。 */
+export function isDroppableGlob(pattern) {
+  const p = String(pattern || '')
+  if (!GLOB_RE.test(p)) return false
+  if (/^\*\.\w+$/.test(p)) return true
+  if (/^[A-Za-z][A-Za-z0-9_-]*\*$/.test(p)) return true
+  return false
+}
+
+/**
+ * 意图词命中：CJK 用包含，拉丁用词边界（避免 `ppt` 命中 `pptx`）。
+ * @param {string} word
+ * @param {string} text - 已经是 {@link intentText} 处理过的意图文本
+ */
+export function matchIntent(word, text) {
+  const w = String(word || '').trim()
+  const hay = String(text || '')
+  if (!w || !hay) return false
+  if (CJK_RANGE.test(w)) return w.length >= 2 && hay.includes(w)
+  if (w.length < 4) return false
+  const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(^|[^A-Za-z0-9_])${esc}([^A-Za-z0-9_]|$)`, 'i').test(hay)
+}
+
+function matchAnyPath(pattern, targets) {
+  const p = String(pattern || '')
+  if (!p) return false
+  const re = globToRegExp(p)
+  return (targets || []).some((cand) => {
+    const c = String(cand || '')
+    if (!c) return false
+    return re.test(c) || re.test(c.split(/[\\/]/).pop() || '')
+  })
+}
+
+/** guard 是**收窄**条件：全部满足才放行；它自己不能触发任何东西。 */
+function guardPass(guard, ctx) {
+  if (!guard || typeof guard !== 'object') return true
+  const targets = ctx?.targets || []
+  if (Array.isArray(guard.paths) && guard.paths.length && !guard.paths.some((p) => matchAnyPath(p, targets))) return false
+  if (Array.isArray(guard.not_paths) && guard.not_paths.some((p) => matchAnyPath(p, targets))) return false
+  if (Array.isArray(guard.hosts) && guard.hosts.length && !guard.hosts.some((h) => (ctx?.hosts || []).includes(String(h)))) return false
+  if (Array.isArray(guard.tags) && guard.tags.length) {
+    const tags = ctx?.tags || []
+    // 画像未知（tags 为空）时不过滤：这是既有语义，保持兼容。
+    if (tags.length && !guard.tags.some((t) => tags.includes(String(t)))) return false
+  }
+  return true
+}
+
+/**
+ * trigger 命中判定（确定性，无打分）——**准入化后的语义**。
+ *
+ * `when` 是唯一的触发面，三个成员按 OR：`ops`（动作）／`writes`（本次要写的文件）／
+ * `intents`（人类消息里剥离引用后的意图词）。`guard` 只能收窄。
+ * **没有 `when` 的条目不再触发任何东西**（降级为可发现 + 按需拉取）。
+ *
+ * @param {object|null} trigger
+ * @param {object} ctx - {@link buildReadinessContext} 的结果
+ * @returns {string|null} 命中原因（`op:…` / `write:…` / `intent:…`），未命中为 null
  */
 export function matchTrigger(trigger, ctx) {
-  if (!trigger) return null
-  const haystack = `${ctx?.humanText || ''}\n${ctx?.actionText || ''}`
-  const lower = haystack.toLowerCase()
-  for (const kw of trigger.keywords || []) {
-    const k = String(kw || '')
-    if (k && lower.includes(k.toLowerCase())) return `keyword:${k}`
+  if (!trigger || typeof trigger !== 'object') return null
+  const when = trigger.when
+  if (!when || typeof when !== 'object') return null
+  if (!guardPass(trigger.guard, ctx)) return null
+  for (const op of when.ops || []) {
+    if (op && (ctx?.ops || []).includes(String(op))) return `op:${op}`
   }
-  for (const sym of trigger.symbols || []) {
-    const s = String(sym || '')
-    if (s && haystack.includes(s)) return `symbol:${s}`
+  for (const w of when.writes || []) {
+    // 扩展名/泛名 glob 在这里被硬性忽略：`*.pptx` 这类条件只能撒谎，不能收窄。
+    if (!w || isDroppableGlob(w)) continue
+    if (matchAnyPath(w, ctx?.targets)) return `write:${w}`
   }
-  const actions = new Set(ctx?.actions || [])
-  for (const a of trigger.actions || []) {
-    const id = String(a || '')
-    if (id && actions.has(id)) return `action:${id}`
-  }
-  for (const p of trigger.paths || []) {
-    const pattern = String(p || '')
-    if (!pattern) continue
-    const re = globToRegExp(pattern)
-    const hit = (ctx?.paths || []).some((cand) => {
-      const c = String(cand || '')
-      if (!c) return false
-      return re.test(c) || re.test(c.split(/[\\/]/).pop() || '')
-    })
-    if (hit) return `path:${pattern}`
+  const intent = ctx?.intent ?? ctx?.humanText ?? ''
+  for (const it of when.intents || []) {
+    if (it && matchIntent(it, intent)) return `intent:${it}`
   }
   return null
+}
+
+/**
+ * 旧 trigger → 新 schema（纯函数、幂等、不改原对象）。
+ *
+ * 迁移规则（都在实测里有据）：
+ *   - `actions` → `when.ops`（经 {@link opForLegacyAction} 映射；死值记录进 `triggerNormalized.dropped`）
+ *   - 具体的 `paths` → `when.writes`（"我要改这个文件"）；扩展名/泛名 glob 直接丢弃
+ *   - `keywords` → `when.intents`，只留通过 {@link isIntentWord} 的
+ *   - `scope` → 默认忽略（它的值不在项目画像 tag 空间里，实测把最相关的一条 procedure 判了死刑）
+ *
+ * @param {object} it
+ * @param {{legacyScope?: 'ignore'|'filter'}} [opts]
+ */
+export function normalizeTrigger(it, opts = {}) {
+  const t = it && it.trigger
+  if (!t || typeof t !== 'object') return it
+  if (t.when && typeof t.when === 'object') return it // 已是新 schema：幂等
+  const dropped = []
+  const writes = []
+  for (const p of t.paths || []) {
+    if (!p) continue
+    if (isDroppableGlob(p)) dropped.push(`path:${p}`)
+    else writes.push(String(p))
+  }
+  const ops = new Set()
+  for (const a of t.actions || []) {
+    const op = opForLegacyAction(a)
+    if (!op) {
+      dropped.push(`action:${a}`)
+      continue
+    }
+    // 有精确 writes 时丢掉弱 op：留着它只会把"改这个文件时"扩大成"任何一次提交时"。
+    if (writes.length && WEAK_OPS.has(op)) {
+      dropped.push(`weak-action:${a}`)
+      continue
+    }
+    ops.add(op)
+  }
+  // 具体路径只写进 `when.writes`，**不要**再补一个 `file-write` 到 ops：
+  // when 的成员是取或的，补进去等于让"写了任何文件"就命中，把路径条件短路掉
+  // （实测：那样会让 D 场景一次多出 6 条假阳性）。
+  const intents = []
+  for (const k of t.keywords || []) if (isIntentWord(k)) intents.push(String(k))
+  const when = {}
+  if (ops.size) when.ops = [...ops].sort()
+  if (writes.length) when.writes = [...new Set(writes)]
+  if (intents.length) when.intents = [...new Set(intents)]
+  const out = { ...t, when }
+  const scopeIgnored = Array.isArray(t.scope) && t.scope.length > 0
+  if (scopeIgnored && opts.legacyScope !== 'ignore') out.guard = { ...(t.guard || {}), tags: t.scope }
+  return { ...it, trigger: out, triggerNormalized: { dropped, scopeIgnored } }
+}
+
+/**
+ * trigger 自检（S5）：把"哪些条目其实推不动、哪些声明是死的"变成可数的事实。
+ * @param {object[]} items
+ */
+export function auditTriggers(items, opts = {}) {
+  const out = {
+    total: 0,
+    pushable: 0,
+    pullOnly: [],
+    deadActions: [],
+    droppedGlobs: [],
+    weakDropped: [],
+    fallbackOps: [],
+    scopeIgnored: [],
+    missingPrevents: [],
+  }
+  for (const raw of items || []) {
+    if (!raw || !raw.id) continue
+    out.total++
+    const it = normalizeTrigger(raw, opts)
+    const meta = it.triggerNormalized || {}
+    for (const d of meta.dropped || []) {
+      if (d.startsWith('action:')) out.deadActions.push({ id: it.id, value: d.slice(7) })
+      else if (d.startsWith('path:')) out.droppedGlobs.push({ id: it.id, value: d.slice(5) })
+      else if (d.startsWith('weak-action:')) out.weakDropped.push({ id: it.id, value: d.slice(12) })
+    }
+    if (meta.scopeIgnored) out.scopeIgnored.push(it.id)
+    const when = it.trigger?.when
+    for (const w of when?.writes || []) {
+      if (isDroppableGlob(w)) out.droppedGlobs.push({ id: it.id, value: w })
+    }
+    const hasWhen = Boolean(when && ((when.ops || []).length || (when.writes || []).length || (when.intents || []).length))
+    if (hasWhen) {
+      out.pushable++
+      // 兜底 op 出现在 when.ops 里：不是错误，但这条触发面比它看起来宽得多。
+      const fb = (when.ops || []).filter((o) => FALLBACK_OPS.has(o))
+      if (fb.length) out.fallbackOps.push({ id: it.id, ops: fb })
+    } else {
+      out.pullOnly.push(it.id)
+    }
+    if (!it.trigger?.prevents) out.missingPrevents.push(it.id)
+  }
+  return out
+}
+
+/**
+ * IDF 加权覆盖率（S4 的**绝对**门槛）：条目覆盖了查询里多少**信息量**，而不是多少个 token。
+ *
+ * 为什么需要它：`relativeHits` 只看"层内最高分的比例"，而最高分本身可能就是噪声——
+ * 实测 `relative:1.00` 出现在和查询毫无关系的条目上。归一在 [0,1]、有真零点，才能设下限。
+ *
+ * 返回四个量，调用方要一起看：
+ *   - `coverage`：在**语料能表示**的词里，条目覆盖了多少信息量（分母不含 df=0 的词——
+ *     自然语言查询总有语料没有的词，把它们算成未命中会让任何正常查询都趋零）。
+ *   - `matched`：命中的词数。单个通用词（"插件"）也能拿到 coverage=1.00。
+ *   - `supported` / `terms`：语料里有对应词的比例。长句子里只有一两个词能在语料中找到对应时，
+ *     "覆盖率 1.00"是假象（实测：一句 19 个词的改时间戳请求，只与 WSL 笔记共享一个"文件"，
+ *     却拿到 cov=1.00），调用方据此让**整条通道沉默**。
+ * @returns {{coverage: number, matched: number, supported: number, terms: number}}
+ */
+export function idfCoverage(query, itemText, corpusTexts) {
+  const q = [...new Set(tokenize(query))]
+  if (!q.length) return { coverage: 0, matched: 0, supported: 0, terms: 0 }
+  const item = new Set(tokenize(itemText))
+  const corpus = (corpusTexts || []).map((t) => new Set(tokenize(t)))
+  const n = Math.max(corpus.length, 1)
+  let total = 0
+  let hit = 0
+  let matched = 0
+  let supported = 0
+  for (const term of q) {
+    let df = 0
+    for (const doc of corpus) if (doc.has(term)) df++
+    // df=0 的词不计入分母：它对"选哪一条"没有分辨力。但 supported 会记下有多少词是
+    // 语料根本无法表示的——那是"这条查询整体上离语料太远"的证据，交给调用方决定沉默。
+    if (df === 0) continue
+    supported++
+    const w = Math.log(1 + n / (1 + df))
+    total += w
+    if (item.has(term)) {
+      hit += w
+      matched++
+    }
+  }
+  return { coverage: total > 0 ? hit / total : 0, matched, supported, terms: q.length }
 }
 
 /**

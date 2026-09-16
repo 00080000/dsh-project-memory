@@ -67,22 +67,54 @@ const PUBLIC_FACE = {
   ok('extractPaths：从工具参数里抽路径 token')
 }
 
-// ---- 3. matchTrigger：四类判据 + 画像过滤 ----
+// ---- 3. matchTrigger：准入化后的三类判据（op / write / intent）+ 旧 trigger 不再触发 ----
 {
   assert.ok(readiness, 'src/readiness.js 不存在')
   const ctx = readiness.buildReadinessContext({
     humanText: '你顺便提交一下，注意别泄漏内部文档',
-    actionText: 'git add README.md && npm pack',
-    actions: ['git-commit'],
-    paths: ['README.md'],
+    actionText: 'edit {"file_path":"/repo/README.md"}',
+    ops: ['git-commit'],
+    targets: ['README.md'],
   })
-  assert.match(readiness.matchTrigger({ keywords: ['内部文档'] }, ctx) || '', /keyword/)
-  assert.match(readiness.matchTrigger({ actions: ['git-commit'] }, ctx) || '', /action/)
-  assert.match(readiness.matchTrigger({ paths: ['README*'] }, ctx) || '', /path/)
-  assert.match(readiness.matchTrigger({ symbols: ['npm'] }, ctx) || '', /symbol/)
+  // when 的三类判据（取或）
+  assert.match(readiness.matchTrigger({ when: { ops: ['git-commit'] } }, ctx) || '', /^op:/)
+  assert.match(readiness.matchTrigger({ when: { writes: ['README.md'] } }, ctx) || '', /^write:/)
+  assert.match(readiness.matchTrigger({ when: { intents: ['内部文档'] } }, ctx) || '', /^intent:/)
+  // guard 只能收窄
+  assert.equal(readiness.matchTrigger({ when: { ops: ['git-commit'] }, guard: { paths: ['package.json'] } }, ctx), null)
+  assert.equal(readiness.matchTrigger({ when: { ops: ['git-commit'] }, guard: { not_paths: ['README.md'] } }, ctx), null)
+  assert.match(readiness.matchTrigger({ when: { ops: ['git-commit'] }, guard: { paths: ['README.md'] } }, ctx) || '', /^op:/)
+  // 扩展名/泛名 glob 在 writes 里被硬性忽略（它们只能撒谎）
+  assert.equal(readiness.matchTrigger({ when: { writes: ['*.pptx'] } }, ctx), null)
+  assert.equal(readiness.matchTrigger({ when: { writes: ['README*'] } }, ctx), null)
+  // 旧 trigger（没有 when）不再触发任何东西——这是 S2 的核心语义变更
+  assert.equal(readiness.matchTrigger({ keywords: ['内部文档'] }, ctx), null)
+  assert.equal(readiness.matchTrigger({ actions: ['git-commit'] }, ctx), null)
+  assert.equal(readiness.matchTrigger({ paths: ['README.md'] }, ctx), null)
+  // 意图词看的是**剥离引用后**的人类消息，且拉丁词要过词边界
+  assert.equal(readiness.matchTrigger({ when: { intents: ['ppt'] } }, readiness.buildReadinessContext({ humanText: '看看这个 pptx' })), null)
+  assert.equal(readiness.matchTrigger({ when: { intents: ['调研'] } }, readiness.buildReadinessContext({ humanText: '把这个 "石啸天-记忆方向调研.pptx" 的时间改一下' })), null)
+  assert.match(readiness.matchTrigger({ when: { intents: ['调研'] } }, readiness.buildReadinessContext({ humanText: '帮我做一份记忆方向调研' })) || '', /^intent:/)
   assert.equal(readiness.matchTrigger(null, ctx), null)
-  assert.equal(readiness.matchTrigger({ keywords: ['zzz'] }, ctx), null)
-  ok('matchTrigger：keywords / symbols / actions / paths 四类判据')
+  ok('matchTrigger：op / write / intent 三类判据；guard 只收窄；旧 trigger 与坏 glob 不再触发')
+}
+
+// ---- 3b. normalizeTrigger：旧 trigger → 新 schema（幂等、纯函数）----
+{
+  const legacy = {
+    id: 'x',
+    trigger: { keywords: ['ppt', 'VaporTok', '内部文档'], actions: ['npm-pack', 'interview-prep'], paths: ['*.pptx', 'src/a.js'], scope: ['npm'] },
+  }
+  const n = readiness.normalizeTrigger(legacy)
+  assert.deepEqual(n.trigger.when.ops.sort(), ['npm-publish'])
+  assert.deepEqual(n.trigger.when.writes, ['src/a.js'])
+  assert.deepEqual(n.trigger.when.intents.sort(), ['VaporTok', '内部文档'].sort())
+  assert.deepEqual(n.trigger.guard, { tags: ['npm'] })
+  assert.ok(n.triggerNormalized.dropped.includes('path:*.pptx'))
+  assert.ok(n.triggerNormalized.dropped.includes('action:interview-prep'))
+  assert.equal(readiness.normalizeTrigger(n).trigger, n.trigger, '幂等：已是新 schema 就原样返回')
+  assert.equal(legacy.trigger.when, undefined, '纯函数：不改原对象')
+  ok('normalizeTrigger：actions→ops、具体 paths→writes、keywords→intents、坏 glob 丢弃')
 }
 
 // ---- 4. 动机回归：lesson 的 authored trigger 必须让人在动手前看到它 ----

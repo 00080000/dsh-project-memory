@@ -15,7 +15,9 @@ import { cfgInsight, GlobalStore, defaultGlobalFile } from './insight-store.js'
 import { projectTags } from './project-profile.js'
 import { rankEntriesMergedScored } from './util/search.js'
 import { insightToEntry } from './recall.js'
-import { buildReadinessContext, hintQueryText, matchTrigger, relativeHits } from './readiness.js'
+import { buildReadinessContext, hintQueryText, idfCoverage, matchTrigger, normalizeTrigger, relativeHits } from './readiness.js'
+import { activityFromCalls } from './ops.js'
+import { appendInjectionAudit, auditRecordFrom, cfgAudit } from './audit.js'
 
 export const INJECT_MARK = '[Memory Inject]'
 
@@ -52,6 +54,25 @@ export function cfgEngine(config) {
     // 0（默认）= 内容没变就不再注入：注入消息会留在会话历史里（宿主不压缩历史），
     // 整块重发同一条 1200 字 procedure 只是重复占位。>0 用于历史可能被外部裁剪的场景。
     reinjectItemsAfter: typeof c.reinjectItemsAfter === 'number' && c.reinjectItemsAfter >= 0 ? c.reinjectItemsAfter : 0,
+    // ---- S2/S3/S4 新增（准入化改造） ----
+    // 旧 `scope` 的处理：'filter'（默认，保留旧语义——不静默改用户数据）或 'ignore'。
+    // 注意：实测里唯一带 scope 的条目，其值不在项目画像 tag 空间内，等于被判死刑；
+    // 自检会把它报出来，由作者决定改值还是改语义。
+    legacyScope: c.legacyScope === 'ignore' ? 'ignore' : 'filter',
+    // 条目通道的步间隔：两次"条目注入"之间至少隔这么多步（常驻任务卡不受限——它是状态快照，
+    // 内容变了就该更新）。这是"不频繁"的主要旋钮。
+    gateCooldownSteps: typeof c.gateCooldownSteps === 'number' && c.gateCooldownSteps >= 0 ? c.gateCooldownSteps : 2,
+    // 每会话条目注入的上限（条数 / 字符）：预算只能是上限，不是目标。
+    maxItemsPerSession: typeof c.maxItemsPerSession === 'number' && c.maxItemsPerSession >= 0 ? c.maxItemsPerSession : 12,
+    maxItemCharsPerSession: typeof c.maxItemCharsPerSession === 'number' && c.maxItemCharsPerSession >= 0 ? c.maxItemCharsPerSession : 4000,
+    // 提示通道的**绝对**下限（IDF 加权覆盖率）：相对阈值分不出"有信号"和"矮子里拔将军"。
+    // null = 关闭（回到只有相对阈值的老行为）。
+    hintMinCoverage: typeof c.hintMinCoverage === 'number' && c.hintMinCoverage >= 0 ? c.hintMinCoverage : 0.3,
+    // 提示通道还要求至少这么多个共同词：单个通用词（"插件"）也能拿到 coverage=1.00。
+    hintMinMatched: typeof c.hintMinMatched === 'number' && c.hintMinMatched >= 0 ? c.hintMinMatched : 2,
+    // 通道级沉默：查询里能在语料中找到对应的词占比低于这个值时，整条提示通道本轮不出声。
+    // 长句子里只有一两个词碰巧命中，coverage 会虚高到 1.00——这条门就是为它设的。
+    hintMinSupport: typeof c.hintMinSupport === 'number' && c.hintMinSupport >= 0 ? c.hintMinSupport : 0.15,
   }
 }
 
@@ -130,8 +151,9 @@ export function buildEntryContent(task, cfg, { withEdited = true } = {}) {
   return parts.join('\n')
 }
 
-/** 候选池：project + global + 绑定任务（同一 id 只取一次；归档/草稿不进注入）。 */
-function insightCandidates(store, globalStore, task) {
+/** 候选池：project + global + 绑定任务（同一 id 只取一次；归档/草稿不进注入）。
+ * 候选在进入匹配前统一走旧 trigger → 新 schema 的归一（幂等，纯内存，不落盘）。 */
+function insightCandidates(store, globalStore, task, opts) {
   const out = []
   const seen = new Set()
   const push = (it) => {
@@ -139,7 +161,7 @@ function insightCandidates(store, globalStore, task) {
     const key = it.id || `${it.kind}:${it.title}`
     if (seen.has(key)) return
     seen.add(key)
-    out.push(it)
+    out.push(normalizeTrigger(it, { legacyScope: opts?.legacyScope }))
   }
   for (const it of (store ? store.insightItems() : []) || []) push(it)
   for (const it of (globalStore ? globalStore.items() : []) || []) push(it)
@@ -181,34 +203,44 @@ export function buildInjection(opts) {
   const { query, task, globalStore, cfg } = opts
   const store = opts.store || null
   const tags = opts.projectTagsList || []
-  const ctx = buildReadinessContext(opts.readiness || { humanText: query || '' })
+  const ctx = buildReadinessContext({ ...(opts.readiness || { humanText: query || '' }), tags })
   const labels = []
   const reasons = []
   const dropped = []
   const parts = []
-  const budgetChars = (cfg.maxTokens || 400) * 3
+  // 预算只能是上限，不是目标：单轮额度（maxTokens）与会话级剩余额度取小者。
+  const quotaChars = typeof opts.maxChars === 'number' ? opts.maxChars : Infinity
+  const maxItems = typeof opts.maxItems === 'number' ? opts.maxItems : Infinity
+  const skipItems = opts.skipItems === true
+  const budgetChars = Math.max(0, Math.min((cfg.maxTokens || 400) * 3, quotaChars))
 
   const skipItem = typeof opts.skipItem === 'function' ? opts.skipItem : null
-  const cands = insightCandidates(store, globalStore, task).filter((it) => !(skipItem && skipItem(it)))
+  const cands = insightCandidates(store, globalStore, task, cfg).filter((it) => !(skipItem && skipItem(it)))
 
   // 通道 1：authored trigger —— 确定性、全文、优先级 1。procedure 先于其它 kind（步骤更完整）。
+  // 准入化（S2）：只有 `when`（op / 写目标 / 意图词）能触发，guard 只能收窄；
+  // **没有 `when` 的条目在这里永远不命中**（降级为可发现 + 按需拉取）。
   const triggered = []
   for (const it of cands) {
     const why = matchTrigger(it.trigger, ctx)
     if (!why) continue
-    const scope = it.trigger?.scope
-    if (Array.isArray(scope) && scope.length && tags.length && !scope.some((s) => tags.includes(s))) continue
     triggered.push({ it, why })
   }
   triggered.sort(
     (a, b) => (a.it.kind === 'procedure' ? 0 : 1) - (b.it.kind === 'procedure' ? 0 : 1)
       || String(a.it.id).localeCompare(String(b.it.id)),
   )
+  if (skipItems) {
+    // 会话级限流命中：条目通道本轮整体沉默，但把"本该注入什么"记进 dropped——不做静默降级。
+    for (const t of triggered) dropped.push({ id: t.it.id, channel: 'trigger', reason: opts.silenceReason || 'cooldown' })
+  }
 
-  // 通道 2：统计信号 —— 提示态、优先级 2，判据是层内相对阈值（尺度无关）。
-  // procedure 只走 trigger 通道：否则会被统计通道绕过 trigger.scope 的画像过滤。
+  // 通道 2：统计信号 —— 提示态、优先级 2。**双门槛**：层内相对阈值 + IDF 加权覆盖率（绝对下限）。
+  // 查询只用「人类消息的意图文字 + 本次写目标」：原始工具参数不再进查询，它们正是
+  // `dcterms→rm`、`*.pptx→论文笔记` 那类假阳性的来源。procedure 不进本通道（要过 trigger.scope）。
   const consumed = new Set(triggered.map((t) => t.it.id))
-  const hintCands = cands.filter((it) => !consumed.has(it.id) && it.kind !== 'procedure')
+  const hintCands = skipItems ? [] : cands.filter((it) => !consumed.has(it.id) && it.kind !== 'procedure')
+  const hintQuery = [ctx.intent || ctx.humanText || '', ...(ctx.targets || [])].filter(Boolean).join(' ')
   const hints = []
   if (hintCands.length) {
     if (typeof cfg.relevanceMin === 'number') {
@@ -218,17 +250,37 @@ export function buildInjection(opts) {
         if (score >= cfg.relevanceMin) hints.push({ it, score, why: `overlap:${score.toFixed(3)}` })
       }
       hints.sort((a, b) => b.score - a.score)
-    } else {
+    } else if (hintQueryText(hintQuery)) {
       const byId = new Map(hintCands.map((it) => [it.id, it]))
-      // 提示查询先剔除 1–2 字符的拉丁缩写（PR/CI/OS）：它们一个巧合命中就能当上该层最高分。
-      const scored = rankEntriesMergedScored(
-        hintCands.map(insightToEntry),
-        [hintQueryText(ctx.humanText), hintQueryText(ctx.actionText)].filter(Boolean),
-        hintCands.length,
-      )
+      const corpus = hintCands.map((it) => insightMatchText(it))
+      // 查询与被测覆盖率的文本用**同一个**过滤后的查询：否则缩写（wsl/npm）会在 BM25 里被剔除、
+      // 却仍在覆盖率里计分，"至少两个共同词"就被它们凑够了。
+      const q = hintQueryText(hintQuery)
+      const scored = rankEntriesMergedScored(hintCands.map(insightToEntry), [q], hintCands.length)
+      const coverage = new Map(hintCands.map((it, i) => [it.id, idfCoverage(q, corpus[i], corpus)]))
+      const qStats = coverage.get(hintCands[0].id) || { supported: 0, terms: 0 }
+      const supportRatio = qStats.terms > 0 ? qStats.supported / qStats.terms : 0
+      // 通道级沉默：查询里绝大多数词在语料里根本没有对应 → "覆盖率 1.00"只是假象。
+      const channelThin = typeof cfg.hintMinSupport === 'number' && supportRatio < cfg.hintMinSupport
       for (const r of relativeHits(scored, { ratioMin: cfg.signalMinRatio })) {
         const it = byId.get(r.entry.insightId)
-        if (it) hints.push({ it, score: r.score, why: `relative:${(r.score / (scored[0].score || 1)).toFixed(2)}` })
+        if (!it) continue
+        const ev = coverage.get(it.id) || { coverage: 0, matched: 0, supported: 0, terms: 0 }
+        if (channelThin) {
+          dropped.push({ id: it.id, channel: 'hint', reason: `support:${supportRatio.toFixed(2)}` })
+          continue
+        }
+        // 绝对门槛：覆盖率下限 + 共同词数下限（查询本身很短时下限按可用词数收敛）。
+        if (typeof cfg.hintMinCoverage === 'number' && ev.coverage < cfg.hintMinCoverage) {
+          dropped.push({ id: it.id, channel: 'hint', reason: `coverage:${ev.coverage.toFixed(2)}` })
+          continue
+        }
+        const needMatched = Math.min(typeof cfg.hintMinMatched === 'number' ? cfg.hintMinMatched : 2, ev.supported)
+        if (ev.matched < needMatched) {
+          dropped.push({ id: it.id, channel: 'hint', reason: `thin:${ev.matched}` })
+          continue
+        }
+        hints.push({ it, score: r.score, why: `relative:${(r.score / (scored[0].score || 1)).toFixed(2)} cov:${ev.coverage.toFixed(2)}/${ev.matched}` })
       }
     }
   }
@@ -239,35 +291,48 @@ export function buildInjection(opts) {
   const entry = echo ? buildEntryContent(task, cfg) : ''
   const entryStable = echo ? buildEntryContent(task, cfg, { withEdited: false }) : ''
   let used = entry.length
+  let itemCount = 0
 
   for (const { it, why } of triggered) {
+    if (skipItems) break
+    if (itemCount >= maxItems) {
+      dropped.push({ id: it.id, channel: 'trigger', reason: 'quota' })
+      continue
+    }
     const body = fitBody(insightBody(it), budgetChars - used, MIN_BODY_CHARS.trigger)
     if (body === null) {
       dropped.push({ id: it.id, channel: 'trigger', reason: 'budget' })
       continue
     }
     used += body.length + 1
+    itemCount++
     parts.push(body)
     labels.push(it.kind === 'procedure' ? 'procedure' : it.kind)
-    reasons.push({ id: it.id, channel: 'trigger', why, hash: insightItemHash(it) })
+    reasons.push({ id: it.id, channel: 'trigger', why, hash: insightItemHash(it), chars: body.length })
   }
   for (const { it, why } of hints) {
+    if (skipItems) break
+    if (itemCount >= maxItems) {
+      dropped.push({ id: it.id, channel: 'hint', reason: 'quota' })
+      continue
+    }
     const body = fitBody(insightBody(it), budgetChars - used, MIN_BODY_CHARS.hint)
     if (body === null) {
       dropped.push({ id: it.id, channel: 'hint', reason: 'budget' })
       continue
     }
     used += body.length + 1
+    itemCount++
     parts.push(body)
     labels.push('hint')
-    reasons.push({ id: it.id, channel: 'hint', why, hash: insightItemHash(it) })
+    reasons.push({ id: it.id, channel: 'hint', why, hash: insightItemHash(it), chars: body.length })
   }
 
   const total = [entry, ...parts].filter(Boolean)
-  if (!total.length) return { text: '', labels, reasons, dropped }
+  if (!total.length) return { text: '', entry, labels, reasons, dropped }
   const clamp = (t) => (t.length > budgetChars ? `${t.slice(0, budgetChars)}\n…(截断)` : t)
   const dedupeText = clamp([entryStable, ...parts].filter(Boolean).join('\n'))
-  return { text: clamp(total.join('\n')), labels, reasons, dropped, dedupeText }
+  return { text: clamp(total.join('\n')), entry, entryStable, labels, reasons, dropped, dedupeText, itemChars: used - entry.length }
 }
 
 /** 注册 agent/pre-step 监听，向每步请求的 enter 决策追加记忆消息（默认开）。
@@ -278,6 +343,8 @@ export function installAutoInject(ctx, config) {
   const auto = (config && config.autoContext) || {}
   if (auto.enabled === false) return
   const cfg = cfgEngine(config)
+  // 审计配置同 cfg：安装时解析一次（与 autoContext 其余开关一致）。
+  const audit = cfgAudit(config)
   // 每个会话一份“上次注入指纹”。用单个变量会让并发会话互相抑制注入。
   const lastFpBySession = new Map()
   const LAST_FP_MAX = 200
@@ -291,6 +358,9 @@ export function installAutoInject(ctx, config) {
   const INJECTED_ITEMS_MAX = 600
   // 会话步数：为 reinjectItemsAfter 提供时间轴（>0 时才用得上）。
   const stepBySession = new Map()
+  // 会话级条目额度（S3）：条数 / 字符 / 上次"条目注入"的步号。常驻任务卡不占这个额度——
+  // 它是状态快照，内容变了就该更新；被限流的是记忆条目的推送。
+  const budgetBySession = new Map()
   // 反应窗口：本会话最近观察到的 tool/call（参数里有 git commit / npm publish / 改动的路径）。
   // 宿主没有"工具执行前拦截"钩子，所以这是 pre-step 之外唯一能拿到的动作事实。
   const observedBySession = new Map()
@@ -318,6 +388,7 @@ export function installAutoInject(ctx, config) {
       observedBySession.clear()
       injectedBySession.clear()
       stepBySession.clear()
+      budgetBySession.clear()
     })
   }
   ctx.on('agent/pre-step', async (payload, next) => {
@@ -336,15 +407,21 @@ export function installAutoInject(ctx, config) {
       const sessionId = session && session.id
       if (!root || !sessionId) return decision
       const query = lastUserText(decision.messages)
-      const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+      const memoryRoot = memoryRootFor(root, config.memoryDir)
+      const store = new ProjectMemoryStore(memoryRoot).load()
       const globalStore = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()
       const boundTaskId = store.getBoundTaskId(sessionId) ? store.getBoundTaskId(sessionId) : null
       const task = boundTaskId ? store.getTask(boundTaskId) : null
       // 两个窗口合并进同一个就绪上下文：人类消息（先发）+ 已观察动作（反应）。
+      // 动作平面（S1）：把"最近做过什么"解析成 op / 写目标 / 主机——不再把原始参数当文本搜。
       const observed = observedBySession.get(sessionId) || []
+      const activity = activityFromCalls(observed)
       const readiness = buildReadinessContext({
         humanText: query || '',
         actionText: observed.map((c) => `${c.name} ${c.arguments}`).join('\n'),
+        ops: activity.ops,
+        targets: activity.targets,
+        hosts: activity.hosts,
       })
       // 条目级去重：本会话已注入过、且正文未变的条目不再参与排程（cfg.reinjectItemsAfter=0 时永久，
       // >0 时走冷却步数，用于历史可能被外部裁剪的场景）。正文变了（编辑过 insight）立刻允许重发。
@@ -364,7 +441,31 @@ export function installAutoInject(ctx, config) {
             const rec = seen.get(it.id)
             return Boolean(rec) && rec.hash === insightItemHash(it) && stepNo - rec.step < cooldown
           }
-      const built = buildInjection({ query: query || '', readiness, task, store, globalStore, projectTagsList: projectTags(root), cfg, skipItem })
+      // 会话级限流（S3）：冷却步数 / 条目条数 / 条目字符。三个任一触顶 → 条目通道整体沉默，
+      // 但本轮"本该注入什么"仍会进 dropped（不做静默降级）。
+      const budget = budgetBySession.get(sessionId) || { items: 0, chars: 0, lastStep: -Infinity }
+      budgetBySession.set(sessionId, budget)
+      while (budgetBySession.size > LAST_FP_MAX) budgetBySession.delete(budgetBySession.keys().next().value)
+      const cooling = Number.isFinite(budget.lastStep) && stepNo - budget.lastStep < cfg.gateCooldownSteps
+      const itemsLeft = Math.max(0, cfg.maxItemsPerSession - budget.items)
+      const charsLeft = Math.max(0, cfg.maxItemCharsPerSession - budget.chars)
+      const silenceReason = cooling ? 'cooldown'
+        : itemsLeft === 0 ? 'session-items'
+          : charsLeft === 0 ? 'session-chars' : null
+      const built = buildInjection({
+        query: query || '',
+        readiness,
+        task,
+        store,
+        globalStore,
+        projectTagsList: projectTags(root),
+        cfg,
+        skipItem,
+        skipItems: silenceReason !== null,
+        silenceReason: silenceReason || 'cooldown',
+        maxItems: itemsLeft,
+        maxChars: charsLeft,
+      })
       const fp = fingerprint(built.dedupeText ?? built.text)
       const shouldInject = Boolean(built.text) && fp !== lastFpBySession.get(sessionId)
       let injectMessage = null
@@ -378,6 +479,12 @@ export function installAutoInject(ctx, config) {
           if (r && r.id && r.hash) seen.set(r.id, { hash: r.hash, step: stepNo })
         }
         while (seen.size > INJECTED_ITEMS_MAX) seen.delete(seen.keys().next().value)
+        // 会话额度只被"条目"消耗；任务卡不算（否则任务一多就把记忆挤没了）。
+        if (built.reasons.length) {
+          budget.items += built.reasons.length
+          budget.chars += typeof built.itemChars === 'number' ? built.itemChars : 0
+          budget.lastStep = stepNo
+        }
         injectMessage = createUserMessage({
           content: [{ type: 'text', text: `\n\n${INJECT_MARK} auto-context\n${built.text}` }],
           // 这一块是「同一生产者后续快照会取代的当前状态」，不是一次性通知。
@@ -410,7 +517,21 @@ export function installAutoInject(ctx, config) {
           }
         }
       }
-      if (injectMessage) return { ...decision, messages: [...decision.messages, injectMessage] }
+      if (injectMessage) {
+        // S0 观测：只记真的进了上下文的那一次（dropped 单独出现不写，否则每步刷屏）。
+        appendInjectionAudit(memoryRoot, auditRecordFrom({
+          sessionId,
+          root,
+          step: stepNo,
+          text: built.text,
+          labels: built.labels,
+          reasons: built.reasons,
+          dropped: built.dropped,
+          budget: { items: budget.items, chars: budget.chars, lastStep: Number.isFinite(budget.lastStep) ? budget.lastStep : null },
+          silence: silenceReason,
+        }), audit)
+        return { ...decision, messages: [...decision.messages, injectMessage] }
+      }
     } catch (err) {
       console.error(`[dsh-project-memory] auto-inject skipped: ${err?.message || err}`)
     }

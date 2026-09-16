@@ -39,10 +39,22 @@ const CASES = [
     expect: ['t_action'],
   },
   {
-    name: 'authored trigger · 路径 glob',
-    insights: [L('t_path', { trigger: { paths: ['README*'] } })],
+    name: 'authored trigger · 写目标（具体文件）',
+    insights: [L('t_path', { trigger: { paths: ['README.md'] } })],
     ctx: { humanText: '继续', actionText: 'edit {"file_path":"/repo/README.md"}' },
     expect: ['t_path'],
+  },
+  {
+    name: 'S2 · 扩展名 glob 不再触发',
+    insights: [L('g_ext', { title: 'pptxgenjs 画布尺寸', fix: 'defineLayout', trigger: { paths: ['*.pptx'] } })],
+    ctx: { humanText: '把创建时间改到昨天', actionText: 'edit {"file_path":"/repo/deck.pptx"}' },
+    expect: [],
+  },
+  {
+    name: 'S2 · 引用内容不得当意图（文件名里的词）',
+    insights: [L('q_quote', { title: '做调研要先扫 curated 列表', fix: '按日期倒序扫最近半年', trigger: { keywords: ['调研'] } })],
+    ctx: { humanText: '把 "石啸天-LLM记忆方向调研.pptx" 的创建时间改到昨天', actions: [], paths: [] },
+    expect: [],
   },
   {
     name: 'authored trigger · keywords',
@@ -93,11 +105,11 @@ const CASES = [
   },
 ]
 
-function runCase(c, ratioMin) {
+function runCase(c, override) {
   const file = path.join(mkdtempSync(path.join(tmpdir(), 'eval-')), 'global.json')
   const gs = new GlobalStore(file).load()
   gs.doc.items.push(...c.insights)
-  const cfg = cfgEngine({ insight: {}, autoContext: { maxTokens: c.maxTokens ?? 400, signalMinRatio: ratioMin } })
+  const cfg = cfgEngine({ insight: {}, autoContext: { maxTokens: c.maxTokens ?? 400, ...override } })
   const out = buildInjection({
     query: c.ctx.humanText,
     readiness: c.ctx,
@@ -108,13 +120,13 @@ function runCase(c, ratioMin) {
   return out.reasons.map((r) => r.id).sort()
 }
 
-function sweep(ratioMin) {
+function sweep(override, label) {
   let tp = 0
   let fp = 0
   let fn = 0
   const misses = []
   for (const c of CASES) {
-    const got = new Set(runCase(c, ratioMin))
+    const got = new Set(runCase(c, override))
     const want = new Set(c.expect)
     for (const id of got) (want.has(id) ? tp++ : fp++)
     for (const id of want) {
@@ -125,7 +137,7 @@ function sweep(ratioMin) {
     }
   }
   return {
-    ratioMin,
+    label,
     tp,
     fp,
     fn,
@@ -135,12 +147,23 @@ function sweep(ratioMin) {
   }
 }
 
+// S4 之后，分辨力来自**绝对门槛**（IDF 加权覆盖率），不再是相对阈值：
+// 相对阈值只看"层内最高分的比例"，最高分本身是噪声时它照样给 1.00。所以这里两个旋钮都扫。
 const RATIOS = [0.2, 0.35, 0.5, 0.7]
-const table = RATIOS.map((r) => sweep(r))
+const table = RATIOS.map((r) => sweep({ signalMinRatio: r }, r.toFixed(2)))
 console.log('\n  signalMinRatio  precision  recall   missed')
 for (const row of table) {
   console.log(
-    `  ${row.ratioMin.toFixed(2)}            ${row.precision.toFixed(2)}       ${row.recall.toFixed(2)}     ${row.misses.join(', ') || '-'}`,
+    `  ${String(row.label).padEnd(15)} ${row.precision.toFixed(2)}       ${row.recall.toFixed(2)}     ${row.misses.join(', ') || '-'}`,
+  )
+}
+
+const COVERAGES = [0, 0.3, 0.6, 0.9]
+const covTable = COVERAGES.map((c) => sweep({ hintMinCoverage: c }, c.toFixed(2)))
+console.log('\n  hintMinCoverage precision  recall   missed')
+for (const row of covTable) {
+  console.log(
+    `  ${String(row.label).padEnd(15)} ${row.precision.toFixed(2)}       ${row.recall.toFixed(2)}     ${row.misses.join(', ') || '-'}`,
   )
 }
 
@@ -150,28 +173,47 @@ for (const row of table) {
   ok(`eval set：${CASES.length} 条标注 case（召回 + 精度双向约束）`)
 }
 
-// ---- 2. 出厂默认 signalMinRatio=0.5 必须在标注集上零漏零误 ----
+// ---- 2. 出厂默认（signalMinRatio=0.5 + hintMinCoverage=0.3）必须零漏零误 ----
 {
-  const shipped = sweep(0.5)
+  const shipped = sweep({}, 'shipped')
   assert.equal(shipped.recall, 1, `漏注入：${shipped.misses.join(', ')}`)
   assert.equal(shipped.precision, 1, `误注入：precision=${shipped.precision}`)
-  ok('出厂阈值 0.5：标注集上 recall=1.00、precision=1.00')
+  ok('出厂默认：标注集上 recall=1.00、precision=1.00')
 }
 
-// ---- 3. 阈值单调性：放宽只会放进来更多，收紧只会漏掉更多 ----
+// ---- 3. 相对阈值单调性：放宽只会放进来更多，收紧只会漏掉更多 ----
 {
   const recalls = table.map((r) => r.recall)
   const precisions = table.map((r) => r.precision)
   assert.ok(recalls[0] >= recalls[recalls.length - 1], `放宽应收紧召回：${recalls.join(',')}`)
   assert.ok(precisions[0] <= precisions[precisions.length - 1], `放宽应损害精度：${precisions.join(',')}`)
-  ok('阈值方向正确：放宽↑召回↓精度，收紧相反')
+  ok('相对阈值方向正确：放宽↑召回↓精度，收紧相反')
 }
 
-// ---- 4. 最宽松档必须能暴露"弱相关被拉进来"（证明这个度量真的有分辨力） ----
+// ---- 4. 分辨力：关掉两个**绝对**判据后，相对阈值单独不足（0.2 档会放进弱相关） ----
 {
-  const loose = sweep(0.2)
-  assert.ok(loose.precision < 1, '最宽松档若仍 precision=1，说明标注集分不出阈值差异，度量无效')
-  ok('度量有分辨力：0.2 档会放进弱相关（precision 下降）')
+  const noAbs = sweep({ signalMinRatio: 0.2, hintMinCoverage: 0, hintMinMatched: 0 }, '0.2 无绝对门槛')
+  assert.ok(
+    noAbs.precision < 1,
+    '关掉绝对门槛后若仍 precision=1，说明标注集分不出差异，度量无效',
+  )
+  ok(`度量有分辨力：关掉绝对门槛后 0.2 档 precision=${noAbs.precision.toFixed(2)}（相对阈值单独不足）`)
+}
+
+// ---- 5. 带上绝对门槛：即使把相对阈值放到最宽，precision 仍保持 1.00 ----
+{
+  const wide = sweep({ signalMinRatio: 0.2 }, '0.2 + 绝对门槛')
+  assert.equal(wide.precision, 1, `绝对门槛应挡住弱相关：precision=${wide.precision}`)
+  assert.equal(wide.recall, 1)
+  ok('绝对门槛接力：最宽相对阈值下 precision 仍为 1.00')
+}
+
+// ---- 6. 出厂绝对门槛不得伤到召回 ----
+{
+  const shipped = sweep({}, 'shipped')
+  assert.equal(shipped.recall, 1, `出厂门槛不该漏：${shipped.misses.join(', ')}`)
+  assert.equal(shipped.precision, 1)
+  ok('出厂绝对门槛（coverage 0.3 + 至少 2 词）：零漏零误')
 }
 
 console.log(`\nreadiness-eval tests: ${passed} passed`)
