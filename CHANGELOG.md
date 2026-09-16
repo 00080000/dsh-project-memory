@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased — injection admission (lessons/decisions/procedures stop arriving by coincidence)
+
+### Changed (only what you are about to *do* can trigger an injection)
+
+- **Trigger matching was a substring test over a haystack of everything the step had seen** (`humanText + tool arguments`, i.e. file contents included). Measured on a real session: 10 injections, **0 of them useful**, 5921 characters appended permanently — including a "recover deleted files" procedure pulled in by the literal string `dcterms` (it contains `rm`) and an "arXiv fetching" note pulled in by the `.pptx` file extension. A labelled 8-scenario evaluation set (now `npm run eval:injection`) scored **precision 0.48 / recall 0.72**.
+- **A trigger now has a shape: `when` (ops / writes / intents) triggers, `guard` only narrows, `prevents` states what breaks without the entry.** `ops` are normalized action ids resolved from the tool call itself (`src/ops.js`: `file-write` / `file-delete` / `git-commit` / `release` / `npm-publish` / `render-doc` / `run-bench` / …); `writes` are the files this step is about to write; `intents` are human-message words matched only **after** stripping quoted spans, paths and filenames, and only above a minimum length/word-boundary rule (so `ppt` no longer matches `pptx`).
+- **Corpus text can no longer trigger anything.** File contents are out of the haystack entirely, extension/name globs (`*.pptx`, `README*`) are ignored outright, and machine identifiers (`web_fetch`, `LAYOUT_16x9`) are filtered out of intent words.
+- **Legacy triggers migrate in memory, idempotently and without rewriting your data**: `actions` → `when.ops` (dead ids mapped where possible, otherwise recorded), concrete `paths` → `when.writes`, `keywords` → `when.intents`, extension/name globs dropped, and weak actions (`git-add` / `git-commit`) dropped when the entry already has precise paths. `npm run selfcheck:triggers` reports what changed — against the live stores: **20 pushable / 4 pull-only, 8 dead action ids, 10 dropped globs, 3 dropped weak actions**.
+- **Result on the evaluation set: precision 1.00, recall 1.00, and the control scenario (rename a `.pptx` timestamp, with the filename in quotes) injects nothing at all.**
+
+### Changed (hint channel: relative *and* absolute, plus a frequency budget)
+
+- **The statistical channel required only "half of this layer's top score"**, which a ranking satisfies even when the top score is itself noise — measured `relative:1.00` on entries sharing nothing with the step. It now also needs an **IDF-weighted coverage floor** (`hintMinCoverage`, default `0.3`) **and** at least two shared terms (`hintMinMatched`, default `2`). Query text is the human message *plus this step's write targets* — raw tool arguments are no longer a query.
+- **Injections are now events, not a heartbeat**: `gateCooldownSteps` (default `2`) bounds how often the item channel may speak, and `maxItemsPerSession` / `maxItemCharsPerSession` cap the session. The resident task card is exempt (it is a state snapshot), and the budget is a ceiling rather than a target — when nothing clears the gates, nothing is injected.
+- **Cache discipline is explicit**: injections are appended as a user message at the tail of history, so the cached prefix is never rewritten; the cost they add is resident cache-read tokens, not cache misses. Nothing is edited in place.
+
+### Added (observability: this change is measured, not asserted)
+
+- **`injection-audit.jsonl`** — one JSONL line per *actual* injection under `<root>/.dsh-project-memory/`, recording what went in, why it matched (`op:` / `write:` / `intent:` / hint coverage), what lost the budget (`budget` / `quota` / `cooldown` / `coverage:` / `thin:`), and the session budget snapshot. Rotation at `auditMaxBytes`; every failure is swallowed so the host request is never affected. Config: `autoContext.auditLog`.
+- **`npm run eval:injection`** — 8 labelled scenarios (publish, trigger-debugging, stale source, benchmark, deleted doc, interview prep, and the clean control) over a 24-entry synthetic pool whose triggers are copied verbatim from the real ones. Asserts the ratchet, precision ≥ 0.90 and a clean control group. `--store <insights.json>` replays a real store; `--selfcheck` prints the trigger audit.
+- **New suites**: `test/ops.test.mjs` (the action plane, including a regression for reading argument *values* rather than key names), `test/injection-budget.test.mjs` (cooldown/caps actually silence, 6 steps with 6 fresh entries → 3 injections), `test/injection-audit.test.mjs` (JSONL shape, rotation, silent failure, end-to-end wiring through `agent/pre-step`). Suite is now **313 tests**.
+- **`trigger.when` / `trigger.guard` / `trigger.prevents`** are declared in the `save_lesson` schema, so new entries can be authored in the new shape.
+
 ## 0.5.5 (2026-09-15)
 
 ### Fixed (the README promised a benchmark the npm package did not contain)
