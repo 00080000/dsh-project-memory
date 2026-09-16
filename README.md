@@ -358,6 +358,8 @@ npm run selfcheck:triggers  # which entries can still push, which declarations a
 npm run bench -- /path/to/project   # index/query performance on any project — no dsh needed
 ```
 
+Release notes live in [`CHANGELOG.md`](CHANGELOG.md) and on [GitHub Releases](https://github.com/00080000/dsh-project-memory/releases).
+
 ## License
 
 MIT
