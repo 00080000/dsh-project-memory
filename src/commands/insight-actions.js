@@ -6,6 +6,7 @@ import { ProjectMemoryStore } from '../store.js'
 import { memoryRootFor } from '../util/fs.js'
 import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, INSIGHT_KINDS } from '../insight-store.js'
 import { projectRootFor } from '../setup/taskbridge.js'
+import { fencedJson, invocationContext } from './invocation.js'
 
 function insSummary(ins, extra = {}) {
   const s = ins || {}
@@ -300,10 +301,6 @@ export function editMemoryItem({ store, gs, scope, id, fields }) {
   return { ok: true, text: '已更新记忆条目' }
 }
 
-function jsonText(payload, note) {
-  return `${note}\n\n\`\`\`json\n${JSON.stringify(payload)}\n\`\`\``
-}
-
 /** /insight <verb> <args…>：list [task|project|global] | confirm/promote/demote/archive/restore/delete <id> [taskId] */
 export function insightCommandDefinition(config, ctx) {
   return {
@@ -312,10 +309,7 @@ export function insightCommandDefinition(config, ctx) {
     input: { hint: 'list [scope] | <动作> <scope> <id> [taskId]' },
     handler: (invocation) => {
       try {
-        const agent = invocation?.agent
-        const sid = agent?.id || agent?.session?.id
-        const session = sid && agent?.ctx ? agent.ctx.sessions?.get(sid) : (agent?.session || null)
-        const cwd = session?.header?.cwd || agent?.session?.header?.cwd
+        const { cwd } = invocationContext(invocation)
         const lineRaw = (invocation?.rawInput || '').trim()
         const raw = lineRaw.split(/\s+/).filter(Boolean)
         const root = projectRootFor(cwd)
@@ -326,7 +320,7 @@ export function insightCommandDefinition(config, ctx) {
           const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
           const gs = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()
           const payload = listInsights(store, gs, scope)
-          return { kind: 'success', text: jsonText(payload, `记忆 ${scope}：${payload.count} 条`) }
+          return { kind: 'success', text: fencedJson(`记忆 ${scope}：${payload.count} 条`, JSON.stringify(payload)) }
         }
         if (verb === 'save') {
           // /insight save <scope> <json>（新建/合并；project|global）

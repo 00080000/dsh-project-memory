@@ -4,6 +4,7 @@
 import { memoryRootFor } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { projectRootFor } from '../setup/taskbridge.js'
+import { fencedJson, invocationContext } from './invocation.js'
 
 function timeAgo(iso) {
   const diff = Date.now() - new Date(iso).getTime()
@@ -47,10 +48,8 @@ export function renderTaskSnapshot(config, cwd, sid) {
 
   if (!active.length) {
     const payload = buildTaskPayload([], boundId, archived)
-    return {
-      kind: 'success',
-      text: `项目 ${root}\n任务记录: 0 套${archived ? `（归档 ${archived}）` : ''}。让模型开始干活并维护 todo 清单后会自动建档。\n\n\`\`\`json\n${payload}\n\`\`\``,
-    }
+    const note = `项目 ${root}\n任务记录: 0 套${archived ? `（归档 ${archived}）` : ''}。让模型开始干活并维护 todo 清单后会自动建档。`
+    return { kind: 'success', text: fencedJson(note, payload) }
   }
   const lines = [`项目 ${root}`, `任务: ${active.length} 套${archived ? `（归档 ${archived}）` : ''}`, '']
   for (const t of active) {
@@ -67,7 +66,7 @@ export function renderTaskSnapshot(config, cwd, sid) {
   lines.push('', '续接/改名/归档：直接告诉模型（list_tasks / select_task / archive_task）。')
   const humanText = lines.join('\n')
   const payload = buildTaskPayload(active, boundId, archived)
-  return { kind: 'success', text: `${humanText}\n\n\`\`\`json\n${payload}\n\`\`\`` }
+  return { kind: 'success', text: fencedJson(humanText, payload) }
 }
 
 export function tasksCommandDefinition(config, ctx) {
@@ -76,10 +75,7 @@ export function tasksCommandDefinition(config, ctx) {
     description: '查看本项目的任务清单（几套任务、进度、涉及文件、当前绑定）',
     handler: (invocation) => {
       try {
-        const agent = invocation?.agent
-        const sid = agent?.id || agent?.session?.id
-        const session = sid && agent?.ctx ? agent.ctx.sessions?.get(sid) : (agent?.session || null)
-        const cwd = session?.header?.cwd || agent?.session?.header?.cwd
+        const { cwd, sid } = invocationContext(invocation)
         return renderTaskSnapshot(config, cwd, sid)
       } catch (err) {
         return { kind: 'error', text: `[tasks] ${err?.message || err}` }
