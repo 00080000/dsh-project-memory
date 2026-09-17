@@ -8,8 +8,7 @@ import { projectRootFor, adoptStepsToSession, shouldAdoptToHost } from '../setup
 import { renderTaskSnapshot, buildTaskPayload } from './tasks.js'
 import { fireReflect } from '../reflection-pipeline.js'
 import { resolveRoute } from '../llm-route.js'
-
-const VERBS = { switch: 'switch', archive: 'archive' }
+import { fencedJson, invocationContext } from './invocation.js'
 
 function describeTask(t) {
   const done = (t.steps || []).filter((s) => s.status === 'completed').length
@@ -24,7 +23,7 @@ function withTaskSnapshot(config, cwd, sid, store, note) {
   const boundId = sid ? store.getBoundTaskId(sid) : null
   const human = `项目 ${projectRootFor(cwd)}\n${note}\n任务: ${active.length} 套${archived ? `（归档 ${archived}）` : ''}`
   const payload = buildTaskPayload(active, boundId, archived)
-  return { kind: 'success', text: `${human}\n\n\`\`\`json\n${payload}\n\`\`\`` }
+  return { kind: 'success', text: fencedJson(human, payload) }
 }
 
 export function taskCommandDefinition(config, ctx) {
@@ -34,10 +33,7 @@ export function taskCommandDefinition(config, ctx) {
     input: { hint: 'switch|archive <任务id> | unbind' },
     handler: (invocation) => {
       try {
-        const agent = invocation?.agent
-        const sid = agent?.id || agent?.session?.id
-        const session = sid && agent?.ctx ? agent.ctx.sessions?.get(sid) : (agent?.session || null)
-        const cwd = session?.header?.cwd || agent?.session?.header?.cwd
+        const { session, sid, cwd } = invocationContext(invocation)
         const raw = (invocation?.rawInput || '').trim()
         const [verb, taskId, ...rest] = raw.split(/\s+/)
 
@@ -126,7 +122,7 @@ export function taskCommandDefinition(config, ctx) {
           return withTaskSnapshot(config, cwd, sid, store, note)
         }
 
-        if (verb === VERBS.switch) {
+        if (verb === 'switch') {
           const task = store.getTask(taskId)
           if (!task) return { kind: 'error', text: `[task] 找不到任务: ${taskId}（/tasks 查看）` }
           const prevBound = sid ? store.getBoundTaskId(sid) : null
@@ -149,7 +145,7 @@ export function taskCommandDefinition(config, ctx) {
           return withTaskSnapshot(config, cwd, sid, store, note)
         }
 
-        if (verb === VERBS.archive) {
+        if (verb === 'archive') {
           const task = store.getTask(taskId)
           if (!task) return { kind: 'error', text: `[task] 找不到任务: ${taskId}（/tasks 查看）` }
           if (task.archived) return { kind: 'error', text: `[task] 已归档: ${task.title}` }
@@ -169,31 +165,3 @@ export function taskCommandDefinition(config, ctx) {
     },
   }
 }
-
-// 保留语义别名：/task-switch、/task-archive（仅当前端/旧入口用）
-export function taskSwitchCommandDefinition(config) {
-  const base = taskCommandDefinition(config)
-  return {
-    ...base,
-    name: 'task-switch',
-    handler: (invocation) => {
-      const id = (invocation?.rawInput || '').trim().split(/\s+/)[0]
-      return base.handler({ ...invocation, rawInput: id ? `switch ${id}` : '' })
-    },
-  }
-}
-
-export function taskArchiveCommandDefinition(config) {
-  const base = taskCommandDefinition(config)
-  return {
-    ...base,
-    name: 'task-archive',
-    handler: (invocation) => {
-      const id = (invocation?.rawInput || '').trim().split(/\s+/)[0]
-      return base.handler({ ...invocation, rawInput: id ? `archive ${id}` : '' })
-    },
-  }
-}
-
-// renderTaskSnapshot 引用保留，供外部（测试/工具）使用
-export { renderTaskSnapshot }
