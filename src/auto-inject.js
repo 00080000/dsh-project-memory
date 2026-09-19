@@ -9,8 +9,8 @@ import { createHash } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { ProjectMemoryStore } from './store.js'
 import { memoryRootFor } from './util/fs.js'
-import { insightMatchText } from './similarity.js'
-import { normalizedTokenOverlap } from './similarity.js'
+import { insightMatchText, normalizedTokenOverlap } from './similarity.js'
+import { BoundedMap, SessionCache } from './util/session-cache.js'
 import { cfgInsight, GlobalStore, defaultGlobalFile } from './insight-store.js'
 import { projectTags } from './project-profile.js'
 import { rankEntriesMergedScored } from './util/search.js'
@@ -142,7 +142,12 @@ export function buildEntryContent(task, cfg, { withEdited = true } = {}) {
   if (!task) return ''
   const c = cfg || {}
   const steps = (task.steps || []).map((s) => (typeof s === 'string' ? s : s.content || s.text || '').slice(0, 80))
-  const card = [`任务: ${task.title || '(untitled)'}`, `进度: ${steps.filter((s) => true).length ? `${steps.length} 步` : ''}`, ...steps.slice(0, 12).map((s, i) => `  ${i + 1}. ${s}`)]
+  const progress = steps.length ? `${steps.length} 步` : ''
+  const card = [
+    `任务: ${task.title || '(untitled)'}`,
+    `进度: ${progress}`,
+    ...steps.slice(0, 12).map((s, i) => `  ${i + 1}. ${s}`),
+  ]
   const insights = linesOf(task.insights)
   const edited = editedFiles(task, c.editedMax || 3)
   const parts = [...card]
@@ -189,6 +194,76 @@ export function fitBody(body, remaining, min = MIN_BODY_CHARS.hint) {
 }
 
 /**
+ * 通道 1：authored trigger 命中（确定性、全文、优先级 1）。procedure 先于其它 kind（步骤更完整）。
+ * 准入化（S2）：只有 `when`（op / 写目标 / 意图词）能触发，guard 只能收窄；
+ * **没有 `when` 的条目在这里永远不命中**（降级为可发现 + 按需拉取）。
+ */
+function collectTriggered(cands, ctx) {
+  const hits = []
+  for (const it of cands) {
+    const why = matchTrigger(it.trigger, ctx)
+    if (why) hits.push({ it, why })
+  }
+  hits.sort(
+    (a, b) => (a.it.kind === 'procedure' ? 0 : 1) - (b.it.kind === 'procedure' ? 0 : 1)
+      || String(a.it.id).localeCompare(String(b.it.id)),
+  )
+  return hits
+}
+
+/**
+ * 通道 2：统计信号（提示态、优先级 2）。**双门槛**：层内相对阈值 + IDF 加权覆盖率（绝对下限）。
+ * 查询只用「人类消息的意图文字 + 本次写目标」：原始工具参数不是查询文本，它们正是
+ * `dcterms→rm`、`*.pptx→论文笔记` 那类假阳性的来源。被门槛拦下的记进 dropped，不静默。
+ */
+function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped }) {
+  const hints = []
+  if (!cands.length) return hints
+  if (typeof cfg.relevanceMin === 'number') {
+    // 兼容：显式 relevanceMin → 旧的绝对 overlap 判据（老 profile 行为不变）
+    for (const it of cands) {
+      const score = normalizedTokenOverlap(humanText || query || '', insightMatchText(it))
+      if (score >= cfg.relevanceMin) hints.push({ it, score, why: `overlap:${score.toFixed(3)}` })
+    }
+    hints.sort((a, b) => b.score - a.score)
+    return hints
+  }
+  const q = hintQueryText(hintQuery)
+  if (!q) return hints
+  const byId = new Map(cands.map((it) => [it.id, it]))
+  const corpus = cands.map((it) => insightMatchText(it))
+  // 查询与被测覆盖率的文本用**同一个**过滤后的查询：否则缩写（wsl/npm）会在 BM25 里被剔除、
+  // 却仍在覆盖率里计分，"至少两个共同词"就被它们凑够了。
+  const scored = rankEntriesMergedScored(cands.map(insightToEntry), [q], cands.length)
+  const coverage = new Map(cands.map((it, i) => [it.id, idfCoverage(q, corpus[i], corpus)]))
+  const qStats = coverage.get(cands[0].id) || { supported: 0, terms: 0 }
+  const supportRatio = qStats.terms > 0 ? qStats.supported / qStats.terms : 0
+  // 通道级沉默：查询里绝大多数词在语料里根本没有对应 → "覆盖率 1.00"只是假象。
+  const channelThin = typeof cfg.hintMinSupport === 'number' && supportRatio < cfg.hintMinSupport
+  for (const r of relativeHits(scored, { ratioMin: cfg.signalMinRatio })) {
+    const it = byId.get(r.entry.insightId)
+    if (!it) continue
+    const ev = coverage.get(it.id) || { coverage: 0, matched: 0, supported: 0, terms: 0 }
+    if (channelThin) {
+      dropped.push({ id: it.id, channel: 'hint', reason: `support:${supportRatio.toFixed(2)}` })
+      continue
+    }
+    // 绝对门槛：覆盖率下限 + 共同词数下限（查询本身很短时下限按可用词数收敛）。
+    if (typeof cfg.hintMinCoverage === 'number' && ev.coverage < cfg.hintMinCoverage) {
+      dropped.push({ id: it.id, channel: 'hint', reason: `coverage:${ev.coverage.toFixed(2)}` })
+      continue
+    }
+    const needMatched = Math.min(typeof cfg.hintMinMatched === 'number' ? cfg.hintMinMatched : 2, ev.supported)
+    if (ev.matched < needMatched) {
+      dropped.push({ id: it.id, channel: 'hint', reason: `thin:${ev.matched}` })
+      continue
+    }
+    hints.push({ it, score: r.score, why: `relative:${(r.score / (scored[0].score || 1)).toFixed(2)} cov:${ev.coverage.toFixed(2)}/${ev.matched}` })
+  }
+  return hints
+}
+
+/**
  * 构建注入内容（不写盘、无副作用）。
  *
  * 交付契约：**authored trigger（所有 kind）= 确定性全文注入，优先级 1；统计信号 = 截断提示，
@@ -217,73 +292,23 @@ export function buildInjection(opts) {
   const skipItem = typeof opts.skipItem === 'function' ? opts.skipItem : null
   const cands = insightCandidates(store, globalStore, task, cfg).filter((it) => !(skipItem && skipItem(it)))
 
-  // 通道 1：authored trigger —— 确定性、全文、优先级 1。procedure 先于其它 kind（步骤更完整）。
-  // 准入化（S2）：只有 `when`（op / 写目标 / 意图词）能触发，guard 只能收窄；
-  // **没有 `when` 的条目在这里永远不命中**（降级为可发现 + 按需拉取）。
-  const triggered = []
-  for (const it of cands) {
-    const why = matchTrigger(it.trigger, ctx)
-    if (!why) continue
-    triggered.push({ it, why })
-  }
-  triggered.sort(
-    (a, b) => (a.it.kind === 'procedure' ? 0 : 1) - (b.it.kind === 'procedure' ? 0 : 1)
-      || String(a.it.id).localeCompare(String(b.it.id)),
-  )
+  // 两条通道：authored trigger（确定性、全文、优先级 1）→ 统计信号提示（优先级 2）。
+  const triggered = collectTriggered(cands, ctx)
   if (skipItems) {
     // 会话级限流命中：条目通道本轮整体沉默，但把"本该注入什么"记进 dropped——不做静默降级。
-    for (const t of triggered) dropped.push({ id: t.it.id, channel: 'trigger', reason: opts.silenceReason || 'cooldown' })
+    for (const { it } of triggered) dropped.push({ id: it.id, channel: 'trigger', reason: opts.silenceReason || 'cooldown' })
   }
-
-  // 通道 2：统计信号 —— 提示态、优先级 2。**双门槛**：层内相对阈值 + IDF 加权覆盖率（绝对下限）。
-  // 查询只用「人类消息的意图文字 + 本次写目标」：原始工具参数不再进查询，它们正是
-  // `dcterms→rm`、`*.pptx→论文笔记` 那类假阳性的来源。procedure 不进本通道（要过 trigger.scope）。
+  // procedure 不进提示通道：它要过 trigger.scope（见 scoreHints 注释）。
   const consumed = new Set(triggered.map((t) => t.it.id))
   const hintCands = skipItems ? [] : cands.filter((it) => !consumed.has(it.id) && it.kind !== 'procedure')
-  const hintQuery = [ctx.intent || ctx.humanText || '', ...(ctx.targets || [])].filter(Boolean).join(' ')
-  const hints = []
-  if (hintCands.length) {
-    if (typeof cfg.relevanceMin === 'number') {
-      // 兼容：显式 relevanceMin → 旧的绝对 overlap 判据（老 profile 行为不变）
-      for (const it of hintCands) {
-        const score = normalizedTokenOverlap(ctx.humanText || query || '', insightMatchText(it))
-        if (score >= cfg.relevanceMin) hints.push({ it, score, why: `overlap:${score.toFixed(3)}` })
-      }
-      hints.sort((a, b) => b.score - a.score)
-    } else if (hintQueryText(hintQuery)) {
-      const byId = new Map(hintCands.map((it) => [it.id, it]))
-      const corpus = hintCands.map((it) => insightMatchText(it))
-      // 查询与被测覆盖率的文本用**同一个**过滤后的查询：否则缩写（wsl/npm）会在 BM25 里被剔除、
-      // 却仍在覆盖率里计分，"至少两个共同词"就被它们凑够了。
-      const q = hintQueryText(hintQuery)
-      const scored = rankEntriesMergedScored(hintCands.map(insightToEntry), [q], hintCands.length)
-      const coverage = new Map(hintCands.map((it, i) => [it.id, idfCoverage(q, corpus[i], corpus)]))
-      const qStats = coverage.get(hintCands[0].id) || { supported: 0, terms: 0 }
-      const supportRatio = qStats.terms > 0 ? qStats.supported / qStats.terms : 0
-      // 通道级沉默：查询里绝大多数词在语料里根本没有对应 → "覆盖率 1.00"只是假象。
-      const channelThin = typeof cfg.hintMinSupport === 'number' && supportRatio < cfg.hintMinSupport
-      for (const r of relativeHits(scored, { ratioMin: cfg.signalMinRatio })) {
-        const it = byId.get(r.entry.insightId)
-        if (!it) continue
-        const ev = coverage.get(it.id) || { coverage: 0, matched: 0, supported: 0, terms: 0 }
-        if (channelThin) {
-          dropped.push({ id: it.id, channel: 'hint', reason: `support:${supportRatio.toFixed(2)}` })
-          continue
-        }
-        // 绝对门槛：覆盖率下限 + 共同词数下限（查询本身很短时下限按可用词数收敛）。
-        if (typeof cfg.hintMinCoverage === 'number' && ev.coverage < cfg.hintMinCoverage) {
-          dropped.push({ id: it.id, channel: 'hint', reason: `coverage:${ev.coverage.toFixed(2)}` })
-          continue
-        }
-        const needMatched = Math.min(typeof cfg.hintMinMatched === 'number' ? cfg.hintMinMatched : 2, ev.supported)
-        if (ev.matched < needMatched) {
-          dropped.push({ id: it.id, channel: 'hint', reason: `thin:${ev.matched}` })
-          continue
-        }
-        hints.push({ it, score: r.score, why: `relative:${(r.score / (scored[0].score || 1)).toFixed(2)} cov:${ev.coverage.toFixed(2)}/${ev.matched}` })
-      }
-    }
-  }
+  const hints = scoreHints({
+    cands: hintCands,
+    query,
+    humanText: ctx.humanText,
+    hintQuery: [ctx.intent || ctx.humanText || '', ...(ctx.targets || [])].filter(Boolean).join(' '),
+    cfg,
+    dropped,
+  })
 
   // 常驻块文本。去重指纹只看稳定内容（任务标题/步骤/insights + 相关 insights）：
   // “编辑中”随每次写文件变化，若参与指纹会导致每写一个文件就重发整块（噪音 + token 浪费）。
@@ -293,39 +318,29 @@ export function buildInjection(opts) {
   let used = entry.length
   let itemCount = 0
 
-  for (const { it, why } of triggered) {
-    if (skipItems) break
-    if (itemCount >= maxItems) {
-      dropped.push({ id: it.id, channel: 'trigger', reason: 'quota' })
-      continue
+  /** 把一组候选按优先级放进剩余预算：放不下的进 dropped（quota / budget），不静默。 */
+  const place = (channel, list, minChars, labelOf) => {
+    for (const { it, why } of list) {
+      if (itemCount >= maxItems) {
+        dropped.push({ id: it.id, channel, reason: 'quota' })
+        continue
+      }
+      const body = fitBody(insightBody(it), budgetChars - used, minChars)
+      if (body === null) {
+        dropped.push({ id: it.id, channel, reason: 'budget' })
+        continue
+      }
+      used += body.length + 1
+      itemCount++
+      parts.push(body)
+      labels.push(labelOf(it))
+      reasons.push({ id: it.id, channel, why, hash: insightItemHash(it), chars: body.length })
     }
-    const body = fitBody(insightBody(it), budgetChars - used, MIN_BODY_CHARS.trigger)
-    if (body === null) {
-      dropped.push({ id: it.id, channel: 'trigger', reason: 'budget' })
-      continue
-    }
-    used += body.length + 1
-    itemCount++
-    parts.push(body)
-    labels.push(it.kind === 'procedure' ? 'procedure' : it.kind)
-    reasons.push({ id: it.id, channel: 'trigger', why, hash: insightItemHash(it), chars: body.length })
   }
-  for (const { it, why } of hints) {
-    if (skipItems) break
-    if (itemCount >= maxItems) {
-      dropped.push({ id: it.id, channel: 'hint', reason: 'quota' })
-      continue
-    }
-    const body = fitBody(insightBody(it), budgetChars - used, MIN_BODY_CHARS.hint)
-    if (body === null) {
-      dropped.push({ id: it.id, channel: 'hint', reason: 'budget' })
-      continue
-    }
-    used += body.length + 1
-    itemCount++
-    parts.push(body)
-    labels.push('hint')
-    reasons.push({ id: it.id, channel: 'hint', why, hash: insightItemHash(it), chars: body.length })
+  // 限流命中时条目通道整体沉默：triggered 已在上方记进 dropped，这里不再重复排程。
+  if (!skipItems) {
+    place('trigger', triggered, MIN_BODY_CHARS.trigger, (it) => it.kind)
+    place('hint', hints, MIN_BODY_CHARS.hint, () => 'hint')
   }
 
   const total = [entry, ...parts].filter(Boolean)
@@ -333,6 +348,64 @@ export function buildInjection(opts) {
   const clamp = (t) => (t.length > budgetChars ? `${t.slice(0, budgetChars)}\n…(截断)` : t)
   const dedupeText = clamp([entryStable, ...parts].filter(Boolean).join('\n'))
   return { text: clamp(total.join('\n')), entry, entryStable, labels, reasons, dropped, dedupeText, itemChars: used - entry.length }
+}
+
+// 每会话状态的会话数上限：六张表共用（旧实现把同一个 200 在五处各写一遍）。
+const SESSION_STATE_MAX = 200
+// 单会话已注入条目表的条数上限。
+const INJECTED_ITEMS_MAX = 600
+// 单会话保留的 tool/call 观察窗口（够覆盖"最近几步在做什么"）。
+const OBSERVED_CALLS_MAX = 8
+
+/**
+ * 注入引擎的「每会话一份」状态。
+ *
+ * 之前六张表散在 installAutoInject 里、各自 hand-roll 淘汰循环，同一个
+ * `while (map.size > CAP) map.delete(map.keys().next().value)` 抄了五遍：容量上限写在五处，
+ * 抄漏一处就是无界增长，dispose 时也漏清两张表。容量只在这里定义一次。
+ */
+class InjectionSessions {
+  constructor() {
+    const cache = (create) => new SessionCache({ maxSessions: SESSION_STATE_MAX, create })
+    // 上次注入指纹：用单个变量会让并发会话互相抑制注入。
+    this.lastText = cache()
+    // 上次预算丢弃签名：预算把条目挤出去时必须留痕一次，而不是静默（degraded 可见性）。
+    this.lastDropped = cache()
+    // 条目级去重记忆：insightId → { hash, step }。注入的消息留在 append-only 的会话历史里，
+    // 所以"整块指纹变了"不等于"内容都是新的"：滑动工具窗口 / 任务卡更新 / 预算截断边界都会
+    // 让同一份 procedure 被整块重发（实测 66 步注入 20 次，同一份 1732 字重发 3 次）。
+    this.items = cache(() => new BoundedMap(INJECTED_ITEMS_MAX))
+    // 会话步数：为 reinjectItemsAfter 提供时间轴。
+    this.step = cache(() => 0)
+    // 会话级条目额度（S3）：条数 / 字符 / 上次"条目注入"的步号。常驻任务卡不占额度——
+    // 它是状态快照，内容变了就该更新；被限流的是记忆条目的推送。
+    this.quota = cache(() => ({ items: 0, chars: 0, lastStep: -Infinity }))
+    // 反应窗口：本会话最近观察到的 tool/call（参数里有 git commit / npm publish / 改动的路径）。
+    // 宿主没有"工具执行前拦截"钩子，所以这是 pre-step 之外唯一能拿到的动作事实。
+    this.observed = cache(() => [])
+    this._all = Object.values(this)
+  }
+
+  clear() {
+    for (const cache of this._all) cache.clear()
+  }
+}
+
+/** 记录会话里的 tool/call：ops.js 从这些参数解析出 op / 写目标 / 主机。 */
+function installCallObserver(ctx, sessions) {
+  ctx.on('session/event', (session, event) => {
+    try {
+      if (!event || event.type !== 'tool/call') return
+      const sessionId = session && session.id
+      if (!sessionId) return
+      const data = event.data || {}
+      const calls = sessions.observed.ensure(sessionId)
+      calls.push({ name: String(data.name || ''), arguments: String(data.arguments || '') })
+      if (calls.length > OBSERVED_CALLS_MAX) calls.shift()
+    } catch {
+      // 观察失败绝不影响宿主请求
+    }
+  })
 }
 
 /** 注册 agent/pre-step 监听，向每步请求的 enter 决策追加记忆消息（默认开）。
@@ -345,51 +418,11 @@ export function installAutoInject(ctx, config) {
   const cfg = cfgEngine(config)
   // 审计配置同 cfg：安装时解析一次（与 autoContext 其余开关一致）。
   const audit = cfgAudit(config)
-  // 每个会话一份“上次注入指纹”。用单个变量会让并发会话互相抑制注入。
-  const lastFpBySession = new Map()
-  const LAST_FP_MAX = 200
-  // 每个会话一份"上次预算丢弃指纹"：预算把条目挤出去时必须留痕一次，而不是静默（degraded 可见性）。
-  const lastDroppedBySession = new Map()
-  // 条目级去重记忆：sessionId → Map(insightId → { hash, step })。注入的消息留在会话历史里
-  // （宿主只追加、不压缩），所以"整块指纹变了"不等于"内容都是新的"——同一份 procedure 会因为
-  // 滑动工具窗口、任务卡更新、预算截断边界变化被整块重发（实测 66 步注入 20 次，其中同一份
-  // 1732 字 procedure 重发 3 次、另一份 1008 字的 6 次）。这里按条目记账，正文没变就不再排程。
-  const injectedBySession = new Map()
-  const INJECTED_ITEMS_MAX = 600
-  // 会话步数：为 reinjectItemsAfter 提供时间轴（>0 时才用得上）。
-  const stepBySession = new Map()
-  // 会话级条目额度（S3）：条数 / 字符 / 上次"条目注入"的步号。常驻任务卡不占这个额度——
-  // 它是状态快照，内容变了就该更新；被限流的是记忆条目的推送。
-  const budgetBySession = new Map()
-  // 反应窗口：本会话最近观察到的 tool/call（参数里有 git commit / npm publish / 改动的路径）。
-  // 宿主没有"工具执行前拦截"钩子，所以这是 pre-step 之外唯一能拿到的动作事实。
-  const observedBySession = new Map()
-  const OBSERVED_MAX = 8
-  const OBSERVED_SESSIONS = 200
-  ctx.on('session/event', (session, event) => {
-    try {
-      if (!event || event.type !== 'tool/call') return
-      const sid = session && session.id
-      if (!sid) return
-      const data = event.data || {}
-      const rec = observedBySession.get(sid) || []
-      rec.push({ name: String(data.name || ''), arguments: String(data.arguments || '') })
-      while (rec.length > OBSERVED_MAX) rec.shift()
-      observedBySession.set(sid, rec)
-      while (observedBySession.size > OBSERVED_SESSIONS) {
-        observedBySession.delete(observedBySession.keys().next().value)
-      }
-    } catch {
-      // 观察失败绝不影响宿主请求
-    }
-  })
+  const sessions = new InjectionSessions()
+
+  installCallObserver(ctx, sessions)
   if (typeof ctx.effect === 'function') {
-    ctx.effect(() => () => {
-      observedBySession.clear()
-      injectedBySession.clear()
-      stepBySession.clear()
-      budgetBySession.clear()
-    })
+    ctx.effect(() => () => sessions.clear())
   }
   ctx.on('agent/pre-step', async (payload, next) => {
     // 宿主契约是 waterfall(payload, next)，next 一定存在；但一旦宿主版本漂移、或事件被当
@@ -401,140 +434,151 @@ export function installAutoInject(ctx, config) {
     if (!decision) return fallback()
     if (decision.kind !== 'enter') return decision
     try {
-      const agent = payload && payload.agent
-      const session = agent && agent.session
-      const root = session && session.header && session.header.cwd
-      const sessionId = session && session.id
-      if (!root || !sessionId) return decision
-      const query = lastUserText(decision.messages)
-      const memoryRoot = memoryRootFor(root, config.memoryDir)
-      const store = new ProjectMemoryStore(memoryRoot).load()
-      const globalStore = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()
-      const boundTaskId = store.getBoundTaskId(sessionId) ? store.getBoundTaskId(sessionId) : null
-      const task = boundTaskId ? store.getTask(boundTaskId) : null
-      // 两个窗口合并进同一个就绪上下文：人类消息（先发）+ 已观察动作（反应）。
-      // 动作平面（S1）：把"最近做过什么"解析成 op / 写目标 / 主机——不再把原始参数当文本搜。
-      const observed = observedBySession.get(sessionId) || []
-      const activity = activityFromCalls(observed)
-      const readiness = buildReadinessContext({
-        humanText: query || '',
-        actionText: observed.map((c) => `${c.name} ${c.arguments}`).join('\n'),
-        ops: activity.ops,
-        targets: activity.targets,
-        hosts: activity.hosts,
-      })
-      // 条目级去重：本会话已注入过、且正文未变的条目不再参与排程（cfg.reinjectItemsAfter=0 时永久，
-      // >0 时走冷却步数，用于历史可能被外部裁剪的场景）。正文变了（编辑过 insight）立刻允许重发。
-      const stepNo = (stepBySession.get(sessionId) || 0) + 1
-      stepBySession.set(sessionId, stepNo)
-      while (stepBySession.size > LAST_FP_MAX) stepBySession.delete(stepBySession.keys().next().value)
-      const seen = injectedBySession.get(sessionId) || new Map()
-      injectedBySession.set(sessionId, seen)
-      while (injectedBySession.size > LAST_FP_MAX) injectedBySession.delete(injectedBySession.keys().next().value)
-      const cooldown = cfg.reinjectItemsAfter || 0
-      const skipItem = cooldown === 0
-        ? (it) => {
-            const rec = seen.get(it.id)
-            return Boolean(rec) && rec.hash === insightItemHash(it)
-          }
-        : (it) => {
-            const rec = seen.get(it.id)
-            return Boolean(rec) && rec.hash === insightItemHash(it) && stepNo - rec.step < cooldown
-          }
-      // 会话级限流（S3）：冷却步数 / 条目条数 / 条目字符。三个任一触顶 → 条目通道整体沉默，
-      // 但本轮"本该注入什么"仍会进 dropped（不做静默降级）。
-      const budget = budgetBySession.get(sessionId) || { items: 0, chars: 0, lastStep: -Infinity }
-      budgetBySession.set(sessionId, budget)
-      while (budgetBySession.size > LAST_FP_MAX) budgetBySession.delete(budgetBySession.keys().next().value)
-      const cooling = Number.isFinite(budget.lastStep) && stepNo - budget.lastStep < cfg.gateCooldownSteps
-      const itemsLeft = Math.max(0, cfg.maxItemsPerSession - budget.items)
-      const charsLeft = Math.max(0, cfg.maxItemCharsPerSession - budget.chars)
-      const silenceReason = cooling ? 'cooldown'
-        : itemsLeft === 0 ? 'session-items'
-          : charsLeft === 0 ? 'session-chars' : null
-      const built = buildInjection({
-        query: query || '',
-        readiness,
-        task,
-        store,
-        globalStore,
-        projectTagsList: projectTags(root),
-        cfg,
-        skipItem,
-        skipItems: silenceReason !== null,
-        silenceReason: silenceReason || 'cooldown',
-        maxItems: itemsLeft,
-        maxChars: charsLeft,
-      })
-      const fp = fingerprint(built.dedupeText ?? built.text)
-      const shouldInject = Boolean(built.text) && fp !== lastFpBySession.get(sessionId)
-      let injectMessage = null
-      if (shouldInject) {
-        // 以宿主 createUserMessage 构造的完整 user 消息追加（带 id/source，plan-mode narration 同款）。
-        // 裸 {role,content} 消息缺 source 会让宿主逐条读 message.source.kind 时崩溃。
-        lastFpBySession.set(sessionId, fp)
-        if (lastFpBySession.size > LAST_FP_MAX) lastFpBySession.delete(lastFpBySession.keys().next().value)
-        // 只记真的进了上下文的那几条：dropped 的没被看到，不能记账（否则以后永远不再注入）。
-        for (const r of built.reasons) {
-          if (r && r.id && r.hash) seen.set(r.id, { hash: r.hash, step: stepNo })
-        }
-        while (seen.size > INJECTED_ITEMS_MAX) seen.delete(seen.keys().next().value)
-        // 会话额度只被"条目"消耗；任务卡不算（否则任务一多就把记忆挤没了）。
-        if (built.reasons.length) {
-          budget.items += built.reasons.length
-          budget.chars += typeof built.itemChars === 'number' ? built.itemChars : 0
-          budget.lastStep = stepNo
-        }
-        injectMessage = createUserMessage({
-          content: [{ type: 'text', text: `\n\n${INJECT_MARK} auto-context\n${built.text}` }],
-          // 这一块是「同一生产者后续快照会取代的当前状态」，不是一次性通知。
-          // 宿主 ContextFormed 是判别联合：snapshot 必须带 sections（notice 才需要 summary）。
-          // 通道不变（仍走 agent/pre-step 追加 user 消息），只修语义。
-          source: {
-            kind: 'plugin',
-            plugin: 'dsh-project-memory',
-            form: 'snapshot',
-            sections: [{ name: 'project-memory', text: built.text }],
-          },
-        })
-      }
-      // 未注入 ≠ 无事发生：因预算被挤掉的条目按 cfg.budgetLog 留痕（默认 off，见 cfgEngine）。
-      // 留痕仍然记账（去重 + 上限），只是默认不外泄到用户的终端。
-      if (built.dropped && built.dropped.length && cfg.budgetLog !== 'off') {
-        const sig = built.dropped.map((d) => `${d.id}:${d.reason}`).join(',')
-        if (lastDroppedBySession.get(sessionId) !== sig) {
-          const seenBefore = lastDroppedBySession.has(sessionId)
-          lastDroppedBySession.set(sessionId, sig)
-          while (lastDroppedBySession.size > LAST_FP_MAX) {
-            lastDroppedBySession.delete(lastDroppedBySession.keys().next().value)
-          }
-          // once：只有本会话第一次丢弃出声，之后继续记账但保持安静。
-          if (cfg.budgetLog === 'all' || !seenBefore) {
-            console.error(
-              `[dsh-project-memory] auto-inject degraded: ${built.dropped.length} insight(s) kept out by budget — `
-              + built.dropped.map((d) => `${d.id}(${d.reason})`).join(', '),
-            )
-          }
-        }
-      }
-      if (injectMessage) {
-        // S0 观测：只记真的进了上下文的那一次（dropped 单独出现不写，否则每步刷屏）。
-        appendInjectionAudit(memoryRoot, auditRecordFrom({
-          sessionId,
-          root,
-          step: stepNo,
-          text: built.text,
-          labels: built.labels,
-          reasons: built.reasons,
-          dropped: built.dropped,
-          budget: { items: budget.items, chars: budget.chars, lastStep: Number.isFinite(budget.lastStep) ? budget.lastStep : null },
-          silence: silenceReason,
-        }), audit)
-        return { ...decision, messages: [...decision.messages, injectMessage] }
-      }
+      return (await injectForStep({ payload, decision, config, cfg, audit, sessions })) || decision
     } catch (err) {
       console.error(`[dsh-project-memory] auto-inject skipped: ${err?.message || err}`)
+      return decision
     }
-    return decision
+  })
+}
+
+/**
+ * 一个 pre-step 的注入决策：解析会话 → 排程 → 必要时构造消息。
+ * 返回 null 表示本步无事可做（交回原决策）。
+ */
+async function injectForStep({ payload, decision, config, cfg, audit, sessions }) {
+  const session = payload && payload.agent && payload.agent.session
+  const root = session && session.header && session.header.cwd
+  const sessionId = session && session.id
+  if (!root || !sessionId) return null
+
+  const query = lastUserText(decision.messages)
+  const memoryRoot = memoryRootFor(root, config.memoryDir)
+  const store = new ProjectMemoryStore(memoryRoot).load()
+  const globalStore = new GlobalStore(cfg.globalFile || defaultGlobalFile()).load()
+  const boundTaskId = store.getBoundTaskId(sessionId)
+  const task = boundTaskId ? store.getTask(boundTaskId) : null
+
+  // 两个窗口合并进同一个就绪上下文：人类消息（先发）+ 已观察动作（反应）。
+  // 动作平面（S1）：把"最近做过什么"解析成 op / 写目标 / 主机——不再把原始参数当文本搜。
+  const observed = sessions.observed.ensure(sessionId)
+  const activity = activityFromCalls(observed)
+  const readiness = buildReadinessContext({
+    humanText: query || '',
+    actionText: observed.map((c) => `${c.name} ${c.arguments}`).join('\n'),
+    ops: activity.ops,
+    targets: activity.targets,
+    hosts: activity.hosts,
+  })
+
+  const stepNo = sessions.step.ensure(sessionId) + 1
+  sessions.step.set(sessionId, stepNo)
+  const quota = sessions.quota.ensure(sessionId)
+  const silence = sessionSilence({ cfg, quota, stepNo })
+  // 条目级去重：本会话已注入过、且正文未变的条目不再参与排程（正文被编辑过 → 立刻允许重发）。
+  const skipItem = makeSkipItem(sessions.items.ensure(sessionId), stepNo, cfg.reinjectItemsAfter || 0)
+
+  const built = buildInjection({
+    query: query || '',
+    readiness,
+    task,
+    store,
+    globalStore,
+    projectTagsList: projectTags(root),
+    cfg,
+    skipItem,
+    skipItems: silence.reason !== null,
+    silenceReason: silence.reason || 'cooldown',
+    maxItems: silence.itemsLeft,
+    maxChars: silence.charsLeft,
+  })
+
+  // 未注入 ≠ 无事发生：因预算被挤掉的条目按 cfg.budgetLog 留痕（默认 off，见 cfgEngine）。
+  // 留痕仍然记账（去重 + 上限），只是默认不外泄到用户的终端。
+  recordDropped({ sessions, sessionId, dropped: built.dropped, budgetLog: cfg.budgetLog })
+
+  const fp = fingerprint(built.dedupeText ?? built.text)
+  if (!built.text || fp === sessions.lastText.peek(sessionId)) return null
+  sessions.lastText.set(sessionId, fp)
+
+  // 只记真的进了上下文的那几条：dropped 的没被看到，不能记账（否则以后永远不再注入）。
+  const seen = sessions.items.ensure(sessionId)
+  for (const r of built.reasons) {
+    if (r && r.id && r.hash) seen.set(r.id, { hash: r.hash, step: stepNo })
+  }
+  // 会话额度只被"条目"消耗；任务卡不算（否则任务一多就把记忆挤没了）。
+  if (built.reasons.length) {
+    quota.items += built.reasons.length
+    quota.chars += typeof built.itemChars === 'number' ? built.itemChars : 0
+    quota.lastStep = stepNo
+  }
+
+  // S0 观测：只记真的进了上下文的那一次（dropped 单独出现不写，否则每步刷屏）。
+  appendInjectionAudit(memoryRoot, auditRecordFrom({
+    sessionId,
+    root,
+    step: stepNo,
+    text: built.text,
+    labels: built.labels,
+    reasons: built.reasons,
+    dropped: built.dropped,
+    budget: { items: quota.items, chars: quota.chars, lastStep: Number.isFinite(quota.lastStep) ? quota.lastStep : null },
+    silence: silence.reason,
+  }), audit)
+
+  return { ...decision, messages: [...decision.messages, injectionMessage(built.text)] }
+}
+
+/**
+ * 会话级限流（S3）：冷却步数 / 条目条数 / 条目字符。三个任一触顶 → 条目通道整体沉默，
+ * 但本轮"本该注入什么"仍会进 dropped（不做静默降级）。
+ */
+function sessionSilence({ cfg, quota, stepNo }) {
+  const cooling = Number.isFinite(quota.lastStep) && stepNo - quota.lastStep < cfg.gateCooldownSteps
+  const itemsLeft = Math.max(0, cfg.maxItemsPerSession - quota.items)
+  const charsLeft = Math.max(0, cfg.maxItemCharsPerSession - quota.chars)
+  const reason = cooling ? 'cooldown'
+    : itemsLeft === 0 ? 'session-items'
+      : charsLeft === 0 ? 'session-chars' : null
+  return { reason, itemsLeft, charsLeft }
+}
+
+/** 条目级去重判据：会话里注入过且正文未变 → 跳过。cooldown=0 永久有效，>0 走步数冷却。 */
+function makeSkipItem(seen, stepNo, cooldown) {
+  return (it) => {
+    const rec = seen.get(it.id)
+    if (!rec || rec.hash !== insightItemHash(it)) return false
+    return cooldown === 0 || stepNo - rec.step < cooldown
+  }
+}
+
+/** 预算丢弃的留痕（cfg.budgetLog）：once=每会话首次，all=丢弃组合每变一次。 */
+function recordDropped({ sessions, sessionId, dropped, budgetLog }) {
+  if (!dropped || !dropped.length || budgetLog === 'off') return
+  const signature = dropped.map((d) => `${d.id}:${d.reason}`).join(',')
+  const previous = sessions.lastDropped.peek(sessionId)
+  if (previous === signature) return
+  sessions.lastDropped.set(sessionId, signature)
+  if (budgetLog === 'all' || previous === undefined) {
+    console.error(
+      `[dsh-project-memory] auto-inject degraded: ${dropped.length} insight(s) kept out by budget — `
+      + dropped.map((d) => `${d.id}(${d.reason})`).join(', '),
+    )
+  }
+}
+
+/** 追加的注入消息：必须是带 source 的完整消息——裸 {role,content} 会让宿主读 message.source 时崩。 */
+function injectionMessage(text) {
+  return createUserMessage({
+    content: [{ type: 'text', text: `\n\n${INJECT_MARK} auto-context\n${text}` }],
+    // 这一块是「同一生产者后续快照会取代的当前状态」，不是一次性通知。
+    // 宿主 ContextFormed 是判别联合：snapshot 必须带 sections（notice 才需要 summary）。
+    // 通道不变（仍走 agent/pre-step 追加 user 消息），只修语义。
+    source: {
+      kind: 'plugin',
+      plugin: 'dsh-project-memory',
+      form: 'snapshot',
+      sections: [{ name: 'project-memory', text }],
+    },
   })
 }
