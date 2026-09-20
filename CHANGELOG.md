@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.5.7 (2026-09-20) — bug-fix release
+
+发布前审计在 313 项全绿下发现并修复以下缺陷，新增 18 项回归测试（共 331）。
+
+### 数据完整性
+
+- 旧库迁移：`index.json` 损坏时会连带删除完好的 `entries.json`（静默清空整个 store）
+- `store.load()` 不幂等，重复调用丢掉未落盘的变更
+- 符号后到时 doc↔symbol 链接不落盘；畸形 shard/insight 条目会让所有读取抛错
+
+### 召回与注入
+
+- 提示通道覆盖率语料与 BM25 排序不一致：只匹配 `fix` 的查询会让整条提示通道沉默
+- `recallItems` 改为每层各自 top-k（文档不再挤掉符号层）；任务级 draft 不再泄漏
+- 未加引号的 CJK 文件名不再触发 `when.intents`
+- `when.writes` 纳入人类消息里的路径（动手前可命中；读取路径不算）
+- 会话条目字符额度不再截断常驻任务卡；`entryOn:false` 与显式 `0` 生效；`fitBody` 边界
+
+### insight
+
+- `applyDecay` 判据不可达，`decayDays` 完全失效
+- 提升/降级同样收口 `maxProject` / `maxGlobalProcedures`
+- 跨层移动保留 `hitCount`/`createdAt`/`triggerDerived`；global 也回填派生 trigger
+
+### 索引
+
+- watch 不再每轮重读重哈希所有未变文件；`index_doc` 补 `terms` 回填
+- `readTextFile` 先 stat 再读；chunker `sourceLine` 不再漂移
+- `export`/多行 interface 与 type 别名可被 L1 扫到；扩展名大小写不敏感
+- 损坏 PDF 销毁 loading task；TS 增强器 type 别名与关闭开关
+- scoped 依赖 tag 修正；畸形依赖不再清空全部 tags
+
+### 工具与命令
+
+- `query_memory(type:'task')` 读错步骤字段；空查询被拒绝
+- 任务文件超限淘汰最冷文件；任务 id 补随机后缀
+- `/insight edit` 合并 trigger 而非重建；`/task rename|todos` 保留内部空白
+- 写类工具校验 root；`invocationContext` 补 `agent.session` 降级
+
+### 重构（已在 main 上，无行为变更）
+
+- 索引逻辑收敛为 `src/index-pipeline.js`；auto-inject 会话状态收敛为 `InjectionSessions`
+- 命令处理器共用 `invocationContext` / `fencedJson`
+
+未修的低优先级发现见 `RELEASE-NOTES-0.5.7.md` 的 backlog。
+
 ## 0.5.6 (2026-09-16) — injection admission (lessons/decisions/procedures stop arriving by coincidence)
 
 ### Changed (only what you are about to *do* can trigger an injection)
