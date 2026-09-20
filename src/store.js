@@ -17,6 +17,14 @@ const SHARDS_DIR = 'shards'
 const storeCache = new Map()
 const STORE_CACHE_MAX = 32
 
+/** 已就"无法迁移的旧 store"告警过的目录：避免每次 load() 都刷一行。 */
+const migrationWarned = new Set()
+
+/** 纯对象判定（排除 null / 数组）：磁盘读入的 JSON 形状校验统一走它。 */
+function isRecord(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
 function loadJson(filePath, fallback) {
   let raw
   try {
@@ -82,7 +90,9 @@ export class ProjectMemoryStore {
   load() {
     const key = path.resolve(this.dir)
     const hot = storeCache.get(key)
-    if (hot && hot !== this) return hot
+    // 缓存命中即返回：`hot === this` 时再读一遍盘会静默丢弃本实例尚未 save() 的变更
+    // （_loadSharded/_loadInsights 会重新赋值 experience/tasks/insights…）。
+    if (hot) return hot
     this._migrateLegacyIfNeeded()
     this._loadSharded()
     this._loadInsights()
@@ -114,9 +124,34 @@ export class ProjectMemoryStore {
     }
     const legacyEntriesPath = path.join(this.dir, ENTRIES_FILE)
     if (!existsSafe(legacyEntriesPath)) return
-    const index = loadJson(path.join(this.dir, INDEX_FILE), {})
-    const files = index.files || {}
-    const entries = loadJson(legacyEntriesPath, {})
+    const legacyIndexPath = path.join(this.dir, INDEX_FILE)
+    // 先读两份旧文件：损坏的那份会在这里被 loadJson 备份为 .corrupt（保留现场）。
+    const index = loadJson(legacyIndexPath, null)
+    const entries = loadJson(legacyEntriesPath, null)
+    if (!isRecord(index) || !isRecord(entries)) {
+      const hasEntries = isRecord(entries) && Object.keys(entries).length > 0
+      if (!hasEntries) {
+        // entries 损坏（已备份）或本就是空的：没有可保护的数据，按空旧库收尾。
+        writeJsonAtomic(formatPath, { version: 2, layout: 'sharded' })
+        for (const stale of [legacyEntriesPath, legacyIndexPath]) {
+          try {
+            unlinkSync(stale)
+          } catch {
+            // already renamed away by corrupt backup, or gone; nothing to do
+          }
+        }
+        return
+      }
+      // index.json 是 entries.json → rel 的唯一映射。它缺失或损坏时继续迁移，会写出 0 个
+      // shard、打上 v2 标记、再把**完好的** entries.json 删掉——等于一次静默的数据清空。
+      // 保留现场，不写 format 标记，等 index.json 修好后再迁（每次进程只提示一次）。
+      if (!migrationWarned.has(this.dir)) {
+        migrationWarned.add(this.dir)
+        console.error(`[dsh-project-memory] legacy store at ${this.dir} has ${ENTRIES_FILE} but no readable ${INDEX_FILE}; migration skipped to protect it`)
+      }
+      return
+    }
+    const files = isRecord(index.files) ? index.files : {}
     const orphans = Object.keys(entries).filter((rel) => !(rel in files))
     if (orphans.length) {
       console.error(
@@ -147,9 +182,11 @@ export class ProjectMemoryStore {
     }
     for (const name of shardNames) {
       const shard = loadJson(path.join(this.dir, SHARDS_DIR, name), null)
-      if (!shard || typeof shard.relPath !== 'string' || !shard.record) continue
+      if (!shard || typeof shard.relPath !== 'string' || !isRecord(shard.record)) continue
       this.files[shard.relPath] = shard.record
-      this.entries[shard.relPath] = shard.entries || []
+      // 畸形 shard（entries 被写成对象/null）不能让 allEntries() 在 `for…of` 上抛错，
+      // 否则一个坏文件会拖垮整个进程的每一次读取。
+      this.entries[shard.relPath] = Array.isArray(shard.entries) ? shard.entries.filter(isRecord) : []
     }
     this.experience = loadJson(path.join(this.dir, EXPERIENCE_FILE), [])
     this.tasks = loadJson(path.join(this.dir, TASKS_FILE), [])
@@ -165,7 +202,10 @@ export class ProjectMemoryStore {
   // migratedAt 落盘保证跨进程/崩溃幂等。销毁式收敛放到 recall 统一 PR。
   _loadInsights() {
     const doc = loadJson(path.join(this.dir, INSIGHTS_FILE), null)
-    this.insights = doc && typeof doc === 'object' && Array.isArray(doc.items) ? doc : { version: 1, migratedAt: null, items: [] }
+    this.insights = isRecord(doc) && Array.isArray(doc.items)
+      // items 里混进 null/非对象（手改或旧版写入）会让迁移与召回逐个 `.title` 抛错——过滤掉。
+      ? { ...doc, items: doc.items.filter(isRecord) }
+      : { version: 1, migratedAt: null, items: [] }
     this._migrateExperienceToInsights()
     // PR3：v1 → v2 懒回填派生 trigger（纯确定性、幂等；不调用模型，不改写已有字段）
     if (backfillDerivedTriggers(this.insights)) this._dirtyInsights = true

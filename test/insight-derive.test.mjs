@@ -177,7 +177,8 @@ const CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
   })
   gs.commit(() => 0)
 
-  // maxTokens 16 → 预算 48 字符 ≤ trigger 的最小可用长度，于是命中的每一条都会被丢弃（必然留痕）。
+  // maxTokens 15 → 预算 45 字符 < trigger 的最小可用长度 48，于是命中的每一条都会被丢弃（必然留痕）。
+  // 注意用 15 而不是 16：预算恰好等于最小长度时 fitBody 允许截断到该长度（off-by-one 修复），不会丢弃。
   const run = async (autoContext) => {
     let handler
     const ctx = { on: (event, fn) => { if (event === 'agent/pre-step') handler = fn } }
@@ -202,10 +203,10 @@ const CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
     return logs.filter((l) => /degraded/.test(l) && /budget/.test(l))
   }
 
-  assert.equal((await run({ enabled: true, maxTokens: 16 })).length, 0, '默认（未配置 budgetLog）必须对终端静默')
-  assert.equal((await run({ enabled: true, maxTokens: 16, budgetLog: 'off' })).length, 0, "budgetLog:'off' 必须静默")
-  assert.ok((await run({ enabled: true, maxTokens: 16, budgetLog: 'all' })).length >= 2, "budgetLog:'all' 每个丢弃组合留一行")
-  assert.equal((await run({ enabled: true, maxTokens: 16, budgetLog: 'once' })).length, 1, "budgetLog:'once' 每个会话最多一行")
+  assert.equal((await run({ enabled: true, maxTokens: 15 })).length, 0, '默认（未配置 budgetLog）必须对终端静默')
+  assert.equal((await run({ enabled: true, maxTokens: 15, budgetLog: 'off' })).length, 0, "budgetLog:'off' 必须静默")
+  assert.ok((await run({ enabled: true, maxTokens: 15, budgetLog: 'all' })).length >= 2, "budgetLog:'all' 每个丢弃组合留一行")
+  assert.equal((await run({ enabled: true, maxTokens: 15, budgetLog: 'once' })).length, 1, "budgetLog:'once' 每个会话最多一行")
   ok('预算丢弃默认静默；once/all 才留痕（可观测性与终端噪音解耦）')
 }
 

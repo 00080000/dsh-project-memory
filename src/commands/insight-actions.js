@@ -226,7 +226,9 @@ const KIND_CONTENT = {
   procedure: ['steps', 'trigger'],
   experience: ['problem', 'solution'],
 }
-const ALL_CONTENT = ['body', 'pattern', 'fix', 'problem', 'solution', 'choice', 'reason', 'steps', 'trigger']
+// 切 kind 时要清掉的内容字段。**不含 trigger**：任何 kind 都可以带 authored trigger，
+// 放进这里会在 lesson↔decision 之间切换时把自动注入能力一并删掉。
+const ALL_CONTENT = ['body', 'pattern', 'fix', 'problem', 'solution', 'choice', 'reason', 'steps']
 
 /** 编辑既有条目（title/kind/正文/trigger 等白名单字段）。任务级按 id 在任务池定位。 */
 export function editMemoryItem({ store, gs, scope, id, fields }) {
@@ -245,10 +247,18 @@ export function editMemoryItem({ store, gs, scope, id, fields }) {
       }
       if (key === 'trigger') {
         if (!v || typeof v !== 'object') continue
-        item.trigger = {
-          keywords: Array.isArray(v.keywords) ? v.keywords.map(String) : [],
-          ...(Array.isArray(v.scope) ? { scope: v.scope.map(String) } : {}),
-        }
+        // 合并而非重建：只改传进来的成员，when/guard/prevents 等 authored 触发面必须原样保留，
+        // 否则一次 /insight edit 就会把自动注入的 trigger 降级成 legacy keywords。
+        const next = { ...(item.trigger || {}) }
+        if (Array.isArray(v.keywords)) next.keywords = v.keywords.map(String)
+        if (Array.isArray(v.scope)) next.scope = v.scope.map(String)
+        if (Array.isArray(v.actions)) next.actions = v.actions.map(String)
+        if (Array.isArray(v.paths)) next.paths = v.paths.map(String)
+        if (Array.isArray(v.symbols)) next.symbols = v.symbols.map(String)
+        if (v.when && typeof v.when === 'object') next.when = v.when
+        if (v.guard && typeof v.guard === 'object') next.guard = v.guard
+        if (typeof v.prevents === 'string') next.prevents = v.prevents
+        item.trigger = next
         changed = true
         continue
       }

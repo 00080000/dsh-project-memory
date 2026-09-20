@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
+import { assertIndexRoot, memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 
 export function forgetTool(config) {
@@ -24,6 +24,7 @@ export function forgetTool(config) {
     },
     async execute(args, exec) {
       const root = resolveIndexRoot(exec, args.root)
+      assertIndexRoot(root, args.root || root)
       const memoryDir = memoryRootFor(root, config.memoryDir)
       const store = new ProjectMemoryStore(memoryDir).load()
       return store.commit((s) => {

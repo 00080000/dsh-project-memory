@@ -2,7 +2,7 @@
 // 事实依据：dsh session/event 签名 (session, event)；todo/write data.todos；
 // tool/call data.arguments 为 JSON 字符串；fs 工具名 read/write/edit/read_image，参数 file_path。
 import path from 'node:path'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { memoryRootFor } from '../util/fs.js'
 import { findProjectRoot } from '../lazy.js'
 import { ProjectMemoryStore } from '../store.js'
@@ -27,7 +27,9 @@ export function slugifyTitle(text) {
 
 export function genTaskId(projectRoot, title) {
   const slug = slugifyTitle(title) || 'task'
-  return `tsk_${hash8(projectRoot)}_${slug}_${Date.now()}`
+  // 毫秒不是唯一性保证：两个会话在同一毫秒建同名任务会拿到同一个 id，
+  // addTask 变成"同一 id 两次"，两个会话的绑定互相串台。补 6 位随机后缀。
+  return `tsk_${hash8(projectRoot)}_${slug}_${Date.now().toString(36)}_${randomUUID().slice(0, 6)}`
 }
 
 /** 项目根推导：findProjectRoot 期望文件路径，传目录会从父级起跳，故用目录内探针路径。 */
@@ -138,13 +140,7 @@ export function hotSortFiles(files, meta) {
 /** 触碰文件后更新元数据并重排 task.files（写 vs 读分别记时间/次数）。 */
 export function touchTaskFile(task, rel, kind, now) {
   task.fileMeta = task.fileMeta || {}
-  if (!task.files.includes(rel)) {
-    task.files.push(rel)
-    if (task.files.length > MAX_FILES_PER_TASK) {
-      const dropped = task.files.shift()
-      delete task.fileMeta[dropped]
-    }
-  }
+  if (!task.files.includes(rel)) task.files.push(rel)
   const m = task.fileMeta[rel] || {}
   m.n = (m.n || 0) + 1 // 兼容旧字段：读+写总数（保留，避免老任务语义漂移）
   // 读/写分计数（先只采集，不消费 —— 排序与注入仍只用 lastWriteAt/lastReadAt）
@@ -157,6 +153,12 @@ export function touchTaskFile(task, rel, kind, now) {
   m.lastReadAt = now
   task.fileMeta[rel] = m
   task.files = hotSortFiles(task.files, task.fileMeta)
+  // 超限丢最冷的：列表已按热度降序，末尾即最冷。旧代码在**重排前** shift()，
+  // 而那时 files 本身就是热序，shift 恰好把最热的那个文件（刚写的）丢掉、留下最冷的。
+  while (task.files.length > MAX_FILES_PER_TASK) {
+    const dropped = task.files.pop()
+    delete task.fileMeta[dropped]
+  }
 }
 
 /**

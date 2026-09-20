@@ -10,6 +10,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { normalizedTokenOverlap, findBestOverlapMatch, insightMatchText } from './similarity.js'
+import { backfillDerivedTriggers } from './readiness.js'
 
 export const INSIGHT_KINDS = ['lesson', 'decision', 'procedure', 'experience']
 export const INSIGHT_SCOPES = ['task', 'project', 'global']
@@ -134,6 +135,23 @@ export function unionStrings(base = [], add = []) {
   return [...out]
 }
 
+/**
+ * 跨 scope 移动（promote/demote）时保留"使用痕迹"。
+ *
+ * 提升/降级只改 scope，不该清零命中数、创建时间，也不该丢掉 `triggerDerived`
+ * （提示通道拿它当检索词）。这些字段不在 {@link normalizeInsight} 的白名单里，
+ * 必须显式带回——否则每次移动都会让条目"看起来从没被用过"，global 层更是每次都丢派生词。
+ * @param {object} copy - 已归一化到新 scope 的副本
+ * @param {object} src - 原条目
+ */
+export function carryUsageFields(copy, src) {
+  copy.hitCount = num(src.hitCount, 0)
+  if (src.lastHitAt) copy.lastHitAt = src.lastHitAt
+  if (src.createdAt) copy.createdAt = src.createdAt
+  if (src.triggerDerived) copy.triggerDerived = src.triggerDerived
+  return copy
+}
+
 /** 把 base 合并进既有条目（content 加固、成员/文件/符号并集、置信取高、记命中）。 */
 export function mergeInto(existing, base, cfg, nowIso) {
   const now = nowIso || new Date().toISOString()
@@ -210,9 +228,12 @@ export function applyDecay(items, cfg, nowIso) {
   const limit = Date.parse(now) - cfg.decayDays * DAY_MS
   let archived = 0
   for (const it of items) {
-    if (it.archived) continue
-    if ((it.hitCount || 0) > 0) continue
-    if (it.lastHitAt && Date.parse(it.lastHitAt) <= limit) {
+    if (!it || it.archived) continue
+    // 用"最近活动"而不是 lastHitAt：lastHitAt 只由 merge/reinforce 写，而那两处同时把
+    // hitCount 加一。旧实现先 `hitCount > 0 → continue`，于是 lastHitAt 分支永远不可达，
+    // decayDays 实际是个死开关。activityOf 退到 updatedAt/createdAt，没命中过的条目也能衰减。
+    const last = activityOf(it)
+    if (last && last <= limit) {
       it.archived = true
       it.updatedAt = now
       archived++
@@ -221,7 +242,11 @@ export function applyDecay(items, cfg, nowIso) {
   return archived
 }
 
-/** 超限先物理删归档里最不活跃的，再归档最不活跃的（下一轮被删），直到回落到上限。 */
+/**
+ * 超限按"最不活跃"物理删除，直到回落到上限。已有 archived 条目优先被删。
+ * 注意：没有归档可删时，本轮归档的条目会在同一次调用的后续循环里被删掉——
+ * `archived` 计数表示"先归档、随即被删"，不是"留下了软删副本"。
+ */
 export function pruneItems(items, max, nowIso) {
   const now = nowIso || new Date().toISOString()
   let removed = 0
@@ -300,7 +325,11 @@ export class GlobalStore {
   }
 
   load() {
-    if (!this.doc) this.doc = normalizeDoc(readJson(this.file, null))
+    if (!this.doc) {
+      this.doc = normalizeDoc(readJson(this.file, null))
+      // 与 project 级一致：global 条目也要补派生 trigger（提示通道用它提升召回；确定性、幂等）。
+      if (backfillDerivedTriggers(this.doc)) this.markDirty()
+    }
     return this
   }
 
@@ -475,16 +504,14 @@ export function promoteAllTasksToProject(store, globalStore, cfg, now) {
         promoted++
         continue
       }
-      const moved = {
-        ...normalizeInsight(ins, { scope: 'project', source: ins.source, nowIso: now }),
-        id: ins.id,
-        draft: false,
-        confidence: num(ins.confidence, cfg.promoteConfidence),
-        hitCount: ins.hitCount || 0,
-        lastHitAt: ins.lastHitAt,
-        createdAt: ins.createdAt || now,
-        movedFrom: { scope: 'task', id: ins.id, at: now },
-      }
+      const moved = carryUsageFields(
+        normalizeInsight(ins, { scope: 'project', source: ins.source, nowIso: now }),
+        ins,
+      )
+      moved.id = ins.id
+      moved.draft = false
+      moved.confidence = num(ins.confidence, cfg.promoteConfidence)
+      moved.movedFrom = { scope: 'task', id: ins.id, at: now }
       pjItems.push(moved)
       store.replaceInsightItems(pjItems)
       removeFromTask(store, ins.id)
@@ -514,16 +541,14 @@ export function promoteProjectToGlobal(store, globalStore, cfg, now) {
     if (glHit && glHit.score >= cfg.dedupOverlap) {
       mergeInto(glHit.item, { sourceTaskIds: ins.sourceTaskIds, files: ins.files, symbols: ins.symbols, tags: ins.tags, confidence: ins.confidence }, cfg, now)
     } else {
-      const movedIns = {
-        ...normalizeInsight(ins, { scope: 'global', source: ins.source, nowIso: now }),
-        id: ins.id,
-        draft: false,
-        confidence: num(ins.confidence, cfg.promoteConfidence),
-        hitCount: ins.hitCount || 0,
-        lastHitAt: ins.lastHitAt,
-        createdAt: ins.createdAt || now,
-        movedFrom: { scope: 'project', id: ins.id, at: now },
-      }
+      const movedIns = carryUsageFields(
+        normalizeInsight(ins, { scope: 'global', source: ins.source, nowIso: now }),
+        ins,
+      )
+      movedIns.id = ins.id
+      movedIns.draft = false
+      movedIns.confidence = num(ins.confidence, cfg.promoteConfidence)
+      movedIns.movedFrom = { scope: 'project', id: ins.id, at: now }
       glItems.push(movedIns)
     }
     items.splice(items.indexOf(ins), 1)
@@ -531,6 +556,8 @@ export function promoteProjectToGlobal(store, globalStore, cfg, now) {
   }
   if (moved) {
     store.replaceInsightItems(items)
+    // 提升只增不减 global：不在这里收口，maxGlobalProcedures 就形同虚设。
+    pruneItems(globalStore.items(), cfg.maxGlobalProcedures, now)
     globalStore.markDirty()
   }
   return moved
@@ -538,17 +565,19 @@ export function promoteProjectToGlobal(store, globalStore, cfg, now) {
 
 // ---- 降级（反向，PR3 UI 使用；现在提供最小实现） ----
 
-export function demoteToProject(store, globalStore, id, nowIso) {
+export function demoteToProject(store, globalStore, id, nowIso, cfg = cfgInsight({})) {
   if (!globalStore) return { ok: false, error: 'global 存储未初始化' }
   const now = nowIso || new Date().toISOString()
   const idx = globalStore.items().findIndex((i) => i.id === id)
   if (idx === -1) return { ok: false, error: `global 无此条目: ${id}` }
   const ins = globalStore.items()[idx]
   const items = store.insightItems()
-  const copy = normalizeInsight(ins, { scope: 'project', nowIso: now })
+  const copy = carryUsageFields(normalizeInsight(ins, { scope: 'project', nowIso: now }), ins)
   copy.id = `${ins.id}_d${Date.now().toString(36)}`
   copy.movedFrom = { scope: 'global', id: ins.id, at: now }
   items.push(copy)
+  // 降级只增不减 project：同样要收口 maxProject。
+  pruneItems(items, cfg.maxProject, now)
   store.replaceInsightItems(items)
   globalStore.items().splice(idx, 1)
   globalStore.markDirty()
@@ -564,7 +593,7 @@ export function demoteToTask(store, taskId, id, nowIso) {
   if (idx === -1) return { ok: false, error: `project 无此条目: ${id}` }
   const ins = items[idx]
   if (!Array.isArray(task.insights)) task.insights = []
-  const copy = normalizeInsight(ins, { scope: 'task', nowIso: now })
+  const copy = carryUsageFields(normalizeInsight(ins, { scope: 'task', nowIso: now }), ins)
   copy.id = `${ins.id}_d${Date.now().toString(36)}`
   copy.movedFrom = { scope: 'project', id: ins.id, at: now }
   task.insights.push(copy)

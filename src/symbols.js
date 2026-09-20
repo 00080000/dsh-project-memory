@@ -144,18 +144,57 @@ function extractTypeSignature(line) {
   return sig
 }
 
-function extractInterfaceOrType(line) {
-  // interface User { name: string; age: number }
-  const ifaceMatch = line.match(/^interface\s+(\w+)\s*(?:extends\s+[^{]+)?\s*\{([^}]*)\}/)
-  if (ifaceMatch) {
-    return `{ ${ifaceMatch[2].trim()} }`
+function braceDelta(s) {
+  let d = 0
+  for (const ch of s) {
+    if (ch === '{') d++
+    else if (ch === '}') d--
   }
-  // type UserMap = Map<string, User>
-  const typeMatch = line.match(/^type\s+(\w+)\s*=\s*([^;{]+)/)
-  if (typeMatch) {
-    return `= ${typeMatch[2].trim()}`
+  return d
+}
+
+/**
+ * 读取一条 interface / type 声明，支持 `export`（含 `declare`）与多行形态。
+ * 旧实现要求 `^interface`（不吃 export）且 `}` 必须在本行，于是
+ * `export interface X {…}`、任何多行 interface、`export type X = …` 在 L1 正则扫描器里
+ * 全都产出 0 个符号（TS 增强器可用时才被补回来；没有 typescript 的项目就彻底看不到）。
+ * @returns {{kind: 'interface'|'type', name: string, text: string, endIdx: number} | null}
+ */
+function readTypeDeclaration(rawLines, startIdx) {
+  const first = rawLines[startIdx].trim()
+  const m = first.match(/^(?:export\s+)?(?:declare\s+)?(interface|type)\s+([A-Za-z_$][\w$]*)/)
+  if (!m) return null
+  const kind = m[1]
+  const parts = [first]
+  let depth = braceDelta(first)
+  let endIdx = startIdx
+  const complete = () => (kind === 'interface'
+    ? depth <= 0 && parts[parts.length - 1].includes('}')
+    : depth <= 0 && /[;}]/.test(parts[parts.length - 1]))
+  for (let j = startIdx + 1; j < rawLines.length && j - startIdx <= 20 && !complete(); j++) {
+    const t = rawLines[j].trim()
+    if (!t) {
+      if (depth <= 0) break
+      parts.push(t)
+      endIdx = j
+      continue
+    }
+    // 归零后遇到下一条声明开头就收尾（TS 的 type 别名常不写分号）
+    if (depth <= 0 && j > startIdx && /^(?:export\s+)?(?:declare\s+)?(?:interface|type|function|class|const|let|var|import|enum)\b/.test(t)) break
+    parts.push(t)
+    depth += braceDelta(t)
+    endIdx = j
   }
-  return ''
+  return { kind, name: m[2], text: parts.join(' '), endIdx }
+}
+
+function formatTypeDeclaration({ kind, text }) {
+  if (kind === 'interface') {
+    const body = text.match(/\{([\s\S]*)\}/)
+    return body ? `{ ${body[1].replace(/\s+/g, ' ').trim()} }` : ''
+  }
+  const eq = text.match(/=\s*([\s\S]+?);?\s*$/)
+  return eq ? `= ${eq[1].replace(/\s+/g, ' ').trim()}` : ''
 }
 
 function extractOverloads(masked, startIdx) {
@@ -226,6 +265,7 @@ function scanJsLike(masked, relPath, rawLines) {
   const symbols = []
   let prevOpensBlock = false
   for (let i = 0; i < masked.length; i++) {
+    const declStart = i // 多行声明会推进 i，符号行号要记声明的**首行**
     const rawText = rawLines[i].trim()
     const maskedText = masked[i].trim()
     if (!rawText) continue
@@ -233,13 +273,12 @@ function scanJsLike(masked, relPath, rawLines) {
     let matched = null
     let joinedText = null
     
-    // Check for interface / type alias first (on raw line, not masked)
-    const ifaceSig = extractInterfaceOrType(rawText)
-    if (ifaceSig) {
-      const nameMatch = rawText.match(/^(?:export\s+)?(?:interface|type)\s+(\w+)/)
-      if (nameMatch) {
-        matched = { name: nameMatch[1], kind: 'interface', typeSig: ifaceSig }
-      }
+    // interface / type（支持 export 与多行；没有 TS 增强器时这是唯一来源）
+    const typeDecl = readTypeDeclaration(rawLines, i)
+    if (typeDecl) {
+      const sig = formatTypeDeclaration(typeDecl)
+      if (sig) matched = { name: typeDecl.name, kind: typeDecl.kind, typeSig: sig }
+      i = typeDecl.endIdx
     }
     
     if (!matched) {
@@ -294,7 +333,7 @@ function scanJsLike(masked, relPath, rawLines) {
         if (overloads.length > 1) matched.overloads = overloads
       }
       
-      symbols.push(buildSymbol(matched, relPath, rawLines[i], i + 1))
+      symbols.push(buildSymbol(matched, relPath, rawLines[declStart], declStart + 1))
     }
     
     prevOpensBlock = masked[i].trim().endsWith('{')
@@ -433,7 +472,7 @@ function buildSymbol(matched, relPath, rawLine, lineNo) {
 export function scanSymbols(a, b, c) {
   // Backward compatible: old signature (filePath, content) or new (relPath, filePath, content)
   const [relPath, filePath, content] = c === undefined ? [a, a, b] : [a, b, c]
-  const ext = relPath.slice(relPath.lastIndexOf('.'))
+  const ext = relPath.slice(relPath.lastIndexOf('.')).toLowerCase()
   const lines = content.split(/\r?\n/)
   if (JS_LIKE.has(ext)) return scanJsLike(maskTokens(lines, JS_MASKER), relPath, lines)
   if (PYTHON.has(ext)) return scanPython(maskTokens(lines, PY_MASKER), relPath, lines)

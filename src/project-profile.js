@@ -17,11 +17,18 @@ function depsOf(manifest, fields) {
   const tags = new Set()
   for (const f of fields) {
     const deps = manifest && manifest[f]
-    if (deps && typeof deps === 'object') {
-      for (const name of Object.keys(deps)) {
-        tags.add(name.toLowerCase())
-        if (name.startsWith('@')) tags.add(name.split('/')[1].toLowerCase())
-      }
+    if (!deps || typeof deps !== 'object') continue
+    for (const name of Object.keys(deps)) {
+      if (typeof name !== 'string' || !name) continue
+      tags.add(name.toLowerCase())
+      if (!name.startsWith('@')) continue
+      // scoped 包名 `@scope/pkg`：要加的是 **scope**（`vue`），不是包名段（`compiler-sfc`）。
+      // 旧写法 `name.split('/')[1]` 让 `@vue/*` 项目永远拿不到 `vue` tag，
+      // trigger.scope:['vue'] / legacy scope 过滤会把最相关的那条 procedure 静默判死；
+      // 而 `@malformed`（没有 `/`）会在这里抛错，异常被 collectTags 整个吞掉 → 全项目 tags 清零。
+      const parts = name.slice(1).split('/')
+      if (parts[0]) tags.add(parts[0].toLowerCase())
+      if (parts[1]) tags.add(parts[1].toLowerCase())
     }
   }
   return tags

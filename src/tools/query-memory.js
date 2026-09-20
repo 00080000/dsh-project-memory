@@ -11,6 +11,15 @@ function toAbs(root, rel) {
   return path.isAbsolute(rel) ? rel : path.join(root, rel)
 }
 
+/** 步骤在历史数据里可能是字符串或 {content|text, status}：TaskBridge/注入/反思都按 content||text 读。 */
+function stepContent(s) {
+  if (typeof s === 'string') return s
+  return s?.content ?? s?.text ?? ''
+}
+function stepStatus(s) {
+  return typeof s === 'string' ? 'pending' : (s?.status || 'pending')
+}
+
 export function queryMemoryTool(ctx, config) {
   return defineTool({
     name: 'query_memory',
@@ -46,6 +55,11 @@ export function queryMemoryTool(ctx, config) {
     },
     async execute(args, exec) {
       const root = resolveIndexRoot(exec, args.root)
+      // 空查询不是"全部"：recallItems 会过滤空串，rankEntriesStreaming 随即返回
+      // entries.slice(0, limit)（任意条目、分数 0），task 分支的 includes('') 更是命中所有任务。
+      if (!String(args.query ?? '').trim()) {
+        return 'query must not be empty. Use memory_stats to see what the store contains.'
+      }
       const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
       const type = args.type || 'all'
       const limit = Math.max(1, Math.min(Number(args.limit) || 8, 20))
@@ -146,16 +160,16 @@ export function queryMemoryTool(ctx, config) {
       if (type === 'task') {
         const q = (queries[0] || '').toLowerCase()
         const matched = tasks
-          .filter((t) => !t.archived && (t.title.toLowerCase().includes(q) || (t.steps || []).some((s) => s.text?.toLowerCase().includes(q)) || (t.files || []).some((f) => f.toLowerCase().includes(q))))
+          .filter((t) => !t.archived && (t.title.toLowerCase().includes(q) || (t.steps || []).some((s) => stepContent(s).toLowerCase().includes(q)) || (t.files || []).some((f) => f.toLowerCase().includes(q))))
           .slice(0, limit)
         if (!matched.length) {
           return `任务记录: 0 套匹配 "${args.query}"（list_tasks 查看全部，select_task 续做）`
         }
         for (const t of matched) {
-          const done = (t.steps || []).filter((s) => s.status === 'completed').length
+          const done = (t.steps || []).filter((s) => stepStatus(s) === 'completed').length
           const total = (t.steps || []).length
           const stepsText = (t.steps || []).length
-            ? (t.steps || []).map((s) => `- [${s.status === 'completed' ? 'x' : s.status === 'in_progress' ? '*' : ' '}] ${s.text}`).join('\n')
+            ? (t.steps || []).map((s) => `- [${stepStatus(s) === 'completed' ? 'x' : stepStatus(s) === 'in_progress' ? '*' : ' '}] ${stepContent(s)}`).join('\n')
             : '（无步骤）'
           const files = (t.files || []).slice(0, 8).join(', ')
           lines.push(`### ${t.title} (${done}/${total} 完成)\n${stepsText}\n- 文件: ${files || '无'}`)

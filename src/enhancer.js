@@ -19,7 +19,14 @@ function acceptTsVersion(mod) {
 }
 
 export function initTypeScript(config) {
-  if (config?.enableTypeScript === false) return null
+  if (config?.enableTypeScript === false) {
+    // 显式关闭要把已解析的模块放掉：否则 enqueueEnhance 的 `if (!ts)` 仍会放行，
+    // 配置上关了、增强器照跑。
+    ts = null
+    tsPath = null
+    tsVersion = null
+    return null
+  }
   if (ts) return ts
 
   // 1. 配置指定路径
@@ -265,7 +272,9 @@ export function deepParseWithTS(filePath, content) {
         line: getLine(node)
       })
     } else if (ts.isTypeAliasDeclaration(node)) {
-      const typeStr = node.type ? getTypeStr(checker.getTypeAtLocation(node.type)) : 'any'
+      // checker.getTypeAtLocation(node.type) 对别名返回的是**别名自身**，于是
+      // `type X = { a: string }` 变成 `X= X -- f:1`。直接用类型节点的源码文本。
+      const typeStr = node.type ? node.type.getText().replace(/\s+/g, ' ').slice(0, 200) : 'any'
       symbols.push({
         name: node.name.getText(),
         kind: 'type',

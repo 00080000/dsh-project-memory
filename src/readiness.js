@@ -82,7 +82,16 @@ export function buildReadinessContext(input = {}) {
   const humanText = String(input.humanText ?? input.query ?? '')
   const actionText = String(input.actionText || '')
   const actions = new Set([...(input.actions || []), ...detectActions(humanText), ...detectActions(actionText)])
-  const paths = new Set([...(input.paths || []), ...extractPaths(actionText), ...extractPaths(humanText)])
+  // 人类消息里提到的路径 = **动手前的写意图**（"帮我改 src/x.js"）；动作文本里的路径不区分读写，
+  // 读一个文件不该算写目标（否则 `read README.md` 会命中 writes:['README.md']）。
+  // 两者对外仍合并成 `paths`（兼容既有语义），写通道单看 humanPaths。
+  // 调用方若已带 humanPaths（injectForStep 构建后再传给 buildInjection），以它为准，
+  // 否则退回 paths —— 避免把上一次算出来的并集（含读路径）再当写意图。
+  const humanPaths = new Set([
+    ...(Array.isArray(input.humanPaths) ? input.humanPaths : (input.paths || [])),
+    ...extractPaths(humanText),
+  ])
+  const paths = new Set([...humanPaths, ...extractPaths(actionText)])
   // 动作平面（S1）：结构化调用优先；没有结构化调用时对 actionText 跑一遍 shell 规则兜底。
   const fromText = activityFromText(actionText)
   const ops = new Set([...(input.ops || []), ...fromText.ops])
@@ -97,6 +106,7 @@ export function buildReadinessContext(input = {}) {
     actionText,
     actions: [...actions],
     paths: [...paths],
+    humanPaths: [...humanPaths],
     ops: [...ops],
     targets: [...targets],
     hosts: [...hosts],
@@ -209,6 +219,10 @@ export function intentText(text) {
     .replace(/“[^”\n]*”/g, ' ')
     .replace(/[A-Za-z]:\\[^\s"']*/g, ' ')
     .replace(/(?:[A-Za-z0-9_.@-]+\/)+[A-Za-z0-9_.@-]+/g, ' ')
+    // 带扩展名的**非 ASCII 文件名**（`石啸天-记忆方向调研.pptx` / `docs/面试演示-王金鹏.md`）：
+    // 只挡 ASCII 路径不够——中文文件名整块留下，"调研""面试"这类子串照样触发 when.intents，
+    // 正是引号剥离要防的那类假阳性。ASCII 裸名（如 de-TODO.md）保持原语义，不在这里动。
+    .replace(/\S*[^\x00-\x7F]\S*\.[A-Za-z][A-Za-z0-9]{0,7}\b/g, ' ')
     // 仓库里的裸文件名（README / CHANGELOG …）也是语料，不是意图
     .replace(/\b(?:README|CHANGELOG|LICENSE|AGENTS|CONTRIBUTING|Dockerfile|Makefile)\b/g, ' ')
     .replace(/\s+/g, ' ')
@@ -301,10 +315,14 @@ export function matchTrigger(trigger, ctx) {
   for (const op of when.ops || []) {
     if (op && (ctx?.ops || []).includes(String(op))) return `op:${op}`
   }
+  // 写目标 = 已观察到的结构化写调用 ∪ 人类消息里提到的路径（动手前的写意图）。
+  // DSH 没有工具执行前拦截钩子，动手前唯一能拿到的写意图就是人类消息里的路径；
+  // 但动作文本里的**读**路径不算（`read README.md` 不是"即将写 README.md"）。
+  const writeTargets = [...(ctx?.targets || []), ...(ctx?.humanPaths || [])]
   for (const w of when.writes || []) {
     // 扩展名/泛名 glob 在这里被硬性忽略：`*.pptx` 这类条件只能撒谎，不能收窄。
     if (!w || isDroppableGlob(w)) continue
-    if (matchAnyPath(w, ctx?.targets)) return `write:${w}`
+    if (matchAnyPath(w, writeTargets)) return `write:${w}`
   }
   const intent = ctx?.intent ?? ctx?.humanText ?? ''
   for (const it of when.intents || []) {
@@ -355,6 +373,9 @@ export function normalizeTrigger(it, opts = {}) {
   // （实测：那样会让 D 场景一次多出 6 条假阳性）。
   const intents = []
   for (const k of t.keywords || []) if (isIntentWord(k)) intents.push(String(k))
+  // 旧 `symbols` 也走文本平面：不归一就等于静默丢掉一个作者写下的触发面
+  // （README 承诺 keywords/symbols/actions/paths/scope 都会迁移）。与 keywords 同一把准入尺子。
+  for (const s of t.symbols || []) if (isIntentWord(s)) intents.push(String(s))
   const when = {}
   if (ops.size) when.ops = [...ops].sort()
   if (writes.length) when.writes = [...new Set(writes)]
@@ -463,6 +484,9 @@ export function relativeHits(scored, { ratioMin = 0.5 } = {}) {
   const list = (scored || []).filter((r) => r && Number.isFinite(r.score) && r.score > 0)
   if (!list.length) return []
   const top = list[0].score
-  const floor = top * (typeof ratioMin === 'number' && ratioMin > 0 ? ratioMin : 0.5)
+  // 显式的 0 表示"关掉相对门槛"（只剩 score>0）；未给/非法值才回退 0.5。
+  // 旧写法 `ratioMin > 0 ? ratioMin : 0.5` 把 0 当成"没配"，配置上无法关闭。
+  const ratio = typeof ratioMin === 'number' && Number.isFinite(ratioMin) ? ratioMin : 0.5
+  const floor = top * Math.max(0, Math.min(1, ratio))
   return list.filter((r) => r.score >= floor)
 }

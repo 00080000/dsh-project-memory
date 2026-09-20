@@ -132,7 +132,12 @@ export class WatchManager {
         continue
       }
       state.failures.delete(rel)
-      if (plan.key === UNCHANGED || plan.key === OVERSIZE) continue
+      // 内容未变 / 体积超限也要落快照：否则 mtime:size 快路径永远命中不了，
+      // 每次 poll 都要把整个仓库重读一遍再哈希（watch 默认开、15s 一轮）。
+      if (plan.key === UNCHANGED || plan.key === OVERSIZE) {
+        state.snapshot[rel] = sig
+        continue
+      }
 
       signatures.set(rel, sig)
       updates.push(toFileUpdate(rel, plan, record))
