@@ -1,11 +1,8 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
 import { statSync } from 'node:fs'
-import { assertIndexRoot, isSupportedCode, isSupportedDoc, looksLikeDump, memoryRootFor, readFileForIndex, relativePath, storeKey, walkDir } from '../util/fs.js'
-import { buildDocEntries } from '../doc-pipeline.js'
-import { docEntriesNeedBackfill } from '../doc-index.js'
-import { scanSymbols } from '../symbols.js'
-import { linkEntries } from '../link.js'
+import { assertIndexRoot, memoryRootFor, relativePath, storeKey, walkDir } from '../util/fs.js'
+import { DROP, OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from '../index-pipeline.js'
 import { ProjectMemoryStore } from '../store.js'
 import { onFileIndexed, isTypeScriptFile } from '../enhancer.js'
 
@@ -16,109 +13,59 @@ export async function indexRepository(ctx, config, root, { reindex = false } = {
   const memoryDir = memoryRootFor(root, config.memoryDir)
   const store = new ProjectMemoryStore(memoryDir).load()
 
-  const files = walkDir(root)
   const seen = new Set()
+  const updates = []
+  const failures = []
   let indexed = 0
   let updated = 0
   let skipped = 0
-  let removed = 0
-  const failures = []
 
-  // First pass: collect all file info and compute hashes/entries (async work outside commit)
-  const fileUpdates = []
-
-  for (const filePath of files) {
+  for (const filePath of walkDir(root)) {
     const rel = storeKey(relativePath(root, filePath))
     seen.add(rel)
-    const ext = path.extname(filePath).toLowerCase()
-    if (!isSupportedDoc(ext) && !isSupportedCode(ext)) continue
+    const kind = fileKind(path.extname(filePath).toLowerCase())
+    if (!kind) continue
 
     try {
       const size = statSync(filePath).size
-        const existing = store.fileRecord(rel)
-      if (isSupportedCode(ext) && config.maxFileSizeMb && size > config.maxFileSizeMb * 1024 * 1024) {
-        fileUpdates.push({ rel, deleted: true })
+      const record = store.fileRecord(rel)
+      const plan = await planFileIndex({ rel, filePath, kind, config, record, existingEntries: store.entries[rel], size, force: reindex })
+      if (plan.key === UNCHANGED) {
         skipped++
         continue
       }
-
-      // 单次读盘：同一 buffer 供哈希与正文使用（不再 sha256OfFile + readFileSync 读两遍）
-      const { hash, buffer } = readFileForIndex(filePath)
-      // 旧 store 的 doc 条目缺 terms → 即使哈希未变也重抽一次（一次性回填）
-      const needsBackfill = isSupportedDoc(ext) && docEntriesNeedBackfill(store.entries[rel])
-      if (!reindex && existing && existing.sha256 === hash && !needsBackfill) {
+      if (plan.key === OVERSIZE) {
+        // 体积超限的代码文件：旧记录一律清掉，避免检索命中一个已经不索引的文件。
+        updates.push({ rel, drop: true })
         skipped++
         continue
       }
-
-      let entries
-      if (isSupportedCode(ext)) {
-        entries = scanSymbols(rel, filePath, buffer.toString('utf8'))
-        fileUpdates.push({ rel, expectedHash: existing?.sha256, hash, size, entries, type: 'code' })
-        updated++
-      } else {
-        const content = buffer.toString('utf8')
-        if (looksLikeDump(content)) {
-          fileUpdates.push({ rel, deleted: true })
-          skipped++
-          continue
-        }
-        entries = await buildDocEntries(rel, filePath, {
-          chunkChars: config.chunkChars,
-          maxChunks: config.maxChunksPerFile,
-          maxFileSizeMb: config.maxFileSizeMb,
-          maxPdfPages: config.maxPdfPages,
-        })
-        if (entries === null) {
-          fileUpdates.push({ rel, deleted: true })
-          skipped++
-          continue
-        }
-        fileUpdates.push({ rel, expectedHash: existing?.sha256, hash, size, entries, type: 'doc' })
-        indexed++
-      }
-    } catch (err) {
+      updates.push(toFileUpdate(rel, plan, record))
+      if (plan.key === DROP) skipped++
+      else if (plan.type === 'code') updated++
+      else indexed++
+    } catch {
       failures.push(rel)
     }
   }
 
-  // Second pass: single commit with all updates
-  const report = store.commit((s) => {
-    for (const update of fileUpdates) {
-      const result = s.applyFileUpdate(update.rel, update)
-      if (result.skipped) {
-        // CAS failed - file was modified concurrently, skip
-        continue
-      }
-    }
-
-    // Remove files not seen
-    for (const rel of Object.keys(s.files)) {
-      if (!seen.has(rel)) {
-        s.removeFile(rel)
-        removed++
-      }
-    }
-
-    linkEntries(s)
-    const stats = s.stats()
-    let report =
-      `Indexed project: ${root}\n` +
-      `docs indexed: ${indexed}, code symbols updated: ${updated}, unchanged skipped: ${skipped}, removed: ${removed}\n` +
-      `memory store: ${stats.files} files, ${stats.entries} entries, ${stats.experience} experience notes`
-    if (failures.length) {
-      report += `\nfailed to index ${failures.length} file(s): ${failures.join(', ')}`
-    }
-    return report
-  })
+  // 单事务提交：写入 + 清理本轮未见到的旧条目 + 重建链接。
+  const { removed } = commitFileUpdates(store, { updates, unseen: seen })
+  const stats = store.stats()
+  let report =
+    `Indexed project: ${root}\n` +
+    `docs indexed: ${indexed}, code symbols updated: ${updated}, unchanged skipped: ${skipped}, removed: ${removed}\n` +
+    `memory store: ${stats.files} files, ${stats.entries} entries, ${stats.experience} experience notes`
+  if (failures.length) {
+    report += `\nfailed to index ${failures.length} file(s): ${failures.join(', ')}`
+  }
 
   // Trigger TS enhancement for code files (TS/JS only)
-  for (const update of fileUpdates) {
-    if (update.type === 'code') {
-      const filePath = path.join(root, update.rel)
-      if (isTypeScriptFile(filePath)) {
-        onFileIndexed(store, update.rel, filePath, config, root)
-      }
+  for (const update of updates) {
+    if (update.type !== 'code') continue
+    const filePath = path.join(root, update.rel)
+    if (isTypeScriptFile(filePath)) {
+      onFileIndexed(store, update.rel, filePath, config, root)
     }
   }
 
