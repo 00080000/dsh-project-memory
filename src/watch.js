@@ -1,10 +1,7 @@
 import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { isSupportedCode, isSupportedDoc, isUnwatchableRoot, memoryRootFor, readFileForIndex, relativePath, storeKey, walkDir } from './util/fs.js'
-import { buildDocEntries } from './doc-pipeline.js'
-import { docEntriesNeedBackfill } from './doc-index.js'
-import { scanSymbols } from './symbols.js'
-import { linkEntries } from './link.js'
+import { isUnwatchableRoot, memoryRootFor, relativePath, storeKey, walkDir } from './util/fs.js'
+import { OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from './index-pipeline.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileChanged, isTypeScriptFile } from './enhancer.js'
 
@@ -94,18 +91,16 @@ export class WatchManager {
   }
 
   async pollRoot(root, state) {
-    const files = walkDir(root)
     const seen = new Set()
-    let changed = 0
+    const updates = []
+    // rel → 本轮采集的 mtime:size。提交成功后才落进快照；CAS 失败的条目留在原地等下一轮。
+    const signatures = new Map()
 
-    // First pass: collect all file info and compute hashes/entries (async work outside commit)
-    const fileUpdates = []
-
-    for (const filePath of files) {
+    for (const filePath of walkDir(root)) {
       const rel = storeKey(relativePath(root, filePath))
       seen.add(rel)
-      const ext = path.extname(filePath).toLowerCase()
-      if (!isSupportedDoc(ext) && !isSupportedCode(ext)) continue
+      const kind = fileKind(path.extname(filePath).toLowerCase())
+      if (!kind) continue
 
       let stats
       try {
@@ -116,86 +111,44 @@ export class WatchManager {
       const sig = `${stats.mtimeMs}:${stats.size}`
       if (state.snapshot[rel] === sig) continue
 
-      if (isSupportedCode(ext) && this.config.maxFileSizeMb && stats.size > this.config.maxFileSizeMb * 1024 * 1024) {
-        continue
-      }
-
-      // 单次读盘：同一 buffer 供哈希与正文使用
-      const { hash, buffer } = readFileForIndex(filePath)
-      const existing = state.store.fileRecord(rel)
-      // 旧 store 的 doc 条目缺 terms → 一次性回填（即使哈希未变）
-      const needsBackfill = isSupportedDoc(ext) && docEntriesNeedBackfill(state.store.entries[rel])
-      if (existing && existing.sha256 === hash && !needsBackfill) continue
-
+      const record = state.store.fileRecord(rel)
+      let plan
       try {
-        let entries
-        if (isSupportedCode(ext)) {
-          entries = scanSymbols(rel, filePath, buffer.toString('utf8'))
-        } else {
-          entries = await buildDocEntries(rel, filePath, {
-            chunkChars: this.config.chunkChars,
-            maxChunks: this.config.maxChunksPerFile,
-            maxFileSizeMb: this.config.maxFileSizeMb,
-            maxPdfPages: this.config.maxPdfPages,
-          })
-          if (entries === null) {
-            // Dump file - update snapshot so we don't re-hash next poll, but don't index
-            fileUpdates.push({ rel, expectedHash: state.store.fileRecord(rel)?.sha256, deleted: true, _sig: sig })
-            changed++
-            state.failures?.delete(rel)
-            continue
-          }
-        }
-        fileUpdates.push({ rel, expectedHash: state.store.fileRecord(rel)?.sha256, hash, size: stats.size, entries, type: isSupportedCode(ext) ? 'code' : 'doc', _sig: sig })
-        changed++
-        state.failures?.delete(rel)
+        plan = await planFileIndex({
+          rel,
+          filePath,
+          kind,
+          config: this.config,
+          record,
+          existingEntries: state.store.entries[rel],
+          size: stats.size,
+        })
       } catch (err) {
-        // Index failed - rollback snapshot so next poll retries
-        delete state.snapshot[rel]
-        // 同一个文件的同一个错误只上报一次：坏文件每轮都会重试，逐轮 console.error 会刷屏
-        if (!state.failures) state.failures = new Map()
+        // 坏文件每轮都会重试：同一个文件的同一个错误只上报一次，否则逐轮 console.error 刷屏。
         if (state.failures.get(rel) !== err.message) {
           state.failures.set(rel, err.message)
           console.error(`[dsh-project-memory] re-index failed for ${rel}: ${err.message}`)
         }
         continue
       }
+      state.failures.delete(rel)
+      if (plan.key === UNCHANGED || plan.key === OVERSIZE) continue
+
+      signatures.set(rel, sig)
+      updates.push(toFileUpdate(rel, plan, record))
     }
 
-    // Single commit with all updates
-    state.store.commit((s) => {
-      for (const update of fileUpdates) {
-        const result = s.applyFileUpdate(update.rel, update)
-        if (result.skipped) {
-          // CAS failed - file was modified concurrently, rollback snapshot to retry next poll
-          delete state.snapshot[update.rel]
-          // Mark this update to skip snapshot update after commit
-          update._skipSnapshot = true
-        }
+    // 单事务写盘；CAS 失败的条目本轮不落快照，下一轮自然重试。
+    const { stale } = commitFileUpdates(state.store, { updates, unseen: seen, link: updates.length > 0 })
+    const failed = new Set(stale)
+    for (const update of updates) {
+      if (failed.has(update.rel)) continue
+      state.snapshot[update.rel] = signatures.get(update.rel)
+      if (update.type !== 'code') continue
+      const filePath = path.join(root, update.rel)
+      if (isTypeScriptFile(filePath)) {
+        onFileChanged(state.store, update.rel, filePath, this.config, root)
       }
-
-      // Remove deleted files
-      for (const rel of Object.keys(s.files)) {
-        if (!seen.has(rel)) {
-          s.removeFile(rel)
-        }
-      }
-
-      if (changed) {
-        linkEntries(s)
-      }
-    })
-
-    // Trigger TS enhancement for code files (TS/JS only)
-    for (const update of fileUpdates) {
-      if (update._skipSnapshot) continue
-      if (update.type === 'code') {
-        const filePath = path.join(root, update.rel)
-        if (isTypeScriptFile(filePath)) {
-          onFileChanged(state.store, update.rel, filePath, this.config, root)
-        }
-      }
-      state.snapshot[update.rel] = update._sig
     }
   }
 }
