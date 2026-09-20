@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
+import { assertIndexRoot, memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { truncate } from '../util/text.js'
 import { cfgInsight, saveInsight, defaultGlobalFile, GlobalStore } from '../insight-store.js'
@@ -77,6 +77,7 @@ export function lessonTool(config) {
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args, exec) {
       const root = resolveIndexRoot(exec, args.root)
+      assertIndexRoot(root, args.root || root)
       const memoryDir = memoryRootFor(root, config.memoryDir)
       const store = new ProjectMemoryStore(memoryDir).load()
       const cfg = cfgInsight(config)

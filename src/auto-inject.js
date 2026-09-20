@@ -14,7 +14,7 @@ import { BoundedMap, SessionCache } from './util/session-cache.js'
 import { cfgInsight, GlobalStore, defaultGlobalFile } from './insight-store.js'
 import { projectTags } from './project-profile.js'
 import { rankEntriesMergedScored } from './util/search.js'
-import { insightToEntry } from './recall.js'
+import { insightToEntry, insightScoringText } from './recall.js'
 import { buildReadinessContext, hintQueryText, idfCoverage, matchTrigger, normalizeTrigger, relativeHits } from './readiness.js'
 import { activityFromCalls } from './ops.js'
 import { appendInjectionAudit, auditRecordFrom, cfgAudit } from './audit.js'
@@ -42,6 +42,8 @@ export function cfgEngine(config) {
     relevanceMin: typeof c.relevanceMin === 'number' ? c.relevanceMin : null,
     // resident 任务卡最多显示几个"编辑中"文件（纯写权重，最近写优先）
     editedMax: typeof c.editedMax === 'number' ? c.editedMax : 3,
+    // 常驻任务卡总开关（entryOn:false = 只做条目注入，不回声任务卡）
+    entryOn: c.entryOn !== false,
     // 模型自己写/维护任务清单后、尚无新人类消息时，不把任务卡再回声给模型（省 token）
     skipEchoSelfTodo: c.skipEchoSelfTodo !== false,
     // 预算审计日志级别（stderr）。默认 off：预算挤掉低优先级条目是正常降级，不是故障，
@@ -95,6 +97,9 @@ export function lastUserText(messages) {
     // 真人消息优先：本插件注入的块也是 role=user，若按"最后一条 user"取，
     // 上一步的注入块会变成这一步的就绪查询（自激：拿自己注入的内容再检索一遍）。
     if (m.source && m.source.kind === 'user') return t.trim()
+    // 本插件注入的块同样是 role=user。无 source 的老宿主下若把它当兜底查询，
+    // 就成了"拿自己上一步注入的内容再检索一遍"的自激——正是 kind==='user' 这道闸要防的。
+    if (m.source && m.source.plugin === 'dsh-project-memory') continue
     if (!fallback) fallback = t.trim() // 无 source 的消息（老宿主 / 测试）兜底
   }
   return fallback
@@ -149,10 +154,13 @@ export function buildEntryContent(task, cfg, { withEdited = true } = {}) {
     ...steps.slice(0, 12).map((s, i) => `  ${i + 1}. ${s}`),
   ]
   const insights = linesOf(task.insights)
-  const edited = editedFiles(task, c.editedMax || 3)
+  // 0 是合法值（= 不显示）：cfgEngine 已归一成数字，这里不能再用 `||` 把 0 顶回默认。
+  const maxEdited = Number.isFinite(c.editedMax) ? c.editedMax : 3
+  const maxInsights = Number.isFinite(c.entryMaxInsights) ? c.entryMaxInsights : 6
+  const edited = editedFiles(task, maxEdited)
   const parts = [...card]
   if (withEdited && edited.length) parts.push(`  编辑中: ${edited.join(', ')}`)
-  if (insights.length) parts.push(`任务记忆:`, ...insights.slice(0, c.entryMaxInsights || 6))
+  if (insights.length) parts.push(`任务记忆:`, ...insights.slice(0, maxInsights))
   return parts.join('\n')
 }
 
@@ -188,7 +196,7 @@ export function insightItemHash(it) {
 
 /** 把正文塞进剩余预算：放不下就截断；连"有用前缀"都留不下就返回 null（由调用方记 dropped）。 */
 export function fitBody(body, remaining, min = MIN_BODY_CHARS.hint) {
-  if (remaining <= min) return null
+  if (remaining < min) return null
   if (body.length <= remaining) return body
   return `${body.slice(0, remaining - 1)}…`
 }
@@ -231,7 +239,9 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped }) {
   const q = hintQueryText(hintQuery)
   if (!q) return hints
   const byId = new Map(cands.map((it) => [it.id, it]))
-  const corpus = cands.map((it) => insightMatchText(it))
+  // 覆盖率语料必须与 BM25 排序同源（insightScoringText）：否则"只在 fix/solution 里有匹配"
+  // 的查询词 df=0 → supportRatio=0 → 整条提示通道沉默，而排序明明给了它高分。
+  const corpus = cands.map((it) => insightScoringText(it))
   // 查询与被测覆盖率的文本用**同一个**过滤后的查询：否则缩写（wsl/npm）会在 BM25 里被剔除、
   // 却仍在覆盖率里计分，"至少两个共同词"就被它们凑够了。
   const scored = rankEntriesMergedScored(cands.map(insightToEntry), [q], cands.length)
@@ -253,7 +263,9 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped }) {
       dropped.push({ id: it.id, channel: 'hint', reason: `coverage:${ev.coverage.toFixed(2)}` })
       continue
     }
-    const needMatched = Math.min(typeof cfg.hintMinMatched === 'number' ? cfg.hintMinMatched : 2, ev.supported)
+    // 共同词数下限按**查询本身的词数**收敛（查询很短时不强求两个），而不是按"语料能表示的词数"：
+    // 后者在长而杂的查询上会退化成 1，一个碰巧命中的通用词就能过闸。
+    const needMatched = Math.min(typeof cfg.hintMinMatched === 'number' ? cfg.hintMinMatched : 2, ev.terms)
     if (ev.matched < needMatched) {
       dropped.push({ id: it.id, channel: 'hint', reason: `thin:${ev.matched}` })
       continue
@@ -283,11 +295,15 @@ export function buildInjection(opts) {
   const reasons = []
   const dropped = []
   const parts = []
-  // 预算只能是上限，不是目标：单轮额度（maxTokens）与会话级剩余额度取小者。
+  // 预算只能是上限，不是目标。两条额度分开：
+  //   stepBudget —— 单轮（常驻块 + 条目）共享的 maxTokens；
+  //   itemBudget —— 条目还受会话字符额度约束；**常驻块不占这条**（它是状态快照，文档明说不受限）。
+  // 旧实现把两者取小成同一个 budgetChars，会话额度用尽后连任务卡都被截成 `…(截断)`。
   const quotaChars = typeof opts.maxChars === 'number' ? opts.maxChars : Infinity
   const maxItems = typeof opts.maxItems === 'number' ? opts.maxItems : Infinity
   const skipItems = opts.skipItems === true
-  const budgetChars = Math.max(0, Math.min((cfg.maxTokens || 400) * 3, quotaChars))
+  const stepBudget = Math.max(0, (cfg.maxTokens || 400) * 3)
+  const itemBudget = Math.max(0, Math.min(stepBudget, quotaChars))
 
   const skipItem = typeof opts.skipItem === 'function' ? opts.skipItem : null
   const cands = insightCandidates(store, globalStore, task, cfg).filter((it) => !(skipItem && skipItem(it)))
@@ -312,10 +328,11 @@ export function buildInjection(opts) {
 
   // 常驻块文本。去重指纹只看稳定内容（任务标题/步骤/insights + 相关 insights）：
   // “编辑中”随每次写文件变化，若参与指纹会导致每写一个文件就重发整块（噪音 + token 浪费）。
-  const echo = shouldEchoTaskCard(task, cfg)
+  const echo = cfg.entryOn !== false && shouldEchoTaskCard(task, cfg)
   const entry = echo ? buildEntryContent(task, cfg) : ''
   const entryStable = echo ? buildEntryContent(task, cfg, { withEdited: false }) : ''
   let used = entry.length
+  let itemUsed = 0
   let itemCount = 0
 
   /** 把一组候选按优先级放进剩余预算：放不下的进 dropped（quota / budget），不静默。 */
@@ -325,12 +342,15 @@ export function buildInjection(opts) {
         dropped.push({ id: it.id, channel, reason: 'quota' })
         continue
       }
-      const body = fitBody(insightBody(it), budgetChars - used, minChars)
+      // 条目同时受"单轮剩余"与"会话字符剩余"约束；常驻块只占前者。
+      const remaining = Math.min(stepBudget - used, itemBudget - itemUsed)
+      const body = fitBody(insightBody(it), remaining, minChars)
       if (body === null) {
         dropped.push({ id: it.id, channel, reason: 'budget' })
         continue
       }
       used += body.length + 1
+      itemUsed += body.length + 1
       itemCount++
       parts.push(body)
       labels.push(labelOf(it))
@@ -345,9 +365,10 @@ export function buildInjection(opts) {
 
   const total = [entry, ...parts].filter(Boolean)
   if (!total.length) return { text: '', entry, labels, reasons, dropped }
-  const clamp = (t) => (t.length > budgetChars ? `${t.slice(0, budgetChars)}\n…(截断)` : t)
+  // 整块只受单轮预算（maxTokens）约束；会话条目额度已在 place() 里单独扣过。
+  const clamp = (t) => (t.length > stepBudget ? `${t.slice(0, stepBudget)}\n…(截断)` : t)
   const dedupeText = clamp([entryStable, ...parts].filter(Boolean).join('\n'))
-  return { text: clamp(total.join('\n')), entry, entryStable, labels, reasons, dropped, dedupeText, itemChars: used - entry.length }
+  return { text: clamp(total.join('\n')), entry, entryStable, labels, reasons, dropped, dedupeText, itemChars: itemUsed }
 }
 
 // 每会话状态的会话数上限：六张表共用（旧实现把同一个 200 在五处各写一遍）。

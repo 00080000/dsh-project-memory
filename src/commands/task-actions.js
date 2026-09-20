@@ -16,6 +16,23 @@ function describeTask(t) {
   return `「${t.title}」（步骤 ${done}/${total}）`
 }
 
+/**
+ * raw 去掉前 n 个空白分隔 token 后的**原始剩余文本**（保留内部空白与引号）。
+ * 旧写法 `raw.split(/\s+/).slice(n).join(' ')` 会把标题/JSON 里的连续空格压成一个，
+ * `/task rename <id> "a  b"` 于是改名成 "a b"。
+ */
+function restAfter(raw, n) {
+  let i = 0
+  let seen = 0
+  while (i < raw.length && seen < n) {
+    while (i < raw.length && /\s/.test(raw[i])) i++
+    if (i >= raw.length) break
+    while (i < raw.length && !/\s/.test(raw[i])) i++
+    seen++
+  }
+  return raw.slice(i).replace(/^\s+/, '')
+}
+
 function withTaskSnapshot(config, cwd, sid, store, note) {
   const tasks = store.getTasks()
   const active = tasks.filter((t) => !t.archived)
@@ -66,7 +83,7 @@ export function taskCommandDefinition(config, ctx) {
         // /task rename <任务id> <json标题> —— 双击任务标题改名
         if (verb === 'rename') {
           if (!taskId) return { kind: 'error', text: '[task] rename 需要任务 id（由卡片双击调用）' }
-          const payload = raw.split(/\s+/).slice(2).join(' ').trim()
+          const payload = restAfter(raw, 2).trim()
           let title = payload
           try {
             const parsed = JSON.parse(payload)
@@ -88,7 +105,7 @@ export function taskCommandDefinition(config, ctx) {
         // /task todos <json> —— 卡片双击编辑步骤后，把整份新清单写回绑定任务并推宿主
         // （与模型 todo_write 同一套数据，只是发起方是用户面板）
         if (verb === 'todos') {
-          const rawJson = raw.split(/\s+/).slice(1).join(' ').trim()
+          const rawJson = restAfter(raw, 1).trim()
           let todos
           try {
             todos = JSON.parse(rawJson)

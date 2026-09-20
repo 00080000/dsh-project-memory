@@ -20,17 +20,25 @@ export function chunkText(text, chunkChars = 3000, maxChunks = 40) {
 
   const chunks = []
   for (const section of sections) {
-    if (!section.lines.join('').trim()) continue
-    let block = section.lines.join('\n').trim()
-    let line = section.line
+    const rawBlock = section.lines.join('\n')
+    if (!rawBlock.trim()) continue
+    // `.trim()` 会吃掉段首的空白与换行——把它们算进行号，否则整段的引用行号会偏低。
+    const lead = rawBlock.match(/^\s*/)[0]
+    let line = section.line + (lead.match(/\n/g) || []).length
+    let block = rawBlock.trim()
     while (block.length > chunkChars) {
       let splitAt = block.lastIndexOf('\n\n', chunkChars)
       if (splitAt < chunkChars * 0.5) splitAt = block.lastIndexOf(' ', chunkChars)
       if (splitAt < chunkChars * 0.5) splitAt = chunkChars
-      const part = block.slice(0, splitAt).trim()
+      const rawPart = block.slice(0, splitAt)
+      const part = rawPart.trim()
       if (part) chunks.push({ title: section.title, text: part, line })
-      line += part.split('\n').length
-      block = block.slice(splitAt).trim()
+      // 行号按**原始**切片里的换行数推进，再加上被下一次 trim 吃掉的段首换行。
+      // 旧写法 `part.split('\n').length` 每次跨行切分都要多算一行，误差会累积。
+      const rest = block.slice(splitAt)
+      const nextLead = rest.match(/^\s*/)[0]
+      line += (rawPart.match(/\n/g) || []).length + (nextLead.match(/\n/g) || []).length
+      block = rest.trim()
       if (chunks.length >= maxChunks) break
     }
     if (block) {

@@ -102,6 +102,21 @@ export function insightToEntry(ins) {
 }
 
 /**
+ * 一条 insight 的**打分文本**（BM25 与 IDF 覆盖率必须用同一份）。
+ *
+ * 为什么要有这个函数：提示通道的"这条查询离语料有多远"（`idfCoverage` 的 df）曾经用
+ * `insightMatchText` 计算，而排序用 `insightToEntry`（含 fix/solution/reason/steps）。
+ * 于是"只在解药里有匹配"的查询词 df=0 → supportRatio=0 → **整条提示通道本轮沉默**，
+ * 而排序明明给了它高分。两份文本永远来自同一个 entry，才不会再漂移。
+ * @param {object} ins
+ * @returns {string}
+ */
+export function insightScoringText(ins) {
+  const e = insightToEntry(ins)
+  return [e.title, e.summary, e.terms, ...(e.keywords || [])].filter(Boolean).join('\n')
+}
+
+/**
  * 召回可见的 insight 集合：作用域可见性跟随会话绑定。
  *   - project / global：始终可见（归档除外）；
  *   - task：只在该会话绑定了对应任务时可见（任务私有，不泄露给别的会话）；
@@ -127,6 +142,9 @@ export function visibleInsights({ store = null, globalStore = null, boundTaskId 
     const task = store.getTask(boundTaskId)
     for (const it of (task && task.insights) || []) {
       if (!it || it.archived) continue
+      // 任务级也要挡草稿：reflection 写的是 draft:true，未确认前不该被 query_memory 召回
+      // （project/global 一直有这道闸，任务级漏了）。
+      if (it.draft === true) continue
       out.push({ ...it, scope: it.scope || 'task' })
     }
   }
@@ -163,15 +181,17 @@ export function recallItems(opts = {}) {
   if (want.has('doc') || want.has('symbol')) {
     const pool = (entries || (store && typeof store.allEntries === 'function' ? store.allEntries() : []) || [])
       .filter((e) => e && (e.type === 'doc' || e.type === 'symbol') && want.has(e.type))
-    const scored = rankEntriesStreaming(pool, qs, idf, limit)
-    const byLayer = new Map([['doc', []], ['symbol', []]])
-    for (const { entry, score } of scored) {
-      const prior = entry.type === 'doc' ? normativePrior(entry) : LAYER_PRIORS.symbol
-      byLayer.get(entry.type).push({ item: entry, score, prior, weightedScore: score * prior })
-    }
+    // 每层各自 top-k（不变量 #2）：一次跨类型取 top-k 会让文档把符号挤出结果——
+    // 20 条命中文档 + 1 条命中符号、limit 8 时符号层直接消失。分类型各取一次再分桶。
     for (const layer of ['doc', 'symbol']) {
-      const hits = byLayer.get(layer)
-      if (!hits.length) continue
+      const layerPool = pool.filter((e) => e.type === layer)
+      if (!layerPool.length) continue
+      const scored = rankEntriesStreaming(layerPool, qs, idf, limit)
+      if (!scored.length) continue
+      const hits = scored.map(({ entry, score }) => {
+        const prior = layer === 'doc' ? normativePrior(entry) : LAYER_PRIORS.symbol
+        return { item: entry, score, prior, weightedScore: score * prior }
+      })
       hits.sort((a, b) => b.weightedScore - a.weightedScore)
       const top = hits[0].weightedScore || 1
       buckets.push({

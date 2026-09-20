@@ -39,7 +39,16 @@ export function linkEntries(store) {
         if (linked.size > before) links++
       }
     }
-    doc.linkedSymbols = linked.size ? [...linked] : undefined
+    const before = Array.isArray(doc.linkedSymbols) ? doc.linkedSymbols.join('\u0000') : ''
+    const next = [...linked]
+    if (before === next.join('\u0000')) continue
+    doc.linkedSymbols = next.length ? next : undefined
+    // 链接是在**符号**落盘那一刻算出来的，此时 doc 的 shard 往往不是脏的；不标脏就只存在于内存，
+    // 下次进程启动重新加载后链接全部丢失（"文档先索引、符号后到"的正常顺序）。
+    if (typeof store.markFile === 'function' && typeof store.fileRecord === 'function' && doc.sourcePath) {
+      const record = store.fileRecord(doc.sourcePath)
+      if (record) store.markFile(doc.sourcePath, record)
+    }
   }
   return links
 }

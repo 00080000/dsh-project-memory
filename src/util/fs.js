@@ -73,8 +73,22 @@ export function readFileForIndex(filePath) {
 }
 
 export async function readTextFile(filePath, maxBytes = 2 * 1024 * 1024) {
+  // 先 stat 再读：大小上限的意义就是"别把整个文件读进内存"。旧写法先 readFile 再比较，
+  // 127 MB 的文件会先把 127 MB 拉进 RSS 再抛错（watch/lazy 每轮重试，反复发生）。
+  if (Number.isFinite(maxBytes)) {
+    let size = 0
+    try {
+      size = statSync(filePath).size
+    } catch {
+      size = 0 // 交给下面的 readFile 报真实错误（不存在 / 无权限）
+    }
+    if (size > maxBytes) {
+      throw new Error(`File too large to index as text (${(size / 1024 / 1024).toFixed(1)} MB)`)
+    }
+  }
   const buf = await readFile(filePath)
   if (buf.length > maxBytes) {
+    // stat 与 read 之间文件被改大：兜底再判一次
     throw new Error(`File too large to index as text (${(buf.length / 1024 / 1024).toFixed(1)} MB)`)
   }
   return buf.toString('utf8')

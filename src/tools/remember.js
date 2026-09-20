@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
+import { assertIndexRoot, memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 
 export function rememberTool(config) {
@@ -35,6 +35,8 @@ export function rememberTool(config) {
     },
     async execute(args, exec) {
       const root = resolveIndexRoot(exec, args.root)
+      // 写盘前校验根：否则一个拼错的 root 会被 mkdir 成字面量目录（连同 .dsh-project-memory）。
+      assertIndexRoot(root, args.root || root)
       const memoryDir = memoryRootFor(root, config.memoryDir)
       const store = new ProjectMemoryStore(memoryDir).load()
       return store.commit((s) => {
