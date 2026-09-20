@@ -352,7 +352,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 313 tests (184 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 9 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 14 readiness + 7 insight-derive + 6 readiness-eval + 6 ops + 6 injection-audit + 5 injection-budget + 6 injection-scenarios)
+npm test                    # 331 tests (184 core + 16 TaskBridge + 11 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 9 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 14 readiness + 7 insight-derive + 6 readiness-eval + 6 ops + 6 injection-audit + 5 injection-budget + 6 injection-scenarios + 18 bugfix-0.5.7)
 npm run eval:injection      # scenario P/R: 14/14 hits, 0 false positives, control group clean
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead
 npm run bench -- /path/to/project   # index/query performance on any project — no dsh needed

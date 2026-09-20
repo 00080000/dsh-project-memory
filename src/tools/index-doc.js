@@ -2,6 +2,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
 import { assertReadableFile, memoryRootFor, sha256OfFile, storeKey } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
+import { docEntriesNeedBackfill } from '../doc-index.js'
 import { linkEntries } from '../link.js'
 import { ProjectMemoryStore } from '../store.js'
 import { findProjectRoot } from '../lazy.js'
@@ -38,7 +39,9 @@ export function indexDocTool(ctx, config) {
       const rel = storeKey(path.relative(root, filePath).split(path.sep).join('/'))
       const { hash, size } = await sha256OfFile(filePath)
       const existing = store.fileRecord(rel)
-      if (existing && existing.sha256 === hash) {
+      // 与 index_repo/watch/lazy 同一条判据：哈希未变但旧条目缺 terms 时仍要重抽一次（一次性回填）。
+      // 少了这一步，terms 回填就是"路径相关"的——只有走 index_repo 才生效。
+      if (existing && existing.sha256 === hash && !docEntriesNeedBackfill(store.entries[rel])) {
         return `Skipped (unchanged): ${rel}\nAlready indexed with ${(store.entries[rel] || []).length} entry/entries.`
       }
 

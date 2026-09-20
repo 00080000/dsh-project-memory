@@ -60,9 +60,8 @@ export async function parsePdf(filePath, { pages = null, maxPages = 1000, backen
   const data = new Uint8Array(await readFile(filePath))
   const { getDocument } = await loadPdfjs()
   const loadingTask = getDocument({ data, ...PDFJS_OPTIONS })
-  const doc = await loadingTask.promise
-
   try {
+    const doc = await loadingTask.promise
     const total = doc.numPages
     if (total > maxPages) {
       throw new Error(`PDF has ${total} pages, over the maxPages limit of ${maxPages}`)
@@ -112,9 +111,8 @@ export async function parsePdfInfo(filePath, maxPages = 1000) {
   const data = new Uint8Array(await readFile(filePath))
   const { getDocument } = await loadPdfjs()
   const loadingTask = getDocument({ data, ...PDFJS_OPTIONS })
-  const doc = await loadingTask.promise
-
   try {
+    const doc = await loadingTask.promise
     if (doc.numPages > maxPages) {
       throw new Error(`PDF has ${doc.numPages} pages, over the maxPages limit of ${maxPages}`)
     }

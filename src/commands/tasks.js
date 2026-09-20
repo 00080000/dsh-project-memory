@@ -16,12 +16,21 @@ function timeAgo(iso) {
   return `${Math.floor(h / 24)}天前`
 }
 
+/** 步骤在历史数据里可能是字符串，也可能是 {content|text, status}：统一取文本与状态。 */
+function stepContent(s) {
+  if (typeof s === 'string') return s
+  return s?.content ?? s?.text ?? ''
+}
+function stepStatus(s) {
+  return typeof s === 'string' ? 'pending' : (s?.status || 'pending')
+}
+
 export function buildTaskPayload(tasks, boundId, archived) {
   return JSON.stringify({
     tasks: tasks.map((t) => ({
       id: t.id,
       title: t.title,
-      steps: (t.steps || []).map((s) => ({ content: s.content || s.text, status: s.status })),
+      steps: (t.steps || []).map((s) => ({ content: stepContent(s), status: stepStatus(s) })),
       files: (t.files || []).map((f) => ({ path: f, line: undefined })),
       lastActiveAt: t.lastActiveAt,
       updatedAt: t.updatedAt,
@@ -53,11 +62,11 @@ export function renderTaskSnapshot(config, cwd, sid) {
   }
   const lines = [`项目 ${root}`, `任务: ${active.length} 套${archived ? `（归档 ${archived}）` : ''}`, '']
   for (const t of active) {
-    const done = (t.steps || []).filter((s) => s.status === 'completed').length
+    const done = (t.steps || []).filter((s) => stepStatus(s) === 'completed').length
     const total = (t.steps || []).length
     const progress = total ? `${done}/${total}` : '无步骤'
-    const inProgress = (t.steps || []).find((s) => s.status === 'in_progress')
-    const step = inProgress ? ` · 当前: ${inProgress.content}` : ''
+    const inProgress = (t.steps || []).find((s) => stepStatus(s) === 'in_progress')
+    const step = inProgress ? ` · 当前: ${stepContent(inProgress)}` : ''
     const marker = bound && bound.id === t.id ? '（本会话绑定）' : ''
     const files = (t.files || []).slice(0, 8)
     const fileLine = files.length ? `\n  文件: ${files.join(', ')}${t.files.length > 8 ? ' …' : ''}` : ''

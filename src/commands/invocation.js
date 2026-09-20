@@ -15,7 +15,11 @@
 export function invocationContext(invocation) {
   const agent = invocation?.agent
   const sid = agent?.id || agent?.session?.id
-  const session = sid && agent?.ctx ? agent.ctx.sessions?.get(sid) : (agent?.session || null)
+  const fromService = sid && agent?.ctx ? agent.ctx.sessions?.get(sid) : null
+  // sessions 服务缺失**或查不到**时都退回 agent.session（文档承诺的降级路径）。
+  // 旧写法只在 agent.ctx 不存在时退回：服务在、但 get 返回 undefined 时 session 直接是 undefined，
+  // /task switch|todos|unbind 于是静默跳过 session.append（宿主 todo 同步失效）。
+  const session = fromService || agent?.session || null
   const cwd = session?.header?.cwd || agent?.session?.header?.cwd
   return { agent, sid, session, cwd }
 }

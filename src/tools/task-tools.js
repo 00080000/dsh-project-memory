@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
+import { assertIndexRoot, memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { truncate } from '../util/text.js'
 import { genTaskId, hash8, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
@@ -40,6 +40,7 @@ export function listTasksTool(config) {
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args, exec) {
       const root = resolveIndexRoot(exec, args.root)
+      assertIndexRoot(root, args.root || root)
       const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
       const tasks = store.getTasks()
       if (!tasks.length) {
@@ -66,6 +67,7 @@ export function selectTaskTool(config, host) {
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args, exec) {
       const root = resolveIndexRoot(exec, args.root)
+      assertIndexRoot(root, args.root || root)
       const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
       const sid = sessionIdOf(exec)
       const now = new Date().toISOString()
@@ -184,6 +186,7 @@ export function archiveTaskTool(config, host) {
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args, exec) {
       const root = resolveIndexRoot(exec, args.root)
+      assertIndexRoot(root, args.root || root)
       const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
       const task = store.getTask(args.taskId)
       if (!task) return truncate(JSON.stringify({ success: false, error: 'Task not found' }), config.maxOutputChars)
