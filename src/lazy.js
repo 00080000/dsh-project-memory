@@ -1,11 +1,8 @@
 import path from 'node:path'
 import { tmpdir } from 'node:os'
 import { existsSync, readdirSync, statSync } from 'node:fs'
-import { isSupportedCode, isSupportedDoc, memoryRootFor, readFileForIndex, relativePath, storeKey } from './util/fs.js'
-import { buildDocEntries } from './doc-pipeline.js'
-import { docEntriesNeedBackfill } from './doc-index.js'
-import { scanSymbols } from './symbols.js'
-import { linkEntries } from './link.js'
+import { memoryRootFor, relativePath, storeKey } from './util/fs.js'
+import { DROP, OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from './index-pipeline.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileObserved } from './enhancer.js'
 
@@ -78,70 +75,42 @@ export function findProjectRoot(filePath, ceiling = path.resolve(tmpdir())) {
 }
 
 export async function indexFile(ctx, config, filePath, watchManager = null) {
-  const ext = path.extname(filePath).toLowerCase()
-  if (!isSupportedDoc(ext) && !isSupportedCode(ext)) return false
+  const kind = fileKind(path.extname(filePath).toLowerCase())
+  if (!kind) return false
   const root = findProjectRoot(filePath)
   if (!root) return false
 
   const memoryDir = memoryRootFor(root, config.memoryDir)
   const store = new ProjectMemoryStore(memoryDir).load()
   const rel = storeKey(relativePath(root, filePath))
-  const existing = store.fileRecord(rel)
-  let hash
+  const record = store.fileRecord(rel)
+
   let size
-  let buffer
-  let entries
+  let plan
   try {
-    if (isSupportedCode(ext) && config.maxFileSizeMb && statSync(filePath).size > config.maxFileSizeMb * 1024 * 1024) {
-      return false
-    }
-    ;({ hash, size, buffer } = readFileForIndex(filePath))
+    size = statSync(filePath).size
+    plan = await planFileIndex({ rel, filePath, kind, config, record, existingEntries: store.entries[rel], size })
   } catch {
     return false
   }
-  // 旧 store 的 doc 条目缺 terms → 一次性回填（即使哈希未变）
-  if (existing && existing.sha256 === hash && !(isSupportedDoc(ext) && docEntriesNeedBackfill(store.entries[rel]))) return false
+  if (plan.key === UNCHANGED || plan.key === OVERSIZE) return false
 
   if (watchManager) {
     watchManager.addRoot(root)
     store.addWatch(root)
   }
 
-  if (isSupportedCode(ext)) {
-    entries = scanSymbols(rel, filePath, buffer.toString('utf8'))
+  if (plan.key !== DROP && plan.type === 'code') {
     onFileObserved(store, rel, filePath, config, root)
-    return store.commit((s) => {
-      s.markFile(rel, { sha256: hash, size, type: 'code', indexedAt: new Date().toISOString() })
-      s.setEntries(rel, entries)
-      linkEntries(s)
-      return true
-    })
-  } else {
-    entries = await buildDocEntries(rel, filePath, {
-      chunkChars: config.chunkChars,
-      maxChunks: config.maxChunksPerFile,
-      maxFileSizeMb: config.maxFileSizeMb,
-      maxPdfPages: config.maxPdfPages,
-    })
-    if (entries === null) {
-      return store.commit((s) => {
-        s.removeFile(rel)
-        return false
-      })
-    }
-    return store.commit((s) => {
-      s.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
-      s.setEntries(rel, entries)
-      linkEntries(s)
-      return true
-    })
   }
+  commitFileUpdates(store, { updates: [toFileUpdate(rel, plan, record)] })
+  return plan.key !== DROP
 }
 
 export function codeFirst(paths) {
   return [...paths].sort((a, b) => {
-    const aCode = isSupportedCode(path.extname(a).toLowerCase()) ? 0 : 1
-    const bCode = isSupportedCode(path.extname(b).toLowerCase()) ? 0 : 1
+    const aCode = fileKind(path.extname(a).toLowerCase()) === 'code' ? 0 : 1
+    const bCode = fileKind(path.extname(b).toLowerCase()) === 'code' ? 0 : 1
     return aCode - bCode
   })
 }

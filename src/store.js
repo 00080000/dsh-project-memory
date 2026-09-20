@@ -551,15 +551,14 @@ export class ProjectMemoryStore {
     return result
   }
 
-  applyFileUpdate(relPath, { expectedHash, hash, entries, meta, deleted, type, size }) {
-    const cur = this.fileRecord(relPath)
-    if (!deleted && (cur?.sha256 ?? null) !== (expectedHash ?? null)) {
-      return { skipped: true }
-    }
-    if (deleted) {
-      this.removeFile(relPath)
-      return { ok: true }
-    }
+  /**
+   * 写入一条文件更新，以 expectedHash 做 CAS。
+   * @returns {boolean} true = 已写入；false = 文件自扫描后又被改动，本次拒绝
+   *   （调用方让该条目保持未落快照，下一轮重试）。
+   * 移除条目不经过这里：调用方在 commit 里直接 removeFile（见 index-pipeline.js）。
+   */
+  applyFileUpdate(relPath, { expectedHash, hash, entries, type, size }) {
+    if ((this.fileRecord(relPath)?.sha256 ?? null) !== (expectedHash ?? null)) return false
     this.markFile(relPath, {
       sha256: hash,
       size,
@@ -567,7 +566,7 @@ export class ProjectMemoryStore {
       indexedAt: new Date().toISOString(),
     })
     this.setEntries(relPath, entries)
-    return { ok: true }
+    return true
   }
 }
 
