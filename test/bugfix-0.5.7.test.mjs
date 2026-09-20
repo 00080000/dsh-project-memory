@@ -24,6 +24,17 @@ const ok = (name) => {
 }
 const dir = (p = 'fix-') => mkdtempSync(path.join(tmpdir(), p))
 
+/** 负路径场景会打 console.error：测试里静音，避免正常输出看起来像失败。 */
+function quiet(fn) {
+  const orig = console.error
+  console.error = () => {}
+  try {
+    return fn()
+  } finally {
+    console.error = orig
+  }
+}
+
 const CONFIG = { memoryDir: '.dsh-project-memory', maxOutputChars: 8000, chunkChars: 3000, maxChunksPerFile: 40, maxFileSizeMb: 50, maxPdfPages: 1000 }
 
 // --- 1. 旧库迁移：index.json 损坏时必须保住 entries.json（不能静默清空） ---
@@ -31,7 +42,7 @@ const CONFIG = { memoryDir: '.dsh-project-memory', maxOutputChars: 8000, chunkCh
   const d = dir('mig-')
   writeFileSync(path.join(d, 'index.json'), '{ broken')
   writeFileSync(path.join(d, 'entries.json'), JSON.stringify({ 'a.md': [{ type: 'doc', title: 'A' }] }))
-  new ProjectMemoryStore(d).load()
+  quiet(() => new ProjectMemoryStore(d).load())
   assert.ok(existsSync(path.join(d, 'entries.json')), 'entries.json 必须保留')
   assert.ok(!existsSync(path.join(d, 'format.json')), '不可读 index 时不得打 v2 标记')
   assert.equal(readdirSync(d).filter((n) => n.startsWith('index.json.') && n.endsWith('.corrupt')).length, 1)
