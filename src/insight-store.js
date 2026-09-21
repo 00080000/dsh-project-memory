@@ -180,6 +180,45 @@ export function mergeInto(existing, base, cfg, nowIso) {
   return existing
 }
 
+/**
+ * 使用记账：条目被**真正用到**时更新活跃度——注入进了上下文，或被 `query_memory` 命中。
+ *
+ * 为什么必须有：`applyDecay` / `pruneItems` 判活跃度只看 `lastHitAt || updatedAt || createdAt`，
+ * 而 `lastHitAt` 此前只由 merge/reinforce 写（= 模型又写了一条相近的知识）。于是一条天天被注入、
+ * 但从没人重写它的教训，`decayDays`（默认 90）之后会被自动归档、再也不会被推送——**用得最多的
+ * 反而等于没人用过**。这是行为缺陷，不是调优问题。
+ *
+ * 记账**不参与任何注入判据**：它只影响活跃度/衰减，以及离线训练样本的标签。
+ * 语义是"曝光次数"而非"被采纳次数"——更强的信号（模型是否真的照着做了）需要另外的回路。
+ * 只记非归档条目（归档件本来就召回不到）。返回实际加一的条数，调用方据此决定是否落盘。
+ * @returns {number} 被加一的条目数
+ */
+export function recordHit({ store, globalStore, ids, nowIso } = {}) {
+  const want = new Set((ids || []).filter(Boolean))
+  if (!want.size) return 0
+  const now = nowIso || new Date().toISOString()
+  let n = 0
+  const touch = (items) => {
+    let c = 0
+    for (const it of items || []) {
+      if (!it || it.archived || !want.has(it.id)) continue
+      it.hitCount = num(it.hitCount, 0) + 1
+      it.lastHitAt = now
+      c++
+    }
+    n += c
+    return c
+  }
+  if (store && typeof store.insightItems === 'function') {
+    const items = store.insightItems()
+    if (touch(items)) store.replaceInsightItems(items) // 标脏；落盘由调用方决定
+  }
+  if (globalStore && typeof globalStore.items === 'function') {
+    if (touch(globalStore.items())) globalStore.markDirty()
+  }
+  return n
+}
+
 export function reinforceOnly(existing, base, nowIso) {
   const now = nowIso || new Date().toISOString()
   existing.sourceTaskIds = unionStrings(existing.sourceTaskIds, base.sourceTaskIds)

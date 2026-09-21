@@ -180,6 +180,15 @@ const ok = (name) => {
   assert.ok(first && first.includes('大 procedure'), '首次应注入 procedure')
   assert.ok(first.includes('去重验证'), '首次应带常驻任务卡')
 
+  // W1 使用记账：注入即写 hitCount/lastHitAt 并**立即落盘**（重开 store 可见）。
+  // 只标脏不落盘的话，注入路径不会走到任何 save()，进程退出就丢。
+  {
+    const reread = new GlobalStore(globalFile).load()
+    const hit = reread.items().find((i) => i.id === 'ins_big_procedure')
+    assert.equal(hit.hitCount, 1, '注入一次 → hitCount=1 且已落盘')
+    assert.ok(hit.lastHitAt, 'lastHitAt 已写')
+  }
+
   // 推进任务卡 → 整块指纹必然变化；旧行为会把同一份 procedure 整块重发
   store.updateTask('tsk_dedupe', { steps: [{ content: '第一步', status: 'done' }, { content: '第二步', status: 'in_progress' }] })
   store.commit(() => 0)

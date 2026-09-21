@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.5.8 (unreleased) — 准入的可复现性
+
+### 注入精度
+
+- `autoContext.hintMinCoverage` 出厂值 `0.30` → `0.45`。真实 store（43 条同源洞察）上，对照组场景
+  「改 pptx 时间戳」以 cov 0.32~0.35 注入了 3 条无关提示：同源语料共享词多、IDF 分辨力被拉平，
+  "矮子里拔将军"能过 0.30。0.45 落在实测分布的空隙（假阳性 ≤0.35、下一个真命中 ≥0.49）。
+  8 个真实会话的注入字符从 33,143 降到约 30,367（−8%），对照组归零。
+- `readiness-eval` 新增第 7 项棘轮，把 `hintMinCoverage ≥ 0.45` 钉住（合成标注集对 0.30~0.60 
+  整段不敏感，保不住这个值，反例只在真实 store 上）。
+
+### 使用记账（修一个会吃掉有用记忆的缺陷）
+
+- `applyDecay` / `pruneItems` 判活跃度只看 `lastHitAt || updatedAt || createdAt`，而 `lastHitAt`
+  此前**只**由 merge/reinforce 写（= 模型又写了一条相近知识）。于是"天天被注入、但没人重写它"的
+  条目在 `decayDays`（90）后被自动归档——用得最多的反而等于没人用过。README 里"decay/capacity
+  prune archived entries only"的说法与代码不符，一并更正。
+- 新增 `recordHit()`，并把两个使用入口接上：`agent/pre-step` 注入成功后写 `hitCount`/`lastHitAt`
+  **并立即落盘**（注入路径不走其它 `save()`，只标脏就会在进程退出时丢）；`query_memory` 命中
+  insight 时记账（热路径只改内存 + 标脏，不强制落盘）。
+- 语义是"曝光次数"，不是"被采纳次数"；记账不参与任何注入判据，失败静默。
+
+### 影子记录（让阈值问题可以离线回答）
+
+- 新增 `admission-shadow.jsonl`：**每步**一行（含零注入的静默步与对照组），带本步全部被评分的
+  候选 + 判据特征（`rel` / `coverage` / `matched` / `support` / `terms` / `decision`）与场景
+  （`query` / `ops` / `writes`）。主审计只在真的注入时写，静默步零痕迹 → "换个阈值会怎样"
+  永远无法离线回答，也攒不出训练样本。`decision` 直接指出每条候选卡在哪一关。
+- `scoreHints` 只做加法：影子候选单独一条路径，`hints` / `dropped` 的行为一字未改。
+- 配置：`autoContext.shadowLog`（默认 true）/ `shadowMaxBytes`（默认 2 MB，超限轮转 `.1`）。
+  只写盘、不进 prompt、不花 token；任何 IO 失败静默。
+
+### 可复现性 / 工具
+
+- `test/injection-scenarios.test.mjs`：`--selfcheck` 原先排在 `--store` 分支之前并
+  `process.exit(0)`，导致 `npm run selfcheck:triggers` **恒定**打印合成池——README 承诺的
+  "看你自己哪些条目推不动"从未真的读到过用户自己的条目。现在 `--store` 优先，未给时自动探测
+  `./.dsh-project-memory/insights.json` 与 `~/.config/dsh-project-memory/global.json`。
+- `--store` 模式新增**对照组硬闸门**：expect 为空的场景必须零注入，否则退出码 1；新增
+  `--hint-cov <n>` 用于换一条底线重放（选阈值的扫描口）。
+- **补声明准入旋钮**：`gateCooldownSteps` / `maxItemsPerSession` / `maxItemCharsPerSession` /
+  `hintMinCoverage` / `hintMinMatched` / `hintMinSupport` / `legacyScope` / `auditLog` /
+  `auditMaxBytes` 自 S2/S4 起就在 `cfgEngine` 生效、README 也一直写着，但从未进过 `Schema`——
+  经 `cordis.patch.yml` 配置它们会被宿主按「not a declared property」拒掉，等于文档里的旋钮是假的。
+
 ## 0.5.7 (2026-09-20) — bug-fix release
 
 发布前审计在 313 项全绿下发现并修复以下缺陷，新增 18 项回归测试（共 331）。
