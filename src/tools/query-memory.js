@@ -4,7 +4,7 @@ import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
 import { expandQuery } from '../llm.js'
 import { resolveRoute } from '../llm-route.js'
-import { GlobalStore, cfgInsight, defaultGlobalFile } from '../insight-store.js'
+import { GlobalStore, cfgInsight, defaultGlobalFile, recordHit } from '../insight-store.js'
 import { recallItems } from '../recall.js'
 import { truncate } from '../util/text.js'
 function toAbs(root, rel) {
@@ -93,6 +93,17 @@ export function queryMemoryTool(ctx, config) {
       })
 
       const lines = []
+      // 使用记账：检索命中也是"被用到"（活跃度/衰减用得上它，见 recordHit）。查询是热路径
+      // （p50 2.6ms），这里只改内存 + 标脏，**不**强制落盘——注入路径会立即落盘，这条路
+      // 靠下一次自然 save 带上。记账失败绝不影响查询结果。
+      if (wantInsight) {
+        try {
+          const bucket = recalled.layers.find((l) => l.layer === 'insight')
+          recordHit({ store, globalStore, ids: (bucket?.hits || []).map((h) => h.item?.insightId) })
+        } catch {
+          /* ignore：记账是旁路 */
+        }
+      }
       if (wantMemory) {
         // doc/symbol 同源同尺度：合并后按加权分排序（规范段提权已计入 weightedScore）
         const memHits = recalled.layers

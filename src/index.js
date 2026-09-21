@@ -90,6 +90,24 @@ export const Config = Schema.object({
     // 同一条 insight 在本会话里重复注入的冷却（pre-step 步数）。0（默认）= 正文没变就不再注入：
     // 注入消息留在会话历史里（宿主只追加不压缩），整块重发只是重复占位。>0 用于外部裁剪历史的场景。
     reinjectItemsAfter: Schema.number().default(0),
+    // --- 准入旋钮（0.5.8 起补声明）---
+    // 下面这些键自 S2/S4 起就在 cfgEngine / cfgAudit 里生效、README 也一直写着，但**从未**在
+    // Schema 里声明过：走 cordis.patch.yml 配它们会被宿主按「not a declared property」拒掉，
+    // 等于文档里的旋钮是假的。默认值以 cfgEngine 的兜底值为准（那里是权威，这里只负责暴露）。
+    gateCooldownSteps: Schema.number().default(2),
+    maxItemsPerSession: Schema.number().default(12),
+    maxItemCharsPerSession: Schema.number().default(4000),
+    hintMinCoverage: Schema.number().default(0.45),
+    hintMinMatched: Schema.number().default(2),
+    hintMinSupport: Schema.number().default(0.15),
+    legacyScope: Schema.union(['filter', 'ignore']).default('filter'),
+    auditLog: Schema.boolean().default(true),
+    auditMaxBytes: Schema.number().default(262144),
+    // 影子记录（admission-shadow.jsonl）：**每步**一行，含全部候选的判据特征与场景。
+    // 主审计只在真的注入时写，静默步零痕迹 → 无法离线重放"换个阈值会怎样"，也攒不出样本。
+    // 只写盘、不进 prompt、不花 token，所以默认开。
+    shadowLog: Schema.boolean().default(true),
+    shadowMaxBytes: Schema.number().default(2097152),
   }).default({}),
 })
 

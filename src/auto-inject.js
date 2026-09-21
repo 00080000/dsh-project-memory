@@ -11,13 +11,13 @@ import { ProjectMemoryStore } from './store.js'
 import { memoryRootFor } from './util/fs.js'
 import { insightMatchText, normalizedTokenOverlap } from './similarity.js'
 import { BoundedMap, SessionCache } from './util/session-cache.js'
-import { cfgInsight, GlobalStore, defaultGlobalFile } from './insight-store.js'
+import { cfgInsight, GlobalStore, defaultGlobalFile, recordHit } from './insight-store.js'
 import { projectTags } from './project-profile.js'
 import { rankEntriesMergedScored } from './util/search.js'
 import { insightToEntry, insightScoringText } from './recall.js'
 import { buildReadinessContext, hintQueryText, idfCoverage, matchTrigger, normalizeTrigger, relativeHits } from './readiness.js'
 import { activityFromCalls } from './ops.js'
-import { appendInjectionAudit, auditRecordFrom, cfgAudit } from './audit.js'
+import { appendInjectionAudit, appendShadowAudit, auditRecordFrom, cfgAudit, cfgShadow, shadowRecordFrom } from './audit.js'
 
 export const INJECT_MARK = '[Memory Inject]'
 
@@ -67,9 +67,13 @@ export function cfgEngine(config) {
     // 每会话条目注入的上限（条数 / 字符）：预算只能是上限，不是目标。
     maxItemsPerSession: typeof c.maxItemsPerSession === 'number' && c.maxItemsPerSession >= 0 ? c.maxItemsPerSession : 12,
     maxItemCharsPerSession: typeof c.maxItemCharsPerSession === 'number' && c.maxItemCharsPerSession >= 0 ? c.maxItemCharsPerSession : 4000,
-    // 提示通道的**绝对**下限（IDF 加权覆盖率）：相对阈值分不出"有信号"和"矮子里拔将军"。
-    // null = 关闭（回到只有相对阈值的老行为）。
-    hintMinCoverage: typeof c.hintMinCoverage === 'number' && c.hintMinCoverage >= 0 ? c.hintMinCoverage : 0.3,
+    // 提示通道的**绝对**覆盖底线（IDF 加权覆盖率）：相对阈值分不出"有信号"和"矮子里拔将军"，
+    // 只有归一在 [0,1]、有真零点才谈得上下限。0.30 时的实测反例：真实 store（43 条同源洞察）上，
+    // 对照组场景「改 pptx 时间戳」以 cov 0.32~0.35 注入了 3 条无关条目——语料同源时共享词多、
+    // IDF 分辨力被拉平，"最不坏的一条"就能过 0.30。0.45 落在实测分布的空隙里（假阳性 ≤0.35、
+    // 下一个真命中 ≥0.49），合成标注集在 0.6 以前 precision/recall 也仍是 1.00。
+    // 用 `--hint-cov` 在真实 store 上重放可复核（见 test/injection-scenarios.test.mjs）。
+    hintMinCoverage: typeof c.hintMinCoverage === 'number' && c.hintMinCoverage >= 0 ? c.hintMinCoverage : 0.45,
     // 提示通道还要求至少这么多个共同词：单个通用词（"插件"）也能拿到 coverage=1.00。
     hintMinMatched: typeof c.hintMinMatched === 'number' && c.hintMinMatched >= 0 ? c.hintMinMatched : 2,
     // 通道级沉默：查询里能在语料中找到对应的词占比低于这个值时，整条提示通道本轮不出声。
@@ -226,7 +230,11 @@ function collectTriggered(cands, ctx) {
  */
 function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped }) {
   const hints = []
-  if (!cands.length) return hints
+  // 影子记录用：本步**全部**被评过分的候选 + 特征 + 判据结果。与 hints/dropped 分开算——
+  // 现有两类记录都只覆盖"过得了相对阈值的那部分"，恰恰缺了"因为没到阈值而从未被考虑"的候选，
+  // 而那正是离线重放阈值时需要的那批。这里只做加法，不动任何现有判据。
+  const candidates = []
+  if (!cands.length) return { hints, candidates }
   if (typeof cfg.relevanceMin === 'number') {
     // 兼容：显式 relevanceMin → 旧的绝对 overlap 判据（老 profile 行为不变）
     for (const it of cands) {
@@ -234,10 +242,10 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped }) {
       if (score >= cfg.relevanceMin) hints.push({ it, score, why: `overlap:${score.toFixed(3)}` })
     }
     hints.sort((a, b) => b.score - a.score)
-    return hints
+    return { hints, candidates } // 旧判据路径不产出影子候选（已废弃，无重放价值）
   }
   const q = hintQueryText(hintQuery)
-  if (!q) return hints
+  if (!q) return { hints, candidates }
   const byId = new Map(cands.map((it) => [it.id, it]))
   // 覆盖率语料必须与 BM25 排序同源（insightScoringText）：否则"只在 fix/solution 里有匹配"
   // 的查询词 df=0 → supportRatio=0 → 整条提示通道沉默，而排序明明给了它高分。
@@ -272,7 +280,36 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped }) {
     }
     hints.push({ it, score: r.score, why: `relative:${(r.score / (scored[0].score || 1)).toFixed(2)} cov:${ev.coverage.toFixed(2)}/${ev.matched}` })
   }
-  return hints
+
+  // ---- 影子候选（只读、无副作用）：重放一遍**全部**被评分的条目，标出它卡在哪一关 ----
+  // 顺序与真实判据一致（support → coverage → thin → relative），最后 'cand' = 过了全部门槛
+  // （注意 'cand' 不等于"真的注入了"：还要过去重/预算/冷却，那些写在同一行的 injected/silence）。
+  {
+    const top = scored[0]?.score || 0
+    const ratio = typeof cfg.signalMinRatio === 'number' && Number.isFinite(cfg.signalMinRatio) ? cfg.signalMinRatio : 0.5
+    for (const r of scored) {
+      const it = byId.get(r.entry.insightId)
+      if (!it || !Number.isFinite(r.score) || r.score <= 0) continue
+      const ev = coverage.get(it.id) || { coverage: 0, matched: 0, supported: 0, terms: 0 }
+      const needMatched = Math.min(typeof cfg.hintMinMatched === 'number' ? cfg.hintMinMatched : 2, ev.terms)
+      let decision = 'cand'
+      if (channelThin) decision = 'support'
+      else if (typeof cfg.hintMinCoverage === 'number' && ev.coverage < cfg.hintMinCoverage) decision = 'coverage'
+      else if (ev.matched < needMatched) decision = 'thin'
+      else if (r.score < top * Math.max(0, Math.min(1, ratio))) decision = 'relative'
+      candidates.push({
+        id: it.id,
+        channel: 'hint',
+        rel: Number((r.score / (top || 1)).toFixed(3)),
+        coverage: Number(ev.coverage.toFixed(3)),
+        matched: ev.matched,
+        support: ev.supported,
+        terms: ev.terms,
+        decision,
+      })
+    }
+  }
+  return { hints, candidates }
 }
 
 /**
@@ -317,7 +354,7 @@ export function buildInjection(opts) {
   // procedure 不进提示通道：它要过 trigger.scope（见 scoreHints 注释）。
   const consumed = new Set(triggered.map((t) => t.it.id))
   const hintCands = skipItems ? [] : cands.filter((it) => !consumed.has(it.id) && it.kind !== 'procedure')
-  const hints = scoreHints({
+  const { hints, candidates } = scoreHints({
     cands: hintCands,
     query,
     humanText: ctx.humanText,
@@ -368,7 +405,7 @@ export function buildInjection(opts) {
   // 整块只受单轮预算（maxTokens）约束；会话条目额度已在 place() 里单独扣过。
   const clamp = (t) => (t.length > stepBudget ? `${t.slice(0, stepBudget)}\n…(截断)` : t)
   const dedupeText = clamp([entryStable, ...parts].filter(Boolean).join('\n'))
-  return { text: clamp(total.join('\n')), entry, entryStable, labels, reasons, dropped, dedupeText, itemChars: itemUsed }
+  return { text: clamp(total.join('\n')), entry, entryStable, labels, reasons, dropped, candidates, dedupeText, itemChars: itemUsed }
 }
 
 // 每会话状态的会话数上限：六张表共用（旧实现把同一个 200 在五处各写一遍）。
@@ -439,6 +476,7 @@ export function installAutoInject(ctx, config) {
   const cfg = cfgEngine(config)
   // 审计配置同 cfg：安装时解析一次（与 autoContext 其余开关一致）。
   const audit = cfgAudit(config)
+  const shadow = cfgShadow(config)
   const sessions = new InjectionSessions()
 
   installCallObserver(ctx, sessions)
@@ -455,7 +493,7 @@ export function installAutoInject(ctx, config) {
     if (!decision) return fallback()
     if (decision.kind !== 'enter') return decision
     try {
-      return (await injectForStep({ payload, decision, config, cfg, audit, sessions })) || decision
+      return (await injectForStep({ payload, decision, config, cfg, audit, shadow, sessions })) || decision
     } catch (err) {
       console.error(`[dsh-project-memory] auto-inject skipped: ${err?.message || err}`)
       return decision
@@ -467,7 +505,7 @@ export function installAutoInject(ctx, config) {
  * 一个 pre-step 的注入决策：解析会话 → 排程 → 必要时构造消息。
  * 返回 null 表示本步无事可做（交回原决策）。
  */
-async function injectForStep({ payload, decision, config, cfg, audit, sessions }) {
+async function injectForStep({ payload, decision, config, cfg, audit, shadow, sessions }) {
   const session = payload && payload.agent && payload.agent.session
   const root = session && session.header && session.header.cwd
   const sessionId = session && session.id
@@ -518,6 +556,21 @@ async function injectForStep({ payload, decision, config, cfg, audit, sessions }
   // 留痕仍然记账（去重 + 上限），只是默认不外泄到用户的终端。
   recordDropped({ sessions, sessionId, dropped: built.dropped, budgetLog: cfg.budgetLog })
 
+  // 影子记录：**每步**都写一行（含零注入的静默步与对照组），带全部候选的判据特征。
+  // 主审计只在真的注入时写，静默步零痕迹 → 日志无法离线重放"换个阈值会怎样"，
+  // 也攒不出训练样本。只写盘、不进 prompt、不花 token。
+  appendShadowAudit(memoryRoot, shadowRecordFrom({
+    sessionId,
+    root,
+    step: stepNo,
+    query: query || '',
+    ops: readiness.ops,
+    writes: readiness.targets,
+    reasons: built.reasons,
+    candidates: built.candidates,
+    silence: silence.reason,
+  }), shadow)
+
   const fp = fingerprint(built.dedupeText ?? built.text)
   if (!built.text || fp === sessions.lastText.peek(sessionId)) return null
   sessions.lastText.set(sessionId, fp)
@@ -532,6 +585,19 @@ async function injectForStep({ payload, decision, config, cfg, audit, sessions }
     quota.items += built.reasons.length
     quota.chars += typeof built.itemChars === 'number' ? built.itemChars : 0
     quota.lastStep = stepNo
+  }
+
+  // 使用记账：注入进上下文 = 这条记忆被用到了。必须在这里显式落盘——注入路径不会走到
+  // 任何其它 save()，只标脏等于进程退出就丢。记账失败绝不影响注入（与审计同约定）。
+  if (built.reasons.length) {
+    try {
+      if (recordHit({ store, globalStore, ids: built.reasons.map((r) => r.id) })) {
+        store.save()
+        globalStore.commit()
+      }
+    } catch {
+      /* ignore：记账是旁路，不能拖累注入 */
+    }
   }
 
   // S0 观测：只记真的进了上下文的那一次（dropped 单独出现不写，否则每步刷屏）。

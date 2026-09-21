@@ -2,16 +2,20 @@
 //   node test/injection-scenarios.test.mjs                 # 棘轮 + 闸门（精确率 ≥ 0.90、对照组零注入）
 //   node test/injection-scenarios.test.mjs --selfcheck     # trigger 自检：谁推得动、谁是死值
 //   node test/injection-scenarios.test.mjs --store <项目 insights.json> [--global <global.json>]
+//                                                          # 真实 store 回放；对照组必须零注入，否则退出码 1
+//   加 --hint-cov <n> 可用另一个覆盖底线重放（选阈值时的扫描口）
 //
 // 为什么在 test/ 而不是 bench/：与 readiness-eval 同款理由——这个基线必须可复现、随仓库
 // 发布、由 CI 守住；bench/ 是 .gitignore 的本地脚手架。
 //
 // 池子是**合成**的，但每一条都照抄真实条目的 trigger（含致病的那几个：`*.pptx` 扩展名 glob、
 // `rm` 这种 2 字符关键词、`scope` 与画像 tag 的错配、`benchmark` 这种不在 ACTION_LEXICON
-// 里的死 action）。合成而非读真实 store：`.dsh-project-memory/` 在 .gitignore 里，读它就等于
-// 这条回归在别的机器上跑不起来。
+// 里的死 action）。合成是**默认**基线而非唯一来源：`--selfcheck` / `--store` 会先探测
+// `.dsh-project-memory/`（见 resolvePool），默认路径（CI 的 npm test）不读真实 store，可复现性不变。
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import path from 'node:path'
 
 import { buildInjection, cfgEngine } from '../src/auto-inject.js'
 import { auditTriggers, normalizeTrigger } from '../src/readiness.js'
@@ -141,7 +145,7 @@ function poolStore(items) {
   return { insightItems: () => items }
 }
 
-function runScenario(s, pool) {
+function runScenario(s, pool, cfg = CFG) {
   const out = buildInjection({
     query: s.human,
     readiness: { humanText: s.human, actionText: s.actions.join('\n') },
@@ -149,7 +153,7 @@ function runScenario(s, pool) {
     store: poolStore(pool),
     globalStore: null,
     projectTagsList: s.tags || [],
-    cfg: CFG,
+    cfg,
   })
   const got = out.reasons.map((r) => r.id)
   const hit = got.filter((id) => s.expect.includes(id))
@@ -226,23 +230,54 @@ const GATE_PRECISION = 0.9
 const argv = process.argv.slice(2)
 const gate = argv.includes('--gate')
 const storeIdx = argv.indexOf('--store')
+const argOf = (flag) => (argv.indexOf(flag) !== -1 ? argv[argv.indexOf(flag) + 1] : undefined)
+
+const DEFAULT_PROJECT_STORE = path.join(process.cwd(), '.dsh-project-memory', 'insights.json')
+const DEFAULT_GLOBAL_STORE = path.join(homedir(), '.config', 'dsh-project-memory', 'global.json')
+const readItems = (file) => JSON.parse(readFileSync(file, 'utf8')).items || []
+const cfgWith = (override) => cfgEngine({ insight: {}, autoContext: { maxTokens: 400, ...override } })
+
+/**
+ * 候选池来源解析：`--store` 显式路径 > 本地 `./.dsh-project-memory/insights.json` > 合成池 POOL。
+ *
+ * 存在的理由：`npm run selfcheck:triggers` 只传 `--selfcheck`，而原实现把 `--selfcheck` 分支放在
+ * `--store` 之前并 `process.exit(0)`——于是这条命令**恒定**打印合成池，README 承诺的"看你自己
+ * 哪些条目推不动"从来没让人看到过自己的条目。默认路径（`npm test`）不经过这里，CI 依旧可复现。
+ * @returns {{items: object[], sources: string[]}}
+ */
+function resolvePool() {
+  const projPath = argOf('--store') || (existsSync(DEFAULT_PROJECT_STORE) ? DEFAULT_PROJECT_STORE : null)
+  if (!projPath) return { items: POOL, sources: ['合成池 POOL（未找到本地 store）'] }
+  const proj = readItems(projPath)
+  const sources = [`${projPath} (${proj.length} 条)`]
+  const globalPath = argOf('--global') || (existsSync(DEFAULT_GLOBAL_STORE) ? DEFAULT_GLOBAL_STORE : null)
+  if (!globalPath) return { items: proj, sources }
+  const global = readItems(globalPath)
+  sources.push(`${globalPath} (${global.length} 条)`)
+  return { items: [...proj, ...global], sources }
+}
 
 if (argv.includes('--selfcheck')) {
-  printSelfcheck(POOL)
+  const { items, sources } = resolvePool()
+  console.log(`\n  池子来源: ${sources.join('  +  ')}`)
+  printSelfcheck(items)
   console.log('')
   process.exit(0)
 }
 
 if (storeIdx !== -1) {
-  // 真实 store 模式：本地复盘用。**只列出注入了什么，不判 P/R**——场景的 expect 用的是内置
-  // 池子的 id，真实 store 里是另一套 id，拿它算精确率只会得到误导性的 0。
-  const projPath = argv[storeIdx + 1]
-  const gIdx = argv.indexOf('--global')
-  const proj = JSON.parse(readFileSync(projPath, 'utf8')).items || []
-  const global = gIdx !== -1 ? JSON.parse(readFileSync(argv[gIdx + 1], 'utf8')).items || [] : []
-  const pool = [...proj, ...global].map((it) => normalizeTrigger(it, { legacyScope: CFG.legacyScope }))
+  // 真实 store 模式：本地复盘用。**只对对照组判定**——场景的 expect 用的是合成池的 id，真实
+  // store 里是另一套 id，拿它算语义精确率只会得到误导性的 0；但"expect 为空的场景该不该沉默"
+  // 与 id 无关，所以它是真实 store 上唯一可判定的硬闸门（也是 0.5.8 修的那条：0.3 底线下
+  // 对照场景 F 会注入 3 条无关提示）。
+  const { items, sources } = resolvePool()
+  const pool = items.map((it) => normalizeTrigger(it, { legacyScope: CFG.legacyScope }))
+  const covArg = argOf('--hint-cov')
+  const cfg = covArg === undefined ? CFG : cfgWith({ hintMinCoverage: Number(covArg) })
+  console.log(`\n  池子来源: ${sources.join('  +  ')}   hintMinCoverage=${cfg.hintMinCoverage}`)
+  let violations = 0
   for (const s of SCENARIOS) {
-    const r = runScenario(s, pool)
+    const r = runScenario(s, pool, cfg)
     console.log(`\n  === ${s.name}  注入 ${r.got.length} 条 / ${r.chars} 字符`)
     for (const why of r.why) {
       const title = String(pool.find((i) => i.id === why.id)?.title || '?').slice(0, 40)
@@ -252,9 +287,17 @@ if (storeIdx !== -1) {
       console.log(`      · dropped ${String(d.id).slice(0, 16)} (${d.reason})`)
     }
     if (!r.got.length) console.log('      （零注入）')
+    if (!s.expect.length && r.got.length) {
+      violations++
+      console.log(`      ✘ 对照组失守：期望零注入，实得 ${r.got.length} 条`)
+    }
   }
-  printSelfcheck(pool)
-  console.log('\n  （--store 模式只报告，不判定；池子里共 %d 条候选）', pool.length)
+  printSelfcheck(items)
+  console.log('\n  （--store 模式：对照组硬闸门 + 语义精确率只报告；池子里共 %d 条候选）', pool.length)
+  if (violations) {
+    console.log(`\n  对照组失守 ${violations} 个场景`)
+    process.exit(1)
+  }
   process.exit(0)
 }
 

@@ -37,7 +37,7 @@
 - **文档 ↔ 代码交叉链接** — 文档提及某符号时记录为 `reference`；查询符号时同时带出描述该符号的文档。
 - **BM25 记忆召回** — 对文档、符号与经验笔记进行排序召回，可选 LLM 查询扩展以应对表述不一致。**CJK 增强**：精确短语乘法加分（3+ 字短语在标题/关键词命中 ×1.5）、同义词表（如 数据库连接池 ↔ 连接池 ↔ DB pool）、CJK 感知的文档↔符号链接边界。
 - **经验笔记** — 记录问题 → 方案；相似问题覆盖而非重复；笔记仅在检索命中时返回。笔记数量有界：容量随项目规模伸缩（钳制在 100–2000），超限时淘汰最旧的笔记。**覆盖阈值收紧为双向 0.7 重叠**（原 0.6）；**经验 `problem` 字段现参与 CJK 短语加分**，提升长尾问句召回。
-- **v0.5 分层 insight 记忆（教训 / 决策 / 流程）** — 一个 `insight` 实体贯穿三级：`task`（任务私有草稿，存 `tasks.json`）、`project`（`.dsh-project-memory/insights.json`）、`global`（`~/.config/dsh-project-memory/global.json`）。`save_lesson` 三级可写；去重采用双向 token overlap ≥ 0.7（合并）外加 0.65–0.7 近重复强化带；**提升 = scope 字段变更而非复制**——同一 insight 被 2 个任务命中升 project、3+ 升 global。归档为软删（`archived`），容量/衰减只清归档区；写盘前过滤密钥/token 形态内容。LLM **反思默认关闭**，且只产任务级草稿（`source: reflect`，触发于任务切走/归档时）。面板新增 Task / Project / Global 记忆视图：审核、提升/降级、归档/恢复、删除、编辑与新建表单（procedure 可带"作为 Skill"触发关键词）。旧 `experience.json` 笔记**非破坏**导入 `insights.json` 一次。所有 kind 都可带 authored `trigger`：**只有 `when` 能触发**，`guard` 只能收窄，`prevents` 说明不知道这条会做错什么。`when.ops` 是从工具调用本身解析出的归一动作 id（`file-write` / `file-delete` / `git-commit` / `release` / `npm-publish` / `render-doc` / `run-bench` …），`when.writes` 是这一步**要写**的文件，`when.intents` 是**剥离引号/路径/文件名之后**的人类意图词。命中即**在动手前**确定性注入。旧字段 `keywords`/`symbols`/`actions`/`paths`/`scope` 会在内存里自动迁移（actions→ops、具体路径→writes、keywords→intents，扩展名与泛名 glob、死 action 值一律丢弃）；迁移后**没有任何可触发成员**的条目不再被推送，用 `npm run selfcheck:triggers` 看是哪些。
+- **v0.5 分层 insight 记忆（教训 / 决策 / 流程）** — 一个 `insight` 实体贯穿三级：`task`（任务私有草稿，存 `tasks.json`）、`project`（`.dsh-project-memory/insights.json`）、`global`（`~/.config/dsh-project-memory/global.json`）。`save_lesson` 三级可写；去重采用双向 token overlap ≥ 0.7（合并）外加 0.65–0.7 近重复强化带；**提升 = scope 字段变更而非复制**——同一 insight 被 2 个任务命中升 project、3+ 升 global。归档为软删（`archived`），且**被使用会记账**：衰减按 `lastHitAt` / `updatedAt` / `createdAt` 排活跃度，而 0.5.8 起注入与 `query_memory` 命中都会写 `hitCount` + `lastHitAt`——此前 `lastHitAt` 只在"模型又写了一条相近知识"时更新，于是一条天天被注入、却从没人重写的条目会在 `decayDays`（90）后被归档，尽管它是这个项目里用得最多的记忆。容量淘汰先删最不活跃的；写盘前过滤密钥/token 形态内容。LLM **反思默认关闭**，且只产任务级草稿（`source: reflect`，触发于任务切走/归档时）。面板新增 Task / Project / Global 记忆视图：审核、提升/降级、归档/恢复、删除、编辑与新建表单（procedure 可带"作为 Skill"触发关键词）。旧 `experience.json` 笔记**非破坏**导入 `insights.json` 一次。所有 kind 都可带 authored `trigger`：**只有 `when` 能触发**，`guard` 只能收窄，`prevents` 说明不知道这条会做错什么。`when.ops` 是从工具调用本身解析出的归一动作 id（`file-write` / `file-delete` / `git-commit` / `release` / `npm-publish` / `render-doc` / `run-bench` …），`when.writes` 是这一步**要写**的文件，`when.intents` 是**剥离引号/路径/文件名之后**的人类意图词。命中即**在动手前**确定性注入。旧字段 `keywords`/`symbols`/`actions`/`paths`/`scope` 会在内存里自动迁移（actions→ops、具体路径→writes、keywords→intents，扩展名与泛名 glob、死 action 值一律丢弃）；迁移后**没有任何可触发成员**的条目不再被推送，用 `npm run selfcheck:triggers` 看是哪些。
 - **流式 TF + IDF 缓存** — 查询路径按存储版本缓存 IDF（词逆频率）；命中时单次流式遍历 20k 条目（5k 文件）为 p50 2.6 ms / p95 5.4 ms，4k 条目（1k 文件）为 p50 0.6 ms / p95 1.6 ms，零中间对象。只有**真正脏了**的写入才递增版本号并清空缓存——无变更时 `save()` 在碰盘前直接返回，因此 15 秒一轮的 watch 轮询不会把查询刚建好的 IDF 缓存清掉。
 - **无锁同步事务** — 不采用锁：所有写入（index / watch / remember / forget / watch_repo）统一走同步事务 `store.commit(fn)`，fn 成功后才一次落盘；JS 单线程事件循环保证事务间不交错，`remember`/`forget` 不会被 watch 重索引阻塞排队。全部写入在**进程内**串行；CAS 幂等更新保证同一文件的重复写入不会写坏。但这里**没有跨进程文件锁**——请勿让多个 dsh 实例同时写同一项目存储（见「设计」的一致性一节）。
 - **依赖极简** — 纯 JavaScript；唯一运行时依赖是 `pdfjs-dist`（PDF 文本提取），无需原生构建。
@@ -161,6 +161,8 @@ dsh plugin --profile web add /path/to/dsh-project-memory.tgz
   tasks.json       TaskBridge 任务实体（跨会话）
   binding.json     当前会话 ↔ 任务绑定
   insights.json    v0.5 项目级 insights（教训/决策/流程）；v0.4 经验笔记非破坏导入一次
+  injection-audit.jsonl   每次真实注入一行（注入了什么 / 为什么 / 丢了什么 / 额度）
+  admission-shadow.jsonl  **每步**一行，全部被评分的候选 + 特征（离线重放、训练样本）
 ```
 
 v0.2.0 之前创建的库（单文件 `entries.json` / `index.json`）在首次加载时自动幂等迁移。同一个 dsh 进程内，所有工具调用共享每个项目的单一内存 store 实例，热路径索引只写发生变化的那一个分片。
@@ -298,11 +300,13 @@ TaskPanel (Container)
 | `autoContext.gateCooldownSteps` | 2 | **准入旋钮**：两次*条目*注入之间至少隔几步（常驻任务卡不受限——它是状态快照，内容变了就该更新）。这是"别频繁注入"的主旋钮 |
 | `autoContext.maxItemsPerSession` | 12 | 每会话条目注入条数硬上限；预算是上限不是目标，用尽后条目通道持续沉默 |
 | `autoContext.maxItemCharsPerSession` | 4000 | 同上，按字符计 |
-| `autoContext.hintMinCoverage` | 0.3 | 提示通道的**绝对**下限：条目覆盖了查询多少 IDF 加权信息量。只用相对阈值分不出"有信号"和"矮子里拔将军"（实测无关条目也拿 `relative:1.00`） |
+| `autoContext.hintMinCoverage` | 0.45 | 提示通道的**绝对**下限：条目覆盖了查询多少 IDF 加权信息量。只用相对阈值分不出"有信号"和"矮子里拔将军"（实测无关条目也拿 `relative:1.00`）。0.5.8 从 0.30 上调：真实 43 条 store 上对照组以 cov 0.32~0.35 注入了 3 条无关提示——同源语料会把 IDF 分辨力拉平 |
 | `autoContext.hintMinMatched` | 2 | 提示还必须至少共享这么多个词：单个通用词（"插件"）不构成证据 |
 | `autoContext.hintMinSupport` | 0.15 | 通道级沉默：查询里能在语料中找到对应的词占比低于此值时，提示通道本轮整体不出声——否则一句只碰巧共享一个词的长句子会报出 `cov:1.00` |
 | `autoContext.legacyScope` | `filter` | 旧 `trigger.scope` 的处理：`filter` 保留旧语义，`ignore` 丢弃。`npm run selfcheck:triggers` 会列出 scope 值与项目画像 tag 空间不可能相交的条目 |
 | `autoContext.auditLog` | true | 每次**真实**注入往 `<root>/.dsh-project-memory/injection-audit.jsonl` 追加一行（注入了什么、为什么命中、丢了什么、会话额度快照）；超过 `auditMaxBytes`（`262144`）轮转 `.1`。任何 IO 失败都静默，绝不影响宿主请求 |
+| `autoContext.shadowLog` | true | **每步**（含什么都没注入的步）往 `admission-shadow.jsonl` 追加一行：本步全部被评分的候选 + 判据特征（`rel` / `coverage` / `matched` / `support` / `terms` / `decision`）+ 场景（`query` / `ops` / `writes`）。它让"换个阈值会怎样"可以在真实历史上离线回答（`decision` 直接指出每条候选卡在哪一关）。超过 `shadowMaxBytes`（`2097152`）轮转。只写盘，不进 prompt、不花 token |
+| `autoContext.shadowMaxBytes` | 2097152 | `admission-shadow.jsonl` 的轮转上限 |
 
 ### 注入的准入化（为什么它保持安静）
 
@@ -313,7 +317,7 @@ TaskPanel (Container)
 - **相对分 + 绝对下限**。提示通道要同时满足相对分、IDF 加权覆盖率下限、以及至少两个共同词——`relative:1.00` 也会出现在和这一步毫无关系的条目上。
 - **频率有上限**。每 `gateCooldownSteps` 步最多一次条目注入，每会话还有条数与字符上限；常驻任务卡不受限（它是快照），预算是上限不是目标。
 - **前缀缓存纪律**。注入以 user 消息追加在历史尾部，缓存前缀永不被改写；它带来的是常驻的 cache-read token，不是缓存失效；没有任何内容被原地改写。
-- **可审计**。每次真实注入往 `injection-audit.jsonl` 落一行（原因、被丢弃的候选、会话额度），`npm run eval:injection` 跑 8 个标注场景——当前精确率 1.00 / 召回率 1.00，对照组零注入。
+- **可审计**。每次真实注入往 `injection-audit.jsonl` 落一行（原因、被丢弃的候选、会话额度）；`admission-shadow.jsonl` 再**每步**落一行（包括"正确地什么都没注入"的步），带全部候选的特征与卡在哪一关。后一个文件才是"阈值问题可以离线回答、而不是重跑 agent"的前提。`npm run eval:injection` 在**合成**池上跑 8 个标注场景——当前精确率 1.00 / 召回率 1.00，对照组零注入；那个池子是 CI 基线，不是你数据的证据。把同一套 harness 指向你自己的 store（`--store`），对照组就变成**硬闸门**（失守则退出码非 0）——0.45 这条底线就是这么选出来的，你也可以用 `--hint-cov <n>` 换一条底线重放。
 
 ### 功能开关
 
@@ -351,9 +355,10 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test                    # 331 项测试（核心 184 + TaskBridge 16 + insight-store 11 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 9 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 14 + insight-derive 7 + readiness-eval 6 + ops 6 + injection-audit 6 + injection-budget 5 + injection-scenarios 6 + bugfix-0.5.7 18）
-npm run eval:injection      # 场景 P/R：命中 14/14、假阳性 0、对照组零注入
-npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的
+npm test                    # 335 项测试（核心 184 + TaskBridge 16 + insight-store 12 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 9 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 14 + insight-derive 7 + readiness-eval 7 + ops 6 + injection-audit 8 + injection-budget 5 + injection-scenarios 6 + bugfix-0.5.7 18）
+npm run eval:injection      # 合成池上的场景 P/R：命中 14/14、假阳性 0、对照组零注入
+npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
+npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）
 npm run bench -- /你的/项目路径   # 对任意项目量索引/查询性能，不需要 dsh
 ```
 

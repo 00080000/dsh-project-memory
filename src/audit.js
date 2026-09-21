@@ -14,6 +14,12 @@ import path from 'node:path'
 export const AUDIT_FILE = 'injection-audit.jsonl'
 const DEFAULT_MAX_BYTES = 256 * 1024
 
+// 影子记录：与主审计**分开一个文件**。主审计只记"真的注入了"的步，静默步（包括对照组那种
+// "本该零注入"的步）完全不落痕，于是日志回答不了"换个阈值/换个判据会怎样"。影子记录每步都写，
+// 带全部候选的特征与判据结果，用来 (a) 离线重放任一阈值、(b) 攒"特征 → 该不该注入"的训练样本。
+export const SHADOW_FILE = 'admission-shadow.jsonl'
+const DEFAULT_SHADOW_MAX_BYTES = 2 * 1024 * 1024
+
 /** 审计配置：默认开（观测是这个插件唯一的仪表盘），显式 `auditLog: false` 才关。 */
 export function cfgAudit(config) {
   const c = (config && config.autoContext) || {}
@@ -25,6 +31,63 @@ export function cfgAudit(config) {
 
 export function auditFileFor(memoryDir) {
   return path.join(memoryDir, AUDIT_FILE)
+}
+
+/** 影子记录配置：默认开（它只写盘、不进 prompt、不花 token），显式 `shadowLog: false` 才关。 */
+export function cfgShadow(config) {
+  const c = (config && config.autoContext) || {}
+  return {
+    enabled: c.shadowLog !== false,
+    maxBytes: typeof c.shadowMaxBytes === 'number' && c.shadowMaxBytes > 0 ? c.shadowMaxBytes : DEFAULT_SHADOW_MAX_BYTES,
+  }
+}
+
+export function shadowFileFor(memoryDir) {
+  return path.join(memoryDir, SHADOW_FILE)
+}
+
+/**
+ * 一步的影子记录（纯函数，可单测）。与主审计的差别只有两点，但都是关键：
+ *  - **每步都写**（含零注入的静默步与对照组），所以"没注入"也留下了可复盘的事实；
+ *  - 带**全部候选**的判据特征（cov/matched/support/relative）与场景（query/ops/writes），
+ *    所以能离线回答"阈值换成 0.40 会注入什么"、并攒出"特征 → 该不该注入"的样本。
+ * @param {object} input { sessionId, root, step, query, ops, writes, reasons, candidates, silence }
+ */
+export function shadowRecordFrom(input) {
+  const reasons = Array.isArray(input.reasons) ? input.reasons : []
+  const candidates = Array.isArray(input.candidates) ? input.candidates : []
+  return {
+    at: new Date().toISOString(),
+    session: input.sessionId || null,
+    root: input.root || null,
+    step: typeof input.step === 'number' ? input.step : null,
+    // 人类消息截断保存：没有它就判不了"这次注入该不该"——标签要能回放到当时的场景。
+    query: typeof input.query === 'string' ? input.query.slice(0, 300) : '',
+    ops: (Array.isArray(input.ops) ? input.ops : []).slice(0, 12),
+    writes: (Array.isArray(input.writes) ? input.writes : []).slice(0, 12),
+    injected: reasons.map((r) => ({ id: r.id, channel: r.channel, why: r.why })),
+    candidates,
+    silence: input.silence || null,
+  }
+}
+
+/**
+ * 追加一行影子记录。返回是否写入成功（仅供测试断言）。与主审计同约定：任何异常一律吞掉，
+ * 绝不影响宿主请求。
+ */
+export function appendShadowAudit(memoryDir, record, cfg) {
+  const c = cfg || {}
+  if (c.enabled === false) return false
+  if (!memoryDir || !record) return false
+  try {
+    mkdirSync(memoryDir, { recursive: true })
+    const file = shadowFileFor(memoryDir)
+    rotateIfOversized(file, c.maxBytes || DEFAULT_SHADOW_MAX_BYTES)
+    appendFileSync(file, `${JSON.stringify(record)}\n`)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**

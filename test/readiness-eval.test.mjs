@@ -158,7 +158,7 @@ for (const row of table) {
   )
 }
 
-const COVERAGES = [0, 0.3, 0.6, 0.9]
+const COVERAGES = [0, 0.3, 0.45, 0.6, 0.9]
 const covTable = COVERAGES.map((c) => sweep({ hintMinCoverage: c }, c.toFixed(2)))
 console.log('\n  hintMinCoverage precision  recall   missed')
 for (const row of covTable) {
@@ -173,7 +173,7 @@ for (const row of covTable) {
   ok(`eval set：${CASES.length} 条标注 case（召回 + 精度双向约束）`)
 }
 
-// ---- 2. 出厂默认（signalMinRatio=0.5 + hintMinCoverage=0.3）必须零漏零误 ----
+// ---- 2. 出厂默认（signalMinRatio=0.5 + hintMinCoverage=0.45）必须零漏零误 ----
 {
   const shipped = sweep({}, 'shipped')
   assert.equal(shipped.recall, 1, `漏注入：${shipped.misses.join(', ')}`)
@@ -213,7 +213,21 @@ for (const row of covTable) {
   const shipped = sweep({}, 'shipped')
   assert.equal(shipped.recall, 1, `出厂门槛不该漏：${shipped.misses.join(', ')}`)
   assert.equal(shipped.precision, 1)
-  ok('出厂绝对门槛（coverage 0.3 + 至少 2 词）：零漏零误')
+  ok('出厂绝对门槛（coverage 0.45 + 至少 2 词）：零漏零误')
+}
+
+// ---- 7. 出厂底线不得回退到 0.30 那一档 ----
+// 合成标注集对 0.30~0.60 这一整段不敏感（表里 precision/recall 全是 1.00），所以它保不住
+// 这个值。真正的反例在真实 store 上：`--store .dsh-project-memory/insights.json` 的对照组
+// 场景「改 pptx 时间戳」在 0.30 下会注入 3 条无关提示（cov 0.32~0.35），0.45 归零。
+// 真实 store 进不了 CI（.gitignore），于是把结论钉在这里。
+{
+  const shipped = cfgEngine({ insight: {}, autoContext: {} })
+  assert.ok(
+    shipped.hintMinCoverage >= 0.45,
+    `hintMinCoverage 回退到 ${shipped.hintMinCoverage}：真实 store 的对照场景会重新失守`,
+  )
+  ok(`棘轮：出厂 hintMinCoverage=${shipped.hintMinCoverage}（≥0.45，真实 store 对照组在 0.30 下失守）`)
 }
 
 console.log(`\nreadiness-eval tests: ${passed} passed`)
