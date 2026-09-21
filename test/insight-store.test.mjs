@@ -16,6 +16,7 @@ import {
   overlapOf,
   pruneItems,
   applyDecay,
+  recordHit,
   containsSecretFields,
 } from '../src/insight-store.js'
 import { ensureGlobalInit } from '../src/global-seed.js'
@@ -187,6 +188,39 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
   const store2 = new ProjectMemoryStore(store.dir).load()
   assert.equal(store2.insightItems().length, 0)
   ok('归档软删 + 衰减 + 容量溢出只删归档区')
+}
+
+// --- 8b. 使用记账：注入/检索命中算活跃度（v0.5.8 修的缺陷） ---
+{
+  // 复现缺陷：条目建于 200 天前、从未被重写（updatedAt 停在创建时），但最近被注入过。
+  // 旧实现判活跃度只看 lastHitAt||updatedAt||createdAt，而 lastHitAt 只由"模型重复写了
+  // 相近知识"写 → 它一路退到 updatedAt，于是天天被注入的条子在 decayDays 后被归档。
+  const now = new Date().toISOString()
+  const old = new Date(Date.now() - 200 * 86400000).toISOString()
+  const items = [
+    { id: 'used', title: '天天被注入但没人重写', confidence: 0.9, hitCount: 12, lastHitAt: now, createdAt: old, updatedAt: old },
+    { id: 'idle', title: '真的没人用', confidence: 0.9, hitCount: 0, createdAt: old, updatedAt: old },
+  ]
+  applyDecay(items, cfgInsight({ insight: { decayDays: 90 } }), now)
+  assert.equal(items[0].archived, undefined, '有命中记录的条目不得被衰减归档')
+  assert.equal(items[1].archived, true, '零活动的条目照旧归档')
+
+  // recordHit：只记存在的非归档条目；project 与 global 两条路径都记
+  const { store, globalFile } = newProject()
+  store.replaceInsightItems([
+    { id: 'p1', title: 'p1', hitCount: 0 },
+    { id: 'p2', title: 'p2', hitCount: 3, archived: true },
+  ])
+  const gs = new GlobalStore(globalFile).load()
+  gs.doc.items.push({ id: 'g1', title: 'g1', hitCount: 0 }, { id: 'g2', title: 'g2', hitCount: 0 })
+  gs.commit(() => 0)
+  const n = recordHit({ store, globalStore: gs, ids: ['p1', 'p2', 'g1', 'nope'], nowIso: now })
+  assert.equal(n, 2, '只记存在的非归档条目（p2 已归档、nope 不存在）')
+  assert.equal(store.insightItems()[0].hitCount, 1)
+  assert.equal(store.insightItems()[0].lastHitAt, now)
+  assert.equal(gs.items().find((i) => i.id === 'g1').hitCount, 1)
+  assert.equal(gs.items().find((i) => i.id === 'g2').hitCount, 0)
+  ok('使用记账：注入/命中写 hitCount+lastHitAt，活跃条目不再被衰减归档')
 }
 
 // --- 9. 降级 project → task ---
