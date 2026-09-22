@@ -1,6 +1,6 @@
 {
   "name": "@yolk_vat-y/dsh-project-memory",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "description": "Persistent project memory for dsh agents: index docs (PDF/Markdown/text) and code symbols into a searchable per-workspace store, recall them with cited sources, and keep experience entries (problems -> solutions) searchable on demand.",
   "type": "module",
   "main": "src/index.js",
@@ -18,7 +18,7 @@
     "url": "https://github.com/00080000/dsh-project-memory.git"
   },
   "scripts": {
-    "test": "node test/run-test.mjs && node test/taskbridge.test.mjs && node test/insight-store.test.mjs && node test/reflection-pipeline.test.mjs && node test/auto-inject.test.mjs && node test/insight-actions.test.mjs && node test/host-contract.test.mjs && node test/llm-route.test.mjs && node test/doc-index.test.mjs && node test/client-hints.test.mjs && node test/recall.test.mjs && node test/readiness.test.mjs && node test/insight-derive.test.mjs && node test/readiness-eval.test.mjs && node test/ops.test.mjs && node test/injection-audit.test.mjs && node test/injection-budget.test.mjs && node test/injection-scenarios.test.mjs && node test/bugfix-0.5.7.test.mjs",
+    "test": "node test/run-test.mjs && node test/taskbridge.test.mjs && node test/insight-store.test.mjs && node test/reflection-pipeline.test.mjs && node test/auto-inject.test.mjs && node test/insight-actions.test.mjs && node test/host-contract.test.mjs && node test/llm-route.test.mjs && node test/doc-index.test.mjs && node test/client-hints.test.mjs && node test/recall.test.mjs && node test/readiness.test.mjs && node test/insight-derive.test.mjs && node test/readiness-eval.test.mjs && node test/ops.test.mjs && node test/injection-audit.test.mjs && node test/injection-budget.test.mjs && node test/injection-scenarios.test.mjs && node test/bugfix-0.5.7.test.mjs && node test/client-icons.test.mjs && node test/client-slash.test.mjs && node test/workflow-command.test.mjs && node test/client-session-id.test.mjs",
     "eval:injection": "node test/injection-scenarios.test.mjs",
     "selfcheck:triggers": "node test/injection-scenarios.test.mjs --selfcheck",
     "bench": "node scripts/bench.mjs",
@@ -92,10 +92,7 @@
     },
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-primitives",
-        "@deepseek-ai/dsh-client-ui-slots",
-        "@deepseek-ai/dsh-client-store"
+        "@deepseek-ai/dsh-client-locale"
       ],
       "platform": "web"
     }
