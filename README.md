@@ -9,14 +9,13 @@
 
 A persistent **project development memory** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) agents. Built specifically for project development, natively integrated with dsh's task system: task lists and files read during a session are automatically persisted as cross-session task records, with tasks ↔ files linked — workflows can be switched and resumed, no need to re-scope the whole project, solving context loss. Documents (PDF/Markdown/txt) and code symbols are stored separately per workspace; documents are automatically cross-linked to the code symbols they mention. Experience notes (problem → solution) are automatically deduplicated, preventing repeated mistakes. All data is stored per project on disk, survives session compaction and handover; recalls include `path:line` citations for source verification. Only one dependency, no vector DB, no native builds.
 
-> The plugin keeps a compact project **memory** on disk, with every entry pointing to a concrete file and line — the agent can reorient quickly instead of re-reading the whole project. Tasks and experience persist across session compactions and handovers.
+> The plugin keeps a compact project **memory** on disk, with every entry pointing to a concrete file and line — the agent can reorient quickly instead of re-reading the whole project.
 
-![alt text](docs/images/image.png)
-The workflow panel is collapsible, automatically adapts to dsh and theme plugin styles, and offers four card style options to switch between.
-![alt text](docs/images/image-4.png)
+![Task panel: task list, step progress, and involved files](docs/images/image.png)
+
 ## Features
 
-- **TaskBridge: cross-session development tasks** — the session's todo list and the files it touches are persisted as durable per-project task entities, so a workflow can be switched and resumed without re-scoping the project. Associated files are kept in recency-weighted order (a read never outranks a written file), so a resumed session sees where to look first. New sessions continue through `list_tasks` → `select_task`. Work delegated to subagents does not create tasks (see Design tradeoffs). Auto-sync needs a dsh build with session events; on older hosts the task tools still work as a plain record list.
+- **TaskBridge: cross-session development tasks** — the session's todo list and the files it touches are persisted as durable per-project task entities, so a workflow can be switched and resumed without re-scoping the project. Associated files are kept in recency-weighted order (a read never outranks a written file), so a resumed session sees where to look first. New sessions continue through `list_tasks` → `select_task`. Work delegated to subagents does not create tasks (see Known limits and boundaries). Auto-sync needs a dsh build with session events; on older hosts the task tools still work as a plain record list.
 - **Task panel in dsh web (v0.4.2+)** — draggable cards show a task's steps and files, collapse to a mini-bar, or hide entirely. The panel stays hidden until summoned, syncs in the background on session switch, and does not reopen itself after a page refresh. Render errors are contained, so a panel failure cannot take down the host.
 - **Panel editing and themes (v0.4.2+)** — bound cards allow inline editing of title and steps and status cycling; unbound cards are read-only. Four visual themes change material, geometry, typeface and density only; colours follow the host.
 - **Bidirectional task-list sync (v0.4.2+)** — binding a task pushes its steps to the host task list, and panel edits write back through the same code path as model updates. Set `tasklist.syncHostOnAdopt` to false to opt out.
@@ -29,70 +28,10 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 - **Experience notes** — problems → solutions, deduplicated by overlap rather than repeated, bounded by project size, and returned only when a search matches.
 - **Tiered insight memory (lessons / decisions / procedures, v0.5)** — one entity across task, project and global scope. Near-duplicates merge or reinforce; promotion moves an entry between scopes rather than copying it. Use is recorded, so decay and capacity rank by activity rather than by age alone. LLM reflection is off by default and writes task-level drafts only. The panel exposes a per-scope memory view for reviewing and editing entries.
 - **Triggered injection** — an insight may carry an authored trigger: only `when` triggers, `guard` narrows it, and `prevents` records what breaks without the entry. Corpus text can never trigger an injection; the statistical channel is gated separately.
-- **Streaming TF + IDF caching** — the query path caches term weights per store version, scoring 20k entries in p50 2.6 ms / p95 5.4 ms and 4k entries in p50 0.6 ms / p95 1.6 ms. Only a real write drops the cache, so the watch poll never clears one a query just built.
+- **Streaming TF + IDF caching** — the query path caches term weights per store version (measured numbers under Performance). Only a real write drops the cache, so the watch poll never clears one a query just built.
 - **Lock-free sync transactions** — all writes go through a synchronous transaction, so `remember` and `forget` never queue behind re-indexing. The lock is in-process: avoid pointing two dsh instances at the same store.
 - **Minimal dependencies** — pure JavaScript; one runtime dependency for PDF text extraction, no native builds.
 - **Negligible overhead** — memory work is in-process; the bottleneck is document extraction and disk I/O, not scoring.
-
-## Performance
-
-### Synthetic Benchmark (Node 24.19, WSL2 on 20 vCPU, Linux file system)
-
-| Scenario | Scale | Measured |
-|----------|-------|----------|
-| Full cold index | 5,000 files / 20k entries | 269 ms avg (p50 267) |
-| Cold load | 5,000 files | 40 ms |
-| Hot lazy re-index (single file) | 5k files | p50 2.4 ms / max 5.5 ms |
-| query_memory (cached) | 5k files / 20k entries | p50 2.6 ms / p95 5.4 ms |
-| query_memory (cached) | 1k files / 4k entries | p50 0.6 ms / p95 1.6 ms |
-| Full cold index | 10,000 files / 40k entries | 551 ms avg (p50 528) |
-| Cold load | 10,000 files | 90 ms |
-| Hot lazy re-index (single file) | 10k files | p50 5.4 ms / max 9.2 ms |
-
-> Synthetic benchmark: generated code (~4–5 symbols/file), Node 24.19 on WSL2 / 20 vCPU / Linux file system, measured 2026-09-14. Reproduce with `npm run bench:synthetic -- 5000` (harness: `scripts/bench-synthetic.mjs`). Measures pure indexing overhead without LLM calls. query_memory uses the IDF cache + precomputed searchText; the first query after a write rebuilds IDF (**106 ms at 40k entries**, 57 ms at 20k, 12 ms at 4k), subsequent queries hit the cache.
-
-### Real Project Storage
-
-| Project | Files | Entries | Store Size | Per Entry |
-|---------|-------|---------|------------|-----------|
-| Java Spring Boot backend | 1,254 | 7,335 | 6.7 MB | ~0.9 KB |
-| Vue 3 + Vite frontend | 289 | 2,141 | 1.0 MB | ~0.5 KB |
-
-> Real projects (Java + Vue), tested on Linux file system (Node 24). Real project entries are smaller than synthetic benchmarks due to lower symbol density and shorter declarations.
-
-### Reproduce it on your own project
-
-Rather than asking you to trust the numbers above, the measurement itself ships with the repository **and with the published npm package** (`scripts/` is part of the tarball). It needs **no dsh instance, no network and no model calls**, and it never touches your project's own store — results go to a temp directory and are removed when it finishes:
-
-```bash
-npm run bench -- /path/to/your/project
-# or, with options:
-node scripts/bench.mjs /path/to/your/project [--json] [--samples 100] [--no-pdf] [--keep]
-```
-
-It reports the cold index split into read+hash / extract / commit, cold load, IDF rebuild, cold and hot query latency (p50/p95/max over 100 sampled queries through the shipped scorer), single-file hot re-index, store size and bytes per entry. Example — our internal Vue project (289 files / 2,141 entries, Node 24, 20 CPU, Linux):
-
-```
-cold index   253 ms   (read+hash 9 ms · extract 229 ms · commit 13 ms)   ← 2nd, warm-cache run
-store        1.10 MB · 538 bytes/entry · cold load 4.6 ms
-hot query    p50 0.80 ms · p95 1.35 ms          (2,141 entries)
-re-index 1 file  p50 0.33 ms
-```
-
-Two caveats we would rather state than hide: `read+hash` depends on the OS page cache — on that corpus the first run spent 787 ms and the second 253 ms, so say which run you quote — and **real projects score slower than the synthetic table above** — on a 3,000-file slice of a large TypeScript repository (15,594 entries) hot queries were p50 7.5 ms, because real declaration text is longer than generated stubs. Pass `--queries your-queries.json` to run the same labeled-set method (hit@5 / hit@10 / MRR) against your own project.
-
-## How it works
-
-The design follows four principles:
-
-- **Volatility** — context is ephemeral; it is lost when a session is compacted.
-- **Persistence** — the **memory** is stored on disk and survives compaction and new sessions.
-- **Compactness** — the code layer stores one declaration line per symbol, so code-heavy projects stay near **0.5% of the source** (8.8 MB of source → 49 KB of index in the example project), and **recall** replaces re-reading the full file. The document layer is heavier by design: each chunk keeps a ≤300-char injected `summary`, a bounded `terms` set covering the whole chunk for retrieval, and a precomputed `searchText`. Measured on a docs-only corpus (179 chunks / 225 KB of Markdown): `terms` ≈ **27.5%** of source and the on-disk store ≈ **166%** of source — so on doc-heavy projects budget for roughly the docs themselves, not 0.5%.
-- **Verifiability** — **recalls** carry a `path:line` citation where applicable, so the agent can confirm details against the source.
-
-Building the **memory** does not require an upfront scan: files are memorized as the model reads them, so the **memory** grows to cover exactly what has been worked with. Re-reading a file that has not changed is a no-op (content hash), so the **memory** stays fresh with minimal ongoing overhead.
-
-The store is per-project and follows the codebase: changed files are re-extracted by content hash, deleted files are removed. Experience notes are retrieval-only, so accumulation does not affect context.
 
 ## Installation
 
@@ -146,6 +85,19 @@ registers **only `/tasks`** and every other action rides it as a sub-verb driven
 menu duplication is one row. Typing `/tasks` + Enter still executes immediately; typing an argued line
 such as `/tasks switch x` is no longer recognised as a command — use the card buttons.
 
+## How it works
+
+The design follows four principles:
+
+- **Volatility** — context is ephemeral; it is lost when a session is compacted.
+- **Persistence** — the **memory** is stored on disk and survives compaction and new sessions.
+- **Compactness** — the code layer stores one declaration line per symbol, so code-heavy projects stay near **0.5% of the source** (8.8 MB of source → 49 KB of index in the example project), and **recall** replaces re-reading the full file. The document layer is heavier by design: each chunk keeps a ≤300-char injected `summary`, a bounded `terms` set covering the whole chunk for retrieval, and a precomputed `searchText`. Measured on a docs-only corpus (179 chunks / 225 KB of Markdown): `terms` ≈ **27.5%** of source and the on-disk store ≈ **166%** of source — so on doc-heavy projects budget for roughly the docs themselves, not 0.5%.
+- **Verifiability** — **recalls** carry a `path:line` citation where applicable, so the agent can confirm details against the source.
+
+Building the **memory** does not require an upfront scan: files are memorized as the model reads them, so the **memory** grows to cover exactly what has been worked with. Re-reading a file that has not changed is a no-op (content hash), so the **memory** stays fresh with minimal ongoing overhead.
+
+The store is per-project and follows the codebase: changed files are re-extracted by content hash, deleted files are removed. Experience notes are retrieval-only, so accumulation does not affect context.
+
 ## Design
 
 ```
@@ -179,99 +131,9 @@ TaskPanel (Container)
 └── TaskComponents   (MiniBar, TaskCard — presentational only)
 ```
 
-## Design tradeoffs
+The workflow panel is collapsible, automatically adapts to dsh and theme plugin styles, and offers four card style options to switch between.
 
-These are deliberate scope choices.
-
-### 1. Synchronous lock-free transactions over async locks
-
-**We do:** All writes go through `store.commit(fn)` — a synchronous in-process transaction. The callback `fn` performs all validation and mutations; only on success is the result atomically written to disk. The JS event loop guarantees no interleaving. CAS (`applyFileUpdate`) makes concurrent writes idempotent.
-
-**We don't:** Async mutexes, file locks, or multi-process coordination.
-
-**Why:** DSH runs on Cordis, which is single-process by design. Adding locks would complicate the hot path (every `remember`/`forget`/`index_doc` call) for a scenario (multi-process DSH) that would require a breaking ecosystem change. Synchronous transactions keep the hot path at ~2 ms median with zero contention overhead in practice.
-
-### 2. Watch: compute outside, commit inside
-
-**We do:** Heavy work (mtime/hash/scan/parse/PDF extraction) runs outside the transaction; a single `commit` applies all changes atomically. On failure, the snapshot rolls back so the next poll retries automatically.
-
-**We don't:** Hold a lock during parsing, or use `fs.watch` events.
-
-**Why:** PDF extraction and large-file parsing take time — holding a lock would block `remember`/`forget`/`query_memory`. Polling with mtime+content-hash is platform-agnostic (works on network drives, Docker volumes, WSL) and avoids the "double fire / missed events" nightmare of `fs.watch`.
-
-### 3. Corrupt files are quarantined, not auto-repaired
-
-**We do:** On JSON parse failure, the bad file is renamed to `*.corrupt`, an error is logged, and that file's store starts fresh. The rest of the store remains intact.
-
-**We don't:** Write-ahead logs, embedded databases (SQLite/LMDB), or automatic partial recovery.
-
-**Why:** A corrupted shard means *one source file* has a bad index — quarantining it costs near zero. A WAL or embedded DB adds a heavy dependency, increases binary size, and introduces new failure modes (lock contention, corruption of the WAL itself). The tradeoff: lose one file's index vs. add 500 KB+ of native code.
-
-### 4. No vector embeddings, no semantic search at query time
-
-**We do:** BM25 with CJK phrase boost (3+ chars ×1.5 on title/keywords), synonym expansion (bidirectional table), field weighting (title ×5), and experience-layer phrase boost. All at query time, zero LLM calls.
-
-**We don't:** Vector embeddings, dense retrieval, rerankers, or hybrid search.
-
-**Why:** Vectors require an embedding model (local = heavy, remote = latency + cost + privacy), a vector index (HNSW/IVF = memory + build time), and reranking (another LLM call). For the queries this plugin targets, lexical BM25 is already sufficient and measurable: on our benchmark suite (29 queries over a real Vue project) file-level hit@5 is **96.6%**, and 28 of the 29 are exact symbol lookups that lexical search answers essentially always. Whole-chunk `terms` took document-term coverage from **27.3% to 100%** while queries that already worked kept their ranking (MRR **0.958** vs **0.955**). Those figures come from an internal Vue project with a hand-labeled 29-query set, so they are not reproducible outside it — but the **method** now ships as `scripts/bench.mjs --queries <your-set.json>`, so you can run the identical measurement on your own project. The marginal gain from semantic search doesn't justify the 10x complexity/cost increase.
-
-### 5. Indexing is deterministic and model-free
-
-**We do:** Derive keywords with a rule (title-weighted top terms) and build a whole-chunk `terms` set — both deterministic and reproducible. Doc↔symbol links surface English symbol names from Chinese queries, and CJK tokenization keeps cross-language hits working. With `llmQueryExpansion: false`, queries never touch the LLM.
-
-**We don't:** Call a model at index time to translate or paraphrase a document, and we don't translate queries at search time.
-
-**Why:** An index-time model call makes indexing slower, non-deterministic and unverifiable — the same document can index differently on two runs. Query-time translation adds latency and a hard failure mode (a bad translation means zero recall). Rules plus symbol linking cover the common cases, work offline, and keep indexing at zero model calls.
-
-### 6. Model-facing memory: the agent writes, and no human has to be in the loop
-
-**We do:** Treat the agent as a first-class writer. `remember` / `save_lesson` write **any scope at any time** (`task` / `project` / `global`) with no human step, and promotion is deterministic and runs inside the ordinary write path: cross-task token-overlap dedupe accumulates `sourceTaskIds`, then `promoteAllTasksToProject` / `promoteProjectToGlobal` move an entry up once its corroboration counts are met (≥2 tasks for project, ≥ `globalPromoteTasks` — 3 by default — for global). Nothing waits on the task panel: a user who never opens the UI still gets a memory that fills, dedupes and graduates.
-
-**We do (labeling):** Keep inferred content distinguishable from recorded content. The v0.5 `reflection` path (opt-in, **off by default**) is the only writer that infers rather than records: it writes task-scoped drafts stamped `draft: true` / `source: 'reflect'`, and `recall` plus silent injection skip `draft` entries while they remain drafts.
-
-**We don't:** Require human approval for memory to become useful, or make the UI a step in the write path. `draft` is a **provenance label plus a corroboration threshold**, not an approval queue.
-
-**Why:** The agent is the consumer and it is usually headless — memory that only graduates when a human clicks a card is memory that never graduates. Labeling keeps the useful half of the caution (inferred ≠ recorded, and unreviewed single-task inference stays out of the prompt) without taxing the normal path. A draft graduates on corroboration: a second task matching it through the model's own writes, or the model writing the same knowledge at project scope, which links the existing entry instead of duplicating it.
-
-### 7. Full entries returned directly
-
-**We do:** `query_memory` returns complete entries with `path:line` citations. Every hit can be verified against source.
-
-**We don't:** Return a minimal index first, then require a second tool call for details.
-
-**Why:** Returning full entries preserves **verifiability** — the agent sees the exact source line for every claim. It also avoids a round-trip per useful hit. Our entries are already compact (~300-char summary + citation, plus a search-only `terms` field that never enters the prompt); the token cost is lower than a second tool call + context switch.
-
-### 8. Symbol extraction focused on what developers search for
-
-**We do:** Regex-based symbol extraction (functions, classes, methods, interfaces, type aliases) with string/comment masking, multi-line signatures, and cross-file linking by symbol name. For TypeScript/JavaScript projects, an optional L2 enhancement layer uses the TS Compiler API to infer return types, resolve generics, and extract interfaces — all cached by content hash for instant reuse.
-
-**We don't:** Tree-sitter AST parsing, import graphs, call graphs, or full-program type resolution across files.
-
-**Why:** Our regex scanner handles 8 languages with zero dependencies, runs in <1 ms/file, and captures the declarations developers actually search for (names, signatures, generics). The optional TS layer adds semantic depth for TS/JS without native deps. Cross-file linking by name covers the most common "find related code" use case. Full-program analysis would add native binaries, 10x install size, and version fragility — for marginal gain on the remaining 5% of edge cases.
-
-### 9. `forget` by query is aggressive; prefer ID deletion
-
-**We do:** `forget query` deletes all experience notes with ≥0.5 token overlap.
-
-**We don't:** Interactive confirmation, soft-delete/trash, or exact-match-only.
-
-**Why:** Experience notes are low-stakes, high-volume, and retrieval-only. Aggressive deletion prevents stale noise from polluting search. For precision, delete by ID (shown in `query_memory` output).
-
-### 10. TypeScript enhancement is optional, lazy, and cached
-
-**We do:** L2 TS Compiler API enhancement runs async in a priority queue (P0 on `fs/observed`, P1 on `watch`, P2 on `index_repo`), results cached by content hash in `type-cache/`. Zero config — just `npm i -D typescript@5` or `typescript@6`. Falls back to L1 regex if TS absent or disabled.
-
-**We don't:** Mandatory TS, blocking enhancement, or full-program type checking.
-
-**Why:** Mandatory TS would break installs for non-TS projects. Blocking enhancement would stall `index_repo` on large codebases. Full-program checking is 10x slower and memory-heavy. Our design: enhance what's read, cache it, never block the hot path.
-
-### 11. Subagent sessions are out of scope for now
-
-**We do:** Exclude sessions spawned as subagents (`origin: 'subagent'` / `delegationDepth > 0`) from auto-creating or binding a task. Their `todo_write` events do not create tasks, and they inherit no task binding.
-
-**We don't:** Merge a delegated run's steps and files back into the task that spawned it. That is **not designed yet**: there is no parent-link model for delegated work, and the naive version mints one project task per subagent.
-
-**Why:** Every subagent that writes a todo would otherwise create its own task entity, so one fan-out run would flood the task list with ephemeral entries nobody resumes. Excluding them keeps the task list equal to the work the user actually owns. The cost is that a delegation's progress is invisible in the task record; merging it properly (child steps folded into the parent, or a separate delegated-work view) is future work.
+![Four card styles](docs/images/image-4.png)
 
 ## Configuration
 
@@ -293,6 +155,11 @@ These are deliberate scope choices.
 | `watchInterval` | 15 | poll interval (seconds) |
 | `tsPath` | (auto) | optional absolute path to a specific `typescript` install; if omitted, resolves from project cwd → plugin node_modules |
 | `enableTypeScript` | true | set `false` to disable L2 TS enhancement entirely (L1 regex only) |
+
+### Memory and injection knobs
+
+| 键 | 默认值 | 含义 |
+|---|---|---|
 | `insight.*` | dedupOverlap `0.7` · reinforceBand `0.65` · maxProject `100` · maxGlobalProcedures `200` · promoteConfidence `0.7` · globalPromoteTasks `3` · decayDays `90` · `globalFile` (auto) | v0.5 insight dedupe / reinforce / promotion / capacity / archive settings |
 | `reflection.enabled` | false | v0.5 LLM reflection, **draft-only at task level** (fires on task switch-away / archive). `cooldownMs` `1800000`, `maxLessonsPerReflect` `3`, `maxDecisionsPerReflect` `2` |
 | `autoContext.enabled` | true | silent injection wrapper (resident task card + gated items). Inert (full passthrough) until the host exposes a resolvable session cwd; `maxTokens` `400`, `editedMax` `3` (how many recently-written "editing now" files the resident task card shows), `signalMinRatio` `0.5` (a hint must reach half of its layer's top score), `skipEchoSelfTodo` `true` (don't echo the task card back when the model itself maintains the task list with no newer human message; relevant insights still inject), `budgetLog` `off` (budget-drop audit on stderr: `off` silent / `once` at most one line per session / `all` one line per changed dropped set), `reinjectItemsAfter` `0` (cooldown, in pre-steps, before the same insight may be injected again) |
@@ -347,6 +214,66 @@ dsh web --patch ./config.yml
 ```
 
 where `config.yml` contains the same override block.
+
+## Performance
+
+### Synthetic Benchmark (Node 24.19, WSL2 on 20 vCPU, Linux file system)
+
+| Scenario | Scale | Measured |
+|----------|-------|----------|
+| Full cold index | 5,000 files / 20k entries | 269 ms avg (p50 267) |
+| Cold load | 5,000 files | 40 ms |
+| Hot lazy re-index (single file) | 5k files | p50 2.4 ms / max 5.5 ms |
+| query_memory (cached) | 5k files / 20k entries | p50 2.6 ms / p95 5.4 ms |
+| query_memory (cached) | 1k files / 4k entries | p50 0.6 ms / p95 1.6 ms |
+| Full cold index | 10,000 files / 40k entries | 551 ms avg (p50 528) |
+| Cold load | 10,000 files | 90 ms |
+| Hot lazy re-index (single file) | 10k files | p50 5.4 ms / max 9.2 ms |
+
+> Synthetic benchmark: generated code (~4–5 symbols/file), Node 24.19 on WSL2 / 20 vCPU / Linux file system, measured 2026-09-14. Reproduce with `npm run bench:synthetic -- 5000` (harness: `scripts/bench-synthetic.mjs`). Measures pure indexing overhead without LLM calls. query_memory uses the IDF cache + precomputed searchText; the first query after a write rebuilds IDF (**106 ms at 40k entries**, 57 ms at 20k, 12 ms at 4k), subsequent queries hit the cache.
+
+### Real Project Storage
+
+| Project | Files | Entries | Store Size | Per Entry |
+|---------|-------|---------|------------|-----------|
+| Java Spring Boot backend | 1,254 | 7,335 | 6.7 MB | ~0.9 KB |
+| Vue 3 + Vite frontend | 289 | 2,141 | 1.0 MB | ~0.5 KB |
+
+> Real projects (Java + Vue), tested on Linux file system (Node 24). Real project entries are smaller than synthetic benchmarks due to lower symbol density and shorter declarations.
+
+### Reproduce it on your own project
+
+Rather than asking you to trust the numbers above, the measurement itself ships with the repository **and with the published npm package** (`scripts/` is part of the tarball). It needs **no dsh instance, no network and no model calls**, and it never touches your project's own store — results go to a temp directory and are removed when it finishes:
+
+```bash
+npm run bench -- /path/to/your/project
+# or, with options:
+node scripts/bench.mjs /path/to/your/project [--json] [--samples 100] [--no-pdf] [--keep]
+```
+
+It reports the cold index split into read+hash / extract / commit, cold load, IDF rebuild, cold and hot query latency (p50/p95/max over 100 sampled queries through the shipped scorer), single-file hot re-index, store size and bytes per entry. Example — our internal Vue project (289 files / 2,141 entries, Node 24, 20 CPU, Linux):
+
+```
+cold index   253 ms   (read+hash 9 ms · extract 229 ms · commit 13 ms)   ← 2nd, warm-cache run
+store        1.10 MB · 538 bytes/entry · cold load 4.6 ms
+hot query    p50 0.80 ms · p95 1.35 ms          (2,141 entries)
+re-index 1 file  p50 0.33 ms
+```
+
+Two caveats we would rather state than hide: `read+hash` depends on the OS page cache — on that corpus the first run spent 787 ms and the second 253 ms, so say which run you quote — and **real projects score slower than the synthetic table above** — on a 3,000-file slice of a large TypeScript repository (15,594 entries) hot queries were p50 7.5 ms, because real declaration text is longer than generated stubs. Pass `--queries your-queries.json` to run the same labeled-set method (hit@5 / hit@10 / MRR) against your own project.
+
+## Design tradeoffs
+
+- **Synchronous lock-free transactions over async locks** — no async mutexes, file locks, or multi-process coordination: DSH runs on Cordis and single-process is an architectural given, so locking for a rare multi-process case would only slow the hot path (every `remember`/`forget`/`index_doc`); synchronous transactions keep that path at ~2 ms median with zero contention.
+- **Watch: compute outside, commit inside** — no lock is held during parsing and `fs.watch` is not used: parsing and PDF extraction are slow, so a held lock would block queries, while polling with mtime + content hash behaves identically on network drives, Docker volumes, and WSL, with none of `fs.watch`'s duplicate-trigger/missed-event failure modes.
+- **Corrupt shards are quarantined, not repaired** — a shard that fails to parse is renamed `*.corrupt` and only that file is re-indexed, leaving every other shard untouched; no WAL or embedded database: those add 500 KB+ of native dependencies, lock contention, and a new failure mode (a corrupt WAL) to avoid losing a single file's index.
+- **No vector embeddings, no semantic search at query time** — no embedding model, vector index (HNSW/IVF), or reranker: lexical retrieval already answers the queries this plugin targets. On a real Vue project with 29 labelled queries, file-level hit@5 is **96.6%**; whole-chunk `terms` lift document term coverage from **27.3% to 100%** with MRR unchanged (**0.958** vs **0.955**). The marginal gain does not justify 10x the complexity, and the method ships with the code — `scripts/bench.mjs --queries your-queries.json` reproduces the same measurement on your own project.
+- **Indexing is deterministic and model-free** — no model at index time and no translation at query time: the former makes two indexings of one document differ, the latter has a hard failure mode (a wrong translation means zero recall); rules plus symbol links already cover the common cases and work offline.
+- **Model-facing memory: the agent writes, no human in the loop** — no human approval step: the consumer of this memory is the agent, and agents are usually headless, so memory that only promotes when someone clicks a card would never promote at all. `draft` is a provenance marker plus an evidence threshold, not an approval queue — the one inferring writer, `reflection` (off by default), writes task-level drafts only, and drafts never reach recall or injection.
+- **Full entries returned directly** — no "minimal index first, fetch details in a second call": entries are already compact, so returning them whole is both more verifiable and one round-trip cheaper.
+- **`forget` by query is aggressive; use IDs for precision** — no confirmation prompt, recycle bin, or exact-match-only mode: experience notes are low-risk, high-volume, and retrieval-only, so stale noise hurts more than an over-broad delete. For exact deletion use the ID shown by `query_memory`.
+- **TypeScript enhancement is optional, lazy, and cached** — the L2 TS Compiler API runs asynchronously on a priority queue (P0 `fs/observed`, P1 `watch`, P2 `index_repo`) and caches results by content hash; TS is never required and enhancement never blocks: requiring it would make non-TS projects uninstallable, and blocking would stall `index_repo` on large projects. `npm i -D typescript@5|6` is the entire setup, and a missing TS falls back to the L1 regex scanner.
+- **Subagent sessions are out of scope for now**
 
 ## Development (for contributors)
 
