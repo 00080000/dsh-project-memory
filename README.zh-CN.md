@@ -134,12 +134,16 @@ dsh plugin --profile web add /path/to/dsh-project-memory.tgz
 | `select_task` | 将会话绑定到某任务（此后 todo 清单与读文件同步进该任务）。按 `taskId` 精确绑定，或按 `title` 完全匹配（多个同名返回候选；无则新建）。带 title 可改名；自动解归档。 |
 | `archive_task` | 归档任务（隐藏默认视图、不占容量、停止同步）。`select_task` 可恢复。 |
 | `show_task_panel` | 在 UI 中打开任务面板。用户要求查看任务列表或你想展示面板时调用。 |
-| `/tasks`（用户输入，不经模型） | 展示任务栈：标题、步骤进度、涉及文件、当前会话绑定哪套任务。 |
-| `/task`（用户输入，不经模型） | 任务面板子命令：`switch` / `archive` / `unbind` / `rename` / `todos`（面板按钮/点击触发，不经模型）。 |
-| `/insight`（用户输入，不经模型） | v0.5 记忆视图动作（面板按钮触发）：`list [task|project|global]`、`confirm` / `promote` / `demote` / `archive` / `restore` / `delete` `<scope> <id>`、`save <scope> <json>`、`edit <scope> <id> <json>`。 |
+| `/tasks`（用户输入，不经模型） | 唯一的用户命令：展示任务栈（标题、步骤进度、涉及文件、当前会话绑定）并驱动工作流卡片。其余动作是它的**子动词**，由卡片按钮调用、无需手敲 —— `/tasks switch` / `archive` / `unbind` / `rename` / `todos …`（任务动作）、`/tasks insight list` / `confirm` / `promote` / `demote` / `archive` / `restore` / `delete` / `save` / `edit …`（记忆动作）。 |
 | `remember problem solution` | 保存经验笔记。相似问题覆盖而非重复。 |
 | `forget id_or_query` | 删除过期经验笔记。 |
 | `save_lesson`（模型工具） | 在 task/project/global 任一作用域保存教训/决策/流程（单一 insight 实体）。近重复按双向 overlap ≥ 0.7 合并、0.65–0.7 强化；同一 insight 被 2+ 任务命中自动 task→project、3+ → global。参数：`title`、`kind`、`scope`、`pattern`/`fix` 或 `choice`/`reason` 或 `steps`、`trigger`（`when` = `ops`/`writes`/`intents`，唯一触发面；`guard` = `paths`/`not_paths`/`hosts`/`tags`，只能收窄；`prevents` = 准入条件；旧 `keywords`/`symbols`/`actions`/`paths`/`scope` 仍接受并自动迁移）、`task_id`、`files`、`symbols`、`confidence`、`root`。 |
+
+`/tasks` 在 web 的 `/` 菜单里以带图标的**「工作流」**组呈现 —— 三个视图入口：任务 / 项目记忆 / 全局记忆
+（标题随界面语言切换）。宿主命令只要注册就会出现在一贯的**「指令」**小节里，且插件无法隐藏它
+（`commands.list()` 与 `commands.execute()` 读同一个视图，`CommandDefinition` 没有 hidden 字段），
+所以插件的宿主命令**只保留 `/tasks` 一条**，其余动作全部作为它的子动词由卡片按钮驱动：菜单里的重复因此只有一行。
+手敲 `/tasks` 回车即执行（与合并前一致）；手敲 `/tasks switch x` 这类带参数的行不再被识别为命令，请用卡片按钮。
 
 ## 设计
 
@@ -347,7 +351,7 @@ dsh web --patch ./config.yml
 
 ```bash
 npm install
-npm test                    # 335 项测试（核心 184 + TaskBridge 16 + insight-store 12 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 9 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 14 + insight-derive 7 + readiness-eval 7 + ops 6 + injection-audit 8 + injection-budget 5 + injection-scenarios 6 + bugfix-0.5.7 18）
+npm test                    # 360 项测试（核心 184 + TaskBridge 16 + insight-store 12 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 9 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 14 + insight-derive 7 + readiness-eval 7 + ops 6 + injection-audit 8 + injection-budget 5 + injection-scenarios 6 + bugfix-0.5.7 18 + client-icons 3 + client-slash 10 + workflow-command 5 + client-session-id 7）
 npm run eval:injection      # 合成池上的场景 P/R：命中 14/14、假阳性 0、对照组零注入
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）

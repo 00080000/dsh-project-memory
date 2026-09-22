@@ -3,14 +3,15 @@
  * 纯渲染 + 卡片局部行内编辑/拖拽状态，动作经 props 回调交给容器（TaskPanel.tsx）。
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+// 图标走兼容层：0.1.5 用 IconXxx14/16，0.1.7+ 改成 IconXxxRegular + size prop
 import {
-  Button,
   IconChevronDownOutline14,
   IconChevronUpOutline14,
   IconCheckOutline16,
   IconPlayOutline16,
   IconFolderOpenOutline16,
-} from '@deepseek-ai/dsh-client-ui-primitives'
+} from './icons.ts'
 import { createTranslate } from './locales.ts'
 import { useTaskDrag } from './task-hooks.ts'
 import { type Task, type TaskInsight, type TaskStep } from './task-data-store.ts'
