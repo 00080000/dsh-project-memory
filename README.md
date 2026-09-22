@@ -133,12 +133,18 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | `select_task` | Bind the session to a task so its todo list and file reads sync into it. Exact `taskId`, or exact `title` (multiple matches return candidates; no match creates a new task). Pass `title` with `taskId` to rename. Auto-unarchives. |
 | `archive_task` | Archive a task (hide from default views, exclude from capacity, stop syncing). `select_task` restores it. |
 | `show_task_panel` | Show the task panel in the UI. Call when the user asks to see the task list or when you want to display the panel. |
-| `/tasks` (typed by the user, not the model) | Shows the task stack: title, step progress, involved files, and which task the current session is bound to. |
-| `/task` (typed by the user, not the model) | Task panel subcommands: `switch` / `archive` / `unbind` / `rename` / `todos`. Invoked by panel buttons/clicks; does not go through the model. |
-| `/insight` (typed by the user, not the model) | v0.5 memory view actions (panel buttons): `list [task|project|global]`, `confirm` / `promote` / `demote` / `archive` / `restore` / `delete` `<scope> <id>`, `save <scope> <json>`, `edit <scope> <id> <json>`. |
+| `/tasks` (typed by the user, not the model) | The only user command: shows the task stack (title, step progress, involved files, current session binding) and drives the workflow card. Every other action is a **sub-verb** invoked by card buttons, never typed: `/tasks switch` / `archive` / `unbind` / `rename` / `todos …` (task actions), `/tasks insight list` / `confirm` / `promote` / `demote` / `archive` / `restore` / `delete` / `save` / `edit …` (memory actions). |
 | `remember problem solution` | Save an experience note. Similar problems supersede instead of duplicating. |
 | `forget id_or_query` | Delete stale experience notes. |
 | `save_lesson` (agent tool) | Save a lesson/decision/procedure at task/project/global scope (single insight entity). Near-duplicates merge (≥ 0.7 overlap) or reinforce (0.65–0.7); 2+ tasks hitting the same insight auto-promote task → project, 3+ → global. Params: `title`, `kind`, `scope`, `pattern`/`fix` or `choice`/`reason` or `steps`, `trigger` (`when` = `ops`/`writes`/`intents`, the only trigger surface; `guard` = `paths`/`not_paths`/`hosts`/`tags`, narrowing only; `prevents` = what breaks without it; legacy `keywords`/`symbols`/`actions`/`paths`/`scope` still accepted and auto-migrated), `task_id`, `files`, `symbols`, `confidence`, `root`. |
+
+`/tasks` appears in the web `/` menu inside an icon-bearing **Workflow** group, offering three view
+entries — Tasks / Project Memory / Global Memory (labelled in the UI language). A host command always
+shows up in the built-in **Commands** section and a plugin cannot hide it (`commands.list()` and
+`commands.execute()` read the same view, and `CommandDefinition` has no hidden flag), so the plugin
+registers **only `/tasks`** and every other action rides it as a sub-verb driven by card buttons: the
+menu duplication is one row. Typing `/tasks` + Enter still executes immediately; typing an argued line
+such as `/tasks switch x` is no longer recognised as a command — use the card buttons.
 
 ## Design
 
@@ -348,7 +354,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 335 tests (184 core + 16 TaskBridge + 12 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 9 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 14 readiness + 7 insight-derive + 7 readiness-eval + 6 ops + 8 injection-audit + 5 injection-budget + 6 injection-scenarios + 18 bugfix-0.5.7)
+npm test                    # 360 tests (184 core + 16 TaskBridge + 12 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 9 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 14 readiness + 7 insight-derive + 7 readiness-eval + 6 ops + 8 injection-audit + 5 injection-budget + 6 injection-scenarios + 18 bugfix-0.5.7 + 3 client-icons + 10 client-slash + 5 workflow-command + 7 client-session-id)
 npm run eval:injection      # scenario P/R on the synthetic pool: 14/14 hits, 0 false positives, control group clean
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)

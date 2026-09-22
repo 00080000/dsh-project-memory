@@ -4,9 +4,84 @@ window.__ModuleLoader__.load({
 		var module = { exports: {} };
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+		//#region \0rolldown/runtime.js
+		var __create = Object.create;
+		var __defProp = Object.defineProperty;
+		var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+		var __getOwnPropNames = Object.getOwnPropertyNames;
+		var __getProtoOf = Object.getPrototypeOf;
+		var __hasOwnProp = Object.prototype.hasOwnProperty;
+		var __copyProps = (to, from, except, desc) => {
+			if (from && typeof from === "object" || typeof from === "function") for (var keys = __getOwnPropNames(from), i = 0, n = keys.length, key; i < n; i++) {
+				key = keys[i];
+				if (!__hasOwnProp.call(to, key) && key !== except) __defProp(to, key, {
+					get: ((k) => from[k]).bind(null, key),
+					enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable
+				});
+			}
+			return to;
+		};
+		var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(isNodeMode || !mod || !mod.__esModule || !__hasOwnProp.call(mod, "default") ? __defProp(target, "default", {
+			value: mod,
+			enumerable: true
+		}) : target, mod));
+		//#endregion
 		let react = require("react");
 		let _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
+		_deepseek_ai_dsh_client_ui_primitives = __toESM(_deepseek_ai_dsh_client_ui_primitives, 1);
 		let react_jsx_runtime = require("react/jsx-runtime");
+		//#region src/client/icons.ts
+		/**
+		* 宿主图标兼容层（dsh 0.1.5 ↔ 0.1.7+）。
+		*
+		* 命名契约变过一次：
+		*   - dsh 0.1.5（含 0.1.5-rc.x）：尺寸写进名字，如 `IconFolderOpenOutline16`；
+		*   - dsh 0.1.7+：去掉尺寸后缀、改为字重后缀，如 `IconFolderOpenOutlineRegular` /
+		*     `IconFolderOpenOutlineMedium`，尺寸改由 `size` prop 传入。
+		* ui-primitives 是 web shell 的冻结 seed 模块（不是插件行），插件无法固定它，
+		* 同一份产物会拿到宿主那一版的导出；直接按某一版的名字解构会在另一版上得到
+		* `undefined`，React 渲染时抛 "Element type is invalid" 把面板整个打崩。
+		*
+		* 因此这里按旧名导出同名组件，运行时在两个名字里取存在的那个，并把旧名里的
+		* 尺寸作为默认 `size`（两版的图标都接受 `size` prop，0.1.5 的默认值正是旧名后缀）。
+		* 两版都没有该名字时降级为空组件并告警，而不是让面板崩溃。
+		*/
+		const table = _deepseek_ai_dsh_client_ui_primitives;
+		function resolveIcon(names) {
+			for (const name of names) {
+				const candidate = table[name];
+				if (typeof candidate === "function" || typeof candidate === "object" && candidate !== null) return candidate;
+			}
+			return null;
+		}
+		function icon(legacyName, currentName, defaultSize) {
+			const impl = resolveIcon([legacyName, currentName]);
+			if (impl === null) {
+				console.warn(`[dsh-project-memory] host ui-primitives exports neither ${legacyName} nor ${currentName}; that icon renders nothing`);
+				return function MissingIcon() {
+					return null;
+				};
+			}
+			function CompatIcon({ size = defaultSize, ...rest }) {
+				return (0, react.createElement)(impl, {
+					size,
+					...rest
+				});
+			}
+			CompatIcon.displayName = legacyName;
+			return CompatIcon;
+		}
+		const IconChevronDownOutline14 = icon("IconChevronDownOutline14", "IconChevronDownOutlineRegular", 14);
+		const IconChevronUpOutline14 = icon("IconChevronUpOutline14", "IconChevronUpOutlineRegular", 14);
+		const IconQuestionOutline14 = icon("IconQuestionOutline14", "IconQuestionOutlineRegular", 14);
+		const IconCloseOutline16 = icon("IconCloseOutline16", "IconCloseOutlineRegular", 16);
+		const IconFolderOpenOutline16 = icon("IconFolderOpenOutline16", "IconFolderOpenOutlineRegular", 16);
+		const IconCheckOutline16 = icon("IconCheckOutline16", "IconCheckOutlineRegular", 16);
+		const IconPlayOutline16 = icon("IconPlayOutline16", "IconPlayOutlineRegular", 16);
+		const IconChecklistOutline16 = icon("IconChecklistOutline14", "IconChecklistOutlineRegular", 14);
+		const IconLightOutline16 = icon("IconLightOutline16", "IconLightOutlineRegular", 16);
+		const IconGlobeOutline16 = icon("IconGlobeOutline14", "IconGlobeOutlineRegular", 14);
+		//#endregion
 		//#region src/client/locales.ts
 		/**
 		* Locale dictionaries for Task Panel
@@ -83,7 +158,11 @@ window.__ModuleLoader__.load({
 			"mem.f.trigger": "作为 Skill：触发关键词（逗号分隔）",
 			"mem.saved": "已保存",
 			"mem.edit": "编辑",
-			"mem.section-label": "任务记忆"
+			"mem.section-label": "任务记忆",
+			"slash.group": "工作流",
+			"slash.tasks-desc": "任务清单：步骤进度、涉及文件、当前会话绑定",
+			"slash.project-desc": "项目记忆：本项目的教训 / 决策 / 流程",
+			"slash.global-desc": "全局记忆：跨项目的经验条目"
 		};
 		const en = {
 			"panel.title": "Task Flow",
@@ -157,7 +236,11 @@ window.__ModuleLoader__.load({
 			"mem.f.trigger": "As Skill: trigger keywords (comma separated)",
 			"mem.saved": "Saved",
 			"mem.edit": "Edit",
-			"mem.section-label": "Task memory"
+			"mem.section-label": "Task memory",
+			"slash.group": "Workflow",
+			"slash.tasks-desc": "Task list: progress, involved files, current session binding",
+			"slash.project-desc": "Project memory: this project’s lessons / decisions / procedures",
+			"slash.global-desc": "Global memory: experience entries shared across projects"
 		};
 		function createTranslate(dict) {
 			return (key, params) => {
@@ -585,92 +668,92 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var TaskPanel_module_css_default = {
-			"hintsOff": "vZSZnG_hintsOff",
-			"memoryPane": "vZSZnG_memoryPane",
-			"panelIn": "vZSZnG_panelIn",
-			"memRow": "vZSZnG_memRow",
-			"kindBadge": "vZSZnG_kindBadge",
-			"memLabel": "vZSZnG_memLabel",
-			"stepRun": "vZSZnG_stepRun",
-			"dragGhost": "vZSZnG_dragGhost",
-			"card": "vZSZnG_card",
-			"cardBound": "vZSZnG_cardBound",
-			"dropTargetAfter": "vZSZnG_dropTargetAfter",
-			"cardTitle": "vZSZnG_cardTitle",
-			"sectionLabel": "vZSZnG_sectionLabel",
-			"stepContentDone": "vZSZnG_stepContentDone",
-			"sectionCount": "vZSZnG_sectionCount",
-			"stepContentRun": "vZSZnG_stepContentRun",
-			"filesList": "vZSZnG_filesList",
-			"stepRow": "vZSZnG_stepRow",
-			"cardFooter": "vZSZnG_cardFooter",
-			"dragHandle": "vZSZnG_dragHandle",
-			"memCount": "vZSZnG_memCount",
-			"dragGhostCard": "vZSZnG_dragGhostCard",
-			"emptyTitle": "vZSZnG_emptyTitle",
-			"stepEditable": "vZSZnG_stepEditable",
-			"header": "vZSZnG_header",
-			"cardHead": "vZSZnG_cardHead",
-			"track": "vZSZnG_track",
-			"headerIcon": "vZSZnG_headerIcon",
-			"updated": "vZSZnG_updated",
-			"stepsList": "vZSZnG_stepsList",
-			"syncHint": "vZSZnG_syncHint",
-			"stepContent": "vZSZnG_stepContent",
-			"headerIconBtn": "vZSZnG_headerIconBtn",
-			"dropPulse": "vZSZnG_dropPulse",
-			"memRowMain": "vZSZnG_memRowMain",
-			"headerTitle": "vZSZnG_headerTitle",
-			"emptyDesc": "vZSZnG_emptyDesc",
-			"cardBody": "vZSZnG_cardBody",
-			"cardTitleEditable": "vZSZnG_cardTitleEditable",
-			"badgeArchived": "vZSZnG_badgeArchived",
-			"memToolbarActs": "vZSZnG_memToolbarActs",
-			"stepToggle": "vZSZnG_stepToggle",
-			"miniIcon": "vZSZnG_miniIcon",
-			"stepInput": "vZSZnG_stepInput",
-			"memMeta": "vZSZnG_memMeta",
-			"counts": "vZSZnG_counts",
-			"stepPending": "vZSZnG_stepPending",
 			"memNew": "vZSZnG_memNew",
-			"memNewRow": "vZSZnG_memNewRow",
-			"headerLeft": "vZSZnG_headerLeft",
-			"panel": "vZSZnG_panel",
-			"taskList": "vZSZnG_taskList",
-			"filePath": "vZSZnG_filePath",
-			"progressText": "vZSZnG_progressText",
-			"boundaryFallback": "vZSZnG_boundaryFallback",
-			"memToolbar": "vZSZnG_memToolbar",
-			"memActs": "vZSZnG_memActs",
-			"notice": "vZSZnG_notice",
-			"emptyState": "vZSZnG_emptyState",
-			"handleGrip": "vZSZnG_handleGrip",
-			"chevron": "vZSZnG_chevron",
-			"miniText": "vZSZnG_miniText",
-			"dragGhostClose": "vZSZnG_dragGhostClose",
-			"dragGhostContent": "vZSZnG_dragGhostContent",
-			"boundBadge": "vZSZnG_boundBadge",
-			"fileDot": "vZSZnG_fileDot",
-			"memRowArchived": "vZSZnG_memRowArchived",
-			"dropTargetBefore": "vZSZnG_dropTargetBefore",
-			"fileLine": "vZSZnG_fileLine",
-			"memList": "vZSZnG_memList",
-			"headerRight": "vZSZnG_headerRight",
-			"muted": "vZSZnG_muted",
-			"badge": "vZSZnG_badge",
-			"section": "vZSZnG_section",
-			"memBody": "vZSZnG_memBody",
-			"stepDone": "vZSZnG_stepDone",
-			"cardTitleRow": "vZSZnG_cardTitleRow",
-			"cardMeta": "vZSZnG_cardMeta",
-			"fileRow": "vZSZnG_fileRow",
-			"miniChevron": "vZSZnG_miniChevron",
-			"stepDragging": "vZSZnG_stepDragging",
-			"trackFill": "vZSZnG_trackFill",
+			"dragHandle": "vZSZnG_dragHandle",
+			"headerIconBtn": "vZSZnG_headerIconBtn",
+			"memCount": "vZSZnG_memCount",
 			"memTitle": "vZSZnG_memTitle",
-			"badgeDraft": "vZSZnG_badgeDraft",
+			"headerTitle": "vZSZnG_headerTitle",
+			"memToolbarActs": "vZSZnG_memToolbarActs",
+			"stepContentRun": "vZSZnG_stepContentRun",
+			"miniChevron": "vZSZnG_miniChevron",
+			"panel": "vZSZnG_panel",
+			"memRowArchived": "vZSZnG_memRowArchived",
+			"filePath": "vZSZnG_filePath",
+			"notice": "vZSZnG_notice",
+			"fileDot": "vZSZnG_fileDot",
+			"cardTitle": "vZSZnG_cardTitle",
+			"cardTitleRow": "vZSZnG_cardTitleRow",
+			"miniText": "vZSZnG_miniText",
+			"stepContent": "vZSZnG_stepContent",
+			"fileLine": "vZSZnG_fileLine",
+			"boundBadge": "vZSZnG_boundBadge",
+			"card": "vZSZnG_card",
+			"updated": "vZSZnG_updated",
+			"muted": "vZSZnG_muted",
+			"memActs": "vZSZnG_memActs",
+			"memLabel": "vZSZnG_memLabel",
+			"memToolbar": "vZSZnG_memToolbar",
+			"syncHint": "vZSZnG_syncHint",
+			"miniIcon": "vZSZnG_miniIcon",
+			"dropTargetAfter": "vZSZnG_dropTargetAfter",
+			"stepPending": "vZSZnG_stepPending",
+			"dragGhostCard": "vZSZnG_dragGhostCard",
+			"stepEditable": "vZSZnG_stepEditable",
+			"sectionCount": "vZSZnG_sectionCount",
+			"stepToggle": "vZSZnG_stepToggle",
+			"hintsOff": "vZSZnG_hintsOff",
+			"boundaryFallback": "vZSZnG_boundaryFallback",
+			"emptyTitle": "vZSZnG_emptyTitle",
+			"memRowMain": "vZSZnG_memRowMain",
+			"cardHead": "vZSZnG_cardHead",
+			"header": "vZSZnG_header",
 			"editorArea": "vZSZnG_editorArea",
-			"miniBar": "vZSZnG_miniBar"
+			"badgeArchived": "vZSZnG_badgeArchived",
+			"stepRun": "vZSZnG_stepRun",
+			"miniBar": "vZSZnG_miniBar",
+			"stepDragging": "vZSZnG_stepDragging",
+			"memoryPane": "vZSZnG_memoryPane",
+			"dragGhostClose": "vZSZnG_dragGhostClose",
+			"cardMeta": "vZSZnG_cardMeta",
+			"stepRow": "vZSZnG_stepRow",
+			"filesList": "vZSZnG_filesList",
+			"memNewRow": "vZSZnG_memNewRow",
+			"cardBody": "vZSZnG_cardBody",
+			"stepContentDone": "vZSZnG_stepContentDone",
+			"cardTitleEditable": "vZSZnG_cardTitleEditable",
+			"dropPulse": "vZSZnG_dropPulse",
+			"kindBadge": "vZSZnG_kindBadge",
+			"headerRight": "vZSZnG_headerRight",
+			"trackFill": "vZSZnG_trackFill",
+			"progressText": "vZSZnG_progressText",
+			"panelIn": "vZSZnG_panelIn",
+			"dragGhostContent": "vZSZnG_dragGhostContent",
+			"emptyDesc": "vZSZnG_emptyDesc",
+			"chevron": "vZSZnG_chevron",
+			"track": "vZSZnG_track",
+			"sectionLabel": "vZSZnG_sectionLabel",
+			"cardFooter": "vZSZnG_cardFooter",
+			"stepDone": "vZSZnG_stepDone",
+			"section": "vZSZnG_section",
+			"dropTargetBefore": "vZSZnG_dropTargetBefore",
+			"memList": "vZSZnG_memList",
+			"cardBound": "vZSZnG_cardBound",
+			"fileRow": "vZSZnG_fileRow",
+			"handleGrip": "vZSZnG_handleGrip",
+			"counts": "vZSZnG_counts",
+			"stepsList": "vZSZnG_stepsList",
+			"dragGhost": "vZSZnG_dragGhost",
+			"emptyState": "vZSZnG_emptyState",
+			"memBody": "vZSZnG_memBody",
+			"headerLeft": "vZSZnG_headerLeft",
+			"memRow": "vZSZnG_memRow",
+			"badgeDraft": "vZSZnG_badgeDraft",
+			"badge": "vZSZnG_badge",
+			"headerIcon": "vZSZnG_headerIcon",
+			"taskList": "vZSZnG_taskList",
+			"memMeta": "vZSZnG_memMeta",
+			"stepInput": "vZSZnG_stepInput"
 		};
 		//#endregion
 		//#region src/client/TaskComponents.tsx
@@ -697,8 +780,8 @@ window.__ModuleLoader__.load({
 			return `${Math.floor(h / 24)}天前`;
 		}
 		function StepIcon({ status }) {
-			if (status === "completed") return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCheckOutline16, { className: TaskPanel_module_css_default.stepDone });
-			if (status === "in_progress") return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconPlayOutline16, { className: TaskPanel_module_css_default.stepRun });
+			if (status === "completed") return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconCheckOutline16, { className: TaskPanel_module_css_default.stepDone });
+			if (status === "in_progress") return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconPlayOutline16, { className: TaskPanel_module_css_default.stepRun });
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: TaskPanel_module_css_default.stepPending });
 		}
 		/**
@@ -797,12 +880,12 @@ window.__ModuleLoader__.load({
 				title: showHints ? hint : void 0,
 				"aria-label": hint,
 				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutline16, { className: TaskPanel_module_css_default.miniIcon }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconFolderOpenOutline16, { className: TaskPanel_module_css_default.miniIcon }),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 						className: TaskPanel_module_css_default.miniText,
 						children: label
 					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronUpOutline14, { className: TaskPanel_module_css_default.miniChevron })
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconChevronUpOutline14, { className: TaskPanel_module_css_default.miniChevron })
 				]
 			});
 		}
@@ -902,7 +985,7 @@ window.__ModuleLoader__.load({
 								}),
 								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 									className: TaskPanel_module_css_default.chevron,
-									children: expanded ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronUpOutline14, {}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
+									children: expanded ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconChevronUpOutline14, {}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconChevronDownOutline14, {})
 								})
 							]
 						})]
@@ -1205,6 +1288,12 @@ window.__ModuleLoader__.load({
 			const inflightRef = (0, react.useRef)(false);
 			const lastRunRef = (0, react.useRef)(0);
 			const refresh = (0, react.useCallback)(async (force = false) => {
+				if (!sessionId) {
+					setPayload(null);
+					setError(null);
+					setLoading(false);
+					return;
+				}
 				if (inflightRef.current) return;
 				const now = Date.now();
 				if (!force && now - lastRunRef.current < 800) return;
@@ -1213,7 +1302,7 @@ window.__ModuleLoader__.load({
 				setLoading(true);
 				setError(null);
 				try {
-					const res = await runLine(`/insight list ${scope}`);
+					const res = await runLine(`/tasks insight list ${scope}`);
 					if (!res.ok) {
 						setError(res.text);
 						setPayload(null);
@@ -1235,7 +1324,7 @@ window.__ModuleLoader__.load({
 				setBusy(true);
 				setError(null);
 				try {
-					const line = `/insight ${action} ${scope} ${id}${action === "demote" && scope === "project" && boundTaskId ? ` ${boundTaskId}` : ""}`;
+					const line = `/tasks insight ${action} ${scope} ${id}${action === "demote" && scope === "project" && boundTaskId ? ` ${boundTaskId}` : ""}`;
 					const res = await runLine(line);
 					if (!res.ok) setError(res.text);
 					else refresh(true);
@@ -1311,7 +1400,7 @@ window.__ModuleLoader__.load({
 					}
 					if (form.kind === "procedure" && form.steps.trim()) fields.steps = form.steps.split("\n").map((s) => s.trim()).filter(Boolean);
 					if (form.kind === "procedure" && form.trigger.trim()) fields.trigger = { keywords: form.trigger.split(/[,，]/).map((s) => s.trim()).filter(Boolean) };
-					const line = editingId ? `/insight edit ${scope} ${editingId} ${JSON.stringify(fields)}` : `/insight save ${scope} ${JSON.stringify(fields)}`;
+					const line = editingId ? `/tasks insight edit ${scope} ${editingId} ${JSON.stringify(fields)}` : `/tasks insight save ${scope} ${JSON.stringify(fields)}`;
 					const res = await runLine(line);
 					if (!res.ok) setError(res.text);
 					else {
@@ -1589,6 +1678,86 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
+		//#region src/client/session-id.js
+		/**
+		* 会话列表快照 → 当前会话 id（宿主版本兼容层）。
+		*
+		* 快照结构被宿主改过一次，旧写法只认第一种：
+		*   - dsh ≤0.1.6：`{ current?: id, items: [{ sessionId, blank }] }`
+		*   - dsh 0.1.7+：`{ ids: id[], byId: Record<id, SessionSummary>, phase, projectionsBySession }`
+		*     —— `current` 与 `items` **都不存在了**。
+		*
+		* 后果一（永远 null）：0.1.7 上 `snap.current` 和 `snap.items` 都是 undefined → 旧代码永远
+		* 返回 null → 面板显示「还没有会话」、记忆视图报 `同步失败: no session / commands service`。
+		* 而**任务视图渲染的是 task-data-store 里的缓存快照**，看起来还正常，所以这个故障很容易被
+		* 误读成"数据格式/旧版本兼容"问题。
+		*
+		* 后果二（不跟随切换）：光"取一个非 null 的 id"不够 —— 兜底取的是宿主列表里第一个非 blank 的
+		* 会话，它**不随用户切换对话而变化**，面板会一直停在同一个会话（从而显示错项目的任务）。
+		* 0.1.7 判断"当前会话"的正式依据是 `SessionSummary.retainedBy.mainView > 0`：
+		* 主视图正在 retain 的那个就是用户正在看的那个（第一方同款判据，见 ui-layout/DocumentTitle.tsx
+		* 与 ui-session）。它就在**列表快照的 byId 行上**，而 retain 计数变化会 `list.set(...)` 重新发布
+		* 快照（session-controller/.../sessions/service.ts 的 publishRetention），所以订阅
+		* `ctx.sessions.list` 的组件会在切换会话时自动重渲染 —— 这条必须走快照内字段，不能另开
+		* `retainInfo()` 订阅，否则切换不会触发重渲染。
+		*
+		* 实测形状见 `packages/api/session-controller/src/client/sessions/service.ts` 的
+		* `SessionListState` / `SessionSummary`。
+		*/
+		/** 正数才算持有（retain 计数缺失/0/负数一律当没有）。 */
+		function heldCount(value) {
+			return typeof value === "number" && value > 0 ? value : 0;
+		}
+		/** 从一行 summary 抽出本模块关心的三个事实。 */
+		function rowFacts(row) {
+			return {
+				blank: row?.blank === true,
+				/** 主视图对这条会话的 retain 计数；> 0 即"用户正在看它"。 */
+				mainView: heldCount(row?.retainedBy?.mainView)
+			};
+		}
+		/**
+		* 把两种快照形状统一成 `{ id, blank, mainView }` 列表，顺序保持宿主给的顺序。
+		* @param {object|undefined|null} snap - `ctx.sessions.list.getSnapshot()`
+		* @returns {Array<{id: string, blank: boolean, mainView: number}>} 认不出的形状返回空数组
+		*/
+		function sessionRows(snap) {
+			if (!snap || typeof snap !== "object") return [];
+			if (Array.isArray(snap.items)) return snap.items.map((row) => ({
+				id: row?.sessionId,
+				...rowFacts(row)
+			})).filter((row) => typeof row.id === "string" && row.id !== "");
+			const byId = snap.byId && typeof snap.byId === "object" ? snap.byId : null;
+			if (Array.isArray(snap.ids)) return snap.ids.map((id) => ({
+				id,
+				...rowFacts(byId?.[id])
+			})).filter((row) => typeof row.id === "string" && row.id !== "");
+			if (byId) return Object.keys(byId).map((id) => ({
+				id,
+				...rowFacts(byId[id])
+			})).filter((row) => typeof row.id === "string" && row.id !== "");
+			return [];
+		}
+		/**
+		* 选出一个可用于执行命令的会话 id（即"用户正在看的那个"）。
+		*
+		* 优先级：
+		*  1. 旧形状的显式 `current`（≤0.1.6 的权威字段，保持原语义）；
+		*  2. `retainedBy.mainView > 0` 的会话（0.1.7 的权威判据，**跟随会话切换**）；
+		*  3. 第一个非 blank → 第一个（对两种形状都适用的兜底）。
+		* @param {object|undefined|null} snap - `ctx.sessions.list.getSnapshot()`
+		* @returns {string|null} 会话 id；拿不到返回 null（调用方据此显示「还没有会话」）
+		*/
+		function pickSessionId(snap) {
+			if (!snap || typeof snap !== "object") return null;
+			if (typeof snap.current === "string" && snap.current !== "") return snap.current;
+			const rows = sessionRows(snap);
+			const live = rows.find((row) => row.mainView > 0);
+			if (live) return live.id;
+			const chosen = rows.find((row) => !row.blank) ?? rows[0];
+			return chosen ? chosen.id : null;
+		}
+		//#endregion
 		//#region src/client/TaskPanel.tsx
 		/**
 		* Task Panel — dsh web `shell.overlay` 浮动任务面板。
@@ -1615,10 +1784,7 @@ window.__ModuleLoader__.load({
 				if (!list || typeof list.subscribe !== "function") return;
 				return list.subscribe(() => force((n) => n + 1));
 			}, [ctx]);
-			const snap = ctx?.sessions?.list?.getSnapshot?.();
-			if (!snap) return null;
-			if (snap.current) return snap.current;
-			return (Array.isArray(snap.items) ? snap.items.find((s) => !s.blank) ?? snap.items[0] : void 0)?.sessionId ?? null;
+			return pickSessionId(ctx?.sessions?.list?.getSnapshot?.());
 		}
 		var PanelErrorBoundary = class extends react.Component {
 			state = { failed: false };
@@ -1702,7 +1868,7 @@ window.__ModuleLoader__.load({
 					const prevBoundId = data.boundTaskId;
 					await runLine("/tasks");
 					const newBoundId = taskDataStore.getSnapshot().boundTaskId;
-					if (newBoundId && newBoundId !== prevBoundId) await runLine(`/task switch ${newBoundId}`);
+					if (newBoundId && newBoundId !== prevBoundId) await runLine(`/tasks switch ${newBoundId}`);
 				} finally {
 					setSyncing(false);
 				}
@@ -1711,7 +1877,7 @@ window.__ModuleLoader__.load({
 				if (syncing) return;
 				setSyncing(true);
 				try {
-					await runLine(`/task ${verb} ${taskId}`);
+					await runLine(`/tasks ${verb} ${taskId}`);
 				} finally {
 					setSyncing(false);
 				}
@@ -1720,14 +1886,14 @@ window.__ModuleLoader__.load({
 				if (syncing) return;
 				setSyncing(true);
 				try {
-					await runLine(`/insight ${action} task ${id}`);
+					await runLine(`/tasks insight ${action} task ${id}`);
 					await refresh();
 				} finally {
 					setSyncing(false);
 				}
 			};
 			const pushSteps = (taskId, steps) => {
-				runLine(`/task todos ${JSON.stringify(steps.map((s) => ({
+				runLine(`/tasks todos ${JSON.stringify(steps.map((s) => ({
 					content: s.content,
 					status: s.status
 				})))}`);
@@ -1771,7 +1937,7 @@ window.__ModuleLoader__.load({
 				const trimmed = value.trim();
 				if (!task) return;
 				if (task.title === trimmed || !trimmed) return;
-				runLine(`/task rename ${taskId} ${JSON.stringify(trimmed)}`);
+				runLine(`/tasks rename ${taskId} ${JSON.stringify(trimmed)}`);
 			};
 			const expand = () => {
 				uiActions.open();
@@ -1881,7 +2047,7 @@ window.__ModuleLoader__.load({
 								onClick: cycleTheme,
 								title: showHints ? styleLabel : void 0,
 								"aria-label": styleLabel,
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutline16, { className: TaskPanel_module_css_default.headerIcon })
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconFolderOpenOutline16, { className: TaskPanel_module_css_default.headerIcon })
 							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("h2", {
 								className: TaskPanel_module_css_default.headerTitle,
 								children: viewTitle
@@ -1936,7 +2102,7 @@ window.__ModuleLoader__.load({
 									"aria-pressed": !showHints,
 									"aria-label": showHints ? t("panel.hints-off") : t("panel.hints-on"),
 									title: showHints ? t("panel.hints-off") : t("panel.hints-on"),
-									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconQuestionOutline14, { size: 16 })
+									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconQuestionOutline14, { size: 16 })
 								}),
 								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 									variant: "ghost",
@@ -1944,7 +2110,7 @@ window.__ModuleLoader__.load({
 									onClick: () => uiActions.minimize(),
 									"aria-label": t("panel.minimize"),
 									title: showHints ? t("panel.minimize") : void 0,
-									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutline14, {})
+									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconChevronDownOutline14, {})
 								}),
 								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 									variant: "ghost",
@@ -1952,7 +2118,7 @@ window.__ModuleLoader__.load({
 									onClick: () => uiActions.close(),
 									"aria-label": t("panel.close"),
 									title: showHints ? t("panel.close") : void 0,
-									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconCloseOutline16, {})
+									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconCloseOutline16, {})
 								})
 							]
 						})]
@@ -2004,7 +2170,7 @@ window.__ModuleLoader__.load({
 								expanded,
 								onToggleExpand: () => uiActions.toggleTaskExpanded(task.id),
 								onSwitch: () => handleAction("switch", task.id),
-								onUnbind: () => runLine("/task unbind"),
+								onUnbind: () => runLine("/tasks unbind"),
 								onArchive: () => handleAction("archive", task.id),
 								onRename: (value) => commitTitle(task.id, value),
 								onEditStep: (index, value) => commitStepText(task.id, index, value),
@@ -2092,7 +2258,7 @@ window.__ModuleLoader__.load({
 					return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: TaskCommandNode_module_css_default.row,
 						"data-variant": "ok",
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutline16, { className: TaskCommandNode_module_css_default.icon }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconFolderOpenOutline16, { className: TaskCommandNode_module_css_default.icon }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [
 							"记忆 ",
 							scope,
 							" · ",
@@ -2132,8 +2298,130 @@ window.__ModuleLoader__.load({
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: TaskCommandNode_module_css_default.row,
 				"data-variant": "ok",
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutline16, { className: TaskCommandNode_module_css_default.icon }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: label })]
+				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconFolderOpenOutline16, { className: TaskCommandNode_module_css_default.icon }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: label })]
 			});
+		}
+		//#endregion
+		//#region src/client/slash.ts
+		/** 源的稳定标识：同一 trigger 内唯一，重复注册会抛错。 */
+		const SLASH_SOURCE_NAME = "project-memory";
+		/** 菜单三行。顺序即渲染顺序；标题复用面板已有的 view.* 文案，保证与面板视图名一致。 */
+		const ROWS = [
+			{
+				labelKey: "view.task",
+				descriptionKey: "slash.tasks-desc",
+				icon: IconChecklistOutline16,
+				match: ["tasks", "task"],
+				line: "/tasks"
+			},
+			{
+				labelKey: "view.project",
+				descriptionKey: "slash.project-desc",
+				icon: IconLightOutline16,
+				match: [
+					"memory",
+					"project",
+					"insight"
+				],
+				line: "/tasks insight list project"
+			},
+			{
+				labelKey: "view.global",
+				descriptionKey: "slash.global-desc",
+				icon: IconGlobeOutline16,
+				match: [
+					"memory",
+					"global",
+					"insight"
+				],
+				line: "/tasks insight list global"
+			}
+		];
+		/** 按当前语言取翻译函数。 */
+		function translator(ctx) {
+			return createTranslate(ctx?.locale?.getSnapshot?.()?.active === "zh" ? zh : en);
+		}
+		/**
+		* 一轮候选：把三行装配成菜单行，再按查询与位置过滤。
+		*
+		* 三行都不接参数（动作全在面板卡片里），所以位置过滤只做一件事：行内出现的 `/` 多半是路径，
+		* 不弹这一整组（宿主对无 input 命令在前导/行内都放行，这里更保守）。
+		* @param t - 翻译函数。
+		* @param req - 宿主给的候选请求（query / position）。
+		* @returns 菜单行；永不抛出。
+		*/
+		function buildSlashCandidates(t, req) {
+			if (req?.position !== void 0 && req.position !== "leading") return [];
+			const query = typeof req?.query === "string" ? req.query.trim().toLowerCase() : "";
+			return ROWS.map((row) => {
+				const title = t(row.labelKey);
+				return {
+					name: title,
+					label: title,
+					description: t(row.descriptionKey),
+					icon: row.icon,
+					section: t("slash.group"),
+					line: row.line,
+					terms: [title, ...row.match].map((term) => term.toLowerCase())
+				};
+			}).filter((row) => query === "" || row.terms.some((term) => term.startsWith(query))).map(({ terms: _terms, ...candidate }) => candidate);
+		}
+		/**
+		* 把触发 token 从草稿里删掉（span 做 CAS：草稿被改过就拒绝，什么都不动）。
+		* 这是宿主 command 源消费菜单点击的同一条契约事件。
+		* @returns true 表示确实消费掉了。
+		*/
+		function consumeSpan(deps, pick) {
+			try {
+				const scope = deps.sessions?.scope?.(pick?.session?.sessionId);
+				if (!scope || typeof scope.bail !== "function") return false;
+				return scope.bail(scope, "slash/input-consume-token", { guard: {
+					kind: "span",
+					span: pick.span
+				} }) === true;
+			} catch (err) {
+				console.warn("[dsh-project-memory] slash token consume failed:", err);
+				return false;
+			}
+		}
+		/**
+		* 一次菜单点击：消费掉触发 token 后立刻执行该行对应的命令行。
+		*
+		* 不返回 claim（回填 `/xxx ` 再等回车）：这三行都是「打开某个视图」，claim 会多要一次回车，
+		* 而且子动词（`insight list project`）也没法由一个 claim token 表达。消费失败时仍然执行，
+		* 只是草稿里残留的触发文本要用户自己清掉 —— 比回填一个会执行错命令的 claim 安全。
+		* @param t - 翻译函数（按当前语言把候选 name 映射回 ROWS）。
+		* @param deps - 会话服务与命令执行通道。
+		* @param pick - 宿主给的点击载荷。
+		* @returns PickOutcome；拿不到可用形状时返回 undefined（菜单照常关闭，草稿不动）。
+		*/
+		function dispatchSlashPick(t, deps, pick) {
+			const title = pick?.candidate?.name;
+			if (typeof title !== "string" || title === "") return void 0;
+			const row = ROWS.find((candidate) => t(candidate.labelKey) === title);
+			if (row === void 0) return void 0;
+			consumeSpan(deps, pick);
+			deps.run(pick.session, row.line, []).catch((err) => {
+				console.warn(`[dsh-project-memory] ${row.line} failed:`, err);
+			});
+			return "handled";
+		}
+		/**
+		* 造出注册给 `ctx.inputTriggers.registerSource` 的源对象。
+		* @param ctx - client 根上下文（只读 locale）。
+		* @param deps - 会话服务与命令执行通道。
+		* @returns 触发器源；只依赖宿主的公开契约字段。
+		*/
+		function createSlashSource(ctx, deps) {
+			const t = translator(ctx);
+			return {
+				trigger: "/",
+				name: SLASH_SOURCE_NAME,
+				order: 1,
+				showGroupTitle: false,
+				candidates: async (_session, req) => buildSlashCandidates(t, req),
+				onPick: (pick) => dispatchSlashPick(t, deps, pick)
+			};
 		}
 		//#endregion
 		//#region src/client/client.ts
@@ -2149,6 +2437,9 @@ window.__ModuleLoader__.load({
 		*
 		* 只依赖宿主 seed 提供的模块（react / dsh-client-ui-primitives），
 		* 数据经 remote.commands.execute 执行 /tasks 命令获取 JSON 快照。
+		*
+		* 另有一个可选增强：自建的 `/` 菜单源（slash.ts），把三条命令收进一个带图标和
+		* 小节标题的「工作流」组。它**整体是可选的**——宿主没有 slash 触发器服务时静默跳过。
 		*/
 		const NS = "dsh-project-memory";
 		const name = NS;
@@ -2160,29 +2451,89 @@ window.__ModuleLoader__.load({
 			"remote.commands",
 			"locale"
 		];
-		function apply(ctx) {
-			const slots = ctx?.slots;
-			if (!slots || typeof slots.inject !== "function") {
-				console.warn(`[${NS}] host has no slots service — task panel disabled`);
+		/**
+		* 执行一条命令行，映射成 composer 的 SubmitOutcome。
+		* 与 TaskPanel 走同一个 remote.commands.execute 通道（同样的返回信封）。
+		* @param commands - ctx.remote.commands
+		* @param session - 会话投影（只读 sessionId）
+		* @param line - 完整命令行（含前导斜杠）
+		* @param attachments - 提交附件（菜单路径恒为空）
+		* @returns {kind:'success'|'error', text?}
+		*/
+		async function runCommand(commands, session, line, attachments = []) {
+			const sessionId = session?.sessionId;
+			if (typeof sessionId !== "string" || !commands || typeof commands.execute !== "function") return {
+				kind: "error",
+				text: `no session / commands service for ${line}`
+			};
+			const envelope = await commands.execute(sessionId, line, [...attachments]);
+			if (envelope && typeof envelope === "object" && envelope.ok === false) return {
+				kind: "error",
+				text: `command.execute failed: ${envelope.error?.code ?? "unknown"}`
+			};
+			const execution = envelope && typeof envelope === "object" && "value" in envelope ? envelope.value : envelope;
+			const result = execution?.result ?? execution;
+			if (result?.kind === "error") return {
+				kind: "error",
+				text: result.text ?? `${line} failed`
+			};
+			return { kind: "success" };
+		}
+		/**
+		* 注册自建的 `/` 菜单源（见 slash.ts）。
+		*
+		* 整段都是**可选增强**：宿主没有 `inputTriggers` 服务、或该服务换了契约时，绝不能因此
+		* 让整个 client 插件挂掉——那会连任务面板一起消失。`inputTriggers` 因此不进顶层 `inject`
+		* （顶层 inject 未满足时 cordis 根本不会调用 apply），而是走嵌套 inject + 两层 try/catch。
+		* @param ctx - client 根上下文
+		*/
+		function registerSlashSource(ctx) {
+			if (typeof ctx?.inject !== "function") {
+				console.warn(`[${NS}] host has no ctx.inject — slash menu group disabled`);
 				return;
 			}
 			try {
+				ctx.inject([
+					"inputTriggers",
+					"sessions",
+					"remote.commands"
+				], (scope) => {
+					try {
+						const inputTriggers = scope?.inputTriggers;
+						if (!inputTriggers || typeof inputTriggers.registerSource !== "function") {
+							console.warn(`[${NS}] host has no inputTriggers.registerSource — slash menu group disabled`);
+							return;
+						}
+						const source = createSlashSource(scope, {
+							sessions: scope.sessions,
+							run: (session, line, attachments) => runCommand(scope?.remote?.commands, session, line, attachments)
+						});
+						scope.effect(() => inputTriggers.registerSource(source), "dsh-project-memory: slash source");
+					} catch (err) {
+						console.warn(`[${NS}] slash source registration failed:`, err);
+					}
+				});
+			} catch (err) {
+				console.warn(`[${NS}] slash source injection failed:`, err);
+			}
+		}
+		function apply(ctx) {
+			const slots = ctx?.slots;
+			if (!slots || typeof slots.inject !== "function") console.warn(`[${NS}] host has no slots service — task panel disabled`);
+			else try {
 				slots.inject("shell.overlay", () => slots.register({
 					name: "shell.overlay",
 					id: "dsh-project-memory-task-panel",
 					order: 100
 				}, () => (0, react.createElement)(TaskPanelEntry, { ctx })));
-				for (const key of [
-					"tasks",
-					"task",
-					"insight"
-				]) slots.inject("conversation.chat.commandview", () => slots.register({
+				for (const key of ["tasks"]) slots.inject("conversation.chat.commandview", () => slots.register({
 					name: "conversation.chat.commandview",
 					key
 				}, TaskCommandNode));
 			} catch (err) {
 				console.warn(`[${NS}] task panel registration failed:`, err);
 			}
+			registerSlashSource(ctx);
 		}
 		//#endregion
 		exports.apply = apply;

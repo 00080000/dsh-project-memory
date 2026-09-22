@@ -4,7 +4,7 @@
  * 目的：大 JSON 载荷绝不整段渲染进对话（否则切视图会刷屏）。
  */
 import { useEffect, useRef } from 'react'
-import { IconFolderOpenOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconFolderOpenOutline16 } from './icons.ts'
 import { parseTaskPayloadText, taskDataStore } from './task-data-store.ts'
 import { parseInsightPayloadText } from './MemoryView.tsx'
 import { taskUIStore } from './task-ui-store.ts'
