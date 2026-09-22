@@ -1,6 +1,68 @@
 # Changelog
 
-## 0.5.8 (unreleased) — 准入的可复现性
+## 0.5.8 (2026-09-22) — 准入的可复现性 + dsh 0.1.7 兼容
+
+### 兼容性修复（dsh 0.1.7 必崩）
+
+- **`message.source.kind: 'plugin'` 会被 0.1.7 宿主拒绝，导致整轮运行失败。** 会话格式 v4 起
+  `MessageSourceMap` 是"每个生产者声明自己的 kind"的可合并联合类型，**没有** `plugin` 兜底；
+  宿主在编码落盘那一刻抛 `format v4 message requires a producer-owned source kind`
+  （`session-format-v3-to-v4/src/message-sources.ts`）。现在写 `plugin:dsh-project-memory`
+  ——这正是宿主自己的 v3→v4 迁移对本插件历史消息的改写结果，新写的与迁移后的旧消息是**同一个
+  生产者身份**（已用宿主真实编码器验证：新 kind 通过 encode + native restore，旧 kind 被 encode /
+  `assertV4MessageSources` / `assertV4SourceRowAdmission` 三处一致拒绝，v3 日志迁移后正好落到新 kind）。
+- 自激闸门（`lastUserText`）从"看 `source.plugin` 字段"改为 `isOwnInjection()`，同时认三种历史形状
+  （`plugin:dsh-project-memory` / `project-memory` / `plugin:'dsh-project-memory'`）。迁移会**丢弃**
+  `plugin` 字段，所以旧判据在迁移后的历史上一律失效——那会让上一步的注入正文变成这一步的检索查询。
+
+### 兼容性修复（dsh 0.1.7 面板拿不到会话）
+
+- **会话列表快照结构变了，面板因此永远拿不到会话。** 0.1.7 的 `SessionListState` 是
+  `{ ids, byId, phase, projectionsBySession }`，而插件读的是 `snap.current` 与 `snap.items`
+  ——**两个字段都已不存在**（见 `session-controller/.../sessions/service.ts`）。于是
+  `useSessionId` 永远返回 null：面板顶部显示「还没有会话」，项目/全局记忆视图报
+  `同步失败: no session / commands service`。而**任务视图渲染的是 task-data-store 里的缓存
+  快照，看起来正常**，所以这个故障极易被误读成"数据格式 / 旧版本兼容"问题。
+  解析抽成 `src/client/session-id.js`（纯函数 + 单测），两种形状都读。这是本版第三个 dsh 0.1.7
+  破坏性变更（前两个：`message.source.kind`、ui-primitives 图标名）。
+- **面板跟随会话切换。** 光"解析出一个非 null 的 id"还不够：兜底取"列表里第一个非 blank"，
+  它**不随用户切换对话变化**，面板会一直停在同一个会话上（从而显示另一个项目的任务）。
+  0.1.7 判断"当前会话"的正式依据是 `SessionSummary.retainedBy.mainView > 0`：主视图正在 retain
+  的那个就是用户正在看的那个（第一方同款判据，见 `ui-layout/DocumentTitle.tsx` 与 `ui-session`）。
+  它就在**列表快照的 `byId` 行上**，而 retain 计数变化会 `list.set(...)` 重新发布快照
+  （`session-controller/.../service.ts` 的 `publishRetention`），所以订阅 `ctx.sessions.list` 的
+  面板会在切换时自动重渲染——这条必须走快照内字段，**不能另开 `retainInfo()` 订阅**，否则切换
+  不会触发重渲染。优先级：`current`（旧形状） → `mainView > 0` → 第一个非 blank → 第一个。
+- 记忆视图在没有活跃会话时**不再报「同步失败」**：面板顶部已经显示「还没有会话」，
+  重复报错会让人以为记忆库坏了。
+
+### `/` 菜单：命令有了图标和分组，且不再重复
+
+- **三条宿主命令合并成一条 `/tasks`**（`src/commands/workflow.js`）。`/task` 与 `/insight` 的动作
+  成为 `/tasks` 的子动词（`/tasks switch <id>`、`/tasks insight list project` …），由卡片按钮经
+  `remote.commands.execute` 驱动。原因：**宿主命令只要注册就会出现在 `/` 菜单的「指令」小节里，
+  插件无法隐藏**（`commands.list()` 与 `commands.execute()` 读同一个视图，`CommandDefinition`
+  也没有 hidden 字段），三条命令就是三行去不掉的原始行，与自建分组形成重复。
+  合并后菜单里的重复降到一行 —— 而那一行是插件执行宿主侧工作的唯一通道（插件没有自己的
+  client→host RPC，`api/remotes` 的远程命名空间是宿主装配期写死的白名单）。
+- `/tasks` **刻意不声明 `input`**：一旦声明就是 leadingInput，`ui-commands.matchEnter` 对带 input
+  的命令一律返回 claim，手敲 `/tasks` 回车会被回填并要求再按一次回车。不声明则裸 `/tasks` 一次回车
+  即执行，与合并前一致。代价：`/tasks switch x` 这类手敲带参行不再被认作命令（会作为普通消息发给
+  模型）——这些动作的入口本来就是卡片按钮。
+- 新增自建 `/` 触发器源（`src/client/slash.ts`）：三个视图入口（任务 / 项目记忆 / 全局记忆，复用
+  面板已有的 `view.*` 文案）出现在带图标的「工作流」组里，标题按语言切换中英文。
+  为什么必须自建源：`/` 菜单的「分组」就是触发器源，而宿主 `ui-commands` 只给第一方
+  `definitionId` 白名单配图标和中文标题（`presentation.ts` 的 `HOST_FACES` / `SECTION_ROWS`），
+  宿主 `CommandDescriptor` 也只有 `name/description/input`——第三方宿主命令改配置也变不出图标。
+- 分组标题走**候选的 `section`**，不走 `slash.menu` 词典：该 namespace 由 ui-input-trigger 独占，
+  `register('slash.menu','zh')` 会抛 `already has locale`，未知 key 则原样回显源名；
+  MenuView 在「组内任一行带 section」时不渲染组标题行，只渲染 section 标题——标题文案因此回到
+  插件手里，还能双语。
+- 排序取 `order: 1`：排在宿主内置源（默认 0）之后，不抢主位置；没有能同时满足"在宿主之后"与
+  "在所有其他插件之前"的取值。
+- 兼容性：`inputTriggers` 是**软依赖**（不进顶层 `inject`，否则没有 slash 服务的宿主根本不会加载
+  本插件，任务面板会一起消失）；整段注册两层 `try/catch`，注册失败只降级、不抛穿。本源不实现
+  `matchSpace`/`matchEnter`，手敲命令与面板调用的行为完全不变。
 
 ### 注入精度
 

@@ -210,10 +210,23 @@ const PUBLIC_FACE = {
 
 // ---- 11. 就绪查询只取真人消息（注入块不得成为查询） ----
 {
-  const { lastUserText } = await import('../src/auto-inject.js')
+  const { lastUserText, isOwnInjection, SOURCE_KIND } = await import('../src/auto-inject.js')
   const human = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '你顺便提交一下' }] }
-  const injected = { role: 'user', source: { kind: 'plugin', plugin: 'dsh-project-memory' }, content: [{ type: 'text', text: '[Memory Inject] auto-context\n任务: x\n进度: 8 步' }] }
-  assert.equal(lastUserText([human, injected]), '你顺便提交一下', '上一步的注入块不得成为这一步的查询（自激）')
+  const text = [{ type: 'text', text: '[Memory Inject] auto-context\n任务: x\n进度: 8 步' }]
+  // 三种历史形状都必须继续被认作"自己注入的"，否则会拿上一步注入正文当本步查询（自激）。
+  const shapes = [
+    { kind: SOURCE_KIND }, // 现在写的 == v3→v4 迁移对老消息的改写结果
+    { kind: 'project-memory' }, // 保留别名
+    { kind: 'plugin', plugin: 'dsh-project-memory' }, // 迁移前内存里的旧形状
+  ]
+  for (const source of shapes) {
+    const injected = { role: 'user', source, content: text }
+    assert.equal(lastUserText([human, injected]), '你顺便提交一下',
+      `source=${JSON.stringify(source)} 的注入块不得成为这一步的查询（自激）`)
+    assert.ok(isOwnInjection(source), `isOwnInjection 必须认 ${JSON.stringify(source)}`)
+  }
+  assert.equal(isOwnInjection({ kind: 'user' }), false, '真人消息不是自己注入的')
+  assert.equal(isOwnInjection(undefined), false, '无 source 的消息不是自己注入的')
   assert.equal(lastUserText([{ role: 'user', content: [{ type: 'text', text: 'hi' }] }]), 'hi', '无 source 的消息仍兜底（老宿主/测试）')
   ok('就绪查询只取真人消息，注入块不参与（防自激）')
 }

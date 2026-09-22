@@ -120,6 +120,14 @@ export function MemoryView({
   const lastRunRef = useRef(0)
 
   const refresh = useCallback(async (force = false): Promise<void> => {
+    // 没有活跃会话时不发命令、也不报错：面板顶部已经显示「还没有会话」，
+    // 再报一次"同步失败"会让人以为记忆库坏了（0.1.7 上会话快照结构变化时就是这个表象）。
+    if (!sessionId) {
+      setPayload(null)
+      setError(null)
+      setLoading(false)
+      return
+    }
     if (inflightRef.current) return
     const now = Date.now()
     if (!force && now - lastRunRef.current < 800) return
@@ -128,7 +136,7 @@ export function MemoryView({
     setLoading(true)
     setError(null)
     try {
-      const res = await runLine(`/insight list ${scope}`)
+      const res = await runLine(`/tasks insight list ${scope}`)
       if (!res.ok) {
         setError(res.text)
         setPayload(null)
@@ -152,7 +160,7 @@ export function MemoryView({
     setBusy(true)
     setError(null)
     try {
-      const line = `/insight ${action} ${scope} ${id}${action === 'demote' && scope === 'project' && boundTaskId ? ` ${boundTaskId}` : ''}`
+      const line = `/tasks insight ${action} ${scope} ${id}${action === 'demote' && scope === 'project' && boundTaskId ? ` ${boundTaskId}` : ''}`
       const res = await runLine(line)
       if (!res.ok) setError(res.text)
       else void refresh(true)
@@ -230,8 +238,8 @@ export function MemoryView({
         fields.trigger = { keywords: form.trigger.split(/[,，]/).map((s) => s.trim()).filter(Boolean) }
       }
       const line = editingId
-        ? `/insight edit ${scope} ${editingId} ${JSON.stringify(fields)}`
-        : `/insight save ${scope} ${JSON.stringify(fields)}`
+        ? `/tasks insight edit ${scope} ${editingId} ${JSON.stringify(fields)}`
+        : `/tasks insight save ${scope} ${JSON.stringify(fields)}`
       const res = await runLine(line)
       if (!res.ok) {
         setError(res.text)

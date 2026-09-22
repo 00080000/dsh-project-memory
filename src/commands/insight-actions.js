@@ -311,11 +311,22 @@ export function editMemoryItem({ store, gs, scope, id, fields }) {
   return { ok: true, text: '已更新记忆条目' }
 }
 
-/** /insight <verb> <args…>：list [task|project|global] | confirm/promote/demote/archive/restore/delete <id> [taskId] */
+/**
+ * 记忆动作处理器：`list [task|project|global]` | `confirm/promote/demote/archive/restore/delete <scope> <id> [taskId]`
+ * 等。
+ *
+ * ⚠️ 这里返回的定义**不再作为宿主命令注册**：合并后唯一的用户命令是 `/tasks`（见 workflow.js），
+ * 本处理器是它的 `insight` 子动词分支（`/tasks insight <动作> …`），由工作流卡片按钮经
+ * remote.commands.execute 驱动。`name` / `description` / `input` 只剩说明意义，真正被使用的是
+ * `handler`——它读 `invocation.rawInput` 自行分词，合并前后一字未变。
+ * @param {object} config - 插件配置
+ * @param {object} ctx - 宿主上下文
+ * @returns {{name: string, description: string, input: object, handler: Function}}
+ */
 export function insightCommandDefinition(config, ctx) {
   return {
     name: 'insight',
-    description: '记忆视图动作（面板按钮调用）：/insight list project|global|task；/insight <confirm|promote|demote|archive|restore|delete> <scope> <id> [taskId]',
+    description: '记忆视图动作（面板按钮调用）：/tasks insight list project|global|task；/tasks insight <confirm|promote|demote|archive|restore|delete> <scope> <id> [taskId]',
     input: { hint: 'list [scope] | <动作> <scope> <id> [taskId]' },
     handler: (invocation) => {
       try {

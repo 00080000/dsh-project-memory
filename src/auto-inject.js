@@ -22,6 +22,37 @@ import { appendInjectionAudit, appendShadowAudit, auditRecordFrom, cfgAudit, cfg
 export const INJECT_MARK = '[Memory Inject]'
 
 /**
+ * 本插件在 `message.source` 上声明的生产者 kind。
+ *
+ * 会话格式 v4 起 `MessageSourceMap` 是「每个生产者声明自己的 kind」的可合并联合类型，
+ * **没有** `plugin` 这个兜底 kind：宿主的 `assertV4MessageSources` / `assertV4SourceRowAdmission`
+ * 会直接拒绝 `kind === 'plugin'` 的消息（`session-format-v3-to-v4/src/message-sources.ts`），
+ * 而拒绝发生在编码落盘那一刻 —— 于是整轮运行失败。
+ *
+ * 值选 `plugin:<包名>` 是因为这正是宿主自己的 v3→v4 迁移对本插件历史消息的改写结果
+ * （`rewritePluginSource`：第三方插件 → `plugin:${plugin}`，并丢弃 `plugin` 字段）。
+ * 新写的消息与迁移后的旧消息因此是**同一个生产者身份**，自激闸门（见 isOwnInjection）不需要按新旧分叉。
+ */
+export const SOURCE_KIND = 'plugin:dsh-project-memory'
+
+/**
+ * 这条消息是不是本插件自己注入的？
+ *
+ * 三种写法都要认，因为同一条历史消息在不同阶段形状不同：
+ *   - `plugin:dsh-project-memory` —— 现在写的，也是 v3→v4 迁移改写老消息的结果；
+ *   - `project-memory` —— 保留的别名：将来若再换 kind，自激闸门不会因此失效；
+ *   - `plugin: 'dsh-project-memory'` —— 迁移前内存里尚未落盘的旧形状（老宿主 / 测试夹具）。
+ * @param {object|undefined|null} source - message.source
+ * @returns {boolean}
+ */
+export function isOwnInjection(source) {
+  if (!source || typeof source !== 'object') return false
+  return source.kind === SOURCE_KIND
+    || source.kind === 'project-memory'
+    || source.plugin === 'dsh-project-memory'
+}
+
+/**
  * 注入正文的最小可用长度：预算塞不下这么多就宁可不注入（记 dropped）。
  * 与其输出 `- [ins_xxx] procedure ` 这种 stub，不如保持沉默——stub 只消耗 token 不传递信息。
  */
@@ -102,8 +133,8 @@ export function lastUserText(messages) {
     // 上一步的注入块会变成这一步的就绪查询（自激：拿自己注入的内容再检索一遍）。
     if (m.source && m.source.kind === 'user') return t.trim()
     // 本插件注入的块同样是 role=user。无 source 的老宿主下若把它当兜底查询，
-    // 就成了"拿自己上一步注入的内容再检索一遍"的自激——正是 kind==='user' 这道闸要防的。
-    if (m.source && m.source.plugin === 'dsh-project-memory') continue
+    // 就成了"拿自己上一步注入的内容再检索一遍"的自激——正是 isOwnInjection 这道闸要防的。
+    if (isOwnInjection(m.source)) continue
     if (!fallback) fallback = t.trim() // 无 source 的消息（老宿主 / 测试）兜底
   }
   return fallback
@@ -660,10 +691,9 @@ function injectionMessage(text) {
     content: [{ type: 'text', text: `\n\n${INJECT_MARK} auto-context\n${text}` }],
     // 这一块是「同一生产者后续快照会取代的当前状态」，不是一次性通知。
     // 宿主 ContextFormed 是判别联合：snapshot 必须带 sections（notice 才需要 summary）。
-    // 通道不变（仍走 agent/pre-step 追加 user 消息），只修语义。
+    // kind 必须是生产者自有的（v4 没有 'plugin' 兜底 kind），见 SOURCE_KIND 的注释。
     source: {
-      kind: 'plugin',
-      plugin: 'dsh-project-memory',
+      kind: SOURCE_KIND,
       form: 'snapshot',
       sections: [{ name: 'project-memory', text }],
     },

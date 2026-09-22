@@ -14,9 +14,7 @@ import { listTasksTool, selectTaskTool, archiveTaskTool, showTaskPanelTool } fro
 import { lessonTool } from './tools/lesson-tools.js'
 import { installAutoInject } from './auto-inject.js'
 import { rememberRoute } from './llm-route.js'
-import { tasksCommandDefinition } from './commands/tasks.js'
-import { taskCommandDefinition } from './commands/task-actions.js'
-import { insightCommandDefinition } from './commands/insight-actions.js'
+import { workflowCommandDefinition } from './commands/workflow.js'
 
 export const name = 'dsh-project-memory'
 export const inject = ['llm', 'tools']
@@ -141,15 +139,15 @@ export function apply(ctx, config) {
   ctx.tools.register(archiveTaskTool(config, { llm: ctx.llm, ctx }))
   ctx.tools.register(showTaskPanelTool(config))
 
-  // /tasks、/task、/insight 用户命令（宿主 commands 服务存在时注册，feature-detect 降级）
+  // /tasks：唯一的用户命令（合并自原 /tasks、/task、/insight —— 宿主命令只要注册就会
+  // 出现在 `/` 菜单的「指令」组里且无法隐藏，三条命令就是三行去不掉的原始行）。
+  // 切换/归档/审核等动作作为子动词，由面板按钮经 remote.commands.execute 驱动。
   try {
     ctx.inject(['commands'], (commandsCtx) => {
-      commandsCtx.commands.register(tasksCommandDefinition(config, ctx))
-      commandsCtx.commands.register(taskCommandDefinition(config, ctx))
-      commandsCtx.commands.register(insightCommandDefinition(config, ctx))
+      commandsCtx.commands.register(workflowCommandDefinition(config, ctx))
     })
   } catch (err) {
-    console.error(`[dsh-project-memory] /tasks,/task,/insight registration skipped: ${err.message}`)
+    console.error(`[dsh-project-memory] /tasks registration skipped: ${err.message}`)
   }
 
   ctx.tools.register(indexDocTool(ctx, config))

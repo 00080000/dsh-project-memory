@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import { appendInjectionAudit, appendShadowAudit, auditFileFor, auditRecordFrom, cfgAudit, cfgShadow, shadowFileFor, shadowRecordFrom } from '../src/audit.js'
-import { installAutoInject } from '../src/auto-inject.js'
+import { installAutoInject, isOwnInjection } from '../src/auto-inject.js'
 import { GlobalStore } from '../src/insight-store.js'
 
 let passed = 0
@@ -103,7 +103,7 @@ const dir = () => mkdtempSync(path.join(tmpdir(), 'audit-'))
   }
   const decision = await handler(payload, async () => ({ kind: 'enter', messages: payload.messages }))
   const last = decision.messages[decision.messages.length - 1]
-  assert.ok(last && last.source && last.source.plugin === 'dsh-project-memory', '应追加一条 [Memory Inject] 消息')
+  assert.ok(last && isOwnInjection(last.source), '应追加一条 [Memory Inject] 消息')
 
   const file = auditFileFor(path.join(root, '.dsh-project-memory'))
   assert.ok(existsSync(file), `注入之后必须留下审计文件：${file}`)
@@ -187,7 +187,7 @@ const dir = () => mkdtempSync(path.join(tmpdir(), 'audit-'))
   const silent = await step('sessSilent', '数据库迁移怎么做')
   assert.equal(silent.kind, 'enter')
   assert.equal(silent.messages.length, 1, '无关消息不得追加注入消息')
-  assert.ok(!silent.messages.some((m) => m.source && m.source.plugin === 'dsh-project-memory'), '不得有 plugin 注入消息')
+  assert.ok(!silent.messages.some((m) => isOwnInjection(m.source)), '不得有 plugin 注入消息')
   const after = lines(file)
   assert.equal(after.length, before + 1, '静默步也必须留下影子行')
   const lastRec = JSON.parse(after.at(-1))

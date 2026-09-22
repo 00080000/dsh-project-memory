@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import { installAutoInject } from '../src/auto-inject.js'
+import { installAutoInject, isOwnInjection } from '../src/auto-inject.js'
 import { GlobalStore } from '../src/insight-store.js'
 import { auditFileFor } from '../src/audit.js'
 
@@ -46,7 +46,7 @@ function harness(items, autoContext) {
     }
     const decision = await handler(payload, async () => ({ kind: 'enter', messages: payload.messages }))
     const last = decision.messages[decision.messages.length - 1]
-    return Boolean(last && last.source && last.source.plugin === 'dsh-project-memory')
+    return Boolean(last && isOwnInjection(last.source))
   }
   const audit = () => {
     const file = auditFileFor(path.join(root, '.dsh-project-memory'))

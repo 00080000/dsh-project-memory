@@ -225,7 +225,7 @@ const CONFIG = { memoryDir: '.dsh-project-memory', maxOutputChars: 8000, chunkCh
   assert.deepEqual(it.trigger.when, { ops: ['npm-publish'] }, 'when 必须保留')
   assert.equal(it.trigger.prevents, 'x', 'prevents 必须保留')
   assert.deepEqual(it.trigger.keywords, ['发包'])
-  ok('/insight edit：合并 trigger 而非重建')
+  ok('/tasks insight edit：合并 trigger 而非重建')
 }
 
 console.log(`\nbugfix-0.5.7 tests: ${passed} passed`)

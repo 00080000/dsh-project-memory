@@ -74,6 +74,13 @@ export const zh = {
   'mem.saved': '已保存',
   'mem.edit': '编辑',
   'mem.section-label': '任务记忆',
+  // `/` 菜单：自建 slash 源的行文案。分组标题走候选的 section（见 slash.ts），
+  // 不走 slash.menu 词典——那个 namespace 由宿主的 ui-input-trigger 独占，重复注册会抛错。
+  // 三个行标题直接复用上面面板的 view.* 文案，保证菜单与面板叫同一个名字。
+  'slash.group': '工作流',
+  'slash.tasks-desc': '任务清单：步骤进度、涉及文件、当前会话绑定',
+  'slash.project-desc': '项目记忆：本项目的教训 / 决策 / 流程',
+  'slash.global-desc': '全局记忆：跨项目的经验条目',
 }
 
 export const en = {
@@ -149,6 +156,10 @@ export const en = {
   'mem.saved': 'Saved',
   'mem.edit': 'Edit',
   'mem.section-label': 'Task memory',
+  'slash.group': 'Workflow',
+  'slash.tasks-desc': 'Task list: progress, involved files, current session binding',
+  'slash.project-desc': 'Project memory: this project’s lessons / decisions / procedures',
+  'slash.global-desc': 'Global memory: experience entries shared across projects',
 }
 
 export type LocaleDict = typeof zh

@@ -4,18 +4,20 @@
  * Presentational 组件在 TaskComponents.tsx
  */
 import { Component, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+// 图标走兼容层：0.1.5 用 IconXxx14/16，0.1.7+ 改成 IconXxxRegular + size prop
 import {
-  Button,
   IconChevronDownOutline14,
   IconCloseOutline16,
   IconFolderOpenOutline16,
   IconQuestionOutline14,
-} from '@deepseek-ai/dsh-client-ui-primitives'
+} from './icons.ts'
 import { createTranslate, zh, en } from './locales.ts'
 import { useTaskData, useTaskDataActions, taskDataStore, parseTaskPayloadText, type TaskStep } from './task-data-store.ts'
 import { useTaskUI, useTaskUIActions } from './task-ui-store.ts'
 import { MiniBar, TaskCard } from './TaskComponents.tsx'
 import { MemoryView, type InsightScope } from './MemoryView.tsx'
+import { pickSessionId } from './session-id.js'
 import css from './TaskPanel.module.css'
 
 const NS = 'dsh-project-memory'
@@ -36,11 +38,9 @@ function useSessionId(ctx: any): string | null {
     if (!list || typeof list.subscribe !== 'function') return
     return list.subscribe(() => force((n) => n + 1))
   }, [ctx])
-  const snap = ctx?.sessions?.list?.getSnapshot?.()
-  if (!snap) return null
-  if (snap.current) return snap.current
-  const first = Array.isArray(snap.items) ? snap.items.find((s: any) => !s.blank) ?? snap.items[0] : undefined
-  return first?.sessionId ?? null
+  // 快照结构在 dsh 0.1.7 变过（current/items → ids/byId）：解析与兼容都在 session-id.js，
+  // 那里有单测；这里只负责订阅与取值。
+  return pickSessionId(ctx?.sessions?.list?.getSnapshot?.())
 }
 
 class PanelErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
@@ -134,7 +134,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
       await runLine('/tasks')
       const newBoundId = taskDataStore.getSnapshot().boundTaskId
       if (newBoundId && newBoundId !== prevBoundId) {
-        await runLine(`/task switch ${newBoundId}`)
+        await runLine(`/tasks switch ${newBoundId}`)
       }
     } finally {
       setSyncing(false)
@@ -145,7 +145,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     if (syncing) return
     setSyncing(true)
     try {
-      await runLine(`/task ${verb} ${taskId}`)
+      await runLine(`/tasks ${verb} ${taskId}`)
     } finally {
       setSyncing(false)
     }
@@ -156,7 +156,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     if (syncing) return
     setSyncing(true)
     try {
-      await runLine(`/insight ${action} task ${id}`)
+      await runLine(`/tasks insight ${action} task ${id}`)
       await refresh()
     } finally {
       setSyncing(false)
@@ -164,7 +164,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   }
 
   const pushSteps = (taskId: string, steps: TaskStep[]): void => {
-    void runLine(`/task todos ${JSON.stringify(steps.map((s) => ({ content: s.content, status: s.status })))}`)
+    void runLine(`/tasks todos ${JSON.stringify(steps.map((s) => ({ content: s.content, status: s.status })))}`)
   }
 
   const cycleStatus = (taskId: string, index: number) => {
@@ -206,7 +206,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     if (!task) return
     const same = task.title === trimmed
     if (same || !trimmed) return
-    void runLine(`/task rename ${taskId} ${JSON.stringify(trimmed)}`)
+    void runLine(`/tasks rename ${taskId} ${JSON.stringify(trimmed)}`)
   }
 
   const expand = () => {
@@ -421,7 +421,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
                 expanded={expanded}
                 onToggleExpand={() => uiActions.toggleTaskExpanded(task.id)}
                 onSwitch={() => handleAction('switch', task.id)}
-                onUnbind={() => runLine('/task unbind')}
+                onUnbind={() => runLine('/tasks unbind')}
                 onArchive={() => handleAction('archive', task.id)}
                 onRename={(value) => commitTitle(task.id, value)}
                 onEditStep={(index, value) => commitStepText(task.id, index, value)}

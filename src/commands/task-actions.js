@@ -19,7 +19,7 @@ function describeTask(t) {
 /**
  * raw 去掉前 n 个空白分隔 token 后的**原始剩余文本**（保留内部空白与引号）。
  * 旧写法 `raw.split(/\s+/).slice(n).join(' ')` 会把标题/JSON 里的连续空格压成一个，
- * `/task rename <id> "a  b"` 于是改名成 "a b"。
+ * `/tasks rename <id> "a  b"` 于是改名成 "a b"。
  */
 function restAfter(raw, n) {
   let i = 0
@@ -43,10 +43,21 @@ function withTaskSnapshot(config, cwd, sid, store, note) {
   return { kind: 'success', text: fencedJson(human, payload) }
 }
 
+/**
+ * 任务动作处理器。
+ *
+ * ⚠️ 这里返回的定义**不再作为宿主命令注册**：合并后唯一的用户命令是 `/tasks`
+ * （见 workflow.js），本处理器是它的子动词分支（`/tasks switch|archive|unbind|rename|todos …`），
+ * 由卡片按钮经 remote.commands.execute 驱动。`name` / `description` / `input` 因此只剩说明意义，
+ * 真正被使用的是 `handler`——它读 `invocation.rawInput` 自行分词，合并前后一字未变。
+ * @param {object} config - 插件配置
+ * @param {object} ctx - 宿主上下文
+ * @returns {{name: string, description: string, input: object, handler: Function}}
+ */
 export function taskCommandDefinition(config, ctx) {
   return {
     name: 'task',
-    description: '任务面板动作：/task switch <任务id> 切换绑定，/task archive <任务id> 归档，/task unbind 取消当前任务绑定',
+    description: '任务面板动作：/tasks switch <任务id> 切换绑定，/tasks archive <任务id> 归档，/tasks unbind 取消当前任务绑定',
     input: { hint: 'switch|archive <任务id> | unbind' },
     handler: (invocation) => {
       try {

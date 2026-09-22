@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { installAutoInject } from '../src/auto-inject.js'
+import { installAutoInject, isOwnInjection } from '../src/auto-inject.js'
 import { GlobalStore } from '../src/insight-store.js'
 import { WatchManager } from '../src/watch.js'
 import { ProjectMemoryStore } from '../src/store.js'
@@ -118,8 +118,12 @@ const ok = (name) => {
   assert.ok(decision.messages.length > payload.messages.length, '应当追加了一条注入消息')
   const injected = decision.messages[decision.messages.length - 1]
   assert.ok(injected && injected.source, '注入消息必须带 source（宿主会读 message.source.kind）')
-  assert.equal(injected.source.kind, 'plugin')
-  assert.equal(injected.source.plugin, 'dsh-project-memory')
+  // 会话格式 v4 的 MessageSourceMap 没有 'plugin' 兜底 kind：宿主 assertV4MessageSources
+  // 会在编码落盘那一刻拒绝 kind==='plugin' 的消息，整轮运行失败。kind 必须是生产者自有的。
+  assert.equal(injected.source.kind, 'plugin:dsh-project-memory',
+    'kind 必须是生产者自有 kind；写 "plugin" 会被宿主的 v4 source 准入直接拒掉（整轮崩）')
+  assert.equal(injected.source.plugin, undefined,
+    'v4 形状里没有 plugin 字段（迁移会丢弃它），写它等于又造一种宿主不认识的形状')
   assert.equal(injected.source.form, 'snapshot', '这是会被后续快照取代的当前状态，不是 notice')
   assert.equal(injected.source.summary, undefined, 'snapshot 不得携带 notice 的 summary（宿主判别联合）')
   assert.ok(Array.isArray(injected.source.sections) && injected.source.sections.length === 1)
@@ -169,7 +173,7 @@ const ok = (name) => {
       }
       const decision = await handler(payload, async () => ({ kind: 'enter', messages: payload.messages }))
       const last = decision.messages[decision.messages.length - 1]
-      return last && last.source && last.source.plugin === 'dsh-project-memory'
+      return last && isOwnInjection(last.source)
         ? last.content.map((b) => b.text).join('\n')
         : null
     }
