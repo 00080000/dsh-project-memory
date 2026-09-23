@@ -113,7 +113,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     try {
       response = await commands.execute(sessionId, line, [])
     } catch (err) {
-      setSyncError(String(err?.message ?? err))
+      setSyncError(String((err as { message?: unknown } | null | undefined)?.message ?? err))
       return false
     }
     const envelope = response as { ok?: boolean; value?: any } | null | undefined
