@@ -20,6 +20,7 @@
   "scripts": {
     "test": "node test/run-test.mjs && node test/taskbridge.test.mjs && node test/insight-store.test.mjs && node test/reflection-pipeline.test.mjs && node test/auto-inject.test.mjs && node test/insight-actions.test.mjs && node test/host-contract.test.mjs && node test/llm-route.test.mjs && node test/doc-index.test.mjs && node test/client-hints.test.mjs && node test/recall.test.mjs && node test/readiness.test.mjs && node test/insight-derive.test.mjs && node test/readiness-eval.test.mjs && node test/ops.test.mjs && node test/injection-audit.test.mjs && node test/injection-budget.test.mjs && node test/injection-scenarios.test.mjs && node test/bugfix-0.5.7.test.mjs && node test/client-icons.test.mjs && node test/client-slash.test.mjs && node test/workflow-command.test.mjs && node test/client-session-id.test.mjs",
     "eval:injection": "node test/injection-scenarios.test.mjs",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
     "selfcheck:triggers": "node test/injection-scenarios.test.mjs --selfcheck",
     "bench": "node scripts/bench.mjs",
     "bench:synthetic": "node scripts/bench-synthetic.mjs",

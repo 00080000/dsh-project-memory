@@ -8,6 +8,8 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "moduleResolution": "bundler",
     "types": ["react", "react-dom"],
+    "allowJs": true,
+    "allowImportingTsExtensions": true,
     "noEmit": true
   },
   "include": ["src/client/**/*"],
