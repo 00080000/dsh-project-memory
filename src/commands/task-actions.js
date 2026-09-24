@@ -2,17 +2,15 @@
 //   switch  <taskId>  — 绑定当前会话到该任务（自动解归档），等价 select_task(taskId)
 //   archive <taskId>  — 归档该任务
 // 返回值与 /tasks 同一快照文本（含 JSON 载荷），面板解析后即时刷新，无需再跑一次 /tasks。
-import { memoryRootFor } from '../util/fs.js'
-import { ProjectMemoryStore } from '../store.js'
-import { projectRootFor, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
+import { taskStoreFor, projectRootFor, NO_PROJECT_ROOT_NOTE, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
 import { renderTaskSnapshot, buildTaskPayload } from './tasks.js'
 import { fireReflect } from '../reflection-pipeline.js'
 import { resolveRoute } from '../llm-route.js'
 import { fencedJson, invocationContext } from './invocation.js'
+import { stepContent, stepProgress, stepStatus } from '../util/task-view.js'
 
 function describeTask(t) {
-  const done = (t.steps || []).filter((s) => s.status === 'completed').length
-  const total = (t.steps || []).length
+  const { done, total } = stepProgress(t)
   return `「${t.title}」（步骤 ${done}/${total}）`
 }
 
@@ -77,8 +75,8 @@ export function taskCommandDefinition(config, ctx) {
         if (!['unbind', 'todos', 'rename'].includes(verb) && (!taskId || rest.length)) {
           return { kind: 'error', text: '[task] 用法: /task switch|archive <任务id> | unbind' }
         }
-        const root = projectRootFor(cwd)
-        const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+        const { root, store } = taskStoreFor(cwd, config)
+        if (!store) return { kind: 'error', text: NO_PROJECT_ROOT_NOTE }
 
         if (verb === 'unbind') {
           if (sid) store.removeBinding(sid)
@@ -127,11 +125,7 @@ export function taskCommandDefinition(config, ctx) {
             return { kind: 'error', text: '[task] todos 需要 JSON 数组参数（由面板自动生成）' }
           }
           const norm = todos
-            .map((s) => {
-              const content = String(s?.content ?? s?.text ?? '').trim()
-              const status = ['pending', 'in_progress', 'completed'].includes(s?.status) ? s.status : 'pending'
-              return { content, status }
-            })
+            .map((s) => ({ content: String(stepContent(s)).trim(), status: stepStatus(s) }))
             .filter((s) => s.content.length > 0)
           const boundId = sid ? store.getBoundTaskId(sid) : null
           if (!boundId) {

@@ -1,14 +1,11 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { assertIndexRoot, memoryRootFor, resolveIndexRoot } from '../util/fs.js'
+import { assertIndexRoot, memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { truncate } from '../util/text.js'
 import { cfgInsight, saveInsight, defaultGlobalFile, GlobalStore } from '../insight-store.js'
 import { ensureGlobalInit } from '../global-seed.js'
 import { INSIGHT_KINDS, INSIGHT_SCOPES } from '../insight-store.js'
-
-function sessionIdOf(exec) {
-  return exec?.agent?.session?.id || exec?.ctx?.session?.id
-}
+import { sessionIdOf } from '../util/task-view.js'
 
 export function lessonTool(config) {
   const kindDesc = `insight 语义：lesson(曾踩坑/纠偏, pattern→fix) | decision(权衡选型, choice→reason) | procedure(多步指南, steps) | experience(problem→solution，v0.4 兼容)。默认 lesson。所有 kind 都可带 trigger：命中即在动手前确定性注入。`
@@ -76,7 +73,7 @@ export function lessonTool(config) {
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args, exec) {
-      const root = resolveIndexRoot(exec, args.root)
+      const root = resolveSafeIndexRoot(exec, args.root, config)
       assertIndexRoot(root, args.root || root)
       const memoryDir = memoryRootFor(root, config.memoryDir)
       const store = new ProjectMemoryStore(memoryDir).load()

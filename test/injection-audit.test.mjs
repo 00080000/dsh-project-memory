@@ -15,7 +15,13 @@ const ok = (name) => {
   console.log('  ok', name)
 }
 
-const dir = () => mkdtempSync(path.join(tmpdir(), 'audit-'))
+// 夹具根都写成"真项目"（带 package.json）：本文件断言的是审计形状与静默步，
+// 不该被"记忆根是推定的"那条一次性通告干扰（它有自己的用例）。
+const dir = () => {
+  const d = mkdtempSync(path.join(tmpdir(), 'audit-'))
+  writeFileSync(path.join(d, 'package.json'), '{}')
+  return d
+}
 
 // --- 1. 记录形状：能直接回答「注入了什么」和「为什么没注入别的」 ---
 {

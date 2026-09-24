@@ -64,8 +64,8 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | Tool | Purpose |
 |---|---|
 | `index_doc file_path` | Index one document (PDF/MD/txt): chunk → deterministic `summary` + whole-chunk `terms` → store with `path:line`. Unchanged files are skipped. |
-| `index_repo root` | Index a whole project: docs get deterministic summaries + whole-chunk terms, code files get a zero-token symbol table. Incremental, cleans up deleted files, cross-links docs to symbols. A root that does not exist — including a Windows-style path resolved on Linux/macOS — is rejected before anything is written. |
-| `watch_repo root` | Enable automatic refresh: a background poll detects new/changed files (mtime + content hash) and re-indexes only those. Watched roots persist across plugin restarts; a non-existent root, the filesystem root and the shared temp directory are all refused, and roots that disappear are dropped instead of being re-created. |
+| `index_repo root` | Index a whole project: docs get deterministic summaries + whole-chunk terms, code files get a zero-token symbol table. Incremental, cleans up deleted files, cross-links docs to symbols. A root that does not exist — including a Windows-style path resolved on Linux/macOS — is rejected before anything is written, and so is a *dangerous* root (home directory, filesystem root, system / package-manager prefixes): scanning one of those walks hundreds of thousands of files. |
+| `watch_repo root` | Enable automatic refresh: a background poll detects new/changed files (mtime + content hash) and re-indexes only those. Watched roots persist across plugin restarts; a non-existent root and a dangerous root (filesystem root, home directory, shared temp directory, system / package-manager prefixes) are all refused, roots that disappear are dropped instead of being re-created, and a polluted watchlist from an older version is self-healed on startup. |
 | `memory_stats root` | Show what the store contains: totals (files / entries / experience notes), last index time, and the per-file list sorted by recency. |
 | `query_memory query` | BM25 search over docs + symbols + experience + insights (lessons / decisions / procedures), optionally query-expanded by the LLM. `type` selects a layer (`all` / `doc` / `symbol` / `experience` / `insight` / `task`). Returns ranked hits with relative scores, sources or insight ids, and doc→symbol references. |
 | `list_tasks` | List task records for the project (archived marked). Call first in a new session before continuing work. |
@@ -153,6 +153,9 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 | `autoIndexOnFirstUse` | false | full scan of the current working directory on plugin load (opt-in) |
 | `watch` | true | enable the background refresh |
 | `watchInterval` | 15 | poll interval (seconds) |
+| `maxScanFiles` | 20000 | hard cap on files per scan pass; a truncated scan is reported and never deletes the entries it did not reach. Set `0` to disable the cap (at your own risk) |
+| `maxScanDepth` | 12 | hard cap on directory depth per scan pass. Set `0` to disable |
+| `allowUnsafeRoots` | false | allow **explicit** tool calls (`index_repo`/`watch_repo`/`remember` with a `root`) to target a dangerous root. Automatic paths (lazy indexing, session audit, TaskBridge, `autoIndexOnFirstUse`) stay inert in these directories regardless |
 | `tsPath` | (auto) | optional absolute path to a specific `typescript` install; if omitted, resolves from project cwd → plugin node_modules |
 | `enableTypeScript` | true | set `false` to disable L2 TS enhancement entirely (L1 regex only) |
 
@@ -162,7 +165,7 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 |---|---|---|
 | `insight.*` | dedupOverlap `0.7` · reinforceBand `0.65` · maxProject `100` · maxGlobalProcedures `200` · promoteConfidence `0.7` · globalPromoteTasks `3` · decayDays `90` · `globalFile` (auto) | v0.5 insight dedupe / reinforce / promotion / capacity / archive settings |
 | `reflection.enabled` | false | v0.5 LLM reflection, **draft-only at task level** (fires on task switch-away / archive). `cooldownMs` `1800000`, `maxLessonsPerReflect` `3`, `maxDecisionsPerReflect` `2` |
-| `autoContext.enabled` | true | silent injection wrapper (resident task card + gated items). Inert (full passthrough) until the host exposes a resolvable session cwd; `maxTokens` `400`, `editedMax` `3` (how many recently-written "editing now" files the resident task card shows), `signalMinRatio` `0.5` (a hint must reach half of its layer's top score), `skipEchoSelfTodo` `true` (don't echo the task card back when the model itself maintains the task list with no newer human message; relevant insights still inject), `budgetLog` `off` (budget-drop audit on stderr: `off` silent / `once` at most one line per session / `all` one line per changed dropped set), `reinjectItemsAfter` `0` (cooldown, in pre-steps, before the same insight may be injected again) |
+| `autoContext.enabled` | true | silent injection wrapper (resident task card + gated items). Inert (full passthrough) until the host exposes a resolvable session cwd; `maxTokens` `400`, `editedMax` `3` (how many recently-written "editing now" files the resident task card shows), `signalMinRatio` `0.5` (a hint must reach half of its layer's top score), `skipEchoSelfTodo` `true` (don't echo the task card back when the model itself maintains the task list with no newer human message; relevant insights still inject), `budgetLog` `off` (budget-drop audit on stderr: `off` silent / `once` at most one line per session / `all` one line per changed dropped set), `reinjectItemsAfter` `0` (cooldown, in pre-steps, before the same insight may be injected again), `rootNotice` `true` (when the memory root is inferred from a marker-less working directory, tell the model once where memory lives and how to change it) |
 | `autoContext.gateCooldownSteps` | 2 | **admission knobs.** Minimum number of pre-steps between two *item* injections (the resident task card is exempt — it is a state snapshot and should update when it changes). This is the main "don't inject often" dial |
 | `autoContext.maxItemsPerSession` | 12 | hard per-session cap on injected items; the budget is a ceiling, not a target — once exhausted the item channel stays silent |
 | `autoContext.maxItemCharsPerSession` | 4000 | same, in characters |
@@ -189,6 +192,16 @@ Automatic injection used to be a *retrieval* problem ("which entry is most relat
 
 The two most relevant switches are `lazyIndexing` (index a file the moment the model reads it; default on) and `autoIndexOnFirstUse` (full scan of the current working directory on plugin load; default off). Lazily indexed project roots are automatically registered with the watcher, so changed files stay fresh without an explicit `watch_repo`.
 
+**Where the project root comes from.** One policy, applied identically by lazy indexing, the session audit trail, TaskBridge and every tool: an explicit `root` argument wins; otherwise an explicitly registered root (`watch_repo`); otherwise the nearest ancestor containing a VCS marker (`.git`/`.hg`/`.svn`) or a build/manifest marker (`package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, …); otherwise **the session working directory itself, provided it is a safe directory**. So a marker-less scratch folder you started dsh in still gets project memory — the plugin just says so once:
+
+```
+memory root: /Users/me/scratch (inferred from the session working directory; no project marker found).
+If project memory should live elsewhere, pass `root: <dir>` to index_repo / watch_repo / remember / query_memory,
+or restart dsh inside the project directory.
+```
+
+That notice goes out once per session and can be muted with `autoContext.rootNotice: false`. What the plugin will **not** do is promote an arbitrary directory to a project: reading a stray file outside the working directory records nothing, and a dangerous root (filesystem root, your home directory, the shared temp directory or a system / package-manager prefix such as `/opt/homebrew`) is refused outright — that is what used to walk an entire home directory and exhaust memory. Sessions whose working directory is one of those run with memory disabled (one stderr line explains why).
+
 Settings live in the plugin's config object. To change them, add an override entry to your profile's `cordis.patch.yml` — for the web profile that is `~/.dsh/profiles/web/cordis.patch.yml`:
 
 ```yaml
@@ -199,7 +212,10 @@ Settings live in the plugin's config object. To change them, add an override ent
     llmQueryExpansion: false    # off: do not spend tokens on LLM query expansion (default)
     watch: true                 # on: background refresh for watched roots (default)
     watchInterval: 15           # poll interval in seconds
+    maxScanFiles: 20000         # per-scan file cap (truncation is reported, never deletes)
+    maxScanDepth: 12            # per-scan directory-depth cap
     enableTypeScript: true      # on: L2 TS enhancement when TS is installed (default)
+    # allowUnsafeRoots: false   # keep false unless you really want to index a home/system dir explicitly
     # budgetLog: once           # debugging: log budget drops to stderr (default off = silent)
     # reinjectItemsAfter: 20    # debugging: allow the same insight again after N steps (default 0 = once per session)
     # tsPath: /custom/path/to/typescript  # optional: force specific TS install

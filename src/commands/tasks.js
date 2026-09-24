@@ -3,27 +3,9 @@
 // renderTaskSnapshot / buildTaskPayload 导出供 task-actions.js 复用（面板动作后返回同一快照）。
 import { memoryRootFor } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
-import { projectRootFor } from '../setup/taskbridge.js'
+import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
-
-function timeAgo(iso) {
-  const diff = Date.now() - new Date(iso).getTime()
-  const m = Math.floor(diff / 60000)
-  if (m < 1) return '刚刚'
-  if (m < 60) return `${m}分钟前`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}小时前`
-  return `${Math.floor(h / 24)}天前`
-}
-
-/** 步骤在历史数据里可能是字符串，也可能是 {content|text, status}：统一取文本与状态。 */
-function stepContent(s) {
-  if (typeof s === 'string') return s
-  return s?.content ?? s?.text ?? ''
-}
-function stepStatus(s) {
-  return typeof s === 'string' ? 'pending' : (s?.status || 'pending')
-}
+import { stepContent, stepProgress, stepStatus, timeAgo } from '../util/task-view.js'
 
 export function buildTaskPayload(tasks, boundId, archived) {
   return JSON.stringify({
@@ -48,6 +30,7 @@ export function buildTaskPayload(tasks, boundId, archived) {
  */
 export function renderTaskSnapshot(config, cwd, sid) {
   const root = projectRootFor(cwd)
+  if (!root) return { kind: 'error', text: NO_PROJECT_ROOT_NOTE }
   const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
   const tasks = store.getTasks()
   const active = tasks.filter((t) => !t.archived)
@@ -62,8 +45,7 @@ export function renderTaskSnapshot(config, cwd, sid) {
   }
   const lines = [`项目 ${root}`, `任务: ${active.length} 套${archived ? `（归档 ${archived}）` : ''}`, '']
   for (const t of active) {
-    const done = (t.steps || []).filter((s) => stepStatus(s) === 'completed').length
-    const total = (t.steps || []).length
+    const { done, total } = stepProgress(t)
     const progress = total ? `${done}/${total}` : '无步骤'
     const inProgress = (t.steps || []).find((s) => stepStatus(s) === 'in_progress')
     const step = inProgress ? ` · 当前: ${stepContent(inProgress)}` : ''
