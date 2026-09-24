@@ -64,8 +64,8 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | Tool | Purpose |
 |---|---|
 | `index_doc file_path` | Index one document (PDF/MD/txt): chunk → deterministic `summary` + whole-chunk `terms` → store with `path:line`. Unchanged files are skipped. |
-| `index_repo root` | Index a whole project: docs get deterministic summaries + whole-chunk terms, code files get a zero-token symbol table. Incremental, cleans up deleted files, cross-links docs to symbols. A root that does not exist — including a Windows-style path resolved on Linux/macOS — is rejected before anything is written, and so is a *dangerous* root (home directory, filesystem root, system / package-manager prefixes): scanning one of those walks hundreds of thousands of files. |
-| `watch_repo root` | Enable automatic refresh: a background poll detects new/changed files (mtime + content hash) and re-indexes only those. Watched roots persist across plugin restarts; a non-existent root and a dangerous root (filesystem root, home directory, shared temp directory, system / package-manager prefixes) are all refused, roots that disappear are dropped instead of being re-created, and a polluted watchlist from an older version is self-healed on startup. |
+| `index_repo root` | Index a whole project: docs get deterministic summaries + whole-chunk terms, code files get a zero-token symbol table. Incremental, cleans up deleted files, cross-links docs to symbols. A root that does not exist — including a Windows-style path resolved on Linux/macOS — or one on the excluded list is rejected before anything is written. |
+| `watch_repo root` | Enable automatic refresh: a background poll detects new/changed files (mtime + content hash) and re-indexes only those. Watched roots persist across plugin restarts; a non-existent or excluded root is refused, roots that disappear are dropped instead of being re-created, and entries that are no longer valid roots are dropped on startup. |
 | `memory_stats root` | Show what the store contains: totals (files / entries / experience notes), last index time, and the per-file list sorted by recency. |
 | `query_memory query` | BM25 search over docs + symbols + experience + insights (lessons / decisions / procedures), optionally query-expanded by the LLM. `type` selects a layer (`all` / `doc` / `symbol` / `experience` / `insight` / `task`). Returns ranked hits with relative scores, sources or insight ids, and doc→symbol references. |
 | `list_tasks` | List task records for the project (archived marked). Call first in a new session before continuing work. |
@@ -153,9 +153,9 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 | `autoIndexOnFirstUse` | false | full scan of the current working directory on plugin load (opt-in) |
 | `watch` | true | enable the background refresh |
 | `watchInterval` | 15 | poll interval (seconds) |
-| `maxScanFiles` | 20000 | hard cap on files per scan pass; a truncated scan is reported and never deletes the entries it did not reach. Set `0` to disable the cap (at your own risk) |
+| `maxScanFiles` | 20000 | hard cap on files per scan pass; a truncated pass is reported and does not remove the entries it did not reach. Set `0` to disable the cap |
 | `maxScanDepth` | 12 | hard cap on directory depth per scan pass. Set `0` to disable |
-| `allowUnsafeRoots` | false | allow **explicit** tool calls (`index_repo`/`watch_repo`/`remember` with a `root`) to target a dangerous root. Automatic paths (lazy indexing, session audit, TaskBridge, `autoIndexOnFirstUse`) stay inert in these directories regardless |
+| `allowUnsafeRoots` | false | allow **explicit** tool calls (`index_repo`/`watch_repo`/`remember` with a `root`) to target a directory on the excluded list. Automatic paths (lazy indexing, session audit, TaskBridge, `autoIndexOnFirstUse`) stay inert in these directories regardless |
 | `tsPath` | (auto) | optional absolute path to a specific `typescript` install; if omitted, resolves from project cwd → plugin node_modules |
 | `enableTypeScript` | true | set `false` to disable L2 TS enhancement entirely (L1 regex only) |
 
@@ -192,23 +192,15 @@ Automatic injection used to be a *retrieval* problem ("which entry is most relat
 
 The two most relevant switches are `lazyIndexing` (index a file the moment the model reads it; default on) and `autoIndexOnFirstUse` (full scan of the current working directory on plugin load; default off). Lazily indexed project roots are automatically registered with the watcher, so changed files stay fresh without an explicit `watch_repo`.
 
-**Where the project root comes from.** One policy, applied identically by lazy indexing, the session audit trail, TaskBridge and every tool: an explicit `root` argument wins; otherwise an explicitly registered root (`watch_repo`); otherwise the nearest ancestor containing a VCS marker (`.git`/`.hg`/`.svn`) or a build/manifest marker (`package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, …); otherwise **the session working directory itself, provided it is a safe directory**. So a marker-less scratch folder you started dsh in still gets project memory — the plugin just says so once:
+**Root resolution.** In order: an explicit `root` argument; a registered root (`watch_repo`); the nearest ancestor with a VCS marker (`.git`/`.hg`/`.svn`) or a build/manifest marker (`package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, …); the session working directory, unless it is on the excluded list. A file that matches none of these is not indexed.
 
-```
-memory root: /Users/me/scratch (inferred from the session working directory; no project marker found).
-If project memory should live elsewhere, pass `root: <dir>` to index_repo / watch_repo / remember / query_memory,
-or restart dsh inside the project directory.
-```
+When the root comes from the working directory, the model gets one notice per session naming it and how to change it; mute with `autoContext.rootNotice: false`. Starting dsh in a container directory such as `~/workspace` therefore makes that directory the root, and memory spans everything beneath it up to the scan limit — start dsh inside the project for one store per project.
 
-That notice goes out once per session and can be muted with `autoContext.rootNotice: false`. What the plugin will **not** do is promote an arbitrary directory to a project: reading a stray file outside the working directory records nothing, and a dangerous root is refused outright: the filesystem root, your home directory, the temp directories (`os.tmpdir()` **and** the shared ones — `/tmp`, `/var/tmp`, `%TEMP%`, `%SystemRoot%\Temp`) and system / package-manager prefixes (`/opt/homebrew` on POSIX, `%SystemRoot%`/`%ProgramFiles%`/`%ProgramData%` on Windows) — that is what used to walk an entire home directory and exhaust memory. Sessions whose working directory is one of those run with memory disabled (one stderr line explains why).
+**Excluded directories.** Not used as a root, matched exactly (subdirectories are unaffected): the filesystem root, the home directory, temp directories — `os.tmpdir()` and the shared ones (`/tmp`, `/var/tmp`, `%TEMP%`, `%SystemRoot%\Temp`) — and system / package-manager prefixes (`/opt/homebrew` on POSIX; `%SystemRoot%`, `%ProgramFiles%`, `%ProgramData%` on Windows). A session in one of these runs without memory, with one line on stderr.
 
-**Scan limits, and what happens on a big tree.** One scan pass touches at most `maxScanFiles` files (**20000**) and `maxScanDepth` directory levels (**12**). For scale: a 1300-file project uses about 6% of the file budget, so ordinary projects never come near it. Hitting a limit is **never silent** — `index_repo` prints `scan truncated at the safety limit …` in its report and the watcher logs one line per affected root — and a truncated scan **never deletes** the entries it did not reach: not having scanned a file is not the same as the file being deleted. Memory stays bounded either way; if your project is legitimately larger, raise `maxScanFiles`/`maxScanDepth` and only the coverage changes.
+**Scan limits.** One pass covers at most `maxScanFiles` files (20000) and `maxScanDepth` directory levels (12). A truncated pass is reported in the `index_repo` result and logged once per root by the watcher, and it does not remove entries it did not reach. Raise both for a larger tree.
 
-**Working in a container directory.** Because the session working directory is a valid root, starting dsh in `~/workspace` (a folder holding many projects, with no marker of its own) makes *that* folder the memory root — memory then spans everything under it, up to the scan cap. That is intended, but if you want one store per project, start dsh inside the project. Either way the store lives in your tree, so add it to `.gitignore`:
-
-```
-.dsh-project-memory/
-```
+The store lives in the tree it indexes and **ignores itself**: it writes a `*` rule into its own `<store>/.gitignore`, which git honours for any directory, so nothing shows up in `git status` or `git add -A` and you have nothing to add to your own `.gitignore`. (It also means `git clean -fd` leaves the store alone.) To commit project memory deliberately, `git add -f .dsh-project-memory` — tracked files are not affected by ignore rules.
 
 Settings live in the plugin's config object. To change them, add an override entry to your profile's `cordis.patch.yml` — for the web profile that is `~/.dsh/profiles/web/cordis.patch.yml`:
 

@@ -13,6 +13,7 @@ const BINDING_FILE = 'binding.json'
 const WATCH_FILE = 'watch.json'
 const INSIGHTS_FILE = 'insights.json'
 const SHARDS_DIR = 'shards'
+const GITIGNORE_FILE = '.gitignore'
 
 const storeCache = new Map()
 const STORE_CACHE_MAX = 32
@@ -96,6 +97,9 @@ export class ProjectMemoryStore {
     this._migrateLegacyIfNeeded()
     this._loadSharded()
     this._loadInsights()
+    // 有些路径只读不写（审计 jsonl 直接写在 store 目录里），所以这里也补一次自我忽略，
+    // 让老版本建出来的 store 在第一次 load 就补上。
+    this.ensureSelfIgnore()
     storeCache.set(key, this)
     // 只保留最近打开的项目：长期跨多项目运行时不至于无限增长（被逐出只是下次重新读盘）
     while (storeCache.size > STORE_CACHE_MAX) {
@@ -286,6 +290,28 @@ export class ProjectMemoryStore {
     }
   }
 
+  /**
+   * store 目录**自我忽略**：在目录里放一个内容为 `*` 的 `.gitignore`。
+   *
+   * 为什么不写进用户的 `.gitignore`：那是用户的文件，插件不该改；而且"忘了加"的代价
+   * 是一次误提交。为什么这样就够：git 会读取工作区里**任意**目录下的 `.gitignore`，
+   * 而 `*` 连这个 `.gitignore` 自己一起命中，于是 `git status` / `git add -A` 里整棵树
+   * 都不出现，用户一个字都不用写（`git check-ignore -v` 可复核）。
+   *
+   * 顺带的好处：被忽略的文件不会被 `git clean -fd` 删除（未跟踪且未忽略的会被删）。
+   * 想把记忆跟着仓库提交：`git add -f .dsh-project-memory`——已跟踪的文件不受忽略规则影响。
+   */
+  ensureSelfIgnore() {
+    if (!existsSafe(this.dir)) return
+    const file = path.join(this.dir, GITIGNORE_FILE)
+    if (existsSafe(file)) return
+    try {
+      writeFileSync(file, '# dsh-project-memory: local by default. `git add -f` to commit it.\n*\n')
+    } catch {
+      // 旁路：写不进去不影响存储本身
+    }
+  }
+
   save() {
     // 没有脏数据就不落盘。watch 每轮对每个根都无条件 commit → save；照旧执行的话，
     // 末尾的 `_version++` + `_idfCache = null` 会打在跨实例共享的 store 上，
@@ -302,6 +328,8 @@ export class ProjectMemoryStore {
     if (dirty) mkdirSync(this.dir, { recursive: true })
     // 崩溃遗留的 *.tmp 无论有没有脏数据都顺手清掉（两次 readdir，自带 try/catch）
     this.cleanStaleTmp()
+    // 自我忽略也在无脏数据时执行：老版本建出来的 store 会在下一次 save 时补上。
+    this.ensureSelfIgnore()
     if (!dirty) return
     if (!this._formatWritten) {
       writeJsonAtomic(path.join(this.dir, FORMAT_FILE), { version: 2, layout: 'sharded' })
