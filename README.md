@@ -200,7 +200,15 @@ If project memory should live elsewhere, pass `root: <dir>` to index_repo / watc
 or restart dsh inside the project directory.
 ```
 
-That notice goes out once per session and can be muted with `autoContext.rootNotice: false`. What the plugin will **not** do is promote an arbitrary directory to a project: reading a stray file outside the working directory records nothing, and a dangerous root (filesystem root, your home directory, the shared temp directory or a system / package-manager prefix — `/opt/homebrew` on POSIX, `%SystemRoot%`/`%ProgramFiles%`/`%ProgramData%` on Windows) is refused outright — that is what used to walk an entire home directory and exhaust memory. Sessions whose working directory is one of those run with memory disabled (one stderr line explains why).
+That notice goes out once per session and can be muted with `autoContext.rootNotice: false`. What the plugin will **not** do is promote an arbitrary directory to a project: reading a stray file outside the working directory records nothing, and a dangerous root is refused outright: the filesystem root, your home directory, the temp directories (`os.tmpdir()` **and** the shared ones — `/tmp`, `/var/tmp`, `%TEMP%`, `%SystemRoot%\Temp`) and system / package-manager prefixes (`/opt/homebrew` on POSIX, `%SystemRoot%`/`%ProgramFiles%`/`%ProgramData%` on Windows) — that is what used to walk an entire home directory and exhaust memory. Sessions whose working directory is one of those run with memory disabled (one stderr line explains why).
+
+**Scan limits, and what happens on a big tree.** One scan pass touches at most `maxScanFiles` files (**20000**) and `maxScanDepth` directory levels (**12**). For scale: a 1300-file project uses about 6% of the file budget, so ordinary projects never come near it. Hitting a limit is **never silent** — `index_repo` prints `scan truncated at the safety limit …` in its report and the watcher logs one line per affected root — and a truncated scan **never deletes** the entries it did not reach: not having scanned a file is not the same as the file being deleted. Memory stays bounded either way; if your project is legitimately larger, raise `maxScanFiles`/`maxScanDepth` and only the coverage changes.
+
+**Working in a container directory.** Because the session working directory is a valid root, starting dsh in `~/workspace` (a folder holding many projects, with no marker of its own) makes *that* folder the memory root — memory then spans everything under it, up to the scan cap. That is intended, but if you want one store per project, start dsh inside the project. Either way the store lives in your tree, so add it to `.gitignore`:
+
+```
+.dsh-project-memory/
+```
 
 Settings live in the plugin's config object. To change them, add an override entry to your profile's `cordis.patch.yml` — for the web profile that is `~/.dsh/profiles/web/cordis.patch.yml`:
 
