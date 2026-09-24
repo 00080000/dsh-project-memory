@@ -11,3 +11,9 @@
         autoIndexOnFirstUse: false
         watch: true
         watchInterval: 15
+        # 危险根护栏（家目录 / 文件系统根 / 系统与包管理器前缀整体扫描会吃满内存）。
+        # 自动路径永远不越权；true 只放开**显式**带 root 的工具调用。
+        allowUnsafeRoots: false
+        # 单次扫描上限；截断会报告，且不会删除未扫到的条目。
+        maxScanFiles: 20000
+        maxScanDepth: 12

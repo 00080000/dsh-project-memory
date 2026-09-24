@@ -1,23 +1,15 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
-import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
+import { memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
 import { expandQuery } from '../llm.js'
 import { resolveRoute } from '../llm-route.js'
 import { GlobalStore, cfgInsight, defaultGlobalFile, recordHit } from '../insight-store.js'
 import { recallItems } from '../recall.js'
 import { truncate } from '../util/text.js'
+import { stepContent, stepStatus } from '../util/task-view.js'
 function toAbs(root, rel) {
   return path.isAbsolute(rel) ? rel : path.join(root, rel)
-}
-
-/** 步骤在历史数据里可能是字符串或 {content|text, status}：TaskBridge/注入/反思都按 content||text 读。 */
-function stepContent(s) {
-  if (typeof s === 'string') return s
-  return s?.content ?? s?.text ?? ''
-}
-function stepStatus(s) {
-  return typeof s === 'string' ? 'pending' : (s?.status || 'pending')
 }
 
 export function queryMemoryTool(ctx, config) {
@@ -54,7 +46,7 @@ export function queryMemoryTool(ctx, config) {
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args, exec) {
-      const root = resolveIndexRoot(exec, args.root)
+      const root = resolveSafeIndexRoot(exec, args.root, config)
       // 空查询不是"全部"：recallItems 会过滤空串，rankEntriesStreaming 随即返回
       // entries.slice(0, limit)（任意条目、分数 0），task 分支的 includes('') 更是命中所有任务。
       if (!String(args.query ?? '').trim()) {

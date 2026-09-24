@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { memoryRootFor, resolveIndexRoot } from '../util/fs.js'
+import { memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
 import { truncate } from '../util/text.js'
 
@@ -22,7 +22,7 @@ export function statsTool(config) {
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args, exec) {
-      const root = resolveIndexRoot(exec, args.root)
+      const root = resolveSafeIndexRoot(exec, args.root, config)
       const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
       const overview = storeOverview(store)
       const files = Object.entries(store.files).sort((a, b) => String(b[1].indexedAt || '').localeCompare(String(a[1].indexedAt || '')))

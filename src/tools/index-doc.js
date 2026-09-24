@@ -1,11 +1,10 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
-import { assertReadableFile, memoryRootFor, sha256OfFile, storeKey } from '../util/fs.js'
+import { assertIndexRoot, assertReadableFile, assertSafeRoot, findProjectRoot, memoryRootFor, sessionMemoryRootOrNull, sha256OfFile, storeKey } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { docEntriesNeedBackfill } from '../doc-index.js'
 import { linkEntries } from '../link.js'
 import { ProjectMemoryStore } from '../store.js'
-import { findProjectRoot } from '../lazy.js'
 
 export function indexDocTool(ctx, config) {
   return defineTool({
@@ -22,16 +21,32 @@ export function indexDocTool(ctx, config) {
       },
       root: {
         type: 'string',
-        description: 'Project root where the .dsh-project-memory store lives. Defaults to the file\'s directory.',
+        description: 'Project root where the .dsh-project-memory store lives. Defaults to the session\'s project root.',
       },
     },
     output: {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
-    async execute(args) {
+    async execute(args, exec) {
       const filePath = assertReadableFile(args.file_path, config.maxFileSizeMb)
-      const root = path.resolve(args.root && args.root.trim() ? args.root : findProjectRoot(filePath))
+      const explicit = args.root && args.root.trim() ? args.root : null
+      let root
+      if (explicit) {
+        root = path.resolve(explicit)
+        assertIndexRoot(root, explicit)
+        assertSafeRoot(root, { requested: explicit, allowUnsafe: config?.allowUnsafeRoots === true })
+      } else {
+        // 与懒索引同序：文件自身的项目标记优先，其次才是会话记忆根（安全但无标记的 cwd）。
+        const sessionRoot = sessionMemoryRootOrNull(exec, config)
+        root = findProjectRoot(filePath, { sessionRoot })
+        if (!root) {
+          return (
+            `Not indexed: ${filePath} is not inside a detected project ` +
+            '(no .git / package.json / pyproject.toml … marker above it). Pass root explicitly to place the memory store.'
+          )
+        }
+      }
       const memoryDir = memoryRootFor(root, config.memoryDir)
 
       const store = new ProjectMemoryStore(memoryDir).load()

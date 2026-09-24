@@ -1,6 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
-import { assertIndexRoot, isUnwatchableRoot, memoryRootFor, resolveIndexRoot } from '../util/fs.js'
+import { assertIndexRoot, assertSafeRoot, isUnsafeRoot, memoryRootFor, sessionMemoryRootOrNull } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 
 export function watchRepoTool(watchManager, config) {
@@ -29,23 +29,24 @@ export function watchRepoTool(watchManager, config) {
       const root = path.resolve(args.root)
       // 不存在的根不写进 watchlist：watch 每轮会 commit → save → mkdirSync，把它重新造出来。
       // 根是**文件**时同样要拦：否则 save() 的 mkdirSync 会抛裸 ENOTDIR。
+      // 家目录 / 系统目录 / Homebrew 前缀也不监听：整体轮询扫描会吃满内存（issue #5）。
       if (args.watch !== false) {
         try {
           assertIndexRoot(root, args.root)
+          assertSafeRoot(root, { requested: args.root, allowUnsafe: config?.allowUnsafeRoots === true })
         } catch (err) {
           return `Not watching: ${err.message}`
         }
       }
-      // 文件系统根 / 共享临时目录不整体监听（子目录允许）：会把无关程序和测试夹具的临时文件全扫进来
-      if (args.watch !== false && isUnwatchableRoot(root)) {
-        return `Refusing to watch ${root}: it is the filesystem root or the shared temp directory. Pass a project subdirectory instead.`
-      }
       const memoryDir = memoryRootFor(root, config.memoryDir)
-      const sessionRoot = resolveIndexRoot(exec)
-      const sessionMemoryDir = memoryRootFor(sessionRoot, config.memoryDir)
-      const store = new ProjectMemoryStore(memoryDir).load()
+      // 会话记忆根与工具侧同一套解析（标记优先 → 会话 cwd）；拿不到就跳过镜像。
+      const sessionRoot = sessionMemoryRootOrNull(exec, config)
+      const sessionMemoryDir = sessionRoot ? memoryRootFor(sessionRoot, config.memoryDir) : null
 
       const mirrorSessionWatchlist = async (present) => {
+        // 会话根不可用（家目录/系统目录且无标记）时跳过镜像：那会在不该有项目记忆的目录里
+        // 造出 watch.json，而 watch.json 一旦落在那里，下次以该目录为 cwd 启动又会把它读回来。
+        if (!sessionRoot || !sessionMemoryDir) return
         if (path.resolve(sessionMemoryDir) === path.resolve(memoryDir)) return
         const sessionStore = new ProjectMemoryStore(sessionMemoryDir).load()
         const removed = sessionStore.removeWatch(root)
@@ -55,11 +56,17 @@ export function watchRepoTool(watchManager, config) {
 
       if (args.watch === false) {
         watchManager.removeRoot(root)
-        store.commit((s) => s.removeWatch(root))
+        // 危险根的 store 一律不读不写：load() 一个历史遗留的超大 store 光读盘就能 OOM
+        // （这正是要修的场景），而写它会在家目录里造出 .dsh-project-memory。那份
+        // watch.json 现在也没有任何启动路径会读取（restorePersisted 只认会话 cwd），
+        // 留着即可；会话侧的镜像条目照常摘掉。
+        if (!isUnsafeRoot(root)) {
+          new ProjectMemoryStore(memoryDir).load().commit((s) => s.removeWatch(root))
+        }
         await mirrorSessionWatchlist(false)
         return `Stopped watching: ${root}`
       }
-      store.commit((s) => s.addWatch(root))
+      new ProjectMemoryStore(memoryDir).load().commit((s) => s.addWatch(root))
       await mirrorSessionWatchlist(true)
       watchManager.addRoot(root)
       watchManager.start(config.watchInterval * 1000)

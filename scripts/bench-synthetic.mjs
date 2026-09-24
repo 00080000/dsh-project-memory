@@ -90,7 +90,7 @@ async function coldIndex(root, config) {
   const store = new ProjectMemoryStore(storeDir)
   // 首次 load 会读盘（若已存在），这里传入一个全新实例以贴近真实冷启动
   store.load()
-  const files = walkDir(root)
+  const { files } = walkDir(root)
   const seen = new Set()
   let updated = 0
   const fileUpdates = []
@@ -234,7 +234,7 @@ async function main() {
   {
     const root = tmpd('pm-sym-')
     generateCorpus(root, FILES)
-    const files = walkDir(root).filter((f) => f.endsWith('.js'))
+    const files = walkDir(root).files.filter((f) => f.endsWith(".js"))
     const times = []
     const n = Math.min(files.length, 500)
     for (let i = 0; i < n; i++) {
@@ -256,7 +256,7 @@ async function main() {
     generateCorpus(root, FILES)
     const { store, report } = await coldIndex(root, config)
     void report
-    const files = walkDir(root).filter((f) => f.endsWith('.js'))
+    const files = walkDir(root).files.filter((f) => f.endsWith(".js"))
     const times = []
     const n = Math.min(files.length, 50)
     for (let i = 0; i < n; i++) {

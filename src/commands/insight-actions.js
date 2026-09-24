@@ -5,7 +5,7 @@
 import { ProjectMemoryStore } from '../store.js'
 import { memoryRootFor } from '../util/fs.js'
 import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, INSIGHT_KINDS } from '../insight-store.js'
-import { projectRootFor } from '../setup/taskbridge.js'
+import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
 
 function insSummary(ins, extra = {}) {
@@ -334,6 +334,7 @@ export function insightCommandDefinition(config, ctx) {
         const lineRaw = (invocation?.rawInput || '').trim()
         const raw = lineRaw.split(/\s+/).filter(Boolean)
         const root = projectRootFor(cwd)
+        if (!root) return { kind: 'error', text: NO_PROJECT_ROOT_NOTE }
         if (!raw[0]) return { kind: 'error', text: '[insight] 用法见面板' }
         const verb = raw[0]
         if (verb === 'list') {

@@ -2,7 +2,7 @@
 // 验收：冷却步数真的会拦住条目；会话额度真的是上限而不是目标；注入次数随步数增长被压住。
 // 观测口用审计文件（`injection-audit.jsonl`），它同时记录 budget 快照与本轮为什么沉默。
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -30,6 +30,9 @@ const lesson = (id, intent) => ({
 /** 每一步用一句人类消息驱动；返回本条 pre-step 是否追加了注入块。 */
 function harness(items, autoContext) {
   const root = mkdtempSync(path.join(tmpdir(), 'budget-'))
+  // 夹具是"真项目"（带 package.json）：本文件量的是条目通道的预算，
+  // 不该被"记忆根是推定的"那条一次性通告计入。
+  writeFileSync(path.join(root, 'package.json'), '{}')
   const globalFile = path.join(mkdtempSync(path.join(tmpdir(), 'budgetg-')), 'global.json')
   const gs = new GlobalStore(globalFile).load()
   gs.doc.items.push(...items)

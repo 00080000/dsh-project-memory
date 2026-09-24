@@ -1,3 +1,17 @@
+/**
+ * 取消息里的纯文本块（多个 text 块按换行拼接）。
+ * 宿主消息块与流式分片都可能缺字段，这里对空块/空消息一律跳过而不是抛错。
+ * @param {{ content?: Array<{ type?: unknown, text?: unknown } | null> } | null | undefined} message
+ * @returns {string}
+ */
+export function textOf(message) {
+  const blocks = (message && message.content) || []
+  return blocks
+    .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text)
+    .join('\n')
+}
+
 export function truncate(text, maxChars) {
   if (typeof text !== 'string') return String(text)
   if (text.length <= maxChars) return text

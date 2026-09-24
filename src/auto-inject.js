@@ -8,7 +8,9 @@
 import { createHash } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { ProjectMemoryStore } from './store.js'
-import { memoryRootFor } from './util/fs.js'
+import { hasProjectMarker, isUnsafeRoot, memoryRootFor, resolveProjectMemoryRoot } from './util/fs.js'
+import { textOf } from './util/text.js'
+import { stepContent } from './util/task-view.js'
 import { insightMatchText, normalizedTokenOverlap } from './similarity.js'
 import { BoundedMap, SessionCache } from './util/session-cache.js'
 import { cfgInsight, GlobalStore, defaultGlobalFile, recordHit } from './insight-store.js'
@@ -113,14 +115,6 @@ export function cfgEngine(config) {
   }
 }
 
-function textOf(message) {
-  const blocks = (message && message.content) || []
-  return blocks
-    .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
-    .map((b) => b.text)
-    .join('\n')
-}
-
 export function lastUserText(messages) {
   if (!Array.isArray(messages)) return ''
   let fallback = ''
@@ -181,7 +175,7 @@ export function shouldEchoTaskCard(task, cfg) {
 export function buildEntryContent(task, cfg, { withEdited = true } = {}) {
   if (!task) return ''
   const c = cfg || {}
-  const steps = (task.steps || []).map((s) => (typeof s === 'string' ? s : s.content || s.text || '').slice(0, 80))
+  const steps = (task.steps || []).map((s) => stepContent(s).slice(0, 80))
   const progress = steps.length ? `${steps.length} 步` : ''
   const card = [
     `任务: ${task.title || '(untitled)'}`,
@@ -472,6 +466,8 @@ class InjectionSessions {
     // 反应窗口：本会话最近观察到的 tool/call（参数里有 git commit / npm publish / 改动的路径）。
     // 宿主没有"工具执行前拦截"钩子，所以这是 pre-step 之外唯一能拿到的动作事实。
     this.observed = cache(() => [])
+    // 本会话是否已通告"记忆根是推定的"（会话工作目录，无项目标记）。状态声明只发一次。
+    this.rootNoticed = cache(() => false)
     this._all = Object.values(this)
   }
 
@@ -532,15 +528,38 @@ export function installAutoInject(ctx, config) {
   })
 }
 
+/** 已就「会话根不安全」提示过的目录：每个进程、每个根只提示一次。 */
+const warnedUnsafeRoots = new Set()
+
+function warnUnsafeSessionRoot(root) {
+  if (warnedUnsafeRoots.has(root)) return
+  warnedUnsafeRoots.add(root)
+  console.error(
+    `[dsh-project-memory] session cwd ${root} is not a project root (home / system / package-manager prefix); ` +
+      'project memory and its audit logs are disabled for this session. Start dsh inside a project directory to enable them.',
+  )
+}
+
 /**
  * 一个 pre-step 的注入决策：解析会话 → 排程 → 必要时构造消息。
  * 返回 null 表示本步无事可做（交回原决策）。
  */
 async function injectForStep({ payload, decision, config, cfg, audit, shadow, sessions }) {
   const session = payload && payload.agent && payload.agent.session
-  const root = session && session.header && session.header.cwd
+  const cwd = session && session.header && session.header.cwd
   const sessionId = session && session.id
-  if (!root || !sessionId) return null
+  if (!cwd || !sessionId) return null
+  // 会话 cwd 是家目录/系统目录时整条链路停在这里：不读 store（历史遗留的超大 store
+  // 光是 load() 就能 OOM），也不写审计——`appendShadowAudit` 里的 mkdirSync 正是把
+  // `.dsh-project-memory` 造进家目录、进而触发"目录自标记 → 家目录被锁成项目"的那一步。
+  if (isUnsafeRoot(cwd)) {
+    warnUnsafeSessionRoot(cwd)
+    return null
+  }
+  // 记忆根与懒索引/工具侧同一套解析：项目标记优先，其次是安全的会话工作目录。
+  // 少了这一步，同一个会话的审计日志与懒索引会落在两个不同的 store 里。
+  const root = resolveProjectMemoryRoot(cwd)
+  if (!root) return null
 
   const query = lastUserText(decision.messages)
   const memoryRoot = memoryRootFor(root, config.memoryDir)
@@ -602,8 +621,14 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     silence: silence.reason,
   }), shadow)
 
-  const fp = fingerprint(built.dedupeText ?? built.text)
-  if (!built.text || fp === sessions.lastText.peek(sessionId)) return null
+  // 记忆根通告：根是**推定**的（会话工作目录，且该目录没有任何项目标记）时，
+  // 第一次注入前告诉模型"记忆现在存在哪、怎么改"。它是状态声明（与常驻任务卡同类），
+  // 只发一次、不占条目额度；否则模型只看到一条来自某处的记忆，却不知道那个根是怎么来的。
+  const notice = rootNotice({ root, sessionId, sessions, config })
+
+  const fp = built.text ? fingerprint(built.dedupeText ?? built.text) : fingerprint(notice || '')
+  const injectedText = notice ? (built.text ? `${notice}\n${built.text}` : notice) : built.text
+  if (!injectedText || fp === sessions.lastText.peek(sessionId)) return null
   sessions.lastText.set(sessionId, fp)
 
   // 只记真的进了上下文的那几条：dropped 的没被看到，不能记账（否则以后永远不再注入）。
@@ -636,7 +661,7 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     sessionId,
     root,
     step: stepNo,
-    text: built.text,
+    text: injectedText,
     labels: built.labels,
     reasons: built.reasons,
     dropped: built.dropped,
@@ -644,7 +669,29 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     silence: silence.reason,
   }), audit)
 
-  return { ...decision, messages: [...decision.messages, injectionMessage(built.text)] }
+  return { ...decision, messages: [...decision.messages, injectionMessage(injectedText)] }
+}
+
+/**
+ * 「记忆根是推定的」一次性通告。
+ *
+ * 触发条件：根是**安全目录但自身没有任何项目标记**（即根来自会话工作目录，而不是
+ * `.git`/`package.json` 这类声明）。此时插件会按 cwd 建 `.dsh-project-memory`——必须
+ * 让模型知道这件事，否则它只会看到记忆来自一个自己没指定过的位置，而纠正的成本随
+ * 会话推进快速上升。通告只发一次，且与常驻任务卡同类：是状态声明，不占条目额度。
+ *
+ * 关掉它：`autoContext.rootNotice: false`。
+ */
+function rootNotice({ root, sessionId, sessions, config }) {
+  if (config?.autoContext?.rootNotice === false) return null
+  if (sessions.rootNoticed.peek(sessionId)) return null
+  if (hasProjectMarker(root)) return null
+  sessions.rootNoticed.set(sessionId, true)
+  return (
+    `memory root: ${root} (inferred from the session working directory; no project marker found). ` +
+    'If project memory should live elsewhere, pass `root: <dir>` to index_repo / watch_repo / remember / query_memory, ' +
+    'or restart dsh inside the project directory.'
+  )
 }
 
 /**

@@ -3,9 +3,9 @@
 // tool/call data.arguments 为 JSON 字符串；fs 工具名 read/write/edit/read_image，参数 file_path。
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { memoryRootFor } from '../util/fs.js'
-import { findProjectRoot } from '../lazy.js'
+import { memoryRootFor, resolveProjectMemoryRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
+import { stepContent, stepStatus } from '../util/task-view.js'
 
 const FS_FILE_TOOLS = new Set(['read', 'write', 'edit', 'read_image'])
 const WRITE_TOOLS = new Set(['write', 'edit']) // 编辑/写入 = 高热点
@@ -32,14 +32,24 @@ export function genTaskId(projectRoot, title) {
   return `tsk_${hash8(projectRoot)}_${slug}_${Date.now().toString(36)}_${randomUUID().slice(0, 6)}`
 }
 
-/** 项目根推导：findProjectRoot 期望文件路径，传目录会从父级起跳，故用目录内探针路径。 */
+/** 会话根不可用时统一的用户提示（/tasks、/task、/insight 共用）。 */
+export const NO_PROJECT_ROOT_NOTE =
+  '当前工作目录不是项目根（是家目录/系统目录且没有项目标记），项目记忆与任务清单已停用；请在项目目录内启动 dsh。'
+
+/**
+ * 项目根推导：与全插件同一套策略（util/fs.js 的 `resolveProjectMemoryRoot`）——
+ * 最近的 VCS/清单标记优先；标记缺失但 cwd 本身是安全目录时退回 cwd（任务清单按
+ * "会话工作目录"归属，没有标记的普通目录也要能用）；cwd 是家目录/系统/包管理器前缀
+ * 且上方没有标记时返回 null。
+ */
 export function projectRootFor(cwd) {
-  const base = cwd || process.cwd()
-  return findProjectRoot(path.join(base, '__taskbridge__.probe'))
+  return resolveProjectMemoryRoot(cwd || process.cwd())
 }
 
+/** 没有可用项目根时返回 `{ root: null, store: null }`，调用方据此整段跳过。 */
 export function taskStoreFor(cwd, config) {
   const root = projectRootFor(cwd)
+  if (!root) return { root: null, store: null }
   return { root, store: new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load() }
 }
 
@@ -63,8 +73,6 @@ export function firstTextOf(content) {
   return ''
 }
 
-const TODO_STATUSES = new Set(['pending', 'in_progress', 'completed'])
-
 /**
  * 反向接管：任务成为某会话绑定后，把任务步骤推成宿主 todo/write 快照，
  * 让 dsh 渲染的任务清单（UI/投影）变成我们这套任务的步骤。
@@ -75,11 +83,7 @@ export function adoptStepsToSession(session, task) {
   if (!session || typeof session.append !== 'function') return false
   const steps = Array.isArray(task?.steps) ? task.steps : null
   if (!steps || steps.length === 0) return false
-  const todos = steps.map((s) => {
-    const raw = typeof s === 'string' ? s : s?.content ?? s?.text ?? ''
-    const status = TODO_STATUSES.has(s?.status) ? s.status : 'pending'
-    return { content: String(raw), status }
-  })
+  const todos = steps.map((s) => ({ content: String(stepContent(s)), status: stepStatus(s) }))
   session.append('todo/write', { todos })
   return true
 }
@@ -182,6 +186,7 @@ export function onSessionEvent(config, session, event, meta) {
       meta.set(sessionId, m)
       try {
         const { store } = taskStoreFor(session?.header?.cwd, config)
+        if (!store) return
         store.commit((s) => {
           const tid = s.getBoundTaskId(sessionId)
           const task = tid ? s.getTask(tid) : null
@@ -199,6 +204,8 @@ export function onSessionEvent(config, session, event, meta) {
   }
 
   const { root, store } = taskStoreFor(session?.header?.cwd, config)
+  // 没有项目根（家目录/系统目录会话）：不建档、不记文件、不落任何盘。
+  if (!store) return
 
   if (type === 'todo/write') {
     const todos = event.data?.todos
