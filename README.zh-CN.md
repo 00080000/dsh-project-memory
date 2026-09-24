@@ -63,8 +63,8 @@ dsh plugin --profile web add /path/to/dsh-project-memory.tgz
 | 工具 | 用途 |
 |---|---|
 | `index_doc file_path` | 索引单个文档（PDF/MD/txt）：分块 → 确定性 `summary` + 整 chunk `terms` → 带 `路径:行号` 入库。未变更文件自动跳过。 |
-| `index_repo root` | 索引整个项目：文档生成确定性摘要 + 整 chunk 词项，代码文件生成零 token 符号表。增量更新、清理已删除文件、文档与符号交叉链接。根目录不存在（含在 Linux/macOS 上被解析成相对路径的 Windows 风格路径）时，会在写入任何内容前直接拒绝。 |
-| `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件（mtime + 内容哈希），仅重抽这些文件。监听的项目在插件重启后自动恢复；不存在的根目录、文件系统根与共享临时目录都会被拒绝，已消失的根目录会被丢弃而不是被重新创建。 |
+| `index_repo root` | 索引整个项目：文档生成确定性摘要 + 整 chunk 词项，代码文件生成零 token 符号表。增量更新、清理已删除文件、文档与符号交叉链接。根目录不存在（含在 Linux/macOS 上被解析成相对路径的 Windows 风格路径）时会在写入任何内容前直接拒绝；**危险根**（家目录、文件系统根、系统/包管理器前缀）同样拒绝——扫它们等于走几十万个文件。 |
+| `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件（mtime + 内容哈希），仅重抽这些文件。监听的项目在插件重启后自动恢复；不存在的根目录与危险根（文件系统根、家目录、共享临时目录、系统/包管理器前缀）都会被拒绝，已消失的根目录会被丢弃而不是被重新创建，旧版本遗留的污染 watchlist 会在启动时自愈。 |
 | `memory_stats root` | 查看记忆库内容：总量（文件 / 条目 / 经验笔记）、最近索引时间，以及按时间排序的逐文件清单。 |
 | `query_memory query` | 对文档、符号、经验与 insight（教训/决策/流程）执行 BM25 检索，可选 LLM 查询扩展。`type` 选择层（`all` / `doc` / `symbol` / `experience` / `insight` / `task`）。返回带相对分数（0-100）、引用或 insight id、以及文档→符号链接的排序结果。 |
 | `list_tasks` | 列出本项目任务记录（含归档，带标记）。新会话/续接前先调用。 |
@@ -150,6 +150,9 @@ TaskPanel (Container)
 | `autoIndexOnFirstUse` | false | 插件加载时对当前工作目录做全量扫描（可选） |
 | `watch` | true | 启用后台刷新 |
 | `watchInterval` | 15 | 轮询间隔（秒） |
+| `maxScanFiles` | 20000 | 单次扫描的文件数硬上限；被截断时会在报告里说明，且**绝不**删除没扫到的旧条目。设 `0` 取消上限（自担风险） |
+| `maxScanDepth` | 12 | 单次扫描的目录深度硬上限。设 `0` 取消 |
+| `allowUnsafeRoots` | false | 允许**显式**工具调用（带 `root` 的 `index_repo`/`watch_repo`/`remember`）指向危险根。自动路径（懒索引、会话审计、TaskBridge、`autoIndexOnFirstUse`）无论此项如何都不会越权 |
 | `tsPath` | (自动) | 可选：强制指定特定 `typescript` 安装路径；省略时按项目 cwd → 插件 node_modules 向上解析 |
 | `enableTypeScript` | true | 设为 `false` 彻底禁用 L2 TS 增强（仅保留 L1 正则） |
 
@@ -159,7 +162,7 @@ TaskPanel (Container)
 |---|---|---|
 | `insight.*` | dedupOverlap `0.7` · reinforceBand `0.65` · maxProject `100` · maxGlobalProcedures `200` · promoteConfidence `0.7` · globalPromoteTasks `3` · decayDays `90` · `globalFile`（自动） | v0.5 insight 去重/强化/提升/容量/归档设置 |
 | `reflection.enabled` | false | v0.5 LLM 反思，**只写任务级草稿**（触发于任务切走/归档）。`cooldownMs` `1800000`、`maxLessonsPerReflect` `3`、`maxDecisionsPerReflect` `2` |
-| `autoContext.enabled` | true | v0.5 静默注入包装（entry 常驻块 + relevance）。宿主无法解析会话 cwd 时完全透传（零副作用）；`maxTokens` `400`、`editedMax` `3`（resident 任务卡显示最近"编辑中"文件数）、`signalMinRatio` `0.5`（提示至少要达到该层最高分的一半）、`skipEchoSelfTodo` `true`（模型自己写/维护任务清单后、无新人类消息时不回声任务卡，省 token；相关 insights 仍注入）、`budgetLog` `off`（预算丢弃审计写到 stderr：`off` 静默 / `once` 每会话最多一行 / `all` 丢弃组合每变化一次一行。注入按优先级排程，预算不够时丢掉低优先级条目属于**正常降级而非故障**，所以默认不占用用户终端）、`reinjectItemsAfter` `0`（同一条 insight 重复注入的冷却步数；`0` = 正文没变就不在本会话内再注入——注入消息留在会话历史里，重发只是重复占位） |
+| `autoContext.enabled` | true | v0.5 静默注入包装（entry 常驻块 + relevance）。宿主无法解析会话 cwd 时完全透传（零副作用）；`maxTokens` `400`、`editedMax` `3`（resident 任务卡显示最近"编辑中"文件数）、`signalMinRatio` `0.5`（提示至少要达到该层最高分的一半）、`skipEchoSelfTodo` `true`（模型自己写/维护任务清单后、无新人类消息时不回声任务卡，省 token；相关 insights 仍注入）、`budgetLog` `off`（预算丢弃审计写到 stderr：`off` 静默 / `once` 每会话最多一行 / `all` 丢弃组合每变化一次一行。注入按优先级排程，预算不够时丢掉低优先级条目属于**正常降级而非故障**，所以默认不占用用户终端）、`reinjectItemsAfter` `0`（同一条 insight 重复注入的冷却步数；`0` = 正文没变就不在本会话内再注入——注入消息留在会话历史里，重发只是重复占位）、`rootNotice` `true`（记忆根是从无标记的工作目录**推定**出来时，向模型通告一次根在哪、怎么改） |
 | `autoContext.gateCooldownSteps` | 2 | **准入旋钮**：两次*条目*注入之间至少隔几步（常驻任务卡不受限——它是状态快照，内容变了就该更新）。这是"别频繁注入"的主旋钮 |
 | `autoContext.maxItemsPerSession` | 12 | 每会话条目注入条数硬上限；预算是上限不是目标，用尽后条目通道持续沉默 |
 | `autoContext.maxItemCharsPerSession` | 4000 | 同上，按字符计 |
@@ -186,6 +189,16 @@ TaskPanel (Container)
 
 两个最常用的开关是 `lazyIndexing`（模型读取文件的瞬间即索引；默认开启）和 `autoIndexOnFirstUse`（插件加载时对当前工作目录做全量扫描；默认关闭）。懒加载建立的索引根会自动注册到 watcher，文件变更无需手动 `watch_repo` 也能保持新鲜。
 
+**项目根是怎么定的。** 全插件同一套策略——懒索引、会话审计、TaskBridge、所有工具都走它：显式 `root` 参数优先；其次是显式登记的根（`watch_repo`）；其次是最近的、含 VCS 标记（`.git`/`.hg`/`.svn`）或构建/清单标记（`package.json`、`go.mod`、`Cargo.toml`、`pyproject.toml` 等）的祖先目录；最后是**会话工作目录本身（只要它是安全目录）**。所以你在一个没有标记的临时目录里启动 dsh，项目记忆照样能用——插件只会说明一次：
+
+```
+memory root: /Users/me/scratch (inferred from the session working directory; no project marker found).
+If project memory should live elsewhere, pass `root: <dir>` to index_repo / watch_repo / remember / query_memory,
+or restart dsh inside the project directory.
+```
+
+这条通告每个会话只发一次，可用 `autoContext.rootNotice: false` 关掉。插件**不会**做的是把任意目录升格成项目：在工作目录之外读到一个散文件不会记任何东西；危险根（文件系统根、家目录、共享临时目录、`/opt/homebrew` 这类系统/包管理器前缀）直接拒绝——旧版正是从这些目录一路扫下去把内存打满的。工作目录属于这些目录的会话，记忆功能整体停用（stderr 会有一行说明）。
+
 配置存放在插件的 config 对象中。修改方式：在 profile 的 `cordis.patch.yml` 里加一条覆盖项——web profile 对应 `~/.dsh/profiles/web/cordis.patch.yml`：
 
 ```yaml
@@ -196,7 +209,10 @@ TaskPanel (Container)
     llmQueryExpansion: false    # 关闭：不用 LLM 扩展查询，节省 token（默认）
     watch: true                 # 开启：被监听根目录后台保持新鲜（默认）
     watchInterval: 15           # 轮询间隔（秒）
+    maxScanFiles: 20000         # 单次扫描文件上限（截断会报告，且不会误删旧条目）
+    maxScanDepth: 12            # 单次扫描目录深度上限
     enableTypeScript: true      # 开启：装了 TS 时启用 L2 语义增强（默认）
+    # allowUnsafeRoots: false   # 保持 false，除非你确实要显式索引家目录/系统目录
     # budgetLog: once           # 调试用：注入被预算挤掉时在 stderr 留痕（默认 off 静默）
     # reinjectItemsAfter: 20    # 调试用：同一条 insight 隔 N 步才允许重发（默认 0 = 本会话只发一次）
     # tsPath: /custom/path/to/typescript  # 可选：强制指定 TS 安装路径

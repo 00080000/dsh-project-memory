@@ -11,6 +11,7 @@ import { memoryRootFor } from './util/fs.js'
 import { cfgInsight, saveInsight, GlobalStore, defaultGlobalFile } from './insight-store.js'
 import { chatText, parseStructuredJson } from './llm.js'
 import { noteDegraded } from './llm-route.js'
+import { stepContent } from './util/task-view.js'
 
 export const REFLECT_SYSTEM =
   'You distill task work into durable lessons and decisions for project memory. ' +
@@ -23,7 +24,7 @@ export const REFLECT_SYSTEM =
 export function taskReflectionSnapshot(task) {
   return {
     title: task ? task.title : '',
-    steps: ((task && task.steps) || []).map((s) => (typeof s === 'string' ? s : s.content || s.text || '')).filter(Boolean).join('\n'),
+    steps: ((task && task.steps) || []).map((s) => stepContent(s)).filter(Boolean).join('\n'),
     files: ((task && task.files) || []).join('\n'),
   }
 }

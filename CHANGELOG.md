@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.5.9 (2026-09-24)
+
+### 修复：issue #5 —— 在家目录 / `/opt/homebrew` 自动建索引把 DSH 撑到 OOM
+
+三个根因叠加，缺一条都复现不出报告者的现象：
+
+- **`findProjectRoot` 会把任意目录升格成项目根。** 旧实现有两条路：`looksLikeProjectRoot`
+  只要目录里有 `lib`+`include` 之类的"源码目录名"就认（`/opt/homebrew` 正好命中），以及找不到
+  任何标记时兜底返回 `path.dirname(filePath)`（读到家目录下的散文件就把家目录当根）。另外
+  ARM Mac 的 Homebrew 是 `git clone` 到 `/opt/homebrew` 的——**那里有 `.git`**，所以单靠
+  "只认项目标记"仍然会把整个 Homebrew 判成项目根，危险前缀必须显式列名单。
+- **`.dsh-project-memory` 自己算项目标记，形成自我固化环。** `shadowLog` 默认开、每步写盘前
+  `mkdirSync`，所以只要在家目录里启动过一次 dsh，该目录就被建出来；此后读家目录下任意文件都会
+  把根解析回家目录，家目录被**永久**锁成"项目"（并写进 `watch.json`）。
+- **扫描/索引全链路没有上限。** `walkDir` 同步把整棵树攒成一个数组；`index_repo` 攒完全部
+  updates 才 commit 一次（峰值 = 整棵树的条目）；`DEFAULT_IGNORE` 不含 `Library`/`Documents`/
+  `Cellar`；watch 每 15 秒把这一切重跑一遍。
+
+修复：
+
+- 新增 `isUnsafeRoot` / `assertSafeRoot` / `resolveSafeIndexRoot`：文件系统根、家目录及其**所有
+  祖先**、共享临时目录、系统与包管理器前缀（`/opt/homebrew`、`/opt`、`/usr`、`/usr/local`、
+  `/home/linuxbrew`、`/nix`、Windows 的 `%SystemRoot%`/`%ProgramFiles%` …）一律拒绝。判定是
+  **精确匹配**：只拒绝这些目录本身，子目录照常可用（`~/Library/Mobile Documents/…/proj` 仍是合法项目根）。
+- 所有会写盘/扫描的入口统一过这道关：`index_repo`、`watch_repo`、`index_doc`、`remember`/
+  `forget`/`lesson`/`query_memory`/`memory_stats`/任务工具、watch 管理器、`autoIndexOnFirstUse`。
+- **项目根推导收敛成 `util/fs.js` 里的唯一策略**，懒索引 / 会话审计 / TaskBridge / 所有工具
+  用同一套顺序：显式 `root` → 显式登记的根（`watch_repo`）→ 最近的 VCS/清单标记 →
+  **会话工作目录本身（只要它是安全目录）** → `null`。旧实现是"标记优先，找不到就兜底到文件
+  所在目录"，且审计/工具侧直接用原始 cwd、懒索引用标记根，同一个会话会分裂成两个 store。
+  现在"有没有标记"不再决定"能不能用"——只决定"这个根是声明的还是推定的"。没有标记的散目录
+  仍然**不会**被升格：只有会话 cwd（人明确选择的工作位置）才有这个资格。
+- **推定根会通告模型**：根来自无标记的会话工作目录时，首次注入前追加一行"记忆根 = X
+  （无项目标记，按会话工作目录推定）；若要改，给 index_repo / watch_repo / remember /
+  query_memory 传 `root: <dir>`，或在项目目录里重启 dsh"。每个会话一次，与常驻任务卡同类
+  （状态声明，不占条目额度），`autoContext.rootNotice: false` 可关。
+- 危险根里**自动路径零副作用**：懒索引不索引、auto-inject 不读 store 也不写审计（不再把
+  `.dsh-project-memory` `mkdirSync` 进家目录）、TaskBridge 不建档不记文件；即使被显式调用的工具
+  也会收到可执行的拒绝说明，只有新配置 `allowUnsafeRoots: true` 才放行显式调用。
+- 有界化：`walkDir` 返回 `{files, truncated}` 并支持 `maxScanFiles`（默认 20000）/`maxScanDepth`
+  （默认 12）；`index_repo` 每 200 个文件分批提交；**截断时不执行"删除本轮未见到条目"的清理**
+  （没扫到 ≠ 被删除，否则一份被上限截断的树每轮都会自我清空一半）；`DEFAULT_IGNORE` 补入
+  `Library`/`Applications`/`Cellar`/`Caskroom`/`Frameworks`/`DerivedData`/`Pods` 等。
+- 自愈：`WatchManager.restorePersisted()` 用新判据剔除历史遗留的污染 watch root（家目录、
+  `/opt/homebrew` 等），用户不需要手删 `watch.json`。
+- 无项目的会话不再静默：`/tasks` 等命令给出明确说明，auto-inject 在 stderr 提示一次。
+
+验证：新增 `test/root-guards.test.mjs`（63 项：判定与例外、每个入口的拒绝、历史污染自愈、
+安全无标记 cwd 照常可用、推定根通告、审计与懒索引用同一个根、截断不误删、auto-inject 静默）；
+`test/run-test.mjs` 里依赖旧语义（启发式、兜底、temp ceiling）的断言改为新契约；
+`injection-audit` / `injection-budget` 的夹具根补上项目标记，避免根通告混进它们的计数。
+全量测试与 `npm run typecheck` 通过。
+
+### 开发工具：typecheck 从「一直不可用」修到可跑，并接入 CI
+
+- 根 `tsconfig.json` 的 `include: ["src/**/*"]` 在纯 JS 源码且未开 `allowJs` 时**匹配不到任何输入**，
+  `tsc` 只会报 `TS18003`；`tsconfig.client.json` 也从未通过过（`.ts/.tsx` 后缀导入 `TS5097` ×13、
+  CSS Modules 无声明 `TS2307`、`session-id.js` 无类型 `TS7016`、`catch (err)` 取 `.message` `TS2339`）。
+  现在：根项目开 `allowJs`（`checkJs: false`，只做解析级校验），客户端项目开
+  `allowImportingTsExtensions` + `allowJs`，并补 `src/client/css-modules.d.ts`；新增 `npm run typecheck`，
+  CI 在 `npm test` 之前执行。**没有**重建 `client/client.js`：那处收窄是纯类型改动，产物逐字不变。
+
+### 重构：步骤读取收敛为单一纯函数模块（无行为变更，含两处刻意的语义对齐）
+
+- **同一套读取逻辑原先抄了 8 份，并且已经漂移。** `commands/tasks.js`、`commands/task-actions.js`、
+  `tools/query-memory.js`、`tools/task-tools.js`、`tools/lesson-tools.js`、`setup/taskbridge.js`、
+  `auto-inject.js`、`reflection-pipeline.js` 各自实现「取步骤文本 / 归一状态 / 数完成度」：取文本分裂成
+  `content ?? text` 与 `content || text` 两种，状态归一分裂成三种（无校验 / `Set` 白名单 / 数组白名单）；
+  此外还有 `timeAgo` ×2、`sessionIdOf` ×2、`textOf` ×2、`done/total` 内联 ×2。现在统一到
+  `src/util/task-view.js`（`stepContent` / `stepStatus` / `stepProgress` / `timeAgo` / `sessionIdOf`），
+  消息文本抽取并入 `src/util/text.js` 的 `textOf`。
+- 两处刻意的语义决定（**不是笔误**，由 `test/task-view.test.mjs` 钉住）：
+  1. `content` 为空串时**不再**回退 `text` —— 显式清空的步骤不该顶出旧文本；
+  2. `/tasks todos` 收到字符串步骤时不再被静默过滤成「0 条」而清空步骤，改为按 `pending` 接受。
+  非法 `status` 一律归一为 `pending`（宿主 `todo/write` 只认那三个合法值）。
+- 验证：真实 store（28 任务 / 150 步骤）的状态取值本就只有三个合法值，所以归一化对现存数据零影响；
+  `git stash` 前后各跑一次真实 `/tasks` 快照，输出逐字相同；全量 182 项测试与 `typecheck` 均通过。
+
 ## 0.5.8 (2026-09-22) — 准入的可复现性 + dsh 0.1.7 兼容
 
 ### 兼容性修复（dsh 0.1.7 必崩）

@@ -123,7 +123,7 @@ const kb = (n) => `${(n / 1024).toFixed(1)} KB`
 const mb = (n) => `${(n / 1024 / 1024).toFixed(2)} MB`
 
 // ---------- 1. 扫描 ----------
-const all = walkDir(root)
+const { files: all } = walkDir(root)
 const targets = []
 let skippedPdf = 0
 for (const abs of all) {

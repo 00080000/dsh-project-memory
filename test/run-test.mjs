@@ -63,6 +63,8 @@ const docsDir = path.join(root, 'docs')
 const srcDir = path.join(root, 'src')
 mkdirSync(docsDir, { recursive: true })
 mkdirSync(srcDir, { recursive: true })
+// 项目标记：index_doc / 懒索引现在只认标记（不再对任意目录兜底），夹具必须是个真项目。
+writeFileSync(path.join(root, 'package.json'), '{"name":"pm-test"}')
 
 const mdPath = path.join(docsDir, 'spec.md')
 writeFileSync(
@@ -811,7 +813,7 @@ check('watch_repo stops watching', out.includes('Stopped watching'))
 const sessionStoreAfter = new ProjectMemoryStore(memoryRootFor(sessionCwd, config.memoryDir)).load()
 check('watch removed from session cwd watchlist', !sessionStoreAfter.watchlist.includes(root))
 const tmpRefusal = await watchTool.execute({ root: tmpdir() }, execMock)
-check('watch_repo refuses the shared temp dir', tmpRefusal.includes('Refusing to watch'))
+check('watch_repo refuses the shared temp dir', tmpRefusal.includes('Refusing to use'))
 check('watch_repo refusal does not persist the root', !new ProjectMemoryStore(memoryRootFor(sessionCwd, config.memoryDir)).load().watchlist.includes(path.resolve(tmpdir())))
 check('addRoot refuses the shared temp dir', new WatchManager(ctx, config).addRoot(tmpdir()) === false)
 check('addRoot refuses the filesystem root', new WatchManager(ctx, config).addRoot(path.parse(process.cwd()).root) === false)
@@ -850,6 +852,7 @@ restoreWm.stop()
 
 console.log('\n== code size limit ==')
 const sizeRoot = mkdtempSync(path.join(tmpdir(), 'pm-size-'))
+writeFileSync(path.join(sizeRoot, 'package.json'), '{}') // 让这条用例真的走到体积判定，而不是被"没有项目根"提前拦下
 const bigCs = path.join(sizeRoot, 'huge.cs')
 writeFileSync(bigCs, `public class Huge {\n  public static string S = "${'x'.repeat(1024 * 1024)}";\n}\n`)
 const sizeLimited = { ...config, maxFileSizeMb: 0.001 }
@@ -997,31 +1000,54 @@ await indexFile(ctx, config, dumpLazy)
 const lazyDumpStore = new ProjectMemoryStore(memoryRootFor(lazyRoot, config.memoryDir)).load()
 check('lazy dump file leaves no shell record', !lazyDumpStore.fileRecord('sub/dump.txt'))
 
-const fallbackRoot = mkdtempSync(path.join(tmpdir(), 'pm-fb-'))
-mkdirSync(path.join(fallbackRoot, 'app'), { recursive: true })
-writeFileSync(path.join(fallbackRoot, 'README.txt'), 'demo')
-writeFileSync(path.join(fallbackRoot, 'app', 'main.js'), 'export function run() {}\n')
-check(
-  'falls back to readme/source-dir root without markers',
-  findProjectRoot(path.join(fallbackRoot, 'app', 'main.js')) === fallbackRoot,
-)
-const bareDir = mkdtempSync(path.join(tmpdir(), 'pm-bare-'))
-writeFileSync(path.join(bareDir, 'note.txt'), 'x')
-check(
-  'falls back to own dir when nothing looks like a project',
-  findProjectRoot(path.join(bareDir, 'note.txt')) === bareDir,
-)
-const nestedRoot = mkdtempSync(path.join(tmpdir(), 'pm-nested-'))
-mkdirSync(path.join(nestedRoot, 'app'), { recursive: true })
-mkdirSync(path.join(nestedRoot, 'tools', 'plugin'), { recursive: true })
-writeFileSync(path.join(nestedRoot, 'README.md'), 'root doc')
-writeFileSync(path.join(nestedRoot, 'app', 'main.js'), 'export function run() {}\n')
-writeFileSync(path.join(nestedRoot, 'tools', 'plugin', 'README.md'), 'sub readme')
-writeFileSync(path.join(nestedRoot, 'tools', 'plugin', 'Plugin.cs'), 'class P {}\n')
-check(
-  'sub-folder readme does not hijack the project root',
-  findProjectRoot(path.join(nestedRoot, 'tools', 'plugin', 'Plugin.cs')) === nestedRoot,
-)
+console.log('\n== project root requires a marker (no heuristics, no fallback) ==')
+{
+  // 旧实现把"随便一个目录"升格成项目根的三条路径，正是 issue #5 的 OOM 起点：
+  //   readme+源码目录启发式、找不到标记就兜底到文件所在目录、以及 `.dsh-project-memory`
+  //   自己算标记导致的自我固化。现在三者都必须不成立。
+  const noMarkerRoot = mkdtempSync(path.join(tmpdir(), 'pm-fb-'))
+  mkdirSync(path.join(noMarkerRoot, 'app'), { recursive: true })
+  writeFileSync(path.join(noMarkerRoot, 'README.txt'), 'demo')
+  writeFileSync(path.join(noMarkerRoot, 'app', 'main.js'), 'export function run() {}\n')
+  check(
+    'readme + source dirs are NOT enough to become a project root',
+    findProjectRoot(path.join(noMarkerRoot, 'app', 'main.js')) === null,
+  )
+  check(
+    'a marker-less dir is not self-promoted from its own files',
+    findProjectRoot(path.join(noMarkerRoot, 'note.txt')) === null,
+  )
+  check(
+    'lazy index skips a file that has no project root',
+    (await indexFile(ctx, config, path.join(noMarkerRoot, 'app', 'main.js'))) === false,
+  )
+  check('no store is created for a marker-less file', !existsSync(path.join(noMarkerRoot, '.dsh-project-memory')))
+
+  const selfMarkerRoot = mkdtempSync(path.join(tmpdir(), 'pm-selfmark-'))
+  mkdirSync(path.join(selfMarkerRoot, '.dsh-project-memory'), { recursive: true })
+  writeFileSync(path.join(selfMarkerRoot, 'note.md'), '# hi')
+  check(
+    '.dsh-project-memory is not a project marker (no self-fixation)',
+    findProjectRoot(path.join(selfMarkerRoot, 'note.md')) === null,
+  )
+
+  const nestedRoot = mkdtempSync(path.join(tmpdir(), 'pm-nested-'))
+  mkdirSync(path.join(nestedRoot, 'app'), { recursive: true })
+  mkdirSync(path.join(nestedRoot, 'tools', 'plugin'), { recursive: true })
+  writeFileSync(path.join(nestedRoot, 'package.json'), '{"name":"nested"}')
+  writeFileSync(path.join(nestedRoot, 'README.md'), 'root doc')
+  writeFileSync(path.join(nestedRoot, 'app', 'main.js'), 'export function run() {}\n')
+  writeFileSync(path.join(nestedRoot, 'tools', 'plugin', 'README.md'), 'sub readme')
+  writeFileSync(path.join(nestedRoot, 'tools', 'plugin', 'Plugin.cs'), 'class P {}\n')
+  check(
+    'sub-folder readme does not hijack the project root',
+    findProjectRoot(path.join(nestedRoot, 'tools', 'plugin', 'Plugin.cs')) === nestedRoot,
+  )
+  check(
+    'an explicitly registered root beats marker detection',
+    findProjectRoot(path.join(noMarkerRoot, 'app', 'main.js'), { extraRoots: [noMarkerRoot] }) === noMarkerRoot,
+  )
+}
 
 console.log('\n== project root detection at real-world scale ==')
 {
@@ -1048,38 +1074,47 @@ console.log('\n== default ignore list ==')
   const igRoot = mkdtempSync(path.join(tmpdir(), 'pm-ignore-'))
   mkdirSync(path.join(igRoot, 'vendor', 'github.com', 'x'), { recursive: true })
   mkdirSync(path.join(igRoot, 'obj'), { recursive: true })
+  mkdirSync(path.join(igRoot, 'Library'), { recursive: true })
   mkdirSync(path.join(igRoot, 'src'), { recursive: true })
   writeFileSync(path.join(igRoot, 'vendor', 'github.com', 'x', 'lib.go'), 'package x')
   writeFileSync(path.join(igRoot, 'obj', 'tmp.cs'), 'class T {}')
+  writeFileSync(path.join(igRoot, 'Library', 'junk.js'), 'void 0')
   writeFileSync(path.join(igRoot, 'src', 'main.go'), 'package main')
+  writeFileSync(path.join(igRoot, 'src', 'extra.go'), 'package main')
+  mkdirSync(path.join(igRoot, 'src', 'deep'), { recursive: true })
+  writeFileSync(path.join(igRoot, 'src', 'deep', 'nested.go'), 'package main')
+  const walked = walkDir(igRoot)
+  const rel = walked.files.map((f) => path.relative(igRoot, f).split(path.sep).join('/'))
   check(
-    'vendor/obj excluded from repo walks',
-    JSON.stringify(walkDir(igRoot)) === JSON.stringify([path.join(igRoot, 'src', 'main.go')]),
+    'vendor/obj/Library excluded from repo walks',
+    JSON.stringify(rel) === JSON.stringify(['src/deep/nested.go', 'src/extra.go', 'src/main.go']) && walked.truncated === false,
   )
+  const capped = walkDir(igRoot, { maxFiles: 2 })
+  check('walkDir caps the file count and reports truncation', capped.files.length <= 2 && capped.truncated === true)
+  const shallow = walkDir(igRoot, { maxDepth: 1 })
+  check('walkDir caps depth', !shallow.files.some((f) => f.endsWith('nested.go')) && shallow.truncated === true)
 }
 
 console.log('\n== root detection ignores system temp ancestors ==')
 {
+  // 旧实现用 ceiling（tmpdir）挡"临时目录上方的垃圾目录"；现在由"只认标记 + 撞到
+  // 家目录/系统目录就停"共同保证：标记缺失一律 null，显式登记的根则优先。
   const fakeTmp = mkdtempSync(path.join(tmpdir(), 'pm-ceiling-'))
-  mkdirSync(path.join(fakeTmp, 'src'), { recursive: true })
-  mkdirSync(path.join(fakeTmp, 'lib'), { recursive: true })
-  writeFileSync(path.join(fakeTmp, 'README.md'), 'junk')
   const proj = path.join(fakeTmp, 'proj')
   mkdirSync(proj, { recursive: true })
   writeFileSync(path.join(proj, 'main.js'), 'export function main() {}\n')
-  check('heuristic junk above the temp boundary does not hijack', findProjectRoot(path.join(proj, 'main.js'), fakeTmp) === proj)
+  check('marker-less ancestors do not hijack the project root', findProjectRoot(path.join(proj, 'main.js')) === null)
+  check('an explicitly registered root is returned as-is', findProjectRoot(path.join(proj, 'main.js'), { extraRoots: [proj] }) === proj)
 
-  const bare = path.join(fakeTmp, 'bare')
-  mkdirSync(bare, { recursive: true })
-  writeFileSync(path.join(bare, 'note.txt'), 'x')
-  check('bare dirs stay put even with junky ancestors', findProjectRoot(path.join(bare, 'note.txt'), fakeTmp) === bare)
-
-  const nested = path.join(fakeTmp, 'nested', 'app')
-  mkdirSync(nested, { recursive: true })
-  writeFileSync(path.join(nested, 'README.md'), 'x')
-  writeFileSync(path.join(nested, 'main.js'), 'export function n() {}\n')
-  check('nearest heuristic root wins over higher matches', findProjectRoot(path.join(nested, 'main.js'), fakeTmp) === nested)
+  const marked = path.join(fakeTmp, 'marked')
+  mkdirSync(marked, { recursive: true })
+  writeFileSync(path.join(marked, 'go.mod'), 'module x')
+  writeFileSync(path.join(marked, 'main.go'), 'package main')
+  check('a real marker is still honoured below the temp boundary', findProjectRoot(path.join(marked, 'main.go')) === marked)
 }
+
+const bareDir = mkdtempSync(path.join(tmpdir(), 'pm-bare-'))
+writeFileSync(path.join(bareDir, 'note.txt'), 'x')
 
 const sessionCwdRoot = mkdtempSync(path.join(tmpdir(), 'pm-cwd-'))
 const procCwdSpy = process.cwd
@@ -1090,7 +1125,7 @@ check(
 )
 check(
   'explicit root wins over session cwd',
-  resolveIndexRoot({ agent: { session: { header: { cwd: sessionCwdRoot } } } }, fallbackRoot) === fallbackRoot,
+  resolveIndexRoot({ agent: { session: { header: { cwd: sessionCwdRoot } } } }, bareDir) === bareDir,
 )
 check(
   'falls back to process cwd without a session',

@@ -1,4 +1,5 @@
 import Schema from '@deepseek-ai/schemastery'
+import { DEFAULT_SCAN_DEPTH, DEFAULT_SCAN_FILES, isUnsafeRoot } from './util/fs.js'
 import { indexDocTool } from './tools/index-doc.js'
 import { indexRepoTool, indexRepository } from './tools/index-repo.js'
 import { queryMemoryTool } from './tools/query-memory.js'
@@ -40,6 +41,15 @@ export const Config = Schema.object({
   autoIndexOnFirstUse: Schema.boolean().default(false),
   watch: Schema.boolean().default(true),
   watchInterval: Schema.number().default(15),
+  // 危险根护栏（issue #5）：家目录 / 文件系统根 / 系统目录 / 包管理器前缀（/opt/homebrew …）
+  // 整体扫描会吃满内存，默认一律拒绝。**自动路径永不越权**——懒索引、会话审计、任务桥在
+  // 这类目录里始终零副作用；这个开关只放开**显式**工具调用（index_repo / watch_repo /
+  // remember 等带 root 的调用）。
+  allowUnsafeRoots: Schema.boolean().default(false),
+  // 单次扫描上限。超过即截断（并跳过"删除本轮未见到条目"的清理，避免把没扫到的文件误删）。
+  // 显式设 0 表示不限制——自担风险。
+  maxScanFiles: Schema.number().default(DEFAULT_SCAN_FILES),
+  maxScanDepth: Schema.number().default(DEFAULT_SCAN_DEPTH),
   tsPath: Schema.string(),
   enableTypeScript: Schema.boolean().default(true),
   tasklist: Schema.object({
@@ -75,6 +85,9 @@ export const Config = Schema.object({
     signalMinRatio: Schema.number().default(0.5),
     // resident 任务卡最多显示几个「编辑中」文件
     editedMax: Schema.number().default(3),
+    // 记忆根是"推定"的（会话工作目录，且该目录没有项目标记）时，首次注入前通告模型
+    // 根在哪、怎么改。状态声明，只发一次、不占条目额度。
+    rootNotice: Schema.boolean().default(true),
     // 模型自己维护清单且之后没有新人类消息时，不把任务卡回声给模型
     skipEchoSelfTodo: Schema.boolean().default(true),
     // ⚠️ 旧兼容闸门，**刻意不给默认值**：cfgEngine 以「relevanceMin 是否为 number」选分支，
@@ -169,9 +182,22 @@ export function apply(ctx, config) {
       let cancelled = false
       const run = async () => {
         const root = process.cwd()
+        // 全量索引 cwd 是显式开启的行为，但"cwd 是家目录"几乎总是误用：拒绝并说明，
+        // 而不是替用户把整棵树扫一遍（旧实现直接 indexRepository(ctx, config, cwd)，
+        // 没有任何护栏——这正是 issue #5 里最直接的 OOM 入口）。
+        if (isUnsafeRoot(root) && config.allowUnsafeRoots !== true) {
+          if (!cancelled) {
+            console.error(
+              `[dsh-project-memory] autoIndexOnFirstUse skipped: cwd ${root} is not a project root ` +
+                '(home / system / package-manager prefix). Start dsh inside a project directory, ' +
+                'or set allowUnsafeRoots: true to override.',
+            )
+          }
+          return
+        }
         try {
           watchManager.addRoot(root)
-          const report = await indexRepository(ctx, config, root)
+          const report = await indexRepository(ctx, config, root, { allowUnsafe: config.allowUnsafeRoots === true })
           if (!cancelled) console.log(`[dsh-project-memory] ${report}`)
         } catch (err) {
           if (!cancelled) console.error(`[dsh-project-memory] auto-index failed for ${root}: ${err.message}`)
