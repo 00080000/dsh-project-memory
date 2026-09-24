@@ -197,7 +197,7 @@ If project memory should live elsewhere, pass `root: <dir>` to index_repo / watc
 or restart dsh inside the project directory.
 ```
 
-这条通告每个会话只发一次，可用 `autoContext.rootNotice: false` 关掉。插件**不会**做的是把任意目录升格成项目：在工作目录之外读到一个散文件不会记任何东西；危险根（文件系统根、家目录、共享临时目录、`/opt/homebrew` 这类系统/包管理器前缀）直接拒绝——旧版正是从这些目录一路扫下去把内存打满的。工作目录属于这些目录的会话，记忆功能整体停用（stderr 会有一行说明）。
+这条通告每个会话只发一次，可用 `autoContext.rootNotice: false` 关掉。插件**不会**做的是把任意目录升格成项目：在工作目录之外读到一个散文件不会记任何东西；危险根（文件系统根、家目录、共享临时目录、系统/包管理器前缀——POSIX 上如 `/opt/homebrew`，Windows 上是 `%SystemRoot%`/`%ProgramFiles%`/`%ProgramData%`）直接拒绝——旧版正是从这些目录一路扫下去把内存打满的。工作目录属于这些目录的会话，记忆功能整体停用（stderr 会有一行说明）。
 
 配置存放在插件的 config 对象中。修改方式：在 profile 的 `cordis.patch.yml` 里加一条覆盖项——web profile 对应 `~/.dsh/profiles/web/cordis.patch.yml`：
 

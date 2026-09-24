@@ -12,6 +12,7 @@ import path from 'node:path'
 import assert from 'node:assert/strict'
 import {
   assertSafeRoot,
+  collectUnsafeRoots,
   isUnsafeRoot,
   resolveSafeIndexRoot,
   resolveIndexRoot,
@@ -65,14 +66,59 @@ function tempProject(prefix = 'pm-guard-') {
 
 console.log('\n== unsafe root classification ==')
 {
-  const unsafe = [path.parse(process.cwd()).root, HOME, TMP, '/opt/homebrew', '/opt', '/usr', '/usr/local']
+  const fsRoot = path.parse(process.cwd()).root
+  // 系统前缀是**按平台**的：POSIX 用 /usr、/opt、/opt/homebrew…，Windows 用
+  // %SystemRoot%/%ProgramFiles%/%ProgramData%。断言必须跟着平台走，否则在 windows-latest
+  // 上会拿 `/usr` 去问一个 Windows 进程（那本来就是 "C:\\usr"，一个正常目录）。
+  const systemPrefixes = process.platform === 'win32'
+    ? [process.env.SystemRoot, process.env.windir, process.env.ProgramFiles, process.env.ProgramData]
+    : ['/opt/homebrew', '/opt/local', '/opt', '/usr', '/usr/local', '/home/linuxbrew', '/nix']
   const safe = [tempProject(), path.join(TMP, 'pm-guard-child')]
-  check('filesystem root is unsafe', isUnsafeRoot(path.parse(process.cwd()).root))
+  check('filesystem root is unsafe', isUnsafeRoot(fsRoot))
   check('home directory is unsafe', isUnsafeRoot(HOME))
   check('shared temp directory is unsafe', isUnsafeRoot(TMP))
-  check('package-manager / system prefixes are unsafe', unsafe.slice(3).every((p) => isUnsafeRoot(p)))
+  const notDenied = systemPrefixes.filter((p) => p && !isUnsafeRoot(p))
+  if (notDenied.length) console.error(`       not denied: ${notDenied.join(', ')}`)
+  check(`platform system / package-manager prefixes are unsafe (${process.platform})`, notDenied.length === 0)
   check('a project directory and its subdirectories are safe', safe.every((p) => !isUnsafeRoot(p)))
   check('empty / non-string input is unsafe', isUnsafeRoot('') && isUnsafeRoot(null))
+}
+
+console.log('\n== the deny list is built per platform (simulated, runs everywhere) ==')
+{
+  // 这条用例的意义：Windows 分支必须在 ubuntu 上也能被验证。第一版把 /usr、/opt 只塞进
+  // POSIX 分支，却拿它们去断言 Windows，CI 才在 windows-latest 上红。
+  const win = collectUnsafeRoots({
+    platform: 'win32',
+    pathApi: path.win32,
+    home: 'C:\\Users\\me',
+    tmp: 'C:\\Users\\me\\AppData\\Local\\Temp',
+    env: {
+      SystemRoot: 'C:\\Windows',
+      windir: 'C:\\Windows',
+      ProgramFiles: 'C:\\Program Files',
+      'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+      ProgramData: 'C:\\ProgramData',
+    },
+  })
+  const hasWin = (p) => win.has(p.toLowerCase())
+  check(
+    'win32: drive root, home + ancestors, AppData and temp are denied',
+    ['C:\\', 'C:\\Users', 'C:\\Users\\me', 'C:\\Users\\me\\AppData', 'C:\\Users\\me\\AppData\\Local\\Temp'].every(hasWin),
+  )
+  check(
+    'win32: %SystemRoot% / %ProgramFiles% / %ProgramData% are denied',
+    ['C:\\Windows', 'C:\\Program Files', 'C:\\Program Files (x86)', 'C:\\ProgramData'].every(hasWin),
+  )
+  check('win32: POSIX-style names are NOT denied (C:\\opt is a normal user directory)', !hasWin('C:\\opt') && !hasWin('C:\\usr'))
+
+  const posix = collectUnsafeRoots({ platform: 'linux', pathApi: path.posix, home: '/home/me', tmp: '/tmp', env: {} })
+  check(
+    'posix: system and package-manager prefixes are denied',
+    ['/usr', '/usr/local', '/opt', '/opt/homebrew', '/etc', '/var', '/home/linuxbrew', '/nix'].every((p) => posix.has(p)),
+  )
+  check('posix: home + ancestors and temp are denied', ['/home/me', '/home', '/tmp'].every((p) => posix.has(p)))
+  check('posix: a project path is not denied', !posix.has('/home/me/project'))
 }
 
 console.log('\n== assertSafeRoot / resolveSafeIndexRoot ==')
