@@ -197,7 +197,15 @@ If project memory should live elsewhere, pass `root: <dir>` to index_repo / watc
 or restart dsh inside the project directory.
 ```
 
-这条通告每个会话只发一次，可用 `autoContext.rootNotice: false` 关掉。插件**不会**做的是把任意目录升格成项目：在工作目录之外读到一个散文件不会记任何东西；危险根（文件系统根、家目录、共享临时目录、系统/包管理器前缀——POSIX 上如 `/opt/homebrew`，Windows 上是 `%SystemRoot%`/`%ProgramFiles%`/`%ProgramData%`）直接拒绝——旧版正是从这些目录一路扫下去把内存打满的。工作目录属于这些目录的会话，记忆功能整体停用（stderr 会有一行说明）。
+这条通告每个会话只发一次，可用 `autoContext.rootNotice: false` 关掉。插件**不会**做的是把任意目录升格成项目：在工作目录之外读到一个散文件不会记任何东西；危险根直接拒绝：文件系统根、家目录、临时目录（`os.tmpdir()` **以及**共享的那些——`/tmp`、`/var/tmp`、`%TEMP%`、`%SystemRoot%\Temp`），以及系统/包管理器前缀（POSIX 上如 `/opt/homebrew`，Windows 上是 `%SystemRoot%`/`%ProgramFiles%`/`%ProgramData%`）——旧版正是从这些目录一路扫下去把内存打满的。工作目录属于这些目录的会话，记忆功能整体停用（stderr 会有一行说明）。
+
+**扫描上限，以及大目录会怎样。** 单次扫描最多 **20000** 个文件（`maxScanFiles`）、**12** 层目录（`maxScanDepth`）。量级参考：1300 个文件的项目只用到约 6% 的文件额度，普通项目根本碰不到。触顶**绝不静默**——`index_repo` 会在报告里打印 `scan truncated at the safety limit …`，watcher 每个受影响的根打一行——而且被截断的扫描**绝不删除**没扫到的条目：没扫到 ≠ 被删除。无论哪样内存都是有界的；项目确实更大就调高这两个值，变的只是覆盖面。
+
+**在"容器目录"里工作。** 因为会话工作目录本身就是合法的根，在 `~/workspace`（一个装着多个项目、自身没有标记的目录）里启动 dsh，记忆根就是**它**——记忆覆盖它下面所有项目，直到扫描上限。这是预期行为；想一个项目一个 store，就在项目目录里启动 dsh。无论哪种，store 都建在你的目录树里，记得加进 `.gitignore`：
+
+```
+.dsh-project-memory/
+```
 
 配置存放在插件的 config 对象中。修改方式：在 profile 的 `cordis.patch.yml` 里加一条覆盖项——web profile 对应 `~/.dsh/profiles/web/cordis.patch.yml`：
 

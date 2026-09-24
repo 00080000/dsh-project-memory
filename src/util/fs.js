@@ -209,12 +209,16 @@ export function memoryRootFor(indexRoot, memoryDir) {
 /**
  * 危险根目录：整体扫描/监听它们会直接吃满内存（issue #5 实测把 DSH 撑死的就是
  * 家目录与 `/opt/homebrew`）。判定是**精确匹配**：只拒绝这些目录**本身**，不拒绝
- * 它们的子目录（`~/Library` 拒绝，`~/Library/Mobile Documents/…/MyProj` 照常可用）。
+ * 它们的子目录（`~/Library` 拒绝，`~/Library/Mobile Documents/…/MyProj` 照常可用；
+ * `/tmp` 拒绝，`/tmp/myproj` 照常可用）。
  *
- * 三类都在名单里：
+ * 四类都在名单里：
  *   - 文件系统根（含 Windows 盘符根）；
  *   - 家目录及其所有祖先（`/Users`、`/home`、`/`），以及家目录下的系统型子目录；
- *   - 系统/包管理器前缀（`/usr`、`/opt`、`/opt/homebrew`、`C:\Windows` …）。
+ *   - 每用户私有临时目录与共享/系统临时目录（`/tmp`、`/var/tmp`、`%TEMP%`、
+ *     `%SystemRoot%\Temp` …）——macOS 的 `os.tmpdir()` 是 `/var/folders/…/T`，共享的
+ *     `/tmp` 是**另一个**路径，两者都要拒；
+ *   - 系统/包管理器前缀（`/usr`、`/opt`、`/opt/homebrew`、`C:\Windows` …），按平台分组。
  */
 function safeHomedir() {
   try {
@@ -225,6 +229,13 @@ function safeHomedir() {
 }
 
 /**
+ * POSIX 的**共享/系统**临时目录。刻意与 `os.tmpdir()` 分开列：macOS 上 `os.tmpdir()` 是
+ * `/var/folders/…/T` 这个每用户私有目录，共享的 `/tmp`（→ `/private/tmp`）根本不在名单里，
+ * 于是 `cd /tmp && dsh` 仍会把整个 /tmp 当项目根——和家目录是同一类问题（issue #5 补充发现）。
+ */
+const POSIX_SHARED_TEMP = ['/tmp', '/var/tmp', '/private/tmp', '/private/var/tmp', '/var/folders', '/dev/shm']
+
+/**
  * 危险根集合（判定用，`isUnsafeRoot` 的底座）。
  *
  * 参数化是为了**能在任意平台上验证每个平台的分支**：测试用 `path.win32` 模拟 Windows，
@@ -233,8 +244,11 @@ function safeHomedir() {
  *
  * 系统前缀按平台分组是刻意的：`C:\opt`、`C:\usr` 在 Windows 上是**正常用户目录**，
  * 跨平台套用既会误伤，也会自相矛盾（`/usr/local` 被拒而 `/usr` 放行）。
+ *
+ * @returns {{ unsafe: Set<string>, sharedTemp: Set<string> }} `sharedTemp` 单独返回，只为了让
+ *   拒绝文案能说清"是共享临时目录"而不是笼统的"系统目录"——两套集合由同一次调用产出，不会漂移。
  */
-export function collectUnsafeRoots({
+export function collectUnsafeRootSets({
   platform = process.platform,
   home = safeHomedir(),
   tmp = os.tmpdir(),
@@ -242,7 +256,8 @@ export function collectUnsafeRoots({
   pathApi = path,
 } = {}) {
   const set = new Set()
-  const push = (p) => {
+  const sharedTemp = new Set()
+  const push = (target) => (p) => {
     if (!p || typeof p !== 'string') return
     let abs
     try {
@@ -250,10 +265,23 @@ export function collectUnsafeRoots({
     } catch {
       return
     }
-    set.add(storeKey(abs, platform))
+    target.add(storeKey(abs, platform))
   }
+  const add = push(set)
+  const addTemp = push(sharedTemp)
 
-  push(tmp)
+  // 每用户私有临时目录 + 共享/系统临时目录，都算"共享临时目录"（拒绝文案上同类）。
+  addTemp(tmp)
+  if (platform === 'win32') {
+    addTemp(env.TEMP)
+    addTemp(env.TMP)
+    if (env.SystemRoot) addTemp(pathApi.join(env.SystemRoot, 'Temp'))
+    if (env.windir) addTemp(pathApi.join(env.windir, 'Temp'))
+  } else {
+    for (const p of POSIX_SHARED_TEMP) addTemp(p)
+  }
+  for (const key of sharedTemp) set.add(key)
+
   let homeAbs = null
   try {
     homeAbs = home ? pathApi.resolve(home) : null
@@ -264,19 +292,19 @@ export function collectUnsafeRoots({
     // 家目录 + 它的所有祖先：往上任何一级当根都会把整台机器扫进来。
     let dir = homeAbs
     for (;;) {
-      push(dir)
+      add(dir)
       const parent = pathApi.dirname(dir)
       if (parent === dir) break
       dir = parent
     }
     for (const sub of platform === 'win32' ? ['AppData', 'Application Data'] : ['Library', 'Applications', '.Trash']) {
-      push(pathApi.join(homeAbs, sub))
+      add(pathApi.join(homeAbs, sub))
     }
   }
 
   if (platform === 'win32') {
     for (const name of ['SystemRoot', 'windir', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData']) {
-      push(env[name])
+      add(env[name])
     }
   } else {
     // POSIX 系统前缀 + 包管理器/工具链前缀。ARM Mac 的 Homebrew 是 git clone 到
@@ -289,13 +317,20 @@ export function collectUnsafeRoots({
       '/System', '/Library', '/Applications', '/private', '/cores',
       '/home/linuxbrew', '/home/linuxbrew/.linuxbrew', '/nix',
     ]) {
-      push(p)
+      add(p)
     }
   }
-  return set
+  return { unsafe: set, sharedTemp }
 }
 
-const UNSAFE_DIRS = collectUnsafeRoots()
+/** 兼容入口：只要判定集合。 */
+export function collectUnsafeRoots(opts) {
+  return collectUnsafeRootSets(opts).unsafe
+}
+
+const UNSAFE = collectUnsafeRootSets()
+const UNSAFE_DIRS = UNSAFE.unsafe
+const SHARED_TEMP_DIRS = UNSAFE.sharedTemp
 
 /** 判定依据文案：用于拒绝时告诉用户「为什么是它」。 */
 function unsafeReason(abs) {
@@ -309,7 +344,7 @@ function unsafeReason(abs) {
     home = null
   }
   if (home && key === home) return 'your home directory'
-  if (key === storeKey(path.resolve(os.tmpdir()))) return 'the shared temp directory'
+  if (SHARED_TEMP_DIRS.has(key)) return 'the shared temp directory'
   return 'a system directory that is never a project root'
 }
 
@@ -434,11 +469,11 @@ function resolveDir(dir) {
   }
 }
 
-function nearestMarker(absPath, markers) {
+function nearestMarker(absPath, markers, isUnsafe) {
   let dir = path.dirname(absPath)
   for (;;) {
     // 撞到家目录/系统目录边界就停：既不把边界当根，也不再向上（上面只会更宽）。
-    if (isUnsafeRoot(dir)) return null
+    if (isUnsafe(dir)) return null
     for (const marker of markers) {
       if (existsSync(path.join(dir, marker))) return dir
     }
@@ -452,14 +487,18 @@ function nearestMarker(absPath, markers) {
  * 项目根推导（**只认标记与显式声明，绝不从文件路径兜底**）。
  *
  * @param {string} filePath 目标文件（也接受目录内探针文件路径）
- * @param {{ extraRoots?: Iterable<string>, sessionRoot?: string|null }} [opts]
+ * @param {{ extraRoots?: Iterable<string>, sessionRoot?: string|null, isUnsafe?: (dir: string) => boolean }} [opts]
  *   `extraRoots`：显式登记过的根（watch_repo / watchManager）。
  *   `sessionRoot`：会话工作目录，作为**最后**一级推定——仅当文件确实在它里面、
  *   且它是安全目录时采用。
+ *   `isUnsafe`：危险根判定，默认 `isUnsafeRoot`。可注入是为了让"被拒前缀里有一个合法
+ *   `.git`"这条反直觉输入能在任意平台上用一个临时目录复现（`/opt/homebrew` 正是被
+ *   `.git` 主动选中的，不是兜底误判——issue #5 的现场复核结论）。
  * @returns {string|null}
  */
 export function findProjectRoot(filePath, opts = {}) {
   if (typeof filePath !== 'string' || !filePath) return null
+  const isUnsafe = typeof opts.isUnsafe === 'function' ? opts.isUnsafe : isUnsafeRoot
   let abs
   try {
     abs = path.resolve(filePath)
@@ -467,13 +506,13 @@ export function findProjectRoot(filePath, opts = {}) {
     return null
   }
   const explicit = longestRootContaining(opts.extraRoots || [], abs)
-  if (explicit) return isUnsafeRoot(explicit) ? null : explicit
+  if (explicit) return isUnsafe(explicit) ? null : explicit
 
-  const byMarker = nearestMarker(abs, VCS_MARKERS) || nearestMarker(abs, PROJECT_MARKERS)
+  const byMarker = nearestMarker(abs, VCS_MARKERS, isUnsafe) || nearestMarker(abs, PROJECT_MARKERS, isUnsafe)
   if (byMarker) return byMarker
 
   const session = resolveDir(opts.sessionRoot)
-  if (session && !isUnsafeRoot(session) && isInside(session, abs)) return session
+  if (session && !isUnsafe(session) && isInside(session, abs)) return session
   return null
 }
 
