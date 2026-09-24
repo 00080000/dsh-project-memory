@@ -28,12 +28,23 @@
 - 另外用 `path.win32` / `path.posix` 模拟两个平台，把各自的临时目录与系统前缀断言在
   **任意 runner** 上（macOS 的 `/tmp` 缺口正是靠这个才可能在 ubuntu CI 上被发现）。
 
+### 新增：store 目录自我忽略（不再需要用户改 `.gitignore`）
+
+让用户手动把 `.dsh-project-memory/` 写进自己的 `.gitignore` 是个设计缺陷：忘了就是一次误提交，
+而插件也不该去改用户的文件。现在 store 在自己目录里写一条 `*` 规则（`<store>/.gitignore`）——
+git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件自己一起命中，于是 `git status` /
+`git add -A` 里整棵树都不出现，用户零配置。老版本留下的 store 在第一次 `load()` 时自动补上。
+
+- 顺带：被忽略的文件不会被 `git clean -fd` 删除（未跟踪且未忽略的会被删）。
+- 想跟着仓库提交记忆：`git add -f .dsh-project-memory`（已跟踪的文件不受忽略规则影响）。
+- 回归用例 `test/store-gitignore.test.mjs` 用真 git 仓库验证：store 不进 `git status`、用户的
+  `.gitignore` 逐字不变、`git clean -fd` 后 store 仍在、重复保存不重写该文件、历史 store 首次
+  `load()` 即补上。
+
 ### 文档（现场复核要求的第 2 点）
 
-- README 写明扫描上限的量级与语义：20000 文件 / 12 层；触顶**不静默**（`index_repo` 报告 +
-  watcher 每根一行），且**绝不删除未扫到的条目**；1300 文件的项目只用约 6% 的额度。
-- README 写明"在容器目录（如 `~/workspace`）里启动 dsh → 该目录成为记忆根"，以及把
-  `.dsh-project-memory/` 加进 `.gitignore`。
+- README 把根策略写成参考文档口径：根解析顺序、排除名单、扫描上限（20000 文件 / 12 层；
+  截断会在结果里说明，且不删除没扫到的条目），以及 store 的自我忽略。
 
 ## 0.5.9 (2026-09-24)
 

@@ -63,8 +63,8 @@ dsh plugin --profile web add /path/to/dsh-project-memory.tgz
 | 工具 | 用途 |
 |---|---|
 | `index_doc file_path` | 索引单个文档（PDF/MD/txt）：分块 → 确定性 `summary` + 整 chunk `terms` → 带 `路径:行号` 入库。未变更文件自动跳过。 |
-| `index_repo root` | 索引整个项目：文档生成确定性摘要 + 整 chunk 词项，代码文件生成零 token 符号表。增量更新、清理已删除文件、文档与符号交叉链接。根目录不存在（含在 Linux/macOS 上被解析成相对路径的 Windows 风格路径）时会在写入任何内容前直接拒绝；**危险根**（家目录、文件系统根、系统/包管理器前缀）同样拒绝——扫它们等于走几十万个文件。 |
-| `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件（mtime + 内容哈希），仅重抽这些文件。监听的项目在插件重启后自动恢复；不存在的根目录与危险根（文件系统根、家目录、共享临时目录、系统/包管理器前缀）都会被拒绝，已消失的根目录会被丢弃而不是被重新创建，旧版本遗留的污染 watchlist 会在启动时自愈。 |
+| `index_repo root` | 索引整个项目：文档生成确定性摘要 + 整 chunk 词项，代码文件生成零 token 符号表。增量更新、清理已删除文件、文档与符号交叉链接。根目录不存在（含在 Linux/macOS 上被解析成相对路径的 Windows 风格路径）或在排除名单上时，会在写入任何内容前拒绝。 |
+| `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件（mtime + 内容哈希），仅重抽这些文件。监听的项目在插件重启后自动恢复；不存在或在排除名单上的根目录会被拒绝，已消失的根目录会被丢弃而不是被重新创建，不再有效的条目会在启动时清掉。 |
 | `memory_stats root` | 查看记忆库内容：总量（文件 / 条目 / 经验笔记）、最近索引时间，以及按时间排序的逐文件清单。 |
 | `query_memory query` | 对文档、符号、经验与 insight（教训/决策/流程）执行 BM25 检索，可选 LLM 查询扩展。`type` 选择层（`all` / `doc` / `symbol` / `experience` / `insight` / `task`）。返回带相对分数（0-100）、引用或 insight id、以及文档→符号链接的排序结果。 |
 | `list_tasks` | 列出本项目任务记录（含归档，带标记）。新会话/续接前先调用。 |
@@ -150,9 +150,9 @@ TaskPanel (Container)
 | `autoIndexOnFirstUse` | false | 插件加载时对当前工作目录做全量扫描（可选） |
 | `watch` | true | 启用后台刷新 |
 | `watchInterval` | 15 | 轮询间隔（秒） |
-| `maxScanFiles` | 20000 | 单次扫描的文件数硬上限；被截断时会在报告里说明，且**绝不**删除没扫到的旧条目。设 `0` 取消上限（自担风险） |
+| `maxScanFiles` | 20000 | 单次扫描的文件数硬上限；被截断时会在报告里说明，且不会删除没扫到的条目。设 `0` 取消上限 |
 | `maxScanDepth` | 12 | 单次扫描的目录深度硬上限。设 `0` 取消 |
-| `allowUnsafeRoots` | false | 允许**显式**工具调用（带 `root` 的 `index_repo`/`watch_repo`/`remember`）指向危险根。自动路径（懒索引、会话审计、TaskBridge、`autoIndexOnFirstUse`）无论此项如何都不会越权 |
+| `allowUnsafeRoots` | false | 允许**显式**工具调用（带 `root` 的 `index_repo`/`watch_repo`/`remember`）指向排除名单上的目录。自动路径（懒索引、会话审计、TaskBridge、`autoIndexOnFirstUse`）无论此项如何都不会越权 |
 | `tsPath` | (自动) | 可选：强制指定特定 `typescript` 安装路径；省略时按项目 cwd → 插件 node_modules 向上解析 |
 | `enableTypeScript` | true | 设为 `false` 彻底禁用 L2 TS 增强（仅保留 L1 正则） |
 
@@ -189,23 +189,15 @@ TaskPanel (Container)
 
 两个最常用的开关是 `lazyIndexing`（模型读取文件的瞬间即索引；默认开启）和 `autoIndexOnFirstUse`（插件加载时对当前工作目录做全量扫描；默认关闭）。懒加载建立的索引根会自动注册到 watcher，文件变更无需手动 `watch_repo` 也能保持新鲜。
 
-**项目根是怎么定的。** 全插件同一套策略——懒索引、会话审计、TaskBridge、所有工具都走它：显式 `root` 参数优先；其次是显式登记的根（`watch_repo`）；其次是最近的、含 VCS 标记（`.git`/`.hg`/`.svn`）或构建/清单标记（`package.json`、`go.mod`、`Cargo.toml`、`pyproject.toml` 等）的祖先目录；最后是**会话工作目录本身（只要它是安全目录）**。所以你在一个没有标记的临时目录里启动 dsh，项目记忆照样能用——插件只会说明一次：
+**项目根怎么定。** 按顺序：显式 `root` 参数 → 登记的根（`watch_repo`）→ 最近的 VCS 标记（`.git`/`.hg`/`.svn`）或构建/清单标记（`package.json`、`go.mod`、`Cargo.toml`、`pyproject.toml` 等）所在祖先 → 会话工作目录（前提是它不在排除名单里）。都不命中则不索引该文件。
 
-```
-memory root: /Users/me/scratch (inferred from the session working directory; no project marker found).
-If project memory should live elsewhere, pass `root: <dir>` to index_repo / watch_repo / remember / query_memory,
-or restart dsh inside the project directory.
-```
+根来自工作目录时，模型每个会话收到一条通告，说明根的位置与改法；`autoContext.rootNotice: false` 关闭。因此在 `~/workspace` 这类容器目录里启动 dsh，该目录就是根，记忆覆盖其下所有项目直到扫描上限——想一个项目一个 store，就在项目目录里启动。
 
-这条通告每个会话只发一次，可用 `autoContext.rootNotice: false` 关掉。插件**不会**做的是把任意目录升格成项目：在工作目录之外读到一个散文件不会记任何东西；危险根直接拒绝：文件系统根、家目录、临时目录（`os.tmpdir()` **以及**共享的那些——`/tmp`、`/var/tmp`、`%TEMP%`、`%SystemRoot%\Temp`），以及系统/包管理器前缀（POSIX 上如 `/opt/homebrew`，Windows 上是 `%SystemRoot%`/`%ProgramFiles%`/`%ProgramData%`）——旧版正是从这些目录一路扫下去把内存打满的。工作目录属于这些目录的会话，记忆功能整体停用（stderr 会有一行说明）。
+**排除名单。** 以下目录不会作为根，精确匹配（子目录不受影响）：文件系统根、家目录、临时目录（`os.tmpdir()` 与共享的 `/tmp`、`/var/tmp`、`%TEMP%`、`%SystemRoot%\Temp`），以及系统/包管理器前缀（POSIX 上的 `/opt/homebrew`，Windows 上的 `%SystemRoot%`、`%ProgramFiles%`、`%ProgramData%`）。这些目录下的会话不启用记忆，stderr 输出一行说明。
 
-**扫描上限，以及大目录会怎样。** 单次扫描最多 **20000** 个文件（`maxScanFiles`）、**12** 层目录（`maxScanDepth`）。量级参考：1300 个文件的项目只用到约 6% 的文件额度，普通项目根本碰不到。触顶**绝不静默**——`index_repo` 会在报告里打印 `scan truncated at the safety limit …`，watcher 每个受影响的根打一行——而且被截断的扫描**绝不删除**没扫到的条目：没扫到 ≠ 被删除。无论哪样内存都是有界的；项目确实更大就调高这两个值，变的只是覆盖面。
+**扫描上限。** 单次扫描最多 `maxScanFiles` 个文件（20000）、`maxScanDepth` 层目录（12）。被截断时，`index_repo` 的结果里会说明，watcher 每个根记一行，且不会删除没扫到的条目。目录树更大就调高这两个值。
 
-**在"容器目录"里工作。** 因为会话工作目录本身就是合法的根，在 `~/workspace`（一个装着多个项目、自身没有标记的目录）里启动 dsh，记忆根就是**它**——记忆覆盖它下面所有项目，直到扫描上限。这是预期行为；想一个项目一个 store，就在项目目录里启动 dsh。无论哪种，store 都建在你的目录树里，记得加进 `.gitignore`：
-
-```
-.dsh-project-memory/
-```
+store 建在被索引的目录树里，并且**自我忽略**：它在自己目录内写入一条 `*` 规则（`<store>/.gitignore`）。git 会读取任意目录下的 `.gitignore`，所以 `git status` / `git add -A` 里都看不到它，你自己的 `.gitignore` 一个字都不用加（`git clean -fd` 也因此不会删它）。确实想把记忆跟着仓库提交：`git add -f .dsh-project-memory`——已跟踪的文件不受忽略规则影响。
 
 配置存放在插件的 config 对象中。修改方式：在 profile 的 `cordis.patch.yml` 里加一条覆盖项——web profile 对应 `~/.dsh/profiles/web/cordis.patch.yml`：
 
