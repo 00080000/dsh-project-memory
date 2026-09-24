@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.5.10 (2026-09-24)
+
+### 修复：共享临时目录仍然是可用的记忆根（issue #5 现场复核的补充发现）
+
+@jinchaofeiyang 在 issue #5 的补充材料里指出 `isUnsafeRoot('/tmp')` 在 macOS 上返回 `false`：
+`os.tmpdir()` 在 macOS 上是 `/var/folders/…/T` 这个**每用户私有**目录，共享的 `/tmp`
+（→ `/private/tmp`）是**另一个路径**，0.5.9 之前不在名单里——于是 `cd /tmp && dsh` 仍会把整个
+/tmp 当项目根全量扫描，与家目录是同一类问题。Windows 同理：`C:\Windows` 被拒，但
+`C:\Windows\Temp` 是精确匹配之外的漏网路径。
+
+- 每用户临时目录与**共享/系统**临时目录合并成"临时目录"一组：POSIX `/tmp`、`/var/tmp`、
+  `/private/tmp`、`/private/var/tmp`、`/var/folders`、`/dev/shm`；Windows `%TEMP%`、`%TMP%`、
+  `%SystemRoot%\Temp`、`%windir%\Temp`。仍是精确匹配——`/tmp/myproj` 这类子目录照常可用
+  （插件自己的测试夹具就依赖这一点）。
+- 拒绝文案据此区分"shared temp directory"与笼统的"system directory"。
+
+### 新增：反直觉输入的回归测试（现场复核要求的第 1 点）
+
+`/opt/homebrew` 是被 `VCS_MARKERS` 的 `.git` **主动选中**的（ARM Mac 的 Homebrew 是 git clone），
+不是兜底误判。所以"拒绝前缀"必须能压过"合法项目标记"。`findProjectRoot` 现在支持注入
+`isUnsafe` 判定，于是这条输入可以在任意平台上用一个临时目录复现：
+
+- 控制组证明：只有 `.git` 时该目录确实会当选（否则这条用例什么都没测）；
+- 加前缀拒绝后必须为 `null`，且上溯在边界处停止；
+- 边界之外的兄弟项目不受影响。
+- 另外用 `path.win32` / `path.posix` 模拟两个平台，把各自的临时目录与系统前缀断言在
+  **任意 runner** 上（macOS 的 `/tmp` 缺口正是靠这个才可能在 ubuntu CI 上被发现）。
+
+### 文档（现场复核要求的第 2 点）
+
+- README 写明扫描上限的量级与语义：20000 文件 / 12 层；触顶**不静默**（`index_repo` 报告 +
+  watcher 每根一行），且**绝不删除未扫到的条目**；1300 文件的项目只用约 6% 的额度。
+- README 写明"在容器目录（如 `~/workspace`）里启动 dsh → 该目录成为记忆根"，以及把
+  `.dsh-project-memory/` 加进 `.gitignore`。
+
 ## 0.5.9 (2026-09-24)
 
 ### 修复：issue #5 —— 在家目录 / `/opt/homebrew` 自动建索引把 DSH 撑到 OOM

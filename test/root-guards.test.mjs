@@ -13,6 +13,7 @@ import assert from 'node:assert/strict'
 import {
   assertSafeRoot,
   collectUnsafeRoots,
+  collectUnsafeRootSets,
   isUnsafeRoot,
   resolveSafeIndexRoot,
   resolveIndexRoot,
@@ -111,6 +112,10 @@ console.log('\n== the deny list is built per platform (simulated, runs everywher
     ['C:\\Windows', 'C:\\Program Files', 'C:\\Program Files (x86)', 'C:\\ProgramData'].every(hasWin),
   )
   check('win32: POSIX-style names are NOT denied (C:\\opt is a normal user directory)', !hasWin('C:\\opt') && !hasWin('C:\\usr'))
+  check(
+    'win32: %SystemRoot%\\Temp is denied even though only C:\\Windows was in the prefix list',
+    ['C:\\Windows\\Temp', 'C:\\Users\\me\\AppData\\Local\\Temp'].every(hasWin),
+  )
 
   const posix = collectUnsafeRoots({ platform: 'linux', pathApi: path.posix, home: '/home/me', tmp: '/tmp', env: {} })
   check(
@@ -119,6 +124,58 @@ console.log('\n== the deny list is built per platform (simulated, runs everywher
   )
   check('posix: home + ancestors and temp are denied', ['/home/me', '/home', '/tmp'].every((p) => posix.has(p)))
   check('posix: a project path is not denied', !posix.has('/home/me/project'))
+  check('posix: a project inside the temp dir is not denied (exact match only)', !posix.has('/tmp/myproject'))
+
+  // issue #5 的现场复核发现：macOS 的 os.tmpdir() 是 /var/folders/…/T（每用户私有），
+  // 共享的 /tmp 是**另一个**路径，0.5.9 之前不在名单里 → `cd /tmp && dsh` 仍会全量扫 /tmp。
+  const darwin = collectUnsafeRootSets({
+    platform: 'darwin',
+    pathApi: path.posix,
+    home: '/Users/charlee',
+    tmp: '/var/folders/zz/abc/T',
+    env: {},
+  })
+  const hasMac = (p) => darwin.unsafe.has(p.toLowerCase()) // darwin 上 storeKey 会小写化
+  check(
+    'darwin: shared temp dirs are denied alongside the per-user one',
+    ['/tmp', '/var/tmp', '/private/tmp', '/private/var/tmp', '/var/folders', '/var/folders/zz/abc/T'].every(hasMac),
+  )
+  check(
+    'darwin: home / Homebrew / /usr/local are denied, a project under the temp dir is not',
+    ['/Users/charlee', '/opt/homebrew', '/usr/local'].every(hasMac) && !hasMac('/var/folders/zz/abc/T/myproject'),
+  )
+  check(
+    'darwin: /tmp itself is classified as the shared temp directory',
+    darwin.sharedTemp.has('/tmp') && darwin.sharedTemp.has('/var/folders/zz/abc/t'),
+  )
+
+  if (process.platform !== 'win32') {
+    check('the shared /tmp is denied on this POSIX host too', isUnsafeRoot('/tmp'))
+  }
+}
+
+console.log('\n== a marker inside a denied prefix must not win (the /opt/homebrew case) ==')
+{
+  // issue #5 的现场结论：/opt/homebrew 是被 STRONG_MARKERS 的 `.git` **主动选中**的
+  // （ARM Mac 的 Homebrew 是 git clone），不是兜底误判。所以"拒绝前缀"必须能压过
+  // "合法项目标记"——这条输入很反直觉，用一个临时目录 + 注入判定来复现。
+  const fakeBrew = mkdtempSync(path.join(TMP, 'pm-brew-'))
+  mkdirSync(path.join(fakeBrew, '.git'), { recursive: true })
+  mkdirSync(path.join(fakeBrew, 'bin', 'deep'), { recursive: true })
+  const brewFile = path.join(fakeBrew, 'bin', 'brew.js')
+  writeFileSync(brewFile, 'export function brew() {}\n')
+  const deepFile = path.join(fakeBrew, 'bin', 'deep', 'x.js')
+  writeFileSync(deepFile, 'export function x() {}\n')
+
+  // 控制组：没有前缀拒绝时，`.git` 确实会让它当选 —— 证明这条用例测的是"前缀 > 标记"。
+  check('control: a bare .git WOULD make this directory the project root', findProjectRoot(brewFile) === fakeBrew)
+  const denyBrew = (d) => path.resolve(d) === path.resolve(fakeBrew)
+  check('a .git inside a denied prefix does not win', findProjectRoot(brewFile, { isUnsafe: denyBrew }) === null)
+  check('the denied boundary also stops the upward walk', findProjectRoot(deepFile, { isUnsafe: denyBrew }) === null)
+  check(
+    'a sibling project outside the denied prefix is unaffected',
+    findProjectRoot(path.join(tempProject('pm-outside-'), 'a.js'), { isUnsafe: denyBrew }) !== null,
+  )
 }
 
 console.log('\n== assertSafeRoot / resolveSafeIndexRoot ==')
