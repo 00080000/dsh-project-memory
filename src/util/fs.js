@@ -216,61 +216,86 @@ export function memoryRootFor(indexRoot, memoryDir) {
  *   - 家目录及其所有祖先（`/Users`、`/home`、`/`），以及家目录下的系统型子目录；
  *   - 系统/包管理器前缀（`/usr`、`/opt`、`/opt/homebrew`、`C:\Windows` …）。
  */
-function collectUnsafeDirs() {
+function safeHomedir() {
+  try {
+    return os.homedir()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 危险根集合（判定用，`isUnsafeRoot` 的底座）。
+ *
+ * 参数化是为了**能在任意平台上验证每个平台的分支**：测试用 `path.win32` 模拟 Windows，
+ * 不必真的跑在 Windows 上（第一版正是因为只在 POSIX 分支里塞了 `/usr`、`/opt`，却拿它们
+ * 去断言 Windows，CI 才红）。生产路径只调用无参形式。
+ *
+ * 系统前缀按平台分组是刻意的：`C:\opt`、`C:\usr` 在 Windows 上是**正常用户目录**，
+ * 跨平台套用既会误伤，也会自相矛盾（`/usr/local` 被拒而 `/usr` 放行）。
+ */
+export function collectUnsafeRoots({
+  platform = process.platform,
+  home = safeHomedir(),
+  tmp = os.tmpdir(),
+  env = process.env,
+  pathApi = path,
+} = {}) {
   const set = new Set()
   const push = (p) => {
     if (!p || typeof p !== 'string') return
     let abs
     try {
-      abs = path.resolve(p)
+      abs = pathApi.resolve(p)
     } catch {
       return
     }
-    set.add(storeKey(abs))
+    set.add(storeKey(abs, platform))
   }
 
-  push(os.tmpdir())
-  let home = null
+  push(tmp)
+  let homeAbs = null
   try {
-    home = path.resolve(os.homedir())
+    homeAbs = home ? pathApi.resolve(home) : null
   } catch {
-    home = null
+    homeAbs = null
   }
-  if (home) {
+  if (homeAbs) {
     // 家目录 + 它的所有祖先：往上任何一级当根都会把整台机器扫进来。
-    let dir = home
+    let dir = homeAbs
     for (;;) {
       push(dir)
-      const parent = path.dirname(dir)
+      const parent = pathApi.dirname(dir)
       if (parent === dir) break
       dir = parent
     }
-    if (process.platform === 'win32') {
-      for (const sub of ['AppData', 'Application Data']) push(path.join(home, sub))
-    } else {
-      for (const sub of ['Library', 'Applications', '.Trash']) push(path.join(home, sub))
+    for (const sub of platform === 'win32' ? ['AppData', 'Application Data'] : ['Library', 'Applications', '.Trash']) {
+      push(pathApi.join(homeAbs, sub))
     }
   }
 
-  if (process.platform === 'win32') {
-    for (const env of ['SystemRoot', 'windir', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData']) {
-      push(process.env[env])
+  if (platform === 'win32') {
+    for (const name of ['SystemRoot', 'windir', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData']) {
+      push(env[name])
     }
   } else {
-    for (const p of ['/usr', '/etc', '/var', '/bin', '/sbin', '/opt', '/dev', '/proc', '/sys', '/run', '/System', '/Library', '/Applications', '/private', '/cores']) {
+    // POSIX 系统前缀 + 包管理器/工具链前缀。ARM Mac 的 Homebrew 是 git clone 到
+    // `/opt/homebrew` 的——那里**有 `.git`**，所以单靠"只认项目标记"仍会把整个 Homebrew
+    // 判成项目根（issue #5 的第二个位置）。
+    for (const p of [
+      '/usr', '/usr/local', '/usr/local/Homebrew', '/usr/local/Cellar',
+      '/opt', '/opt/homebrew', '/opt/local',
+      '/etc', '/var', '/bin', '/sbin', '/dev', '/proc', '/sys', '/run',
+      '/System', '/Library', '/Applications', '/private', '/cores',
+      '/home/linuxbrew', '/home/linuxbrew/.linuxbrew', '/nix',
+    ]) {
       push(p)
     }
-  }
-  // 包管理器/工具链前缀：与平台无关地列出来（绝对 POSIX 路径在 Windows 上 resolve 成
-  // `C:\…`，不会误伤）。ARM Mac 的 Homebrew 是 git clone 到 /opt/homebrew 的——那里**有
-  // `.git`**，所以单靠"只认项目标记"仍会把整个 Homebrew 判成项目根（issue #5 的第二个位置）。
-  for (const p of ['/opt/homebrew', '/opt/local', '/usr/local', '/usr/local/Homebrew', '/usr/local/Cellar', '/home/linuxbrew', '/home/linuxbrew/.linuxbrew', '/nix']) {
-    push(p)
   }
   return set
 }
 
-const UNSAFE_DIRS = collectUnsafeDirs()
+const UNSAFE_DIRS = collectUnsafeRoots()
 
 /** 判定依据文案：用于拒绝时告诉用户「为什么是它」。 */
 function unsafeReason(abs) {

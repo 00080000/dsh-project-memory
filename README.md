@@ -200,7 +200,7 @@ If project memory should live elsewhere, pass `root: <dir>` to index_repo / watc
 or restart dsh inside the project directory.
 ```
 
-That notice goes out once per session and can be muted with `autoContext.rootNotice: false`. What the plugin will **not** do is promote an arbitrary directory to a project: reading a stray file outside the working directory records nothing, and a dangerous root (filesystem root, your home directory, the shared temp directory or a system / package-manager prefix such as `/opt/homebrew`) is refused outright — that is what used to walk an entire home directory and exhaust memory. Sessions whose working directory is one of those run with memory disabled (one stderr line explains why).
+That notice goes out once per session and can be muted with `autoContext.rootNotice: false`. What the plugin will **not** do is promote an arbitrary directory to a project: reading a stray file outside the working directory records nothing, and a dangerous root (filesystem root, your home directory, the shared temp directory or a system / package-manager prefix — `/opt/homebrew` on POSIX, `%SystemRoot%`/`%ProgramFiles%`/`%ProgramData%` on Windows) is refused outright — that is what used to walk an entire home directory and exhaust memory. Sessions whose working directory is one of those run with memory disabled (one stderr line explains why).
 
 Settings live in the plugin's config object. To change them, add an override entry to your profile's `cordis.patch.yml` — for the web profile that is `~/.dsh/profiles/web/cordis.patch.yml`:
 
