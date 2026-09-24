@@ -21,8 +21,10 @@
 修复：
 
 - 新增 `isUnsafeRoot` / `assertSafeRoot` / `resolveSafeIndexRoot`：文件系统根、家目录及其**所有
-  祖先**、共享临时目录、系统与包管理器前缀（`/opt/homebrew`、`/opt`、`/usr`、`/usr/local`、
-  `/home/linuxbrew`、`/nix`、Windows 的 `%SystemRoot%`/`%ProgramFiles%` …）一律拒绝。判定是
+  祖先**、共享临时目录、系统与包管理器前缀一律拒绝，且**按平台分组**（POSIX：`/opt/homebrew`、
+  `/opt`、`/usr`、`/usr/local`、`/home/linuxbrew`、`/nix` …；Windows：`%SystemRoot%`、
+  `%ProgramFiles%`、`%ProgramData%` …）——`C:\opt`/`C:\usr` 是 Windows 上的正常用户目录，
+  套用 POSIX 名单既误伤又自相矛盾。判定是
   **精确匹配**：只拒绝这些目录本身，子目录照常可用（`~/Library/Mobile Documents/…/proj` 仍是合法项目根）。
 - 所有会写盘/扫描的入口统一过这道关：`index_repo`、`watch_repo`、`index_doc`、`remember`/
   `forget`/`lesson`/`query_memory`/`memory_stats`/任务工具、watch 管理器、`autoIndexOnFirstUse`。
@@ -47,8 +49,9 @@
   `/opt/homebrew` 等），用户不需要手删 `watch.json`。
 - 无项目的会话不再静默：`/tasks` 等命令给出明确说明，auto-inject 在 stderr 提示一次。
 
-验证：新增 `test/root-guards.test.mjs`（63 项：判定与例外、每个入口的拒绝、历史污染自愈、
-安全无标记 cwd 照常可用、推定根通告、审计与懒索引用同一个根、截断不误删、auto-inject 静默）；
+验证：新增 `test/root-guards.test.mjs`（69 项：判定与例外、**用 `path.win32` 在任意平台上
+模拟验证 Windows 分支**、每个入口的拒绝、历史污染自愈、安全无标记 cwd 照常可用、推定根通告、
+审计与懒索引用同一个根、截断不误删、auto-inject 静默）；
 `test/run-test.mjs` 里依赖旧语义（启发式、兜底、temp ceiling）的断言改为新契约；
 `injection-audit` / `injection-budget` 的夹具根补上项目标记，避免根通告混进它们的计数。
 全量测试与 `npm run typecheck` 通过。
