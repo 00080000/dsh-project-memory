@@ -49,8 +49,9 @@
   带 1 小时 grace 防误删刚写入还没入库的条目，并节流到每 10 分钟一次。本仓库实测
   **41MB/9827 → 20MB/4892**。
 - **watch 轮询空闲退避**。轮询是 O(树) 的 walkDir + 逐文件 stat（本仓库实测 58–87ms），
-  原来固定 15s 一轮、不管有没有改动都在磨 I/O。现在改成递归 `setTimeout`：无变化时翻倍
-  退避到最长 2 分钟，任何变化立即回到 `watchInterval`（基础值不变，仍可配置）。
+  原来固定一轮、不管有没有改动都在磨 I/O。现在改成递归 `setTimeout`：无变化时翻倍
+  退避到最长 2 分钟，任何变化立即回到 `watchInterval`。基准间隔同时 **15s → 30s**
+  （仍可配置）。
 - **删除死代码** `rankEntries` / `rankEntriesMerged` / `store.searchEntries`：它们每次调用
   都 `buildBm25` 全库分词（70k 条目实测 p50 1.4s），生产路径没有调用方；相关测试改用线上
   真正跑的 `rankEntriesStreaming` / `rankEntriesMergedScored`。

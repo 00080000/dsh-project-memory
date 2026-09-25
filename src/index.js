@@ -40,7 +40,7 @@ export const Config = Schema.object({
   lazyIndexing: Schema.boolean().default(true),
   autoIndexOnFirstUse: Schema.boolean().default(false),
   watch: Schema.boolean().default(true),
-  watchInterval: Schema.number().default(15),
+  watchInterval: Schema.number().default(30),
   // 危险根护栏（issue #5）：家目录 / 文件系统根 / 系统目录 / 包管理器前缀（/opt/homebrew …）
   // 整体扫描会吃满内存，默认一律拒绝。**自动路径永不越权**——懒索引、会话审计、任务桥在
   // 这类目录里始终零副作用；这个开关只放开**显式**工具调用（index_repo / watch_repo /

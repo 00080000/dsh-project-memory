@@ -149,7 +149,7 @@ TaskPanel (Container)
 | `lazyIndexing` | true | 模型读取文件的瞬间即索引（`fs/observed`） |
 | `autoIndexOnFirstUse` | false | 插件加载时对当前工作目录做全量扫描（可选） |
 | `watch` | true | 启用后台刷新 |
-| `watchInterval` | 15 | 基础轮询间隔（秒）；空闲时逐步退避到最长 2 分钟，一有变化立即回到该值 |
+| `watchInterval` | 30 | 基础轮询间隔（秒）；空闲时逐步退避到最长 2 分钟，一有变化立即回到该值 |
 | `maxScanFiles` | 20000 | 单次扫描的文件数硬上限；被截断时会在报告里说明，且不会删除没扫到的条目。设 `0` 取消上限 |
 | `maxScanDepth` | 12 | 单次扫描的目录深度硬上限。设 `0` 取消 |
 | `allowUnsafeRoots` | false | 允许**显式**工具调用（带 `root` 的 `index_repo`/`watch_repo`/`remember`）指向排除名单上的目录。自动路径（懒索引、会话审计、TaskBridge、`autoIndexOnFirstUse`）无论此项如何都不会越权 |
@@ -208,7 +208,7 @@ store 建在被索引的目录树里，并且**自我忽略**：它在自己目�
     autoIndexOnFirstUse: false  # 关闭：不做加载时的全量扫描（默认）
     llmQueryExpansion: false    # 关闭：不用 LLM 扩展查询，节省 token（默认）
     watch: true                 # 开启：被监听根目录后台保持新鲜（默认）
-    watchInterval: 15           # 基础轮询间隔；空闲时退避到最长 2 分钟
+    watchInterval: 30           # 基础轮询间隔；空闲时退避到最长 2 分钟
     maxScanFiles: 20000         # 单次扫描文件上限（截断会报告，且不会误删旧条目）
     maxScanDepth: 12            # 单次扫描目录深度上限
     enableTypeScript: true      # 开启：装了 TS 时启用 L2 语义增强（默认）
