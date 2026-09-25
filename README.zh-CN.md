@@ -312,4 +312,6 @@ npm run bench -- /你的/项目路径   # 对任意项目量索引/查询性能�
 
 ## 许可证
 
-MIT
+MIT，全文见 [`LICENSE`](LICENSE)。
+
+Copyright (c) 2026 00080000 &lt;3388065969@qq.com&gt;
