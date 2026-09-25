@@ -86,6 +86,24 @@ const ok = (name) => {
   await first
   assert.equal(maxConcurrent, 1)
   ok('慢轮询期间再次 poll 被跳过（不叠加并发索引）')
+
+  // 空闲退避：连续无变化的轮次把间隔翻倍（上限内），一旦有变化立即回到 base。
+  const wm2 = new WatchManager({}, { memoryDir: '.dsh-project-memory' })
+  let wmChanged = false
+  wm2.roots.set('/fake2', { store: {}, snapshot: {} })
+  wm2.pollRoot = async () => wmChanged
+  wm2._schedule = () => {} // 测试直接驱动 _tick，不真的挂定时器
+  wm2.start(15000)
+  assert.equal(wm2._baseInterval, 15000)
+  await wm2._tick()
+  assert.equal(wm2._interval, 30000)
+  await wm2._tick()
+  assert.equal(wm2._interval, 60000)
+  wmChanged = true
+  await wm2._tick()
+  assert.equal(wm2._interval, 15000)
+  wm2.stop()
+  ok('空闲轮询退避（15s→30s→60s），有变化立即回到 base')
 }
 
 // ---- 3. 注入消息的 source 语义：snapshot + sections ----

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { rankEntries, rankExperience, tokenize, tokenizeRaw, extractCjkPhrases, makeSearchText } from './util/search.js'
+import { rankExperience, tokenize, tokenizeRaw, extractCjkPhrases, makeSearchText } from './util/search.js'
 import { backfillDerivedTriggers } from './readiness.js'
 
 const FORMAT_FILE = 'format.json'
@@ -16,7 +16,32 @@ const SHARDS_DIR = 'shards'
 const GITIGNORE_FILE = '.gitignore'
 
 const storeCache = new Map()
+/** 条目数上限（兜底）。 */
 const STORE_CACHE_MAX = 32
+/**
+ * 驻留内存的估算上限。只数"几个 store"是不够的：单个大仓库 store 加载后堆占用实测
+ * 130–200MB，32 个就是几 GB。按 store 的条目数与读入文本量估算，约 2.5KB/entry。
+ */
+const STORE_CACHE_MAX_BYTES = 256 * 1024 * 1024
+
+/** 单个 store 的驻留估算（驻留文本量 vs 条目数换算，取大者）。 */
+function estimateResidentBytes(store) {
+  let entries = 0
+  for (const list of Object.values(store.entries)) entries += list.length
+  return Math.max(store._residentChars || 0, entries * 2500)
+}
+
+/** 按 LRU 逐出，直到同时满足条数与字节预算；刚加入的 keepKey 即使超预算也保留。 */
+function evictStoreCache(keepKey) {
+  let total = 0
+  for (const store of storeCache.values()) total += estimateResidentBytes(store)
+  while (storeCache.size > STORE_CACHE_MAX || total > STORE_CACHE_MAX_BYTES) {
+    const oldest = storeCache.keys().next().value
+    if (oldest === undefined || oldest === keepKey) break
+    total -= estimateResidentBytes(storeCache.get(oldest))
+    storeCache.delete(oldest)
+  }
+}
 
 /** 已就"无法迁移的旧 store"告警过的目录：避免每次 load() 都刷一行。 */
 const migrationWarned = new Set()
@@ -27,23 +52,36 @@ function isRecord(value) {
 }
 
 /**
- * 剥离**跨实体派生**字段：`linkedSymbols` 由读取期的解析器解算（见 src/link.js 顶部
- * 说明），不再落盘。加载时剥掉是为了立刻释放老 store 里那部分内存（实测占大仓库堆的
- * 大部分），写入时剥掉防止旧对象把它带回去。`searchText` 是自派生（只依赖本 entry），
- * 仍然物化。
+ * 落盘的 entry 只保留**不可推导的事实**。两个派生字段永远不写盘：
+ *  - `linkedSymbols`：跨实体派生（取决于符号表当前状态），读取期由 src/link.js 解算；
+ *  - `searchText`：自派生（只依赖本 entry），由 `allEntries()` 在内存里物化。
+ * 旧 store 里的这两个字段在加载时剥掉，于是下一次写盘自然压实。
+ * 实测两者在一个真实大仓库 store 里合计约 245MB（链接 222.8MB + searchText 22.7MB）。
  */
-function stripDerivedFields(entry) {
-  if (entry && typeof entry === 'object' && 'linkedSymbols' in entry) delete entry.linkedSymbols
+const PERSISTED_DERIVED = ['linkedSymbols', 'searchText', 'typeSig']
+
+/** 原地剥离派生字段（加载路径用，省掉一次分配）。 */
+function stripPersistedDerived(entry) {
+  if (!entry || typeof entry !== 'object') return entry
+  for (const key of PERSISTED_DERIVED) if (key in entry) delete entry[key]
   return entry
 }
 
-function loadJson(filePath, fallback) {
+/** 返回不含派生字段的副本（写盘路径用，不能动内存里的对象）。 */
+function withoutPersistedDerived(entry) {
+  const out = { ...entry }
+  for (const key of PERSISTED_DERIVED) delete out[key]
+  return out
+}
+
+function loadJson(filePath, fallback, sizeSink) {
   let raw
   try {
     raw = readFileSync(filePath, 'utf8')
   } catch {
     return fallback
   }
+  if (sizeSink) sizeSink.bytes += raw.length
   try {
     return JSON.parse(raw)
   } catch {
@@ -99,6 +137,8 @@ export class ProjectMemoryStore {
     this._idfCache = null
     /** entries 的变更计数：符号索引（读取期链接）据此失效，与 save 的 `_version` 解耦。 */
     this._entriesVersion = 0
+    /** 从磁盘读入的 JSON 文本量（UTF-16 字符数），作为驻留内存的估算基数。 */
+    this._residentChars = 0
   }
 
   load() {
@@ -106,7 +146,12 @@ export class ProjectMemoryStore {
     const hot = storeCache.get(key)
     // 缓存命中即返回：`hot === this` 时再读一遍盘会静默丢弃本实例尚未 save() 的变更
     // （_loadSharded/_loadInsights 会重新赋值 experience/tasks/insights…）。
-    if (hot) return hot
+    if (hot) {
+      // LRU：命中挪到队尾，避免"热的先被逐出、冷的常驻"。
+      storeCache.delete(key)
+      storeCache.set(key, hot)
+      return hot
+    }
     this._migrateLegacyIfNeeded()
     this._loadSharded()
     this._loadInsights()
@@ -114,12 +159,7 @@ export class ProjectMemoryStore {
     // 让老版本建出来的 store 在第一次 load 就补上。
     this.ensureSelfIgnore()
     storeCache.set(key, this)
-    // 只保留最近打开的项目：长期跨多项目运行时不至于无限增长（被逐出只是下次重新读盘）
-    while (storeCache.size > STORE_CACHE_MAX) {
-      const oldest = storeCache.keys().next().value
-      if (oldest === key) break
-      storeCache.delete(oldest)
-    }
+    evictStoreCache(key)
     return this
   }
 
@@ -177,7 +217,7 @@ export class ProjectMemoryStore {
     }
     mkdirSync(path.join(this.dir, SHARDS_DIR), { recursive: true })
     for (const rel of Object.keys(files)) {
-      writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: files[rel], entries: (entries[rel] || []).map(stripDerivedFields) })
+      writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: files[rel], entries: (entries[rel] || []).map(withoutPersistedDerived) })
     }
     writeJsonAtomic(formatPath, { version: 2, layout: 'sharded' })
     for (const stale of [legacyEntriesPath, path.join(this.dir, INDEX_FILE)]) {
@@ -197,20 +237,22 @@ export class ProjectMemoryStore {
     } catch {
       shardNames = []
     }
+    const sizeSink = { bytes: 0 }
     for (const name of shardNames) {
-      const shard = loadJson(path.join(this.dir, SHARDS_DIR, name), null)
+      const shard = loadJson(path.join(this.dir, SHARDS_DIR, name), null, sizeSink)
       if (!shard || typeof shard.relPath !== 'string' || !isRecord(shard.record)) continue
       this.files[shard.relPath] = shard.record
       // 畸形 shard（entries 被写成对象/null）不能让 allEntries() 在 `for…of` 上抛错，
       // 否则一个坏文件会拖垮整个进程的每一次读取。
       const list = Array.isArray(shard.entries) ? shard.entries.filter(isRecord) : []
-      this.entries[shard.relPath] = list.map(stripDerivedFields)
+      this.entries[shard.relPath] = list.map(stripPersistedDerived)
     }
     this._entriesVersion++
-    this.experience = loadJson(path.join(this.dir, EXPERIENCE_FILE), [])
-    this.tasks = loadJson(path.join(this.dir, TASKS_FILE), [])
-    this.binding = loadJson(path.join(this.dir, BINDING_FILE), {})
-    this.watchlist = loadJson(path.join(this.dir, WATCH_FILE), [])
+    this.experience = loadJson(path.join(this.dir, EXPERIENCE_FILE), [], sizeSink)
+    this.tasks = loadJson(path.join(this.dir, TASKS_FILE), [], sizeSink)
+    this.binding = loadJson(path.join(this.dir, BINDING_FILE), {}, sizeSink)
+    this.watchlist = loadJson(path.join(this.dir, WATCH_FILE), [], sizeSink)
+    this._residentChars = sizeSink.bytes
     this._formatWritten = existsSafe(path.join(this.dir, FORMAT_FILE))
   }
 
@@ -353,7 +395,7 @@ export class ProjectMemoryStore {
     for (const rel of this._dirtyShards) {
       if (this.files[rel]) {
         mkdirSync(path.join(this.dir, SHARDS_DIR), { recursive: true })
-        writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: this.files[rel], entries: this.entries[rel] || [] })
+        writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: this.files[rel], entries: (this.entries[rel] || []).map(withoutPersistedDerived) })
       } else {
         this._removedShards.add(rel)
       }
@@ -453,7 +495,12 @@ export class ProjectMemoryStore {
 
   setEntries(relPath, entries) {
     if (entries.length) {
-      const enriched = entries.map((e) => stripDerivedFields({ ...e, searchText: makeSearchText(e) }))
+      // searchText 在内存里物化（写入/检索都靠它），但 save() 不会把它写盘。
+      const enriched = entries.map((e) => {
+        const out = stripPersistedDerived({ ...e })
+        out.searchText = makeSearchText(out)
+        return out
+      })
       this.entries[relPath] = enriched
     } else {
       delete this.entries[relPath]
@@ -481,13 +528,13 @@ export class ProjectMemoryStore {
   allEntries() {
     const out = []
     for (const list of Object.values(this.entries)) {
-      for (const entry of list) out.push(entry)
+      for (const entry of list) {
+        // searchText 不落盘，首次用到时按需物化并挂在对象上（同一 entry 只算一次）。
+        if (entry.searchText === undefined) entry.searchText = makeSearchText(entry)
+        out.push(entry)
+      }
     }
     return out
-  }
-
-  searchEntries(query, limit = 8) {
-    return rankEntries(this.allEntries(), query, limit)
   }
 
   addExperience({ problem, solution, sourceFile }) {
