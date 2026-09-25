@@ -583,23 +583,14 @@ console.log('\n== symbol declaration is one bounded line ==')
   check('压平成单行', !oneLineDeclaration('a\n\n   b').includes('\n'))
 }
 
-console.log('\n== type-cache prunes stale entries ==')
+console.log('\n== legacy type-cache directory is self-healed ==')
 {
-  const { pruneTypeCache } = await import('../src/enhancer.js')
-  const cacheDir = path.join(mkdtempSync(path.join(tmpdir(), 'pm-typecache-')), 'type-cache')
-  mkdirSync(cacheDir, { recursive: true })
-  const keep = 'a'.repeat(16)
-  const staleOld = 'b'.repeat(16)
-  const staleFresh = 'c'.repeat(16)
-  for (const key of [keep, staleOld, staleFresh]) writeFileSync(path.join(cacheDir, `${key}.json`), '{}')
-  const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
-  utimesSync(path.join(cacheDir, `${staleOld}.json`), old, old)
-  // 保留集来自当前 shard 记录的 sha256 前 16 位
-  pruneTypeCache(cacheDir, { files: { 'src/a.ts': { sha256: `${keep}${'x'.repeat(48)}` } } })
-  const left = readdirSync(cacheDir)
-  check('保留当前记录引用的条目', left.includes(`${keep}.json`))
-  check('删除过期的僵尸条目', !left.includes(`${staleOld}.json`))
-  check('grace 期内不误删刚写入的条目', left.includes(`${staleFresh}.json`))
+  const dir = path.join(mkdtempSync(path.join(tmpdir(), 'pm-typecache-')), 'mem')
+  mkdirSync(path.join(dir, 'type-cache'), { recursive: true })
+  writeFileSync(path.join(dir, 'type-cache', 'deadbeefdeadbeef.json'), '{}')
+  // 0.5.11 起不再用这个缓存（永远命中不了），首次 load 顺手清掉
+  new ProjectMemoryStore(dir).load()
+  check('加载时清掉旧的 type-cache 目录', !existsSync(path.join(dir, 'type-cache')))
 }
 
 console.log('\n== remember / forget ==')
