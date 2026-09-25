@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
-import { linkEntries } from './link.js'
 
 const require = createRequire(import.meta.url)
 
@@ -428,8 +427,7 @@ function applyEnhancedSymbols(fn, relPath, enhanced) {
   // Write to store.entries via setEntries so the shard is marked dirty and persisted
   fn.setEntries(relPath, [...mergedEntries, ...newEntries])
 
-  // Refresh doc<->symbol links for newly added symbols
-  if (newEntries.length) linkEntries(fn)
+  // doc<->symbol 链接不在这里维护：它是读取期解算的派生关系（见 src/link.js）
 
   // Also update fn.files metadata
   if (fn.files[relPath]) {

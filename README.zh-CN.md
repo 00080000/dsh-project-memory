@@ -114,7 +114,7 @@ dsh plugin --profile web add /path/to/dsh-project-memory.tgz
 v0.2.0 之前创建的库（单文件 `entries.json` / `index.json`）在首次加载时自动幂等迁移。同一个 dsh 进程内，所有工具调用共享每个项目的单一内存 store 实例，热路径索引只写发生变化的那一个分片。
 
 - **增量** — 按文件内容哈希，仅重新抽取变更文件。
-- **交叉链接** — 索引后将文档摘要与符号名匹配，命中符号以 `references` 挂载到文档条目，由 `query_memory` 带出。
+- **交叉链接** — `query_memory` 返回文档 chunk 时，按**当前**符号表解算它提到的符号，以 `references` 带出。链接在读取期解算、不落盘，因此不会过期（文档先索引、符号后到也能链上），也不占存储。
 - **查询扩展** — `llmQueryExpansion` 开启时，`query_memory` 让 `ctx.llm` 将查询改写为多个变体（同义词、中英、符号名猜测），再跨变体合并 BM25 分数；关闭时查询完全不碰 LLM。索引本身不调用模型：keywords 由规则推导（标题加权词项），doc↔symbol 链接也会从中文命中带出英文符号名。
 - **一致性** — 事实层跟随代码库（哈希重抽 / 删除即移除）；经验层仅检索，配合覆盖与 `forget` 机制。每个记忆目录的写入走同步事务 `store.commit(fn)`：fn 内完成校验与变更、成功后才原子落盘，单进程内天然串行；请避免多个 dsh 实例同时写同一项目存储。
 
@@ -294,7 +294,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ```bash
 npm install
-npm test                    # 360 项测试（核心 184 + TaskBridge 16 + insight-store 12 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 9 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 14 + insight-derive 7 + readiness-eval 7 + ops 6 + injection-audit 8 + injection-budget 5 + injection-scenarios 6 + bugfix-0.5.7 18 + client-icons 3 + client-slash 10 + workflow-command 5 + client-session-id 7）
+npm test                    # 466 项测试（核心 196 + TaskBridge 16 + insight-store 12 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 9 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 14 + insight-derive 7 + readiness-eval 7 + ops 6 + injection-audit 8 + injection-budget 5 + injection-scenarios 6 + bugfix-0.5.7 18 + client-icons 3 + client-slash 10 + workflow-command 5 + client-session-id 7 + task-view 6 + root-guards 79 + store-gitignore 9）
 npm run eval:injection      # 合成池上的场景 P/R：命中 14/14、假阳性 0、对照组零注入
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）

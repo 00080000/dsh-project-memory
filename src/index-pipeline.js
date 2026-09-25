@@ -10,7 +10,6 @@ import { isSupportedCode, isSupportedDoc, readFileForIndex } from './util/fs.js'
 import { buildDocEntries } from './doc-pipeline.js'
 import { docEntriesNeedBackfill } from './doc-index.js'
 import { scanSymbols } from './symbols.js'
-import { linkEntries } from './link.js'
 
 /** 不索引的后缀。 */
 export const UNSUPPORTED = 'unsupported'
@@ -88,13 +87,16 @@ export function toFileUpdate(rel, plan, record) {
 }
 
 /**
- * 一批更新一次性落盘：写入 / 移除 → 清掉本轮未见到的旧条目 → 重建链接。
+ * 一批更新一次性落盘：写入 / 移除 → 清掉本轮未见到的旧条目。
  * 单事务的好处是 store 只 save 一次，watch 每轮不会反复重写。
+ *
+ * 不再重建 doc↔symbol 链接：链接是读取期解算的派生关系（见 src/link.js），
+ * 所以这里也没有了那个「中间批次跳过链接、最后一批统一做」的 `link` 参数。
  *
  * @returns {{stale: string[], removed: number}} stale 是 CAS 失败（并发改动）的 rel，
  *   调用方应让它们保持「未落快照」状态，下一轮重试。
  */
-export function commitFileUpdates(store, { updates, unseen = null, link = true }) {
+export function commitFileUpdates(store, { updates, unseen = null }) {
   const stale = []
   let removed = 0
   store.commit((s) => {
@@ -113,7 +115,6 @@ export function commitFileUpdates(store, { updates, unseen = null, link = true }
         }
       }
     }
-    if (link) linkEntries(s)
   })
   return { stale, removed }
 }

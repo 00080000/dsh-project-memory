@@ -26,6 +26,17 @@ function isRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
+/**
+ * 剥离**跨实体派生**字段：`linkedSymbols` 由读取期的解析器解算（见 src/link.js 顶部
+ * 说明），不再落盘。加载时剥掉是为了立刻释放老 store 里那部分内存（实测占大仓库堆的
+ * 大部分），写入时剥掉防止旧对象把它带回去。`searchText` 是自派生（只依赖本 entry），
+ * 仍然物化。
+ */
+function stripDerivedFields(entry) {
+  if (entry && typeof entry === 'object' && 'linkedSymbols' in entry) delete entry.linkedSymbols
+  return entry
+}
+
 function loadJson(filePath, fallback) {
   let raw
   try {
@@ -86,6 +97,8 @@ export class ProjectMemoryStore {
     this._formatWritten = false
     this._version = 0
     this._idfCache = null
+    /** entries 的变更计数：符号索引（读取期链接）据此失效，与 save 的 `_version` 解耦。 */
+    this._entriesVersion = 0
   }
 
   load() {
@@ -164,7 +177,7 @@ export class ProjectMemoryStore {
     }
     mkdirSync(path.join(this.dir, SHARDS_DIR), { recursive: true })
     for (const rel of Object.keys(files)) {
-      writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: files[rel], entries: entries[rel] || [] })
+      writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: files[rel], entries: (entries[rel] || []).map(stripDerivedFields) })
     }
     writeJsonAtomic(formatPath, { version: 2, layout: 'sharded' })
     for (const stale of [legacyEntriesPath, path.join(this.dir, INDEX_FILE)]) {
@@ -190,8 +203,10 @@ export class ProjectMemoryStore {
       this.files[shard.relPath] = shard.record
       // 畸形 shard（entries 被写成对象/null）不能让 allEntries() 在 `for…of` 上抛错，
       // 否则一个坏文件会拖垮整个进程的每一次读取。
-      this.entries[shard.relPath] = Array.isArray(shard.entries) ? shard.entries.filter(isRecord) : []
+      const list = Array.isArray(shard.entries) ? shard.entries.filter(isRecord) : []
+      this.entries[shard.relPath] = list.map(stripDerivedFields)
     }
+    this._entriesVersion++
     this.experience = loadJson(path.join(this.dir, EXPERIENCE_FILE), [])
     this.tasks = loadJson(path.join(this.dir, TASKS_FILE), [])
     this.binding = loadJson(path.join(this.dir, BINDING_FILE), {})
@@ -438,11 +453,12 @@ export class ProjectMemoryStore {
 
   setEntries(relPath, entries) {
     if (entries.length) {
-      const enriched = entries.map((e) => ({ ...e, searchText: makeSearchText(e) }))
+      const enriched = entries.map((e) => stripDerivedFields({ ...e, searchText: makeSearchText(e) }))
       this.entries[relPath] = enriched
     } else {
       delete this.entries[relPath]
     }
+    this._entriesVersion++
     this._dirtyShards.add(relPath)
     this._removedShards.delete(relPath)
   }
@@ -451,9 +467,15 @@ export class ProjectMemoryStore {
     if (relPath in this.files) {
       delete this.files[relPath]
       delete this.entries[relPath]
+      this._entriesVersion++
       this._dirtyShards.add(relPath)
       this._removedShards.add(relPath)
     }
+  }
+
+  /** entries 的变更计数：派生缓存（符号索引）据此失效。 */
+  get entriesVersion() {
+    return this._entriesVersion
   }
 
   allEntries() {

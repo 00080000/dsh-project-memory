@@ -33,8 +33,8 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
 
   const flushBatch = () => {
     if (!batch.length) return
-    // 中间批次不做 unseen 清理、不重建链接（最后一批统一做）——否则每批都要遍历整个 store。
-    commitFileUpdates(store, { updates: batch, link: false })
+    // 中间批次不做 unseen 清理（最后一批统一做）——否则每批都要遍历整个 store。
+    commitFileUpdates(store, { updates: batch })
     batch = []
   }
 
@@ -74,12 +74,11 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
     }
   }
 
-  // 收尾：写完最后一批 + 清理本轮未见到的旧条目 + 重建链接。
+  // 收尾：写完最后一批 + 清理本轮未见到的旧条目。
   // 截断时**不做 unseen 清理**：没扫到的文件不等于被删了。
   const { removed } = commitFileUpdates(store, {
     updates: batch,
     unseen: truncated ? null : seen,
-    link: true,
   })
   const stats = store.stats()
   let report =
