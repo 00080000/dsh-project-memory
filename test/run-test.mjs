@@ -13,9 +13,31 @@ import { forgetTool } from '../src/tools/forget.js'
 import { watchRepoTool } from '../src/tools/watch-repo.js'
 import { statsTool } from '../src/tools/stats.js'
 import { WatchManager } from '../src/watch.js'
-import { linkEntries } from '../src/link.js'
+import { resolveLinkedSymbols } from '../src/link.js'
 import { rankEntriesMerged, rankEntries, rankExperienceScored, tokenizeRaw } from '../src/util/search.js'
 import { findProjectRoot, indexFile, setupLazyIndexing, codeFirst } from '../src/lazy.js'
+
+/**
+ * 读取期链接解析的测试助手：返回某条 doc entry 命中的符号 id。
+ * @param {object} store 待查 store（或等价的 `{allEntries, entriesVersion}` 桩）
+ * @param {string} docId 目标 doc 的 id
+ * @param {number} limit 放宽上限，避免断言被默认的 5 截断
+ * @returns {string[]}
+ */
+function linkedIdsOf(store, docId, limit = 50) {
+  const doc = store.allEntries().find((e) => e.id === docId)
+  return resolveLinkedSymbols(store, doc, limit).map((s) => s.id)
+}
+
+/** 直接从磁盘 shard 聚合 entry，模拟"另一个进程重新加载"（绕过进程内 storeCache）。 */
+function storeLikeFromShards(memDir) {
+  const entries = []
+  for (const name of readdirSync(path.join(memDir, 'shards'))) {
+    const shard = JSON.parse(readFileSync(path.join(memDir, 'shards', name), 'utf8'))
+    if (Array.isArray(shard.entries)) entries.push(...shard.entries)
+  }
+  return { allEntries: () => entries, entriesVersion: 1 }
+}
 
 let passed = 0
 let failed = 0
@@ -488,7 +510,7 @@ console.log('\n== no-hit introspection & stats tool ==')
   check('stats tool lists per-file entries', out.includes('spec.md [doc] entries:') && out.includes('payments.py [code] entries:'))
 }
 
-console.log('\n== linkedSymbols persist to disk (cross-process probe) ==')
+console.log('\n== links are resolved at read time, not persisted ==')
 {
   const lpRoot = mkdtempSync(path.join(tmpdir(), 'pm-linkdisk-'))
   mkdirSync(path.join(lpRoot, 'docs'), { recursive: true })
@@ -497,25 +519,35 @@ console.log('\n== linkedSymbols persist to disk (cross-process probe) ==')
   writeFileSync(gwPath, 'class Gateway:\n    def charge(self): pass\n')
   const spec = path.join(lpRoot, 'docs', 'spec.md')
   writeFileSync(spec, '# Spec\n\nSee gateway notes.')
-  // 先让代码符号入库（模拟 lazy 路径），再走 index-doc
   const lpMemDir = memoryRootFor(lpRoot, config.memoryDir)
+  const specRel = path.relative(lpRoot, spec).split(path.sep).join('/')
+
+  // 关键顺序：**文档先入库、符号后到**。旧实现把链接物化在索引那一刻，这条顺序会永久丢链接。
+  await docTool.execute({ file_path: spec, root: lpRoot })
   {
     const st = new ProjectMemoryStore(lpMemDir).load()
     st.markFile('src/gw.py', { sha256: 'gw', size: 1, type: 'code', indexedAt: new Date().toISOString() })
     st.setEntries('src/gw.py', scanSymbols(gwPath, readFileSync(gwPath, 'utf8')))
     st.save()
   }
-  await docTool.execute({ file_path: spec, root: lpRoot })
+
   const shardDir = path.join(lpMemDir, 'shards')
   let persisted = null
-  const specRel = path.relative(lpRoot, spec).split(path.sep).join('/')
   for (const name of readdirSync(shardDir)) {
     const shard = JSON.parse(readFileSync(path.join(shardDir, name), 'utf8'))
     if (shard.relPath === specRel) persisted = shard
   }
   check(
-    'linkedSymbols written to shard on disk (not just process memory)',
-    Array.isArray(persisted?.entries?.[0]?.linkedSymbols) && persisted.entries[0].linkedSymbols.length > 0,
+    'linkedSymbols 不再落盘（跨实体派生字段由读取期解算）',
+    Array.isArray(persisted?.entries) && persisted.entries.length > 0
+      && persisted.entries.every((e) => !('linkedSymbols' in e)),
+  )
+  // 只凭磁盘上剩下的内容（等价于另一个进程重新加载）也要能解出链接
+  const reloaded = storeLikeFromShards(lpMemDir)
+  const specEntry = reloaded.allEntries().find((e) => e.sourcePath === specRel)
+  check(
+    '仅凭磁盘 shard 即可解出 Gateway 链接（文档先索引、符号后到也不丢）',
+    resolveLinkedSymbols(reloaded, specEntry, 5).some((s) => s.keywords?.[0] === 'Gateway'),
   )
 }
 
@@ -593,8 +625,12 @@ console.log('\n== CJK query: phrase boost + synonyms ==')
 }
 
 console.log('\n== doc <-> symbol cross-linking ==')
-const linked = linkEntries(new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load())
-check('links doc entries to mentioned symbols', linked > 0)
+const linkedStore = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+const resolvedSyms = linkedStore
+  .allEntries()
+  .filter((e) => e.type === 'doc')
+  .flatMap((d) => resolveLinkedSymbols(linkedStore, d, 50))
+check('links doc entries to mentioned symbols', resolvedSyms.some((s) => s.title.includes('PaymentService')))
 out = await queryTool.execute({ root, query: 'payments' })
 check('query shows references to linked symbols', out.includes('references:') && out.includes('PaymentService'))
 
@@ -617,11 +653,9 @@ console.log('\n== link hygiene ==')
       title: 'Parsing', summary: 'parseConfig loads values at boot.', keywords: ['parseConfig'],
     },
   ])
-  const links = linkEntries(linkStore)
-  const docs = linkStore.allEntries().filter((e) => e.type === 'doc')
-  check('generic word does not link every symbol', !docs.find((e) => e.id === 'd1').linkedSymbols)
-  check('real name match still links', docs.find((e) => e.id === 'd2').linkedSymbols?.includes('s1'))
-  check('link count is unique pairs only', links === 1)
+  check('generic word does not link every symbol', linkedIdsOf(linkStore, 'd1').length === 0)
+  check('real name match still links', linkedIdsOf(linkStore, 'd2').includes('s1'))
+  check('同一条链接只出现一次（id 去重）', linkedIdsOf(linkStore, 'd2').filter((id) => id === 's1').length === 1)
 }
 
 console.log('\n== link word boundaries ==')
@@ -645,10 +679,8 @@ console.log('\n== link word boundaries ==')
       title: 'Run guide', summary: 'How to run tasks.', keywords: ['run'],
     },
   ])
-  linkEntries(bStore)
-  const docs = bStore.allEntries().filter((e) => e.type === 'doc')
-  check('substring run does not match runtime', !docs.find((e) => e.id === 'dx').linkedSymbols)
-  check('standalone run matches', docs.find((e) => e.id === 'dy').linkedSymbols?.includes('sr'))
+  check('substring run does not match runtime', linkedIdsOf(bStore, 'dx').length === 0)
+  check('standalone run matches', linkedIdsOf(bStore, 'dy').includes('sr'))
 }
 
 console.log('\n== CJK link boundaries ==')
@@ -682,15 +714,45 @@ console.log('\n== CJK link boundaries ==')
   cjkStore.setEntries('docs/e.md', [
     { id: 'de', type: 'doc', sourcePath: 'docs/e.md', sourceLine: 1, title: '用户服务V2', summary: 'V2 版本', keywords: [] },
   ])
-  linkEntries(cjkStore)
-  const cjkDocs = cjkStore.allEntries().filter((e) => e.type === 'doc')
-  check('前边界 CJK 允许匹配: 调用用户服务 -> 用户服务', cjkDocs.find((e) => e.id === 'da').linkedSymbols?.includes('svc'))
-  check('后缀 CJK 阻断: 用户服务管理器 -/-> 用户服务', !cjkDocs.find((e) => e.id === 'db').linkedSymbols?.includes('svc'))
-  check('混合名后缀数字阻断: 用户服务V22 -/-> 用户服务V2', !cjkDocs.find((e) => e.id === 'dc').linkedSymbols?.includes('svc2'))
-  check('混合名后缀 CJK 阻断: 用户服务V2管理器 -/-> 用户服务V2', !cjkDocs.find((e) => e.id === 'dd').linkedSymbols?.includes('svc2'))
-  check('精确匹配: 用户服务V2 -> 用户服务V2', cjkDocs.find((e) => e.id === 'de').linkedSymbols?.includes('svc2'))
+  check('前边界 CJK 允许匹配: 调用用户服务 -> 用户服务', linkedIdsOf(cjkStore, 'da').includes('svc'))
+  check('后缀 CJK 阻断: 用户服务管理器 -/-> 用户服务', !linkedIdsOf(cjkStore, 'db').includes('svc'))
+  check('混合名后缀数字阻断: 用户服务V22 -/-> 用户服务V2', !linkedIdsOf(cjkStore, 'dc').includes('svc2'))
+  check('混合名后缀 CJK 阻断: 用户服务V2管理器 -/-> 用户服务V2', !linkedIdsOf(cjkStore, 'dd').includes('svc2'))
+  check('精确匹配: 用户服务V2 -> 用户服务V2', linkedIdsOf(cjkStore, 'de').includes('svc2'))
   // 纯 CJK 符号名不应误链混合后缀
-  check('纯 CJK 名阻断混合后缀: 用户服务V2管理器 -/-> 用户服务', !cjkDocs.find((e) => e.id === 'dd').linkedSymbols?.includes('svc'))
+  check('纯 CJK 名阻断混合后缀: 用户服务V2管理器 -/-> 用户服务', !linkedIdsOf(cjkStore, 'dd').includes('svc'))
+}
+
+console.log('\n== link resolution is bounded and ranked ==')
+{
+  const rStore = new ProjectMemoryStore(path.join(mkdtempSync(path.join(tmpdir(), 'pm-linkrank-')), 'mem')).load()
+  rStore.setEntries('src/all.js', Array.from({ length: 10 }, (_, i) => ({
+    id: `w${i}`, type: 'symbol', sourcePath: `src/m${i}.js`, sourceLine: 1,
+    title: `Widget${i} (class)`, summary: '', keywords: [`Widget${i}`],
+  })))
+  rStore.setEntries('docs/r.md', [
+    {
+      id: 'dr', type: 'doc', sourcePath: 'docs/r.md', sourceLine: 1,
+      title: 'Widgets', summary: 'Widget3 Widget3 Widget3 Widget1 Widget2 Widget4 Widget5 Widget6', keywords: [],
+    },
+  ])
+  const top = resolveLinkedSymbols(rStore, rStore.allEntries().find((e) => e.id === 'dr'), 5)
+  check('limit 生效：最多返回 5 个', top.length === 5)
+  check('按命中次数排序：Widget3 居首', top[0]?.keywords?.[0] === 'Widget3')
+  check('超出 limit 的低相关符号被截掉', !top.some((s) => s.keywords?.[0] === 'Widget6'))
+}
+
+console.log('\n== link resolution reflects the current symbol table ==')
+{
+  const oStore = new ProjectMemoryStore(path.join(mkdtempSync(path.join(tmpdir(), 'pm-linkorder-')), 'mem')).load()
+  oStore.setEntries('docs/late.md', [
+    { id: 'dl', type: 'doc', sourcePath: 'docs/late.md', sourceLine: 1, title: 'Late', summary: 'LateService handles it.', keywords: [] },
+  ])
+  check('符号未到时不解出链接', linkedIdsOf(oStore, 'dl').length === 0)
+  oStore.setEntries('src/late.js', [
+    { id: 'sl', type: 'symbol', sourcePath: 'src/late.js', sourceLine: 1, title: 'LateService (class)', summary: '', keywords: ['LateService'] },
+  ])
+  check('符号后到时立即解出（无需重新索引文档）', linkedIdsOf(oStore, 'dl').includes('sl'))
 }
 
 console.log('\n== watch reloads store each poll (external writes preserved) ==')

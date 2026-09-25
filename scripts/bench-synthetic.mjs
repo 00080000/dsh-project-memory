@@ -5,7 +5,7 @@
  *   - store.js       : load / commit / addExperience(findSupersede) / removeExperience
  *   - util/search.js : buildBm25 / rankEntriesStreaming / rankExperienceScored
  *   - symbols.js     : scanSymbols（零 token 符号抽取，无 LLM）
- *   - link.js        : linkEntries（doc↔symbol 交叉链接）
+ *   - link.js        : resolveLinkedSymbols（doc↔symbol 交叉链接，读取期解算）
  *   - insight-store.js: GlobalStore read/write + saveInsight（归一化去重）
  *   - similarity.js  : normalizedTokenOverlap（去重阈值判定）
  *
@@ -21,7 +21,6 @@ import { performance } from 'node:perf_hooks'
 import { ProjectMemoryStore } from '../src/store.js'
 import { walkDir, readFileForIndex, relativePath, storeKey, isSupportedCode } from '../src/util/fs.js'
 import { scanSymbols } from '../src/symbols.js'
-import { linkEntries } from '../src/link.js'
 import { rankEntriesStreaming, rankExperienceScored, makeSearchText } from '../src/util/search.js'
 import { GlobalStore, saveInsight, normalizeInsight } from '../src/insight-store.js'
 import { normalizedTokenOverlap } from '../src/similarity.js'
@@ -108,7 +107,6 @@ async function coldIndex(root, config) {
   const report = store.commit((s) => {
     for (const u of fileUpdates) s.applyFileUpdate(u.rel, u)
     for (const rel of Object.keys(s.files)) if (!seen.has(rel)) s.removeFile(rel)
-    linkEntries(s)
     return s.stats()
   })
   return { report, store }
@@ -146,7 +144,7 @@ async function main() {
   console.log(`\n[语料生成] ${FILES} 文件写盘耗时 ${genMs.toFixed(0)} ms`)
 
   // ---------- 1. 冷索引（完整内核管线，无 LLM）----------
-  console.log('\n--- 1. 冷索引 index_repo 内核管线（walk + sha256 + scanSymbols + linkEntries + commit）---')
+  console.log('\n--- 1. 冷索引 index_repo 内核管线（walk + sha256 + scanSymbols + commit）---')
   const idxTimes = []
   let entriesCount = 0
   for (let r = 0; r < 3; r++) {
