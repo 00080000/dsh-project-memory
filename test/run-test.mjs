@@ -14,7 +14,7 @@ import { watchRepoTool } from '../src/tools/watch-repo.js'
 import { statsTool } from '../src/tools/stats.js'
 import { WatchManager } from '../src/watch.js'
 import { resolveLinkedSymbols } from '../src/link.js'
-import { rankEntriesMerged, rankEntries, rankExperienceScored, tokenizeRaw } from '../src/util/search.js'
+import { rankEntriesMergedScored, rankEntriesStreaming, rankExperienceScored, tokenizeRaw } from '../src/util/search.js'
 import { findProjectRoot, indexFile, setupLazyIndexing, codeFirst } from '../src/lazy.js'
 
 /**
@@ -532,15 +532,19 @@ console.log('\n== links are resolved at read time, not persisted ==')
   }
 
   const shardDir = path.join(lpMemDir, 'shards')
-  let persisted = null
+  // 落盘只留事实：链接、searchText、typeSig 都是派生/中间量，不应出现在任何 shard 里。
+  let sawEntries = 0
+  let derivedOnDisk = 0
   for (const name of readdirSync(shardDir)) {
     const shard = JSON.parse(readFileSync(path.join(shardDir, name), 'utf8'))
-    if (shard.relPath === specRel) persisted = shard
+    for (const e of Array.isArray(shard.entries) ? shard.entries : []) {
+      sawEntries++
+      if ('linkedSymbols' in e || 'searchText' in e || 'typeSig' in e) derivedOnDisk++
+    }
   }
   check(
-    'linkedSymbols 不再落盘（跨实体派生字段由读取期解算）',
-    Array.isArray(persisted?.entries) && persisted.entries.length > 0
-      && persisted.entries.every((e) => !('linkedSymbols' in e)),
+    '派生字段不落盘（linkedSymbols / searchText / typeSig）',
+    sawEntries > 0 && derivedOnDisk === 0,
   )
   // 只凭磁盘上剩下的内容（等价于另一个进程重新加载）也要能解出链接
   const reloaded = storeLikeFromShards(lpMemDir)
@@ -549,6 +553,53 @@ console.log('\n== links are resolved at read time, not persisted ==')
     '仅凭磁盘 shard 即可解出 Gateway 链接（文档先索引、符号后到也不丢）',
     resolveLinkedSymbols(reloaded, specEntry, 5).some((s) => s.keywords?.[0] === 'Gateway'),
   )
+}
+
+console.log('\n== derived fields live in memory, not on disk ==')
+{
+  const dir = path.join(mkdtempSync(path.join(tmpdir(), 'pm-derived-')), 'mem')
+  const st = new ProjectMemoryStore(dir).load()
+  st.setEntries('docs/a.md', [
+    { id: 'a1', type: 'doc', sourcePath: 'docs/a.md', sourceLine: 1, title: 'Alpha', summary: 'beta gamma', keywords: ['alpha'] },
+  ])
+  st.markFile('docs/a.md', { sha256: 'h', size: 1, type: 'doc', indexedAt: new Date().toISOString() })
+  st.save()
+  let onDisk = null
+  for (const name of readdirSync(path.join(dir, 'shards'))) {
+    const shard = JSON.parse(readFileSync(path.join(dir, 'shards', name), 'utf8'))
+    if (shard.relPath === 'docs/a.md') onDisk = shard.entries[0]
+  }
+  check('searchText 不写盘', Boolean(onDisk) && !('searchText' in onDisk))
+  // 内存里按需物化（供 rankEntriesStreaming 用）
+  delete st.entries['docs/a.md'][0].searchText
+  const got = st.allEntries()
+  check('allEntries 按需物化 searchText', typeof got[0].searchText === 'string' && got[0].searchText.includes('alpha'))
+}
+
+console.log('\n== symbol declaration is one bounded line ==')
+{
+  const { oneLineDeclaration, MAX_DECLARATION } = await import('../src/util/text.js')
+  check('限长到 MAX_DECLARATION', oneLineDeclaration('x'.repeat(MAX_DECLARATION * 5)).length === MAX_DECLARATION)
+  check('压平成单行', !oneLineDeclaration('a\n\n   b').includes('\n'))
+}
+
+console.log('\n== type-cache prunes stale entries ==')
+{
+  const { pruneTypeCache } = await import('../src/enhancer.js')
+  const cacheDir = path.join(mkdtempSync(path.join(tmpdir(), 'pm-typecache-')), 'type-cache')
+  mkdirSync(cacheDir, { recursive: true })
+  const keep = 'a'.repeat(16)
+  const staleOld = 'b'.repeat(16)
+  const staleFresh = 'c'.repeat(16)
+  for (const key of [keep, staleOld, staleFresh]) writeFileSync(path.join(cacheDir, `${key}.json`), '{}')
+  const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
+  utimesSync(path.join(cacheDir, `${staleOld}.json`), old, old)
+  // 保留集来自当前 shard 记录的 sha256 前 16 位
+  pruneTypeCache(cacheDir, { files: { 'src/a.ts': { sha256: `${keep}${'x'.repeat(48)}` } } })
+  const left = readdirSync(cacheDir)
+  check('保留当前记录引用的条目', left.includes(`${keep}.json`))
+  check('删除过期的僵尸条目', !left.includes(`${staleOld}.json`))
+  check('grace 期内不误删刚写入的条目', left.includes(`${staleFresh}.json`))
 }
 
 console.log('\n== remember / forget ==')
@@ -581,14 +632,15 @@ out = await repoTool.execute({ root })
 check('reindex keeps docs, updates changed code', out.includes('docs indexed: 0') && out.includes('code symbols updated: 1'))
 
 console.log('\n== merged BM25 (query expansion fallback) ==')
-const merged = rankEntriesMerged(
+// 走生产函数 rankEntriesMergedScored（recall 的 insight 层用同一条）
+const merged = rankEntriesMergedScored(
   [
     { id: '1', title: 'Refund flow', summary: 'Handles order refunds', keywords: ['refund'], sourcePath: 'a.md' },
     { id: '2', title: 'Login', summary: 'Auth token', keywords: ['auth'], sourcePath: 'b.md' },
   ],
   ['refund', 'money back'],
 )
-check('merged search ranks by max score', merged.length === 1 && merged[0].id === '1')
+check('merged search ranks by max score', merged.length === 1 && merged[0].entry.id === '1')
 
 console.log('\n== BM25 term frequency & field weighting ==')
 {
@@ -596,12 +648,12 @@ console.log('\n== BM25 term frequency & field weighting ==')
     { id: 'low', title: 'Alpha notes', summary: 'fees y z w', keywords: [], sourcePath: 'a.md' },
     { id: 'high', title: 'Beta notes', summary: 'fees fees fees x', keywords: [], sourcePath: 'b.md' },
   ]
-  check('higher term frequency ranks first', rankEntries(tfDocs, 'fees')[0]?.id === 'high')
+  check('higher term frequency ranks first', rankEntriesStreaming(tfDocs, ['fees'], {}, 8)[0]?.entry.id === 'high')
   const fieldDocs = [
     { id: 'body', title: 'Other title', summary: 'about zephyr stuff', keywords: [], sourcePath: 'c.md' },
     { id: 'head', title: 'Zephyr spec', summary: 'nothing relevant here', keywords: [], sourcePath: 'd.md' },
   ]
-  check('title hit outweighs body hit', rankEntries(fieldDocs, 'zephyr')[0]?.id === 'head')
+  check('title hit outweighs body hit', rankEntriesStreaming(fieldDocs, ['zephyr'], {}, 8)[0]?.entry.id === 'head')
 }
 
 console.log('\n== CJK query: phrase boost + synonyms ==')
@@ -612,10 +664,10 @@ console.log('\n== CJK query: phrase boost + synonyms ==')
     { id: 'd3', title: '其他文档', summary: '无关内容', keywords: ['其他'], sourcePath: 'c.md' },
   ]
   // 短语加分：查询"数据库连接池配置"，标题含"数据库连接池配置"应加分（d1 包含查询短语）
-  const r1 = rankEntries(cjkDocs, '数据库连接池配置')
+  const r1 = rankEntriesStreaming(cjkDocs, ['数据库连接池配置'], {}, 8).map((r) => r.entry)
   check('精确短语加分: 数据库连接池配置 -> 数据库连接池配置详解 排前', r1[0]?.id === 'd1')
   // 同义词展开：查询"连接池"应召回"数据库连接池配置详解"
-  const r2 = rankEntries(cjkDocs, '连接池')
+  const r2 = rankEntriesStreaming(cjkDocs, ['连接池'], {}, 8).map((r) => r.entry)
   check('同义词展开: 连接池 召回 数据库连接池配置详解', r2.some((d) => d.id === 'd1'))
   // expandQuery undefined 不抛错
   const { buildBm25 } = await import('../src/util/search.js')
@@ -882,7 +934,7 @@ check('addRoot refuses the filesystem root', new WatchManager(ctx, config).addRo
 
 const wmClamp = new WatchManager(ctx, config)
 wmClamp.start(0)
-check('watch interval clamped to >= 1s', wmClamp.timer?._repeat === 1000)
+check('watch interval clamped to >= 1s', wmClamp._baseInterval === 1000 && wmClamp.timer?._idleTimeout === 1000)
 wmClamp.stop()
 
 console.log('\n== watch restore (persisted roots) ==')

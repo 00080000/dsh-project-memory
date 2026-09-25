@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { oneLineDeclaration } from './util/text.js'
 
 const JS_LIKE = new Set(['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.jsx', '.tsx'])
 const PYTHON = new Set(['.py'])
@@ -465,7 +466,8 @@ function buildSymbol(matched, relPath, rawLine, lineNo) {
     type: 'symbol',
     title: `${matched.name} (${matched.kind})`,
     keywords: [matched.name, matched.kind],
-    text: identity,
+    // interface/type 的 typeSig 可能是整个类型体；这里限长成一行，避免符号条目被撑大。
+    text: oneLineDeclaration(identity),
   }
 }
 

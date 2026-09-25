@@ -141,15 +141,10 @@ export function makeSearchText(entry) {
   return weightedFieldText(entry).toLowerCase()
 }
 
-export function rankEntries(entries, query, limit = 8) {
-  const bm25 = buildBm25(entries, weightedFieldText)
-  const scored = bm25.score(query)
-  return scored.slice(0, limit).map((r) => r.doc)
-}
-
-export function rankEntriesMerged(entries, queries, limit = 8) {
-  return rankEntriesMergedScored(entries, queries, limit).map((r) => r.entry)
-}
+// 说明：文档/符号的线上检索走 `rankEntriesStreaming`（recall.js），它不重建整库 BM25，
+// 而是用预物化的 `searchText` + 每 store 缓存的 idf。曾经存在的 `rankEntries` /
+// `rankEntriesMerged`（每次调用都 buildBm25 全库分词，70k 条目实测 p50 1.4s）已删除——
+// 它们在生产路径上没有调用方，留着只会被误用。
 
 export function rankEntriesMergedScored(entries, queries, limit = 8) {
   if (!queries.length) return entries.slice(0, limit).map((entry) => ({ entry, score: 0 }))

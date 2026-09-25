@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
+import { oneLineDeclaration } from './util/text.js'
 
 const require = createRequire(import.meta.url)
 
@@ -123,6 +124,48 @@ async function saveTypeCache(cacheDir, key, data) {
     const file = join(cacheDir, `${key}.json`)
     writeFileSync(file, JSON.stringify(data))
   } catch {}
+}
+
+/** cacheDir -> 上次清理时间。清理是 O(缓存文件数) 的 readdir+stat，节流到每 10 分钟一次。 */
+const typeCachePrunedAt = new Map()
+const TYPE_CACHE_PRUNE_INTERVAL_MS = 10 * 60 * 1000
+/** 刚写入、还没来得及进 store 记录的缓存条目（lazy 路径）在 grace 期内不删。 */
+const TYPE_CACHE_GRACE_MS = 60 * 60 * 1000
+
+/**
+ * 清理 type-cache 的过期条目。
+ *
+ * 缓存按内容哈希命名，文件一改就会留下新条目、把旧条目变成僵尸：实测一个真实仓库
+ * 9827 个条目里 4935 个（一半）已不被任何 shard 记录引用。内容本身只有 9.2MB，但因为
+ * 每个条目是独立小文件，`du` 出来的 41MB 里约 31MB 是 4KB 块开销——删掉僵尸条目能省掉
+ * 约 19MB，而保留下来的正好是当前索引的工作集。
+ *
+ * @param {string} cacheDir
+ * @param {object} store 当前 root 的 ProjectMemoryStore（提供 files[rel].sha256 保留集）
+ */
+export function pruneTypeCache(cacheDir, store) {
+  const now = Date.now()
+  if (now - (typeCachePrunedAt.get(cacheDir) || 0) < TYPE_CACHE_PRUNE_INTERVAL_MS) return
+  typeCachePrunedAt.set(cacheDir, now)
+  try {
+    const retain = new Set()
+    for (const record of Object.values(store?.files || {})) {
+      if (record && typeof record.sha256 === 'string') retain.add(record.sha256.slice(0, 16))
+    }
+    for (const dirent of readdirSync(cacheDir, { withFileTypes: true })) {
+      if (!dirent.isFile() || !dirent.name.endsWith('.json')) continue
+      if (retain.has(dirent.name.slice(0, -5))) continue
+      const full = join(cacheDir, dirent.name)
+      try {
+        if (now - statSync(full).mtimeMs < TYPE_CACHE_GRACE_MS) continue
+        unlinkSync(full)
+      } catch {
+        // 单个条目删不掉不影响其它
+      }
+    }
+  } catch {
+    // 缓存目录不存在 / 不可读：旁路，绝不影响索引
+  }
 }
 
 export function isTypeScriptFile(filePath) {
@@ -263,11 +306,14 @@ export function deepParseWithTS(filePath, content) {
         if (!m.name) return null
         const type = m.type ? getTypeStr(checker.getTypeAtLocation(m.type)) : 'any'
         return `${m.name.getText()}: ${type}`
-      }).filter(Boolean).join('; ')
+      }).filter(Boolean)
+      // 成员列表必须有界：一个大 interface 的全部成员拼起来能到几 KB，而它整条只作为
+      // "一行声明"存在。只留前 6 个，其余记数量。
+      const shown = members.slice(0, 6)
       symbols.push({
         name: node.name.getText(),
         kind: 'interface',
-        typeSig: `{ ${members} }`,
+        typeSig: `{ ${shown.join('; ')}${members.length > shown.length ? `; … +${members.length - shown.length} more` : ''} }`,
         line: getLine(node)
       })
     } else if (ts.isTypeAliasDeclaration(node)) {
@@ -337,6 +383,7 @@ export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BAT
       const enhanced = deepParseWithTS(filePath, content)
       if (enhanced?.length) {
         await saveTypeCache(cacheDir, cacheKey, { symbols: enhanced })
+        pruneTypeCache(cacheDir, store)
         await store.commit(fn => applyEnhancedSymbols(fn, relPath, enhanced))
       }
     } catch (err) {
@@ -395,8 +442,10 @@ function applyEnhancedSymbols(fn, relPath, enhanced) {
     if (!enh || nameOf(e) !== enh.name) return e
     return {
       ...e,
-      text: `${enh.name}${enh.typeSig} -- ${relPath}:${enh.line}`,
-      typeSig: enh.typeSig,
+      // 一行声明（限长）。typeSig 只是构建期的中间量，不落进 entry：它没有读取方，
+      // 且 interface 的 typeSig 就是整个类型体，是符号条目变胖的主因。
+      text: oneLineDeclaration(`${enh.name}${enh.typeSig} -- ${relPath}:${enh.line}`),
+      typeSig: undefined,
       enhanced: true
     }
   })
@@ -419,7 +468,7 @@ function applyEnhancedSymbols(fn, relPath, enhanced) {
       type: 'symbol',
       title: `${s.name} (${s.kind})`,
       keywords: [s.name, s.kind],
-      text: `${s.name}${s.typeSig} -- ${relPath}:${s.line}`,
+      text: oneLineDeclaration(`${s.name}${s.typeSig} -- ${relPath}:${s.line}`),
       enhanced: true
     })
   }

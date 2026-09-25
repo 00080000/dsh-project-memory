@@ -26,11 +26,46 @@
 - `query_memory` 的 `references` 输出格式不变，`test/run-test.mjs` 的链接用例改为断言
   解析器行为，并新增"文档先索引、符号后到也能解出"与"limit / 排序"回归。
 
+### 修复：其余派生/中间字段与两处无界缓存（体积、内存、轮询）
+
+第一轮去掉了链接，这一轮把剩下的放大源和常驻开销一起收掉。同一个 store（11698 文件 /
+70119 条目 / 索引源码 108.5MB）实测：**落盘 361MB → 93MB**，加载 **1017ms → 279ms**，
+堆占用 **129–196MB → 101MB**，`recallItems` p50 **53ms → 47ms**。
+
+- **`searchText` 不再落盘**（省 22.7MB）。它是 `weightedFieldText` 的纯派生结果，改成
+  `allEntries()` 在内存里按需物化；写入时与 `linkedSymbols` 一起剥离（`PERSISTED_DERIVED`）。
+  检索语义与输出不变；磁盘与加载解析变少，堆占用基本持平（物化改到首次查询时做）。
+- **符号声明限长成一行**（`oneLineDeclaration`，≤200 字符）。TypeScript enricher 之前把
+  interface 的**全部成员**拼进 `typeSig`、再整体落进 `text`/`typeSig`（实测符号条目平均
+  1.25KB，其中 `text` 648B），而这两个字段没有任何读取方。现在 interface 只留前 6 个成员 +
+  `… +N more`，`typeSig` 不再落盘。代码层 **31% → 19% 源码**，README 声称的"一行声明"
+  由此第一次成立。
+- **storeCache 按字节预算 + LRU**。原来只按个数（32），而单个大仓库 store 实测驻留
+  130–200MB；现在同时限制条数与估算驻留量（256MB，约 2.5KB/entry），命中会把条目挪到
+  队尾，热的不会先被逐出。
+- **type-cache 清理僵尸条目**。缓存按内容哈希命名，文件一改就留下永不回收的旧条目：
+  实测 9827 个条目里 4935 个（一半）已不被任何 shard 记录引用。注意 `du` 的 41MB 里约
+  31MB 是 4KB 块开销、内容其实只有 9.2MB——清理按"当前 shard 记录引用的哈希"保留，
+  带 1 小时 grace 防误删刚写入还没入库的条目，并节流到每 10 分钟一次。本仓库实测
+  **41MB/9827 → 20MB/4892**。
+- **watch 轮询空闲退避**。轮询是 O(树) 的 walkDir + 逐文件 stat（本仓库实测 58–87ms），
+  原来固定 15s 一轮、不管有没有改动都在磨 I/O。现在改成递归 `setTimeout`：无变化时翻倍
+  退避到最长 2 分钟，任何变化立即回到 `watchInterval`（基础值不变，仍可配置）。
+- **删除死代码** `rankEntries` / `rankEntriesMerged` / `store.searchEntries`：它们每次调用
+  都 `buildBm25` 全库分词（70k 条目实测 p50 1.4s），生产路径没有调用方；相关测试改用线上
+  真正跑的 `rankEntriesStreaming` / `rankEntriesMergedScored`。
+
+存量 store 的压实：`index_repo reindex=true` 会重写全部 shard（代价是重新抽取）；只想去掉
+派生字段可以按 store API 标记后 `save()`。本次已用后者压实本仓库的 store——**361MB → 93MB，
+1.9 秒**，未重新抽取任何文件。
+
 ### 文档
 
-- README 的 `npm test` 断言与实测对齐：360 → **466**（核心 184 → 196；补上此前漏记的
-  task-view 6 / root-guards 79 / store-gitignore 9）；
-- 两份 README 的"交叉链接"机制描述由"索引后挂载到条目"改为"读取期按当前符号表解算"。
+- README 的 `npm test` 断言与实测对齐：360 → **474**（核心 184 → 203、host-contract 9 → 10；
+  补上此前漏记的 task-view 6 / root-guards 79 / store-gitignore 9）；
+- 两份 README 的"交叉链接"机制描述由"索引后挂载到条目"改为"读取期按当前符号表解算"；
+- `watchInterval` 文档补充空闲退避语义；"紧凑性"一节改用实测区间（符号稀疏项目 ~0.5%，
+  符号密集的 TS monorepo ~19%），不再把 0.5% 当普遍值。
 
 ## 0.5.10 (2026-09-24)
 
