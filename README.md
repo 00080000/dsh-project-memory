@@ -315,4 +315,6 @@ Release notes live in [`CHANGELOG.md`](CHANGELOG.md) and on [GitHub Releases](ht
 
 ## License
 
-MIT
+MIT — see [`LICENSE`](LICENSE).
+
+Copyright (c) 2026 00080000 &lt;3388065969@qq.com&gt;
