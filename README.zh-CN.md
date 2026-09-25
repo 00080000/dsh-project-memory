@@ -88,7 +88,7 @@ dsh plugin --profile web add /path/to/dsh-project-memory.tgz
 
 - **易失性** — 上下文是临时的，会话压缩即丢失。
 - **持久性** — **记忆**存于磁盘，跨压缩与会话保留。
-- **紧凑性** — 代码层每个符号只存一行声明，所以代码为主的项目仍约 **0.5% 源码体积**（示例项目中 8.8 MB 源码 → 49 KB 索引），**召回**替代了通读整个文件。文档层按设计更重：每个 chunk 保留 ≤300 字符的注入 `summary`、覆盖整 chunk 的 `terms`，以及预计算的 `searchText`。纯文档语料实测（179 chunk / 225 KB Markdown）：`terms` ≈ 源码 **27.5%**，整库落盘 ≈ 源码 **166%**——文档占比高的项目请按「约等于文档本身大小」估，而不是 0.5%。
+- **紧凑性** — 代码层每个符号只存一行声明（≤200 字符），文档层每个 chunk 保留 ≤300 字符的 `summary` 与有界的 `terms`。**派生数据一律不落盘**：doc→symbol 链接与 BM25 的 `searchText` 都在读取期计算。最终体积取决于符号密度，所以「0.5%」是区间里稀疏的那一端、不是承诺：Java/Vue 项目实测约 **0.5% 源码**（8.8 MB → 49 KB），而符号密集的 TypeScript monorepo（11.7k 文件 / 108 MB 索引）实测代码层约 **19%**、文档层约 **106%**。纯文档语料实测（179 chunk / 225 KB Markdown）`terms` ≈ 源码 **27.5%**、整库落盘 ≈ 源码 **166%**——文档占比高的项目请按「约等于文档本身大小」估。
 - **可核验性** — **召回**在适用时携带 `路径:行号` 引用，agent 可对照源文件核实。
 
 构建**记忆**无需预先全量扫描：文件在模型读取时被记忆，**记忆**恰好覆盖实际处理过的内容。未变更的文件重读是空操作（内容哈希），因此**记忆**的持续维护开销很低。
@@ -149,7 +149,7 @@ TaskPanel (Container)
 | `lazyIndexing` | true | 模型读取文件的瞬间即索引（`fs/observed`） |
 | `autoIndexOnFirstUse` | false | 插件加载时对当前工作目录做全量扫描（可选） |
 | `watch` | true | 启用后台刷新 |
-| `watchInterval` | 15 | 轮询间隔（秒） |
+| `watchInterval` | 15 | 基础轮询间隔（秒）；空闲时逐步退避到最长 2 分钟，一有变化立即回到该值 |
 | `maxScanFiles` | 20000 | 单次扫描的文件数硬上限；被截断时会在报告里说明，且不会删除没扫到的条目。设 `0` 取消上限 |
 | `maxScanDepth` | 12 | 单次扫描的目录深度硬上限。设 `0` 取消 |
 | `allowUnsafeRoots` | false | 允许**显式**工具调用（带 `root` 的 `index_repo`/`watch_repo`/`remember`）指向排除名单上的目录。自动路径（懒索引、会话审计、TaskBridge、`autoIndexOnFirstUse`）无论此项如何都不会越权 |
@@ -208,7 +208,7 @@ store 建在被索引的目录树里，并且**自我忽略**：它在自己目�
     autoIndexOnFirstUse: false  # 关闭：不做加载时的全量扫描（默认）
     llmQueryExpansion: false    # 关闭：不用 LLM 扩展查询，节省 token（默认）
     watch: true                 # 开启：被监听根目录后台保持新鲜（默认）
-    watchInterval: 15           # 轮询间隔（秒）
+    watchInterval: 15           # 基础轮询间隔；空闲时退避到最长 2 分钟
     maxScanFiles: 20000         # 单次扫描文件上限（截断会报告，且不会误删旧条目）
     maxScanDepth: 12            # 单次扫描目录深度上限
     enableTypeScript: true      # 开启：装了 TS 时启用 L2 语义增强（默认）
@@ -294,7 +294,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ```bash
 npm install
-npm test                    # 466 项测试（核心 196 + TaskBridge 16 + insight-store 12 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 9 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 14 + insight-derive 7 + readiness-eval 7 + ops 6 + injection-audit 8 + injection-budget 5 + injection-scenarios 6 + bugfix-0.5.7 18 + client-icons 3 + client-slash 10 + workflow-command 5 + client-session-id 7 + task-view 6 + root-guards 79 + store-gitignore 9）
+npm test                    # 474 项测试（核心 203 + TaskBridge 16 + insight-store 12 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 10 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 14 + insight-derive 7 + readiness-eval 7 + ops 6 + injection-audit 8 + injection-budget 5 + injection-scenarios 6 + bugfix-0.5.7 18 + client-icons 3 + client-slash 10 + workflow-command 5 + client-session-id 7 + task-view 6 + root-guards 79 + store-gitignore 9）
 npm run eval:injection      # 合成池上的场景 P/R：命中 14/14、假阳性 0、对照组零注入
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）

@@ -91,7 +91,7 @@ The design follows four principles:
 
 - **Volatility** — context is ephemeral; it is lost when a session is compacted.
 - **Persistence** — the **memory** is stored on disk and survives compaction and new sessions.
-- **Compactness** — the code layer stores one declaration line per symbol, so code-heavy projects stay near **0.5% of the source** (8.8 MB of source → 49 KB of index in the example project), and **recall** replaces re-reading the full file. The document layer is heavier by design: each chunk keeps a ≤300-char injected `summary`, a bounded `terms` set covering the whole chunk for retrieval, and a precomputed `searchText`. Measured on a docs-only corpus (179 chunks / 225 KB of Markdown): `terms` ≈ **27.5%** of source and the on-disk store ≈ **166%** of source — so on doc-heavy projects budget for roughly the docs themselves, not 0.5%.
+- **Compactness** — the code layer stores one bounded declaration line per symbol (≤200 chars) and the document layer keeps a ≤300-char `summary` plus a bounded `terms` set per chunk. **Derived data is never stored**: doc→symbol links and the BM25 `searchText` are computed at read time. How small the index ends up depends on symbol density, so treat "0.5%" as the sparse end of the range, not a guarantee: a Java/Vue project measured **~0.5% of source** (8.8 MB → 49 KB), while a symbol-dense TypeScript monorepo (11.7k files / 108 MB indexed) measured **~19%** for the code layer and **~106%** for the document layer. On a docs-only corpus (179 chunks / 225 KB of Markdown) `terms` ≈ **27.5%** of source and the on-disk store ≈ **166%** of source — on doc-heavy projects budget for roughly the docs themselves.
 - **Verifiability** — **recalls** carry a `path:line` citation where applicable, so the agent can confirm details against the source.
 
 Building the **memory** does not require an upfront scan: files are memorized as the model reads them, so the **memory** grows to cover exactly what has been worked with. Re-reading a file that has not changed is a no-op (content hash), so the **memory** stays fresh with minimal ongoing overhead.
@@ -152,7 +152,7 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 | `lazyIndexing` | true | index files the moment the model reads them (`fs/observed`) |
 | `autoIndexOnFirstUse` | false | full scan of the current working directory on plugin load (opt-in) |
 | `watch` | true | enable the background refresh |
-| `watchInterval` | 15 | poll interval (seconds) |
+| `watchInterval` | 15 | base poll interval (seconds); idle polls back off up to 2 minutes and reset to this value on any change |
 | `maxScanFiles` | 20000 | hard cap on files per scan pass; a truncated pass is reported and does not remove the entries it did not reach. Set `0` to disable the cap |
 | `maxScanDepth` | 12 | hard cap on directory depth per scan pass. Set `0` to disable |
 | `allowUnsafeRoots` | false | allow **explicit** tool calls (`index_repo`/`watch_repo`/`remember` with a `root`) to target a directory on the excluded list. Automatic paths (lazy indexing, session audit, TaskBridge, `autoIndexOnFirstUse`) stay inert in these directories regardless |
@@ -211,7 +211,7 @@ Settings live in the plugin's config object. To change them, add an override ent
     autoIndexOnFirstUse: false  # off: no upfront full scan (default)
     llmQueryExpansion: false    # off: do not spend tokens on LLM query expansion (default)
     watch: true                 # on: background refresh for watched roots (default)
-    watchInterval: 15           # poll interval in seconds
+    watchInterval: 15           # base poll interval; idle polls back off to at most 2 min
     maxScanFiles: 20000         # per-scan file cap (truncation is reported, never deletes)
     maxScanDepth: 12            # per-scan directory-depth cap
     enableTypeScript: true      # on: L2 TS enhancement when TS is installed (default)
@@ -297,7 +297,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 466 tests (196 core + 16 TaskBridge + 12 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 9 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 14 readiness + 7 insight-derive + 7 readiness-eval + 6 ops + 8 injection-audit + 5 injection-budget + 6 injection-scenarios + 18 bugfix-0.5.7 + 3 client-icons + 10 client-slash + 5 workflow-command + 7 client-session-id + 6 task-view + 79 root-guards + 9 store-gitignore)
+npm test                    # 474 tests (203 core + 16 TaskBridge + 12 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 10 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 14 readiness + 7 insight-derive + 7 readiness-eval + 6 ops + 8 injection-audit + 5 injection-budget + 6 injection-scenarios + 18 bugfix-0.5.7 + 3 client-icons + 10 client-slash + 5 workflow-command + 7 client-session-id + 6 task-view + 79 root-guards + 9 store-gitignore)
 npm run eval:injection      # scenario P/R on the synthetic pool: 14/14 hits, 0 false positives, control group clean
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)

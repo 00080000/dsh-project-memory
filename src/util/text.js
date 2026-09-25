@@ -20,6 +20,22 @@ export function truncate(text, maxChars) {
 
 export const MAX_SUMMARY = 300
 
+/** 符号声明行的上限。未限长的 interface 类型体会把一行撑到几 KB。 */
+export const MAX_DECLARATION = 200
+
+/**
+ * 符号的一行声明：压平空白并限长。实测一个真实 TS 仓库里，未限长的类型体正文让
+ * 符号 `text` 字段达到 5.6MB（而它当前没有任何消费者）；限长后保住"一行声明"的语义，
+ * 又不会把代码层体积从 ~0.5% 推到 30%+。
+ * @param {unknown} text
+ * @param {number} max
+ * @returns {string}
+ */
+export function oneLineDeclaration(text, max = MAX_DECLARATION) {
+  const flat = String(text || '').replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
+}
+
 /** 注入用短摘要：压平空白，按句子边界截断到 max 字符。纯函数，无 LLM。 */
 export function summarizeText(text, max = MAX_SUMMARY) {
   const flat = String(text || '').replace(/\s+/g, ' ').trim()

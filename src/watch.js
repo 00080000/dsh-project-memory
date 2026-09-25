@@ -81,28 +81,52 @@ export class WatchManager {
 
   start(intervalMs = 15000) {
     if (this.timer) return
-    // NaN/undefined 会让 setInterval 退化成 1ms 轮询（Node 只发一条 TimeoutNaNWarning），
+    // NaN/undefined 会让定时器退化成 1ms 轮询（Node 只发一条 TimeoutNaNWarning），
     // 足以打满事件循环让 agent 无法响应；非法值回退到 15s。
     const raw = Number(intervalMs)
-    const ms = Number.isFinite(raw) ? Math.max(raw, 1000) : 15000
-    this.timer = setInterval(() => this.poll(), ms)
+    this._baseInterval = Number.isFinite(raw) ? Math.max(raw, 1000) : 15000
+    // 空闲退避：连续没有变化的轮次把间隔翻倍，最长 2 分钟一轮；任何变化立刻回到 base。
+    // 轮询本身是 O(树) 的 walkDir + 逐文件 stat（本仓库一轮实测 58–87ms），
+    // 常驻 15s 一轮意味着不管有没有改动都在磨 I/O。
+    this._maxInterval = Math.max(this._baseInterval, Math.min(this._baseInterval * 8, 120000))
+    this._interval = this._baseInterval
+    this._stopped = false
+    this._schedule()
+  }
+
+  _schedule() {
+    this.timer = setTimeout(() => this._tick(), this._interval)
     if (this.timer.unref) this.timer.unref()
   }
 
+  async _tick() {
+    this.timer = null
+    let changed = false
+    try {
+      changed = await this.poll()
+    } catch {
+      // poll() 内部已逐根兜底；这里保证无论发生什么都一定排下一轮，不会静默停掉 watch。
+    }
+    if (this._stopped) return // 轮询期间被 stop() 了，不要再排下一轮
+    this._interval = changed ? this._baseInterval : Math.min(this._interval * 2, this._maxInterval)
+    this._schedule()
+  }
+
   stop() {
-    if (this.timer) clearInterval(this.timer)
+    this._stopped = true
+    if (this.timer) clearTimeout(this.timer)
     this.timer = null
   }
 
   async poll() {
-    // setInterval 不等待上一轮：大仓库/文档 LLM 摘要让一轮 >interval 时，
-    // 轮询会叠加成并发索引，最终打满事件循环。用重入锁让慢轮询自然跳过。
-    if (this._polling) return
+    // 慢轮询期间再次进入直接跳过（递归 setTimeout 下正常不会叠加，保留作防御）。
+    if (this._polling) return false
     this._polling = true
+    let changed = false
     try {
       for (const [root, state] of this.roots) {
         try {
-          await this.pollRoot(root, state)
+          if (await this.pollRoot(root, state)) changed = true
         } catch (err) {
           console.error(`[dsh-project-memory] watch poll failed for ${root}: ${err.message}`)
         }
@@ -110,6 +134,7 @@ export class WatchManager {
     } finally {
       this._polling = false
     }
+    return changed
   }
 
   async pollRoot(root, state) {
@@ -179,14 +204,15 @@ export class WatchManager {
     // 单事务写盘；CAS 失败的条目本轮不落快照，下一轮自然重试。
     // 截断时**不传 unseen**：没扫到的文件不等于被删了，否则一份被上限截掉的树每轮都会
     // 把自己的记忆删掉一半（先删再下轮重新索引，纯粹的抖动）。
-    const { stale } = commitFileUpdates(state.store, {
+    const { stale, removed } = commitFileUpdates(state.store, {
       updates,
       unseen: truncated ? null : seen,
-      link: updates.length > 0,
     })
     const failed = new Set(stale)
+    let applied = 0
     for (const update of updates) {
       if (failed.has(update.rel)) continue
+      applied++
       state.snapshot[update.rel] = signatures.get(update.rel)
       if (update.type !== 'code') continue
       const filePath = path.join(root, update.rel)
@@ -194,5 +220,7 @@ export class WatchManager {
         onFileChanged(state.store, update.rel, filePath, this.config, root)
       }
     }
+    // 有变化 → 下一轮回到 base 间隔；纯空转 → 退避。
+    return applied > 0 || removed > 0
   }
 }
