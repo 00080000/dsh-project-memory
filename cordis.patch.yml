@@ -10,7 +10,7 @@
         lazyIndexing: true
         autoIndexOnFirstUse: false
         watch: true
-        watchInterval: 15
+        watchInterval: 30
         # 危险根护栏（家目录 / 文件系统根 / 系统与包管理器前缀整体扫描会吃满内存）。
         # 自动路径永远不越权；true 只放开**显式**带 root 的工具调用。
         allowUnsafeRoots: false

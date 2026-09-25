@@ -55,14 +55,14 @@ const ok = (name) => {
 {
   const wm = new WatchManager({}, { memoryDir: '.dsh-project-memory' })
 
-  // 非法间隔 → 回退到 15s，绝不退化成 1ms
+  // 非法间隔 → 回退到 30s，绝不退化成 1ms
   wm.start(NaN)
   assert.ok(wm.timer && wm.timer._idleTimeout >= 1000, `interval=${wm.timer?._idleTimeout}`)
   wm.stop()
   wm.start(undefined)
-  assert.equal(wm.timer._idleTimeout, 15000)
+  assert.equal(wm.timer._idleTimeout, 30000)
   wm.stop()
-  ok('start(NaN/undefined) 回退到 15s（不再 1ms 轮询风暴）')
+  ok('start(NaN/undefined) 回退到 30s（不再 1ms 轮询风暴）')
 
   // 轮询重入：慢轮询期间再次 poll 应直接跳过，不叠加
   let concurrent = 0

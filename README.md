@@ -152,7 +152,7 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 | `lazyIndexing` | true | index files the moment the model reads them (`fs/observed`) |
 | `autoIndexOnFirstUse` | false | full scan of the current working directory on plugin load (opt-in) |
 | `watch` | true | enable the background refresh |
-| `watchInterval` | 15 | base poll interval (seconds); idle polls back off up to 2 minutes and reset to this value on any change |
+| `watchInterval` | 30 | base poll interval (seconds); idle polls back off up to 2 minutes and reset to this value on any change |
 | `maxScanFiles` | 20000 | hard cap on files per scan pass; a truncated pass is reported and does not remove the entries it did not reach. Set `0` to disable the cap |
 | `maxScanDepth` | 12 | hard cap on directory depth per scan pass. Set `0` to disable |
 | `allowUnsafeRoots` | false | allow **explicit** tool calls (`index_repo`/`watch_repo`/`remember` with a `root`) to target a directory on the excluded list. Automatic paths (lazy indexing, session audit, TaskBridge, `autoIndexOnFirstUse`) stay inert in these directories regardless |
@@ -211,7 +211,7 @@ Settings live in the plugin's config object. To change them, add an override ent
     autoIndexOnFirstUse: false  # off: no upfront full scan (default)
     llmQueryExpansion: false    # off: do not spend tokens on LLM query expansion (default)
     watch: true                 # on: background refresh for watched roots (default)
-    watchInterval: 15           # base poll interval; idle polls back off to at most 2 min
+    watchInterval: 30           # base poll interval; idle polls back off to at most 2 min
     maxScanFiles: 20000         # per-scan file cap (truncation is reported, never deletes)
     maxScanDepth: 12            # per-scan directory-depth cap
     enableTypeScript: true      # on: L2 TS enhancement when TS is installed (default)
