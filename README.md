@@ -297,7 +297,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 474 tests (203 core + 16 TaskBridge + 12 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 10 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 14 readiness + 7 insight-derive + 7 readiness-eval + 6 ops + 8 injection-audit + 5 injection-budget + 6 injection-scenarios + 18 bugfix-0.5.7 + 3 client-icons + 10 client-slash + 5 workflow-command + 7 client-session-id + 6 task-view + 79 root-guards + 9 store-gitignore)
+npm test                    # 472 tests (201 core + 16 TaskBridge + 12 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 10 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 14 readiness + 7 insight-derive + 7 readiness-eval + 6 ops + 8 injection-audit + 5 injection-budget + 6 injection-scenarios + 18 bugfix-0.5.7 + 3 client-icons + 10 client-slash + 5 workflow-command + 7 client-session-id + 6 task-view + 79 root-guards + 9 store-gitignore)
 npm run eval:injection      # scenario P/R on the synthetic pool: 14/14 hits, 0 false positives, control group clean
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)
