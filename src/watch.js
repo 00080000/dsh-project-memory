@@ -79,12 +79,12 @@ export class WatchManager {
     return this.roots.delete(root)
   }
 
-  start(intervalMs = 15000) {
+  start(intervalMs = 30000) {
     if (this.timer) return
     // NaN/undefined 会让定时器退化成 1ms 轮询（Node 只发一条 TimeoutNaNWarning），
-    // 足以打满事件循环让 agent 无法响应；非法值回退到 15s。
+    // 足以打满事件循环让 agent 无法响应；非法值回退到默认 30s。
     const raw = Number(intervalMs)
-    this._baseInterval = Number.isFinite(raw) ? Math.max(raw, 1000) : 15000
+    this._baseInterval = Number.isFinite(raw) ? Math.max(raw, 1000) : 30000
     // 空闲退避：连续没有变化的轮次把间隔翻倍，最长 2 分钟一轮；任何变化立刻回到 base。
     // 轮询本身是 O(树) 的 walkDir + 逐文件 stat（本仓库一轮实测 58–87ms），
     // 常驻 15s 一轮意味着不管有没有改动都在磨 I/O。
