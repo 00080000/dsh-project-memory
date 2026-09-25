@@ -25,6 +25,8 @@ const STORE_CACHE_MAX = 32
  * 130–200MB，32 个就是几 GB。按 store 的条目数与读入文本量估算，约 2.5KB/entry。
  */
 const STORE_CACHE_MAX_BYTES = 256 * 1024 * 1024
+/** 每轮 save 最多补写多少个待压实的老分片（有界，避免升级后一次重写整库）。 */
+const COMPACT_BATCH = 200
 
 /** 单个 store 的驻留估算（驻留文本量 vs 条目数换算，取大者）。 */
 function estimateResidentBytes(store) {
@@ -135,10 +137,11 @@ export class ProjectMemoryStore {
     this._dirtyBinding = false
     this._dirtyWatch = false
     this._formatWritten = false
-    this._version = 0
     this._idfCache = null
-    /** entries 的变更计数：符号索引（读取期链接）据此失效，与 save 的 `_version` 解耦。 */
+    /** entries 的变更计数：IDF 缓存与符号索引（读取期链接）都据此失效。 */
     this._entriesVersion = 0
+    /** 待压实的老分片（≤0.5.10 落盘时带 linkedSymbols/searchText）；save() 每轮有界补写。 */
+    this._compactQueue = new Set()
     /** 从磁盘读入的 JSON 文本量（UTF-16 字符数），作为驻留内存的估算基数。 */
     this._residentChars = 0
   }
@@ -248,6 +251,8 @@ export class ProjectMemoryStore {
       // 畸形 shard（entries 被写成对象/null）不能让 allEntries() 在 `for…of` 上抛错，
       // 否则一个坏文件会拖垮整个进程的每一次读取。
       const list = Array.isArray(shard.entries) ? shard.entries.filter(isRecord) : []
+      // 老分片带着派生字段：内存里立刻剥掉，并排队等 save() 把磁盘上也压实。
+      if (list.some((e) => PERSISTED_DERIVED.some((k) => k in e))) this._compactQueue.add(shard.relPath)
       this.entries[shard.relPath] = list.map(stripPersistedDerived)
     }
     this._entriesVersion++
@@ -392,9 +397,11 @@ export class ProjectMemoryStore {
 
   save() {
     // 没有脏数据就不落盘。watch 每轮对每个根都无条件 commit → save；照旧执行的话，
-    // 末尾的 `_version++` + `_idfCache = null` 会打在跨实例共享的 store 上，
-    // 等于每 15 秒清空一次 IDF 缓存，废掉查询侧的 IDF 复用（v0.3.4 的 20x）。
+    // 末尾的 ID 缓存失效会打在跨实例共享的 store 上，等于每轮清空一次 IDF 复用（v0.3.4 的 20x）。
+    // 待压实队列不算"脏数据"，但它需要有界推进，所以也走这条落盘路径。
+    const compacting = this._compactQueue.size > 0
     const dirty =
+      compacting ||
       this._dirtyShards.size > 0 ||
       this._removedShards.size > 0 ||
       this._dirtyExperience ||
@@ -412,6 +419,16 @@ export class ProjectMemoryStore {
     if (!this._formatWritten) {
       writeJsonAtomic(path.join(this.dir, FORMAT_FILE), { version: 2, layout: 'sharded' })
       this._formatWritten = true
+    }
+    // 存量压实：≤0.5.10 的分片带着派生字段，而那些字段只在分片被重写时才会从磁盘消失。
+    // 每轮最多补写 COMPACT_BATCH 个，让升级后的 store 在后续任意一次 save（watch 轮询、
+    // 索引、写入）里自动收敛，而不是永远停在旧体积。
+    let compactBudget = COMPACT_BATCH
+    for (const rel of this._compactQueue) {
+      if (compactBudget <= 0) break
+      compactBudget--
+      this._compactQueue.delete(rel)
+      if (this.files[rel]) this._dirtyShards.add(rel)
     }
     for (const rel of this._dirtyShards) {
       if (this.files[rel]) {
@@ -452,16 +469,16 @@ export class ProjectMemoryStore {
       writeJsonAtomic(path.join(this.dir, WATCH_FILE), this.watchlist)
       this._dirtyWatch = false
     }
-    this._version++
-    this._idfCache = null
   }
 
   getIdfCache() {
-    if (this._idfCache && this._idfCache.version === this._version) {
+    // IDF 只依赖 entries（title/keywords/summary），所以按 entries 的变更计数失效：
+    // 只写经验/insight 或只做存量压实的 save 不会再无谓地重建 IDF。
+    if (this._idfCache && this._idfCache.version === this._entriesVersion) {
       return this._idfCache.idf
     }
     const idf = this._rebuildIdf()
-    this._idfCache = { version: this._version, idf }
+    this._idfCache = { version: this._entriesVersion, idf }
     return idf
   }
 
@@ -544,6 +561,11 @@ export class ProjectMemoryStore {
   /** entries 的变更计数：派生缓存（符号索引）据此失效。 */
   get entriesVersion() {
     return this._entriesVersion
+  }
+
+  /** 还有多少个老分片等着被 save() 压实（0 = 存量已收敛）。 */
+  get pendingCompaction() {
+    return this._compactQueue.size
   }
 
   allEntries() {
