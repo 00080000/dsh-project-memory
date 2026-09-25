@@ -117,7 +117,7 @@ The store is per-project and follows the codebase: changed files are re-extracte
 Stores created before v0.2.0 (single `entries.json` / `index.json`) migrate automatically and idempotently on first load. Within one dsh process, all tool calls share a single in-memory store per project, so hot-path indexing writes only the shard that changed.
 
 - **Incremental** — content hash per file; only changed files are re-extracted.
-- **Cross-linking** — after indexing, doc summaries are matched against symbol names; matches are attached to the doc entry as `references` and surfaced by `query_memory`.
+- **Cross-linking** — when `query_memory` returns a doc chunk, it resolves the symbols that chunk mentions against the **current** symbol table and appends them as `references`. Links are computed at read time, so they cannot go stale and are not stored in the index (a doc indexed before its symbols still links correctly).
 - **Query expansion** — when `llmQueryExpansion` is on, `query_memory` asks `ctx.llm` to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and merges BM25 scores across variants; when off, queries never touch the LLM. Indexing itself is model-free: keywords are rule-derived (title-weighted top terms), and doc↔symbol links surface English symbol names from Chinese hits.
 - **Consistency** — the fact layer follows the codebase (hash re-extract / remove-on-delete); the experience layer is retrieval-only with supersede and `forget`. Store writes are serialized per memory directory; the lock is in-process, so avoid running multiple dsh instances against the same project store concurrently.
 
@@ -297,7 +297,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 360 tests (184 core + 16 TaskBridge + 12 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 9 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 14 readiness + 7 insight-derive + 7 readiness-eval + 6 ops + 8 injection-audit + 5 injection-budget + 6 injection-scenarios + 18 bugfix-0.5.7 + 3 client-icons + 10 client-slash + 5 workflow-command + 7 client-session-id)
+npm test                    # 466 tests (196 core + 16 TaskBridge + 12 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 9 host-contract + 5 reflection + 4 llm-route + 2 client-hints + 8 recall + 14 readiness + 7 insight-derive + 7 readiness-eval + 6 ops + 8 injection-audit + 5 injection-budget + 6 injection-scenarios + 18 bugfix-0.5.7 + 3 client-icons + 10 client-slash + 5 workflow-command + 7 client-session-id + 6 task-view + 79 root-guards + 9 store-gitignore)
 npm run eval:injection      # scenario P/R on the synthetic pool: 14/14 hits, 0 false positives, control group clean
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)

@@ -6,6 +6,7 @@ import { expandQuery } from '../llm.js'
 import { resolveRoute } from '../llm-route.js'
 import { GlobalStore, cfgInsight, defaultGlobalFile, recordHit } from '../insight-store.js'
 import { recallItems } from '../recall.js'
+import { resolveLinkedSymbols } from '../link.js'
 import { truncate } from '../util/text.js'
 import { stepContent, stepStatus } from '../util/task-view.js'
 function toAbs(root, rel) {
@@ -59,10 +60,6 @@ export function queryMemoryTool(ctx, config) {
       const queries = config.llmQueryExpansion
         ? await expandQuery(ctx.llm, args.query, config.expansionCount, { route: resolveRoute(exec, config) })
         : [args.query]
-      const symbolById = new Map()
-      for (const e of store.allEntries()) {
-        if (e.type === 'symbol') symbolById.set(e.id, e)
-      }
 
       // 会话绑定决定 task 级 insight 的可见性；global 级始终可见。
       const sessionId = exec?.agent?.session?.id
@@ -121,12 +118,12 @@ export function queryMemoryTool(ctx, config) {
             // 条目状态占位（可证伪状态机落地前恒为 exact）。
             // 先立字段，后续状态机到位时只改值、不改输出契约。
             lines.push(`### ${e.title} (score: ${rel})\n- source: ${absSource}\n- status: ${e.status || 'exact'}\n${summaryLine}`)
-            if (e.type === 'doc' && Array.isArray(e.linkedSymbols) && e.linkedSymbols.length) {
-              const refs = e.linkedSymbols.slice(0, 5).map((id) => {
-                const s = symbolById.get(id)
-                return s ? `${s.title} @ ${toAbs(root, s.sourcePath)}:${s.sourceLine}` : id
-              })
-              lines.push(`- references: ${refs.join('; ')}`)
+            if (e.type === 'doc') {
+              // 读取期解算：链接不落盘，按当前符号表排序取前 5（见 src/link.js）
+              const refs = resolveLinkedSymbols(store, e, 5).map(
+                (s) => `${s.title} @ ${toAbs(root, s.sourcePath)}:${s.sourceLine}`,
+              )
+              if (refs.length) lines.push(`- references: ${refs.join('; ')}`)
             }
           }
         }

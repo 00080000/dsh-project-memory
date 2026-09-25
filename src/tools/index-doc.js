@@ -3,7 +3,6 @@ import path from 'node:path'
 import { assertIndexRoot, assertReadableFile, assertSafeRoot, findProjectRoot, memoryRootFor, sessionMemoryRootOrNull, sha256OfFile, storeKey } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { docEntriesNeedBackfill } from '../doc-index.js'
-import { linkEntries } from '../link.js'
 import { ProjectMemoryStore } from '../store.js'
 
 export function indexDocTool(ctx, config) {
@@ -76,7 +75,6 @@ export function indexDocTool(ctx, config) {
       return store.commit((s) => {
         s.setEntries(rel, entries)
         s.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
-        linkEntries(s)
         const preview = entries
           .map((e) => `  - ${e.title} @ ${rel}:${e.sourceLine}`)
           .join('\n')
