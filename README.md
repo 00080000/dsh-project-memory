@@ -91,7 +91,7 @@ The design follows four principles:
 
 - **Volatility** — context is ephemeral; it is lost when a session is compacted.
 - **Persistence** — the **memory** is stored on disk and survives compaction and new sessions.
-- **Compactness** — the code layer stores one bounded declaration line per symbol (≤200 chars) and the document layer keeps a ≤300-char `summary` plus a bounded `terms` set per chunk. **Derived data is never stored**: doc→symbol links and the BM25 `searchText` are computed at read time. How small the index ends up depends on symbol density, so treat "0.5%" as the sparse end of the range, not a guarantee: a Java/Vue project measured **~0.5% of source** (8.8 MB → 49 KB), while a symbol-dense TypeScript monorepo (11.7k files / 108 MB indexed) measured **~19%** for the code layer and **~106%** for the document layer. On a docs-only corpus (179 chunks / 225 KB of Markdown) `terms` ≈ **27.5%** of source and the on-disk store ≈ **166%** of source — on doc-heavy projects budget for roughly the docs themselves.
+- **Compactness** — the code layer stores one bounded declaration line per symbol (≤200 chars) and the document layer keeps a ≤300-char `summary` plus a bounded `terms` set per chunk. **Derived data is never stored**: doc→symbol links and the BM25 `searchText` are computed at read time. How small the index ends up depends on symbol density and chunk length, so treat these as measurements of specific corpora (2026-09-25), not as guarantees: a code-only Vue app (289 files) lands at **325 bytes/entry ≈ 21% of source**, while a symbol-dense TypeScript monorepo (12,408 files / 106 MB of code + 14 MB of docs) measures **22% of source for the code layer (553 bytes/entry overall)** and **130% for the document layer**. Doc-heavy corpora are the largest per entry: a 274-document workspace (PDFs and Markdown) stores **1,506 bytes/entry**.
 - **Verifiability** — **recalls** carry a `path:line` citation where applicable, so the agent can confirm details against the source.
 
 Building the **memory** does not require an upfront scan: files are memorized as the model reads them, so the **memory** grows to cover exactly what has been worked with. Re-reading a file that has not changed is a no-op (content hash), so the **memory** stays fresh with minimal ongoing overhead.
@@ -233,29 +233,35 @@ where `config.yml` contains the same override block.
 
 ## Performance
 
-### Synthetic Benchmark (Node 24.19, WSL2 on 20 vCPU, Linux file system)
+### Measured on real projects (2026-09-25)
+
+Four corpora, one machine (Node 24.19, 20 vCPU, Linux file system), each run twice with the **second, warm-cache run** quoted. "Cold index" is a full index pass (walk + sha256 + extract + commit); "query" runs the shipped scorer over 100 sampled queries; "re-index 1 file" is the watch/lazy hot path.
+
+| Corpus | Files / entries | Cold index | Cold load | Query p50 / p95 | Re-index 1 file | Store content / on disk | Heap after load |
+|--------|-----------------|-----------|-----------|-----------------|-----------------|------------------------|-----------------|
+| Vue 3 + Vite app (code only) | 289 / 2,142 | 283 ms | 5.2 ms | 0.86 / 1.8 ms | 0.4 ms | 0.66 MB / 1.52 MB | 6.1 MB |
+| Docs + PDFs workspace (274 docs) | 286 / 2,120 | 6.5 s | 12.4 ms | 4.6 / 13.9 ms | 0.4 ms | 3.05 MB / 3.63 MB | 9.0 MB |
+| TypeScript monorepo, 3,000-file slice | 3,000 / 17,733 | 2.1 s | 59 ms | 10.2 / 21.4 ms | 1.8 ms | 11.0 MB / 19.0 MB | 22.6 MB |
+| TypeScript monorepo, whole tree | 12,408 / 79,168 | 8.6 s | 239 ms | 45.8 / 89.3 ms | 7.4 ms | 41.7 MB / 74.7 MB | 73.9 MB |
+
+**How it scales.** Re-indexing a changed file costs O(file), not O(corpus) — 0.4–7.4 ms across every corpus above. Cold load (≈19 µs/file), query (≈0.6 µs/entry) and resident heap (≈1.4 KB/entry once the first query materializes `searchText`) grow linearly with the index, which keeps small and mid-size projects in the single-digit-millisecond range.
+
+> Two notes on method: `read+hash` depends on the OS page cache (2.5 s cold vs 0.3 s warm on the 12.4k-file tree), so the warm run is the one quoted; and this benchmark drifts by up to ~20% across days on the same machine, so compare numbers measured in the same session.
+
+### Synthetic Benchmark (Node 24.19, 20 vCPU, Linux file system)
 
 | Scenario | Scale | Measured |
 |----------|-------|----------|
-| Full cold index | 5,000 files / 20k entries | 269 ms avg (p50 267) |
-| Cold load | 5,000 files | 40 ms |
-| Hot lazy re-index (single file) | 5k files | p50 2.4 ms / max 5.5 ms |
-| query_memory (cached) | 5k files / 20k entries | p50 2.6 ms / p95 5.4 ms |
-| query_memory (cached) | 1k files / 4k entries | p50 0.6 ms / p95 1.6 ms |
-| Full cold index | 10,000 files / 40k entries | 551 ms avg (p50 528) |
-| Cold load | 10,000 files | 90 ms |
-| Hot lazy re-index (single file) | 10k files | p50 5.4 ms / max 9.2 ms |
+| Full cold index | 5,000 files / 20k entries | 373 ms avg (p50 374) |
+| Cold load | 5,000 files | 56 ms |
+| Hot lazy re-index (single file) | 5k files | p50 2.8 ms / max 3.5 ms |
+| query_memory (cached) | 5k files / 20k entries | p50 3.3 ms / p95 6.9 ms |
+| query_memory (cached) | 1k files / 4k entries | p50 0.7 ms / p95 1.5 ms |
+| Full cold index | 10,000 files / 40k entries | 696 ms avg (p50 668) |
+| Cold load | 10,000 files | 123 ms |
+| Hot lazy re-index (single file) | 10k files | p50 5.9 ms / max 13.5 ms |
 
-> Synthetic benchmark: generated code (~4–5 symbols/file), Node 24.19 on WSL2 / 20 vCPU / Linux file system, measured 2026-09-14. Reproduce with `npm run bench:synthetic -- 5000` (harness: `scripts/bench-synthetic.mjs`). Measures pure indexing overhead without LLM calls. query_memory uses the IDF cache + precomputed searchText; the first query after a write rebuilds IDF (**106 ms at 40k entries**, 57 ms at 20k, 12 ms at 4k), subsequent queries hit the cache.
-
-### Real Project Storage
-
-| Project | Files | Entries | Store Size | Per Entry |
-|---------|-------|---------|------------|-----------|
-| Java Spring Boot backend | 1,254 | 7,335 | 6.7 MB | ~0.9 KB |
-| Vue 3 + Vite frontend | 289 | 2,141 | 1.0 MB | ~0.5 KB |
-
-> Real projects (Java + Vue), tested on Linux file system (Node 24). Real project entries are smaller than synthetic benchmarks due to lower symbol density and shorter declarations.
+> Synthetic benchmark: generated code (~4–5 symbols/file), Node 24.19 on 20 vCPU / Linux file system, measured 2026-09-25. Reproduce with `npm run bench:synthetic -- 5000` (harness: `scripts/bench-synthetic.mjs`). Measures pure indexing overhead without LLM calls. query_memory uses the IDF cache + searchText materialized on first use; the first query after a write rebuilds IDF (**142 ms at 40k entries**, 67 ms at 20k, 14 ms at 4k), subsequent queries hit the cache.
 
 ### Reproduce it on your own project
 
@@ -267,16 +273,17 @@ npm run bench -- /path/to/your/project
 node scripts/bench.mjs /path/to/your/project [--json] [--samples 100] [--no-pdf] [--keep]
 ```
 
-It reports the cold index split into read+hash / extract / commit, cold load, IDF rebuild, cold and hot query latency (p50/p95/max over 100 sampled queries through the shipped scorer), single-file hot re-index, store size and bytes per entry. Example — our internal Vue project (289 files / 2,141 entries, Node 24, 20 CPU, Linux):
+It reports the cold index split into read+hash / extract / commit, cold load, IDF rebuild, cold and hot query latency (p50/p95/max over 100 sampled queries through the shipped scorer), single-file hot re-index, store content vs on-disk size, resident heap (after load and after the first query), bytes per entry and RSS. Example — the Vue app row above:
 
 ```
-cold index   253 ms   (read+hash 9 ms · extract 229 ms · commit 13 ms)   ← 2nd, warm-cache run
-store        1.10 MB · 538 bytes/entry · cold load 4.6 ms
-hot query    p50 0.80 ms · p95 1.35 ms          (2,141 entries)
-re-index 1 file  p50 0.33 ms
+cold index   283 ms   (read+hash 11 ms · extract 256 ms · commit 14 ms)   ← 2nd, warm-cache run
+store        0.66 MB content · 1.52 MB on disk · 325 bytes/entry · cold load 5.2 ms
+memory       heap 6.1 MB after load → 6.7 MB after the first query (RSS 62 MB)
+hot query    p50 0.86 ms · p95 1.8 ms          (2,142 entries)
+re-index 1 file  p50 0.4 ms
 ```
 
-Two caveats we would rather state than hide: `read+hash` depends on the OS page cache — on that corpus the first run spent 787 ms and the second 253 ms, so say which run you quote — and **real projects score slower than the synthetic table above** — on a 3,000-file slice of a large TypeScript repository (15,594 entries) hot queries were p50 7.5 ms, because real declaration text is longer than generated stubs. Pass `--queries your-queries.json` to run the same labeled-set method (hit@5 / hit@10 / MRR) against your own project.
+Pass `--queries your-queries.json` to run the labeled-set method (hit@5 / hit@10 / MRR) against your own project.
 
 ## Design tradeoffs
 
