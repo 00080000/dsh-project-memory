@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { rankExperience, tokenize, tokenizeRaw, extractCjkPhrases, makeSearchText } from './util/search.js'
 import { backfillDerivedTriggers } from './readiness.js'
@@ -14,6 +14,8 @@ const WATCH_FILE = 'watch.json'
 const INSIGHTS_FILE = 'insights.json'
 const SHARDS_DIR = 'shards'
 const GITIGNORE_FILE = '.gitignore'
+/** ≤0.5.10 的 TS 增强结果缓存目录；0.5.11 起废弃并自愈清理。 */
+const LEGACY_TYPE_CACHE_DIR = 'type-cache'
 
 const storeCache = new Map()
 /** 条目数上限（兜底）。 */
@@ -155,6 +157,7 @@ export class ProjectMemoryStore {
     this._migrateLegacyIfNeeded()
     this._loadSharded()
     this._loadInsights()
+    this._removeLegacyTypeCache()
     // 有些路径只读不写（审计 jsonl 直接写在 store 目录里），所以这里也补一次自我忽略，
     // 让老版本建出来的 store 在第一次 load 就补上。
     this.ensureSelfIgnore()
@@ -254,6 +257,24 @@ export class ProjectMemoryStore {
     this.watchlist = loadJson(path.join(this.dir, WATCH_FILE), [], sizeSink)
     this._residentChars = sizeSink.bytes
     this._formatWritten = existsSafe(path.join(this.dir, FORMAT_FILE))
+  }
+
+  /**
+   * 清掉 ≤0.5.10 留下的 `type-cache/` 目录。
+   *
+   * 它按内容哈希缓存 TS 增强结果，但三个增强入口（lazy 的 `fs/observed`、watch 轮询、
+   * `index_repo`）**都只在"文件已变更并重新索引"之后**才触发，此时内容哈希必然是新值——
+   * 这个缓存永远命中不了。实测本仓库残留 9827 个文件（`du` 41MB，内容其实 9.2MB，约 31MB
+   * 是 4KB 块开销）。这里做一次自愈清理；删的是纯缓存，不丢任何事实。
+   */
+  _removeLegacyTypeCache() {
+    const dir = path.join(this.dir, LEGACY_TYPE_CACHE_DIR)
+    if (!existsSafe(dir)) return
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // 权限/占用导致删不掉也不影响 store 本身
+    }
   }
 
   // ---- v0.5 insights：project 级 insight 文档（任务级在 task.insights[]） ----

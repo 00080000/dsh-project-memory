@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { oneLineDeclaration } from './util/text.js'
@@ -98,74 +98,9 @@ const PRIORITY = {
 const enhanceQueue = []
 let processing = false
 
-function getCacheDirForRoot(root, config) {
-  return join(root, config.memoryDir || '.dsh-project-memory', 'type-cache')
-}
-
 function getCacheKey(content) {
   const hash = createHash('sha256').update(content).digest('hex').slice(0, 16)
   return hash
-}
-
-async function loadTypeCache(cacheDir, key) {
-  const file = join(cacheDir, `${key}.json`)
-  if (!existsSync(file)) return null
-  try {
-    const data = JSON.parse(readFileSync(file, 'utf8'))
-    return data
-  } catch {
-    return null
-  }
-}
-
-async function saveTypeCache(cacheDir, key, data) {
-  try {
-    if (!existsSync(cacheDir)) mkdirSync(cacheDir, { recursive: true })
-    const file = join(cacheDir, `${key}.json`)
-    writeFileSync(file, JSON.stringify(data))
-  } catch {}
-}
-
-/** cacheDir -> 上次清理时间。清理是 O(缓存文件数) 的 readdir+stat，节流到每 10 分钟一次。 */
-const typeCachePrunedAt = new Map()
-const TYPE_CACHE_PRUNE_INTERVAL_MS = 10 * 60 * 1000
-/** 刚写入、还没来得及进 store 记录的缓存条目（lazy 路径）在 grace 期内不删。 */
-const TYPE_CACHE_GRACE_MS = 60 * 60 * 1000
-
-/**
- * 清理 type-cache 的过期条目。
- *
- * 缓存按内容哈希命名，文件一改就会留下新条目、把旧条目变成僵尸：实测一个真实仓库
- * 9827 个条目里 4935 个（一半）已不被任何 shard 记录引用。内容本身只有 9.2MB，但因为
- * 每个条目是独立小文件，`du` 出来的 41MB 里约 31MB 是 4KB 块开销——删掉僵尸条目能省掉
- * 约 19MB，而保留下来的正好是当前索引的工作集。
- *
- * @param {string} cacheDir
- * @param {object} store 当前 root 的 ProjectMemoryStore（提供 files[rel].sha256 保留集）
- */
-export function pruneTypeCache(cacheDir, store) {
-  const now = Date.now()
-  if (now - (typeCachePrunedAt.get(cacheDir) || 0) < TYPE_CACHE_PRUNE_INTERVAL_MS) return
-  typeCachePrunedAt.set(cacheDir, now)
-  try {
-    const retain = new Set()
-    for (const record of Object.values(store?.files || {})) {
-      if (record && typeof record.sha256 === 'string') retain.add(record.sha256.slice(0, 16))
-    }
-    for (const dirent of readdirSync(cacheDir, { withFileTypes: true })) {
-      if (!dirent.isFile() || !dirent.name.endsWith('.json')) continue
-      if (retain.has(dirent.name.slice(0, -5))) continue
-      const full = join(cacheDir, dirent.name)
-      try {
-        if (now - statSync(full).mtimeMs < TYPE_CACHE_GRACE_MS) continue
-        unlinkSync(full)
-      } catch {
-        // 单个条目删不掉不影响其它
-      }
-    }
-  } catch {
-    // 缓存目录不存在 / 不可读：旁路，绝不影响索引
-  }
 }
 
 export function isTypeScriptFile(filePath) {
@@ -371,19 +306,8 @@ export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BAT
   const p = (async () => {
     try {
       const content = readFileSync(filePath, 'utf8')
-      const cacheKey = getCacheKey(content)
-      const cacheDir = getCacheDirForRoot(root || process.cwd(), config)
-      const cached = await loadTypeCache(cacheDir, cacheKey)
-      if (cached) {
-        // Cache hit: persist via store.commit
-        await store.commit(fn => applyEnhancedSymbols(fn, relPath, cached.symbols))
-        return
-      }
-
       const enhanced = deepParseWithTS(filePath, content)
       if (enhanced?.length) {
-        await saveTypeCache(cacheDir, cacheKey, { symbols: enhanced })
-        pruneTypeCache(cacheDir, store)
         await store.commit(fn => applyEnhancedSymbols(fn, relPath, enhanced))
       }
     } catch (err) {
