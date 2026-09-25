@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 /**
- * 独立基准：给一个真实项目路径，量「冷索引 / 冷加载 / 热查询 / 单文件热重索引 / 存储体积」。
+ * 独立基准：给一个真实项目路径，量「冷索引 / 冷加载 / 热查询 / 单文件热重索引 / 存储体积 / 常驻内存」。
  *
  * 特点：
  * - **不需要运行 dsh**，只 import 插件自己的 src 模块，走的就是线上那条索引与检索路径；
  * - **不碰被测项目**：结果写进临时目录，跑完删除（`--keep` 可保留）；
  * - 索引期零模型调用、零网络请求，所以在任何机器上都能复现。
+ * - 常驻内存（load 后 / allEntries() 后）由一个 `--expose-gc` 的子进程量（`scripts/bench-load.mjs`），
+ *   否则同一个进程里已经有索引用的那个 store，量出来是两份。
  *
  * 用法：
  *   node scripts/bench.mjs [projectPath] [--json] [--samples 100] [--no-pdf] [--keep] [--max-files 20000]
@@ -15,10 +17,12 @@
  *   [{ "query": "jwt token validation", "expect": "src/utils/auth.ts" }, ...]
  * `expect` 按子串匹配结果的 sourcePath / title / id（大小写不敏感）。
  */
+import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
+import { fileURLToPath } from 'node:url'
 
 import { ProjectMemoryStore } from '../src/store.js'
 import { buildDocEntries } from '../src/doc-pipeline.js'
@@ -94,6 +98,7 @@ function stats(xs) {
 
 function dirSize(dir) {
   let bytes = 0
+  let allocated = 0
   let files = 0
   const stack = [dir]
   while (stack.length) {
@@ -108,7 +113,11 @@ function dirSize(dir) {
       if (e.isDirectory()) stack.push(p)
       else {
         try {
-          bytes += statSync(p).size
+          const st = statSync(p)
+          bytes += st.size
+          // 一个源文件一个碎分片 → 每个文件至少占一个块（通常 4 KB），`du` 会明显大于
+          // 内容字节和。两个数都给出来，别把「内容大小」当成「占盘大小」。
+          allocated += st.blocks ? st.blocks * 512 : st.size
           files++
         } catch {
           /* ignore */
@@ -116,7 +125,7 @@ function dirSize(dir) {
       }
     }
   }
-  return { bytes, files }
+  return { bytes, allocated, files }
 }
 
 const kb = (n) => `${(n / 1024).toFixed(1)} KB`
@@ -206,6 +215,16 @@ const onDisk = dirSize(tmpStore)
 const coldDir = `${tmpStore}-cold`
 cpSync(tmpStore, coldDir, { recursive: true })
 const coldLoad = timeSync(() => new ProjectMemoryStore(coldDir).load())
+// 常驻内存必须在独立进程里量：本进程已经拿着索引那个 store，再 load 一个副本得到的是两份
+const memory = (() => {
+  try {
+    const loadScript = path.join(path.dirname(fileURLToPath(import.meta.url)), 'bench-load.mjs')
+    const out = execFileSync(process.execPath, ['--expose-gc', loadScript, coldDir], { encoding: 'utf8' })
+    return JSON.parse(out.trim().split('\n').pop())
+  } catch (err) {
+    return { error: err.message }
+  }
+})()
 
 // ---------- 4. 热查询 / 冷查询 ----------
 const queryPool = entries.filter((e) => typeof e.title === 'string' && e.title.trim().length >= 4)
@@ -328,10 +347,12 @@ const result = {
   store: {
     dir: tmpStore,
     bytes: onDisk.bytes,
+    allocatedBytes: onDisk.allocated,
     files: onDisk.files,
     bytesPerEntry: entries.length ? Math.round(onDisk.bytes / entries.length) : 0,
   },
   coldLoadMs: round(coldLoad.ms),
+  memory,
   query: {
     samples: queries.length,
     idfRebuildMs: round(idfCold.ms),
@@ -363,7 +384,17 @@ if (opts.json) {
   console.log(`  read+hash ${result.index.readHashMs} ms · extract ${result.index.extractMs} ms · commit ${result.index.commitMs} ms`)
   console.log(`  per file  p50 ${result.index.perFileMs.p50} ms · p95 ${result.index.perFileMs.p95} ms`)
   console.log(`  note: read+hash depends on the OS page cache — run it twice and say which run you quote`)
-  console.log(`store     ${mb(result.store.bytes)} · ${result.store.bytesPerEntry} bytes/entry · cold load ${result.coldLoadMs} ms`)
+  console.log(
+    `store     ${mb(result.store.bytes)} content · ${mb(result.store.allocatedBytes)} on disk · ${result.store.bytesPerEntry} bytes/entry · cold load ${result.coldLoadMs} ms`,
+  )
+  if (memory && !memory.error) {
+    console.log(
+      `memory    isolated child: after load heap ${memory.afterLoad.heapMb} MB / RSS ${memory.afterLoad.rssMb} MB` +
+        ` · after allEntries() heap ${memory.afterEntries.heapMb} MB / RSS ${memory.afterEntries.rssMb} MB`,
+    )
+  } else if (memory && memory.error) {
+    console.log(`memory    unavailable (${memory.error})`)
+  }
   console.log(`\n-- query (shipped scorer: IDF cache + streaming BM25 + CJK phrase boost) --`)
   console.log(`idf rebuild (first query after write)  ${result.query.idfRebuildMs} ms`)
   console.log(`cold query (rebuild + rank)            ${result.query.coldMs} ms`)
