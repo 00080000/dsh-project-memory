@@ -29,8 +29,9 @@
 ### 修复：其余派生/中间字段与两处无界缓存（体积、内存、轮询）
 
 第一轮去掉了链接，这一轮把剩下的放大源和常驻开销一起收掉。同一个 store（11698 文件 /
-70119 条目 / 索引源码 108.5MB）实测：**落盘 361MB → 93MB**，加载 **1017ms → 279ms**，
-堆占用 **129–196MB → 101MB**，`recallItems` p50 **53ms → 47ms**。
+70119 条目 / 索引源码 108.5MB）实测：**落盘 361MB → 93MB**（老 store 由下面的自动压实
+收敛；再叠加 type-cache 自愈清理后是 **73MB**），加载 **1017ms → 279ms**，堆占用
+**129–196MB → 101MB**，`recallItems` p50 **53ms → 47ms**。
 
 - **`searchText` 不再落盘**（省 22.7MB）。它是 `weightedFieldText` 的纯派生结果，改成
   `allEntries()` 在内存里按需物化；写入时与 `linkedSymbols` 一起剥离（`PERSISTED_DERIVED`）。
@@ -56,13 +57,15 @@
   都 `buildBm25` 全库分词（70k 条目实测 p50 1.4s），生产路径没有调用方；相关测试改用线上
   真正跑的 `rankEntriesStreaming` / `rankEntriesMergedScored`。
 
-存量 store 的压实：`index_repo reindex=true` 会重写全部 shard（代价是重新抽取）；只想去掉
-派生字段可以按 store API 标记后 `save()`。本次已用后者压实本仓库的 store——**361MB → 93MB，
-1.9 秒**，未重新抽取任何文件。
+**存量 store 的压实是自动且有界的**：加载时把带派生字段的老分片放进待压实队列，此后任意一次
+`save()`（watch 轮询、索引、写入都会触发）最多补写 `COMPACT_BATCH = 200` 个分片，直到队列
+清空。升级后不需要重新索引，也不会在首次启动时一次性重写整库；想让它立刻跑完，随便索引一次
+即可。为了让压实不产生副作用，IDF 缓存的失效键也从"任何脏写"改成 entries 的变更计数
+（`_entriesVersion`）——IDF 只依赖 entries，只写经验/insight 或只做压实都不该重建它。
 
 ### 文档
 
-- README 的 `npm test` 断言与实测对齐：360 → **472**（核心 184 → 201、host-contract 9 → 10；
+- README 的 `npm test` 断言与实测对齐：360 → **476**（核心 184 → 205、host-contract 9 → 10；
   补上此前漏记的 task-view 6 / root-guards 79 / store-gitignore 9）；
 - 两份 README 的"交叉链接"机制描述由"索引后挂载到条目"改为"读取期按当前符号表解算"；
 - `watchInterval` 文档补充空闲退避语义；"紧凑性"一节改用实测区间（符号稀疏项目 ~0.5%，

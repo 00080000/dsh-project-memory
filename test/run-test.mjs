@@ -1,4 +1,5 @@
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, utimesSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { chunkText } from '../src/chunker.js'
@@ -345,11 +346,18 @@ console.log('\n== IDF caching & streaming TF ==')
   const idf3 = store.getIdfCache()
   check('no-op save() keeps the IDF cache', idf3 === idf1)
 
-  // A save() with real changes still invalidates it.
-  store.addExperience({ problem: 'idf cache probe', solution: 'dirty the store' })
+  // IDF 只依赖 entries（title/keywords/summary），失效边界应当**恰好**是"条目变了"：
+  // 新增条目必须重建；只写经验/insight 不应重建（旧实现任何脏写都重建，watch 每轮白建一次）。
+  store.setEntries('probe.md', [
+    { id: 'p9', type: 'doc', sourcePath: 'probe.md', sourceLine: 1, title: 'Probe', summary: 'idf probe', keywords: ['probe'] },
+  ])
   store.save()
   const idf4 = store.getIdfCache()
-  check('dirty save() invalidates the IDF cache', idf4 !== idf1)
+  check('条目变化后 IDF 重建', idf4 !== idf1)
+  const beforeExp = idf4
+  store.addExperience({ problem: 'idf cache probe', solution: 'dirty the store' })
+  store.save()
+  check('只写经验不重建 IDF', store.getIdfCache() === beforeExp)
 
   // Test streaming rank function directly
   const { rankEntriesStreaming } = await import('../src/util/search.js')
@@ -591,6 +599,28 @@ console.log('\n== legacy type-cache directory is self-healed ==')
   // 0.5.11 起不再用这个缓存（永远命中不了），首次 load 顺手清掉
   new ProjectMemoryStore(dir).load()
   check('加载时清掉旧的 type-cache 目录', !existsSync(path.join(dir, 'type-cache')))
+}
+
+console.log('\n== legacy shards compact themselves over saves ==')
+{
+  const dir = path.join(mkdtempSync(path.join(tmpdir(), 'pm-compact-')), 'mem')
+  mkdirSync(path.join(dir, 'shards'), { recursive: true })
+  writeFileSync(path.join(dir, 'format.json'), JSON.stringify({ version: 2, layout: 'sharded' }))
+  // 手工写一个「0.5.10 时代」的分片：带 linkedSymbols / searchText（文件名须与 store 的
+  // shardRelPath 一致，否则 save() 会写到规范路径、把未规范命名的旧文件留在原地）
+  const rel = 'docs/a.md'
+  const shardName = `${createHash('sha256').update(rel).digest('hex')}.json`
+  writeFileSync(path.join(dir, 'shards', shardName), JSON.stringify({
+    relPath: rel,
+    record: { sha256: 'h', size: 1, type: 'doc', indexedAt: new Date().toISOString() },
+    entries: [{ id: 'a1', type: 'doc', sourcePath: rel, sourceLine: 1, title: 'Alpha', summary: 'beta', keywords: [], searchText: 'legacy', linkedSymbols: ['s1'] }],
+  }))
+  const st = new ProjectMemoryStore(dir).load()
+  check('加载即剥离内存里的派生字段并排队', !('searchText' in st.entries[rel][0]) && st.pendingCompaction === 1)
+  st.save()
+  const onDisk = JSON.parse(readFileSync(path.join(dir, 'shards', shardName), 'utf8'))
+  check('下一次 save 自动压实该分片', !('searchText' in onDisk.entries[0]) && !('linkedSymbols' in onDisk.entries[0]))
+  check('压实队列清空', st.pendingCompaction === 0)
 }
 
 console.log('\n== remember / forget ==')
