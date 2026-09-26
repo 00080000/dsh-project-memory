@@ -18,33 +18,122 @@ const GITIGNORE_FILE = '.gitignore'
 const LEGACY_TYPE_CACHE_DIR = 'type-cache'
 
 const storeCache = new Map()
+/** 单实例超预算的告警只打一次（key = 解析后的 store 目录）。 */
+const warnedOverBudget = new Set()
 /** 条目数上限（兜底）。 */
 const STORE_CACHE_MAX = 32
 /**
- * 驻留内存的估算上限。只数"几个 store"是不够的：单个大仓库 store 加载后堆占用实测
- * 130–200MB，32 个就是几 GB。按 store 的条目数与读入文本量估算，约 2.5KB/entry。
+ * 驻留内存的估算上限。只数"几个 store"是不够的：单个大仓库 store 实测驻留
+ * 68MB（`load()` 后）～110MB（物化 `searchText` + 建 IDF/符号索引后），
+ * 语料是 deepseek-harness / 70119 条目。32 个就是几 GB。
+ * 估算口径见 `_estimateResidentBytes`（对内存里的对象图精确计数，不再用读盘文本量换算）。
  */
-const STORE_CACHE_MAX_BYTES = 256 * 1024 * 1024
+let STORE_CACHE_MAX_BYTES = 256 * 1024 * 1024
 /** 每轮 save 最多补写多少个待压实的老分片（有界，避免升级后一次重写整库）。 */
 const COMPACT_BATCH = 200
 
-/** 单个 store 的驻留估算（驻留文本量 vs 条目数换算，取大者）。 */
-function estimateResidentBytes(store) {
-  let entries = 0
-  for (const list of Object.values(store.entries)) entries += list.length
-  return Math.max(store._residentChars || 0, entries * 2500)
+/**
+ * 一个值的驻留字节：形状开销 + 字符串的**编码字节数**。
+ *
+ * 用 `Buffer.byteLength()` 而不是 `String.length`：CJK 在 UTF-8 里 3 字节/字符，而 V8
+ * 双字节串 2 字节/字符——UTF-8 对非 ASCII 是偏高的代理指标，对纯 ASCII 精确。缓存预算
+ * 容得下这个误差（实测两端 ±13%，见 `test/store-cache.test.mjs` 与 PLAN 附七）。
+ *
+ * 递归用深度上限而不是 `Set` 去环：store 的对象图来自 `JSON.parse`，本就无环；深度上限
+ * 既挡畸形数据，又比逐对象 `Set` 查重快 ~30%（70119 条目实测 36ms vs 52ms）。
+ */
+const RESIDENT_OBJ_BYTES = 60
+const RESIDENT_ARR_BYTES = 40
+const RESIDENT_KEY_BYTES = 40
+const RESIDENT_STR_BYTES = 16
+const RESIDENT_MAX_DEPTH = 8
+
+function residentBytesOf(value, depth = 0) {
+  if (depth > RESIDENT_MAX_DEPTH) return 0
+  const type = typeof value
+  if (type === 'string') return RESIDENT_STR_BYTES + Buffer.byteLength(value)
+  if (type === 'number' || type === 'bigint') return 16
+  if (type === 'boolean' || value === null) return 8
+  if (Array.isArray(value)) {
+    let sum = RESIDENT_ARR_BYTES
+    for (const item of value) sum += 8 + residentBytesOf(item, depth + 1)
+    return sum
+  }
+  if (type === 'object') {
+    let sum = RESIDENT_OBJ_BYTES
+    for (const key in value) sum += RESIDENT_KEY_BYTES + residentBytesOf(value[key], depth + 1)
+    return sum
+  }
+  return 0
+}
+
+/**
+ * 单个 store 的驻留估算：数**内存里留下的对象图**，按版本记忆化。
+ *
+ * 为什么不是"读盘文本量换算"（旧实现）：那个口径有两个错。
+ *  1. 时序错位——它量的是 `load()` 读进来的 JSON 文本，而 `searchText` 要到
+ *     `allEntries()` 才物化，同一份数据在物化前后估出两个数（实测 76MB → 107MB）。
+ *  2. 账不对物——旧分片里还带着 `searchText` / `linkedSymbols`，`load()` 会
+ *     `stripPersistedDerived` 把它们删掉，可文本量已经把被删的字节算进去了。
+ *     `/home/sxt/project` 的 store 实测：读盘 212.6MB，真实驻留 101.7MB。
+ *
+ * 两个版本键都参与失效：`_entriesVersion`（`setEntries` / `removeFile` / `_loadSharded`）
+ * 与 `_materializeVersion`（`allEntries()` 物化 `searchText`）。漏掉后者就是旧实现的错。
+ *
+ * 代价：版本变化后的**一次**全量遍历（70119 条目 ~40ms）。必须记忆化——`evictStoreCache`
+ * 是对**整个缓存**逐 store 求和的，不记忆化等于每次冷加载都把缓存里所有 store 重数一遍。
+ */
+export function _estimateResidentBytes(store) {
+  const stamp = `${store._entriesVersion}:${store._materializeVersion}`
+  if (store._residentStamp !== stamp) {
+    store._residentBytes =
+      residentBytesOf(store.entries) +
+      residentBytesOf(store.files) +
+      residentBytesOf(store.experience) +
+      residentBytesOf(store.tasks) +
+      residentBytesOf(store.insights) +
+      residentBytesOf(store.watchlist) +
+      residentBytesOf(store.binding)
+    store._residentStamp = stamp
+  }
+  return store._residentBytes
 }
 
 /** 按 LRU 逐出，直到同时满足条数与字节预算；刚加入的 keepKey 即使超预算也保留。 */
 function evictStoreCache(keepKey) {
   let total = 0
-  for (const store of storeCache.values()) total += estimateResidentBytes(store)
+  for (const store of storeCache.values()) total += _estimateResidentBytes(store)
   while (storeCache.size > STORE_CACHE_MAX || total > STORE_CACHE_MAX_BYTES) {
     const oldest = storeCache.keys().next().value
     if (oldest === undefined || oldest === keepKey) break
-    total -= estimateResidentBytes(storeCache.get(oldest))
+    total -= _estimateResidentBytes(storeCache.get(oldest))
     storeCache.delete(oldest)
   }
+  // keepKey 豁免是**有意**的：刚加载的 store 必须立刻可用。但它的代价是"单实例超预算时
+  // 预算不再是上界"——这个代价不能是隐式的，所以每个这样的 store 告警一次（每 root 一次）。
+  const kept = _estimateResidentBytes(storeCache.get(keepKey))
+  if (kept > STORE_CACHE_MAX_BYTES && !warnedOverBudget.has(keepKey)) {
+    warnedOverBudget.add(keepKey)
+    console.error(
+      `[dsh-project-memory] store ${keepKey} 单实例驻留约 ${Math.round(kept / 1048576)}MB，` +
+        `超过 storeCache 预算 ${Math.round(STORE_CACHE_MAX_BYTES / 1048576)}MB；` +
+        '刚加载的 store 不逐出（有意豁免），多 root 场景下其他 store 会被更频繁地逐出。',
+    )
+  }
+}
+
+/** 仅供测试：临时收窄字节预算（返回恢复函数），免得测试真去分配 256MB 字符串。 */
+export function _setStoreCacheBudgetForTest(bytes) {
+  const previous = STORE_CACHE_MAX_BYTES
+  STORE_CACHE_MAX_BYTES = bytes
+  return () => {
+    STORE_CACHE_MAX_BYTES = previous
+  }
+}
+
+/** 仅供测试：当前缓存 key 的 LRU 顺序（最旧在前）。 */
+export function _storeCacheKeysForTest() {
+  return [...storeCache.keys()]
 }
 
 /** 已就"无法迁移的旧 store"告警过的目录：避免每次 load() 都刷一行。 */
@@ -78,14 +167,13 @@ function withoutPersistedDerived(entry) {
   return out
 }
 
-function loadJson(filePath, fallback, sizeSink) {
+function loadJson(filePath, fallback) {
   let raw
   try {
     raw = readFileSync(filePath, 'utf8')
   } catch {
     return fallback
   }
-  if (sizeSink) sizeSink.bytes += raw.length
   try {
     return JSON.parse(raw)
   } catch {
@@ -142,8 +230,14 @@ export class ProjectMemoryStore {
     this._entriesVersion = 0
     /** 待压实的老分片（≤0.5.10 落盘时带 linkedSymbols/searchText）；save() 每轮有界补写。 */
     this._compactQueue = new Set()
-    /** 从磁盘读入的 JSON 文本量（UTF-16 字符数），作为驻留内存的估算基数。 */
-    this._residentChars = 0
+    /** 驻留字节估算的记忆化结果与版本戳（见 `_estimateResidentBytes`）。 */
+    this._residentBytes = 0
+    this._residentStamp = ''
+    /**
+     * `searchText` 的物化计数。它和 `_entriesVersion` 一起构成驻留估算的失效键：
+     * 物化只改 entry 对象本身，不改 entries 的构成，所以不会 bump `_entriesVersion`。
+     */
+    this._materializeVersion = 0
   }
 
   load() {
@@ -243,9 +337,8 @@ export class ProjectMemoryStore {
     } catch {
       shardNames = []
     }
-    const sizeSink = { bytes: 0 }
     for (const name of shardNames) {
-      const shard = loadJson(path.join(this.dir, SHARDS_DIR, name), null, sizeSink)
+      const shard = loadJson(path.join(this.dir, SHARDS_DIR, name), null)
       if (!shard || typeof shard.relPath !== 'string' || !isRecord(shard.record)) continue
       this.files[shard.relPath] = shard.record
       // 畸形 shard（entries 被写成对象/null）不能让 allEntries() 在 `for…of` 上抛错，
@@ -256,11 +349,10 @@ export class ProjectMemoryStore {
       this.entries[shard.relPath] = list.map(stripPersistedDerived)
     }
     this._entriesVersion++
-    this.experience = loadJson(path.join(this.dir, EXPERIENCE_FILE), [], sizeSink)
-    this.tasks = loadJson(path.join(this.dir, TASKS_FILE), [], sizeSink)
-    this.binding = loadJson(path.join(this.dir, BINDING_FILE), {}, sizeSink)
-    this.watchlist = loadJson(path.join(this.dir, WATCH_FILE), [], sizeSink)
-    this._residentChars = sizeSink.bytes
+    this.experience = loadJson(path.join(this.dir, EXPERIENCE_FILE), [])
+    this.tasks = loadJson(path.join(this.dir, TASKS_FILE), [])
+    this.binding = loadJson(path.join(this.dir, BINDING_FILE), {})
+    this.watchlist = loadJson(path.join(this.dir, WATCH_FILE), [])
     this._formatWritten = existsSafe(path.join(this.dir, FORMAT_FILE))
   }
 
@@ -563,6 +655,24 @@ export class ProjectMemoryStore {
     return this._entriesVersion
   }
 
+  /**
+   * 这个 store 里有没有任何"事实"。
+   *
+   * 用于判断"值不值得为一条记账把它落盘"：一个从没被索引过、也没写过任何东西的根，
+   * 不该因为一次**全局** insight 命中就被建出一个 store 目录（审计侧同理，见 audit.js）。
+   * 刻意不调 `stats()`——那个会 `allEntries()` 物化 `searchText`。
+   */
+  get hasContent() {
+    return (
+      Object.keys(this.files).length > 0 ||
+      this.experience.length > 0 ||
+      this.tasks.length > 0 ||
+      this.insights.items.length > 0 ||
+      Object.keys(this.binding).length > 0 ||
+      this.watchlist.length > 0
+    )
+  }
+
   /** 还有多少个老分片等着被 save() 压实（0 = 存量已收敛）。 */
   get pendingCompaction() {
     return this._compactQueue.size
@@ -570,13 +680,20 @@ export class ProjectMemoryStore {
 
   allEntries() {
     const out = []
+    let materialized = 0
     for (const list of Object.values(this.entries)) {
       for (const entry of list) {
         // searchText 不落盘，首次用到时按需物化并挂在对象上（同一 entry 只算一次）。
-        if (entry.searchText === undefined) entry.searchText = makeSearchText(entry)
+        if (entry.searchText === undefined) {
+          entry.searchText = makeSearchText(entry)
+          materialized++
+        }
         out.push(entry)
       }
     }
+    // 物化只改 entry 对象、不改 entries 的构成，所以 `_entriesVersion` 不会动；但驻留会实打实
+    // 增加（70119 条目实测 +34MB）。这里是它的第二个失效键——漏了它，估算就停在物化前的水位。
+    if (materialized) this._materializeVersion++
     return out
   }
 

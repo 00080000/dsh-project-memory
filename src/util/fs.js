@@ -130,11 +130,27 @@ export function scanLimits(config) {
  *   - `truncated` 让调用方区分「这棵树扫完了」和「只扫了一部分」——后者绝不能拿
  *     本轮未见到的文件去删旧条目（见 index-repo/watch 的 unseen 用法）。
  */
+/**
+ * 一个目录是否**自带 store**（即它自己已经是一个被索引过的项目根）。
+ *
+ * 判据用 `format.json`：任何走过一次 `save()` 的 store 都必然有它，而误建/刚建的空
+ * `.dsh-project-memory` 目录没有——那种不能作为跳过的依据，否则父 store 一跳过，内容两头都没了。
+ */
+export function hasOwnStore(dir, memoryDirName) {
+  return existsSync(path.join(dir, memoryDirName, 'format.json'))
+}
+
 export function walkDir(root, opts = {}) {
   const ignoreNames = opts.ignoreNames || DEFAULT_IGNORE
   const maxFiles = Number.isFinite(opts.maxFiles) && opts.maxFiles > 0 ? opts.maxFiles : Infinity
   const maxDepth = Number.isFinite(opts.maxDepth) && opts.maxDepth > 0 ? opts.maxDepth : Infinity
+  // 传 memoryDir 名即开启「嵌套根不重复索引」：子目录自带 store 时不再往下走。
+  // 理由是跟解析规则保持一致——`findProjectRoot()` 对子树里的文件返回的正是那个子根，
+  // 扫描也该同意这一点；否则父根会把子项目的全部内容再存一份（实测 `/home/sxt/project`
+  // 的 store 里 9075/9081 个文件是子根 store 的重复副本）。
+  const nestedStoreName = opts.nestedStoreName || null
   const out = []
+  const skipped = []
   const stack = [[root, 0]]
   let truncated = false
   let hitFileCap = false
@@ -151,6 +167,10 @@ export function walkDir(root, opts = {}) {
       const full = path.join(dir, entry.name)
       if (entry.isDirectory()) {
         if (ignoreNames.has(entry.name)) continue
+        if (nestedStoreName && hasOwnStore(full, nestedStoreName)) {
+          skipped.push(full)
+          continue
+        }
         if (depth + 1 > maxDepth) {
           truncated = true
           continue
@@ -168,7 +188,8 @@ export function walkDir(root, opts = {}) {
     if (hitFileCap) break
   }
   out.sort()
-  return { files: out, truncated }
+  skipped.sort()
+  return { files: out, truncated, skipped }
 }
 
 export function isSupportedDoc(ext) {
@@ -204,6 +225,14 @@ export function storeKey(rel, platform = process.platform) {
 
 export function memoryRootFor(indexRoot, memoryDir) {
   return path.join(indexRoot, memoryDir)
+}
+
+/** store 目录名（配置项 `memoryDir`；调用方可能来自工具参数，缺省时兜底成默认值）。 */
+export const DEFAULT_MEMORY_DIR = '.dsh-project-memory'
+
+export function memoryDirName(config) {
+  const raw = config?.memoryDir
+  return typeof raw === 'string' && raw.trim() ? raw : DEFAULT_MEMORY_DIR
 }
 
 /**

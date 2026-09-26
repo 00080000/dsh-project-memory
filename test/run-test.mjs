@@ -1230,6 +1230,47 @@ console.log('\n== default ignore list ==')
   check('walkDir caps depth', !shallow.files.some((f) => f.endsWith('nested.go')) && shallow.truncated === true)
 }
 
+console.log('\n== nested project roots are not indexed twice ==')
+{
+  const { walkDir, hasOwnStore } = await import('../src/util/fs.js')
+  const { indexRepository } = await import('../src/tools/index-repo.js')
+  const parent = mkdtempSync(path.join(tmpdir(), 'pm-nested-'))
+  const child = path.join(parent, 'child')
+  mkdirSync(path.join(child, 'src'), { recursive: true })
+  writeFileSync(path.join(parent, 'own.js'), 'export function own() {}\n')
+  writeFileSync(path.join(child, 'src', 'inner.js'), 'export function inner() {}\n')
+
+  // 没有 store 的兄弟目录照常走（空 .dsh-project-memory 不算数）
+  mkdirSync(path.join(parent, 'empty-store', '.dsh-project-memory'), { recursive: true })
+  writeFileSync(path.join(parent, 'empty-store', 'keep.js'), 'export function keep() {}\n')
+  check('an empty .dsh-project-memory is not a nested root', !hasOwnStore(path.join(parent, 'empty-store'), '.dsh-project-memory'))
+  const walked = walkDir(parent, { nestedStoreName: '.dsh-project-memory' })
+  check('a nested root without its own store is still walked', walked.files.some((f) => f.endsWith('keep.js')) && walked.skipped.length === 0)
+
+  // 给子根建一个真实 store（走一次 save 就会写 format.json）
+  const childStore = new ProjectMemoryStore(path.join(child, '.dsh-project-memory'))
+  childStore.setEntries('src/inner.js', [{ id: 'inner', relPath: 'src/inner.js', title: 'inner', summary: 'inner' }])
+  childStore.save()
+  check('a saved store is recognised as a nested root', hasOwnStore(child, '.dsh-project-memory'))
+
+  const walked2 = walkDir(parent, { nestedStoreName: '.dsh-project-memory' })
+  check('walk skips the nested root and reports it', walked2.skipped.length === 1 && walked2.skipped[0] === child)
+  check('walk no longer yields files under the nested root', !walked2.files.some((f) => f.includes(`${path.sep}child${path.sep}`)))
+
+  // 存量重复：先手工在父 store 里塞一条属于子树的旧条目，跑一次父根索引应把它清掉
+  const parentStore = new ProjectMemoryStore(path.join(parent, '.dsh-project-memory'))
+  parentStore.setEntries('child/src/inner.js', [{ id: 'dup', relPath: 'child/src/inner.js', title: 'dup', summary: 'dup' }])
+  parentStore.setEntries('own.js', [{ id: 'own', relPath: 'own.js', title: 'own', summary: 'own' }])
+  parentStore.save()
+  const report = await indexRepository(ctx, config, parent)
+  const after = new ProjectMemoryStore(path.join(parent, '.dsh-project-memory')).load()
+  check('index_repo keeps the parent\'s own file', !!after.fileRecord('own.js'))
+  check('index_repo does not index the nested root', !after.fileRecord('child/src/inner.js'))
+  check('a stale duplicate from before is removed', !after.fileRecord('child/src/inner.js') && after.entries['child/src/inner.js'] === undefined)
+  check('the report says what was skipped', report.includes('nested project root(s) with their own store') && report.includes('child'))
+}
+
+
 console.log('\n== root detection ignores system temp ancestors ==')
 {
   // 旧实现用 ceiling（tmpdir）挡"临时目录上方的垃圾目录"；现在由"只认标记 + 撞到

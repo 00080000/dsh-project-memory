@@ -1,7 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
 import { statSync } from 'node:fs'
-import { assertIndexRoot, assertSafeRoot, memoryRootFor, relativePath, scanLimits, storeKey, walkDir } from '../util/fs.js'
+import { assertIndexRoot, assertSafeRoot, memoryDirName, memoryRootFor, relativePath, scanLimits, storeKey, walkDir } from '../util/fs.js'
 import { DROP, OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from '../index-pipeline.js'
 import { ProjectMemoryStore } from '../store.js'
 import { onFileIndexed, isTypeScriptFile } from '../enhancer.js'
@@ -38,7 +38,10 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
     batch = []
   }
 
-  const { files, truncated } = walkDir(root, scanLimits(config))
+  const { files, truncated, skipped: nestedRoots } = walkDir(root, {
+    ...scanLimits(config),
+    nestedStoreName: memoryDirName(config),
+  })
   for (const filePath of files) {
     const rel = storeKey(relativePath(root, filePath))
     seen.add(rel)
@@ -90,6 +93,13 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
     report +=
       `\nscan truncated at the safety limit (maxFiles=${maxFiles}, maxDepth=${maxDepth}): only part of the tree was indexed.` +
       ' Raise maxScanFiles/maxScanDepth if this project is legitimately that large.'
+  }
+  if (nestedRoots.length) {
+    const rels = nestedRoots.map((p) => storeKey(relativePath(root, p)))
+    report +=
+      `\nskipped ${nestedRoots.length} nested project root(s) with their own store: ${rels.join(', ')}` +
+      "\n(their content lives in their own root's index; this root keeps no duplicate copy)"
+    if (removed) report += `, ${removed} stale duplicate entr${removed === 1 ? 'y' : 'ies'} removed`
   }
   if (failures.length) {
     report += `\nfailed to index ${failures.length} file(s): ${failures.join(', ')}`

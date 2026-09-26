@@ -619,7 +619,7 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     reasons: built.reasons,
     candidates: built.candidates,
     silence: silence.reason,
-  }), shadow)
+  }), shadow, root)
 
   // 记忆根通告：根是**推定**的（会话工作目录，且该目录没有任何项目标记）时，
   // 第一次注入前告诉模型"记忆现在存在哪、怎么改"。它是状态声明（与常驻任务卡同类），
@@ -648,7 +648,9 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   if (built.reasons.length) {
     try {
       if (recordHit({ store, globalStore, ids: built.reasons.map((r) => r.id) })) {
-        store.save()
+        // 只有这个根里真有东西才落盘。否则一次**全局** insight 的命中就会为一个从没被
+        // 索引过的容器目录建出整个 store（`save()` 会 mkdir）。审计侧同样不建，见 audit.js。
+        if (store.hasContent) store.save()
         globalStore.commit()
       }
     } catch {
@@ -667,7 +669,7 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     dropped: built.dropped,
     budget: { items: quota.items, chars: quota.chars, lastStep: Number.isFinite(quota.lastStep) ? quota.lastStep : null },
     silence: silence.reason,
-  }), audit)
+  }), audit, root)
 
   return { ...decision, messages: [...decision.messages, injectionMessage(injectedText)] }
 }
