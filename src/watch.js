@@ -1,6 +1,6 @@
 import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { isUnsafeRoot, memoryRootFor, relativePath, scanLimits, storeKey, walkDir } from './util/fs.js'
+import { isUnsafeRoot, memoryDirName, memoryRootFor, relativePath, scanLimits, storeKey, walkDir } from './util/fs.js'
 import { OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from './index-pipeline.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileChanged, isTypeScriptFile } from './enhancer.js'
@@ -13,6 +13,8 @@ export class WatchManager {
     this.timer = null
     this._polling = false
     this._truncationWarned = new Set()
+    /** 已就「跳过了嵌套项目根」告警过的根：同上，只提示一次。 */
+    this._nestedStoreWarned = new Set()
   }
 
   /** 包含该路径的已注册根（最长前缀）：懒索引据此把文件归到显式 watch 过的无标记项目里。 */
@@ -64,8 +66,11 @@ export class WatchManager {
     // 文件系统根 / 家目录 / 系统前缀不整体监听（它们的子目录允许），除非显式放行。
     if (!this.unsafeAllowed() && isUnsafeRoot(root)) return false
     if (!this.roots.has(root)) {
+      // **不在这里 load()**：`restorePersisted()` 会对 cwd store 的整条 watchlist 逐个 addRoot，
+      // 急切读盘等于「watch 过多少个根，启动就同步读多少个 store 的全部 shard」——一个万文件
+      // 的 store 就是秒级，几十个根就是启动卡死 + 内存无上界。这里只登记，store 到第一次
+      // pollRoot 真正需要时才取（见 `storeFor`）。
       this.roots.set(root, {
-        store: new ProjectMemoryStore(memoryRootFor(root, this.config.memoryDir)).load(),
         snapshot: {},
         // rel → 上次已上报的错误信息。坏文件每轮都会重试，逐轮打印会刷屏。
         failures: new Map(),
@@ -73,6 +78,21 @@ export class WatchManager {
       return true
     }
     return false
+  }
+
+  /**
+   * 每个根**按需**取 store：命中 `storeCache` 时是 O(1)（一次 Map 查找 + LRU 挪位）。
+   *
+   * 刻意不让本类长期持有实例。旧实现把 `store` 塞进 `this.roots` 里，等于给每个 watch 根
+   * 加了一个**进程级强引用**，于是：
+   *   - 逐出对 watch 根完全不省内存（`storeCache` 丢了 key，watcher 还攥着）；
+   *   - 一旦真被逐出，下一次 `load()` 会从盘上**再建一份**，同一个 root 在同一进程里出现两份
+   *     互不可见的内存状态，两份各自 `save()` 脏分片 → 最后写者赢，存在丢更新的窗口。
+   * 现在唯一的活实例就是缓存里那一个：逐出即真正释放，下一轮 poll 重新读盘（缓存该有的语义），
+   * 而内存上界回到 `STORE_CACHE_MAX_BYTES`，不再由「watch 了多少个根」决定。
+   */
+  storeFor(root) {
+    return new ProjectMemoryStore(memoryRootFor(root, this.config.memoryDir)).load()
   }
 
   removeRoot(root) {
@@ -142,8 +162,22 @@ export class WatchManager {
     const updates = []
     // rel → 本轮采集的 mtime:size。提交成功后才落进快照；CAS 失败的条目留在原地等下一轮。
     const signatures = new Map()
+    // 本轮用的 store：命中缓存即 O(1)，被逐出则重新读盘。整个 pollRoot 期间共用同一个实例。
+    const store = this.storeFor(root)
 
-    const { files, truncated } = walkDir(root, scanLimits(this.config))
+    const { files, truncated, skipped: nestedRoots } = walkDir(root, {
+      ...scanLimits(this.config),
+      nestedStoreName: memoryDirName(this.config),
+    })
+    if (nestedRoots.length && !this._nestedStoreWarned.has(root)) {
+      // 同上，只提示一次。这里同时说明"旧副本会被本轮清掉"——升级后的存量重复就是这么收敛的。
+      this._nestedStoreWarned.add(root)
+      const rels = nestedRoots.map((p) => storeKey(relativePath(root, p)))
+      console.error(
+        `[dsh-project-memory] watch of ${root} skips nested project root(s) with their own store: ${rels.join(', ')}; ` +
+          'their content is refreshed by their own root, and any duplicate copy previously indexed here is being removed.',
+      )
+    }
     if (truncated && !this._truncationWarned.has(root)) {
       // 只提示一次：这是一条**永久**的降级说明，不是每轮都要刷屏的故障。
       this._truncationWarned.add(root)
@@ -169,7 +203,7 @@ export class WatchManager {
       const sig = `${stats.mtimeMs}:${stats.size}`
       if (state.snapshot[rel] === sig) continue
 
-      const record = state.store.fileRecord(rel)
+      const record = store.fileRecord(rel)
       let plan
       try {
         plan = await planFileIndex({
@@ -178,7 +212,7 @@ export class WatchManager {
           kind,
           config: this.config,
           record,
-          existingEntries: state.store.entries[rel],
+          existingEntries: store.entries[rel],
           size: stats.size,
         })
       } catch (err) {
@@ -204,7 +238,7 @@ export class WatchManager {
     // 单事务写盘；CAS 失败的条目本轮不落快照，下一轮自然重试。
     // 截断时**不传 unseen**：没扫到的文件不等于被删了，否则一份被上限截掉的树每轮都会
     // 把自己的记忆删掉一半（先删再下轮重新索引，纯粹的抖动）。
-    const { stale, removed } = commitFileUpdates(state.store, {
+    const { stale, removed } = commitFileUpdates(store, {
       updates,
       unseen: truncated ? null : seen,
     })
@@ -217,7 +251,7 @@ export class WatchManager {
       if (update.type !== 'code') continue
       const filePath = path.join(root, update.rel)
       if (isTypeScriptFile(filePath)) {
-        onFileChanged(state.store, update.rel, filePath, this.config, root)
+        onFileChanged(store, update.rel, filePath, this.config, root)
       }
     }
     // 有变化 → 下一轮回到 base 间隔；纯空转 → 退避。

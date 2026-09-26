@@ -303,7 +303,23 @@ export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BAT
     }
   }
 
-  const p = (async () => {
+  // 先登记队列条目，再启动任务。
+  //
+  // 任务体可能在**同步阶段**就跑完：`deepParseWithTS` 是同步的，没有增强结果时根本走不到
+  // 那个 `await`，于是 `finally` 立刻执行。旧实现在任务启动**之后**才登记条目，并在 finally
+  // 里用 `enhanceQueue.findIndex(q => q.promise === p)` 反查自己 ——
+  //   · 队列为空时 `findIndex` 的回调根本不会被调用，`p` 不被求值，看不出问题；
+  //   · 队列非空（真实的 watch 轮询里必然如此）时回调被调用，读到尚未初始化的 `const p`
+  //     → `ReferenceError: Cannot access 'p' before initialization`。
+  // `scheduleProcess` 会 await 这个 promise，但 watch 路径上抛出的那一个没人接，未处理的
+  // rejection 直接把宿主打成 `dsh: fatal load failure`。
+  //
+  // 现在：条目先入队，finally 按**对象身份**摘除自己，完全不引用尚未初始化的绑定。
+  const entry = { relPath, filePath, priority, cacheKey, promise: null }
+  if (existingIdx >= 0) enhanceQueue[existingIdx] = entry
+  else enhanceQueue.push(entry)
+
+  entry.promise = (async () => {
     try {
       const content = readFileSync(filePath, 'utf8')
       const enhanced = deepParseWithTS(filePath, content)
@@ -313,23 +329,15 @@ export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BAT
     } catch (err) {
       console.warn(`[dsh-project-memory] enhance failed for ${relPath}: ${err.message}`)
     } finally {
-      // Remove only this task's own queue entry (not a newer one for the same relPath)
-      const idx = enhanceQueue.findIndex(q => q.promise === p)
+      // 只摘自己那一条：同 relPath 的新任务可能已经把它替换掉了（那种情况这里是 -1）。
+      const idx = enhanceQueue.indexOf(entry)
       if (idx >= 0) enhanceQueue.splice(idx, 1)
     }
   })()
-
-  // Update or add to queue
-  const existingIdx2 = enhanceQueue.findIndex(q => q.relPath === relPath)
-  if (existingIdx2 >= 0) {
-    enhanceQueue[existingIdx2] = { relPath, filePath, priority, cacheKey, promise: p }
-  } else {
-    enhanceQueue.push({ relPath, filePath, priority, cacheKey, promise: p })
-  }
   enhanceQueue.sort((a, b) => a.priority - b.priority)
 
   scheduleProcess()
-  return p
+  return entry.promise
 }
 
 function scheduleProcess() {
@@ -408,17 +416,24 @@ function applyEnhancedSymbols(fn, relPath, enhanced) {
   }
 }
 
+// 三个入口都不 await 任务，所以必须各自挂一个 catch：任务体内部已经兜底，但
+// **未处理的 rejection 会把整个宿主打成 `dsh: fatal load failure`**（2026-09-26 的事故就是
+// 这个形状：一个 TDZ 从 watch 路径逃出去，dsh web 起不来）。这条路径不该有任何机会向上抛。
+const fireAndForget = (p) => {
+  if (p && typeof p.catch === 'function') p.catch(() => {})
+}
+
 export function onFileObserved(store, relPath, filePath, config, root) {
   if (!isTypeScriptFile(filePath)) return
-  enqueueEnhance(store, relPath, filePath, PRIORITY.ACTIVE, config, root)
+  fireAndForget(enqueueEnhance(store, relPath, filePath, PRIORITY.ACTIVE, config, root))
 }
 
 export function onFileChanged(store, relPath, filePath, config, root) {
   if (!isTypeScriptFile(filePath)) return
-  enqueueEnhance(store, relPath, filePath, PRIORITY.RECENT, config, root)
+  fireAndForget(enqueueEnhance(store, relPath, filePath, PRIORITY.RECENT, config, root))
 }
 
 export function onFileIndexed(store, relPath, filePath, config, root) {
   if (!isTypeScriptFile(filePath)) return
-  enqueueEnhance(store, relPath, filePath, PRIORITY.BATCH, config, root)
+  fireAndForget(enqueueEnhance(store, relPath, filePath, PRIORITY.BATCH, config, root))
 }
