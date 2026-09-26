@@ -140,6 +140,41 @@ export function hasOwnStore(dir, memoryDirName) {
   return existsSync(path.join(dir, memoryDirName, 'format.json'))
 }
 
+/**
+ * 列出 `root` 下**自带 store** 的子目录 —— 也就是"这部分内容有自己的独立索引"。
+ *
+ * 存在的理由：`walkDir()` 会跳过这些子树（父根不再重复保存它们的内容），于是"在父根下问子项目
+ * 的事"必须换个 `root=` 再问一次。这个函数就是用来在**查询未命中时给模型指路**的，不是文件系统
+ * 巡检：BFS、限深 3 层、最多列 8 个、最多看 300 个目录，且不往已知的子根里下探。
+ */
+export function nestedStoreRoots(root, memoryDirName, { maxDepth = 3, maxEntries = 8, maxVisited = 300 } = {}) {
+  const found = []
+  const queue = [[root, 0]]
+  let visited = 0
+  while (queue.length && found.length < maxEntries && visited < maxVisited) {
+    const [dir, depth] = queue.shift()
+    visited++
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (found.length >= maxEntries) break
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+      if (DEFAULT_IGNORE.has(entry.name)) continue
+      const full = path.join(dir, entry.name)
+      if (hasOwnStore(full, memoryDirName)) {
+        found.push(full)
+        continue // 已知的子根不再往里下探
+      }
+      if (depth + 1 <= maxDepth) queue.push([full, depth + 1])
+    }
+  }
+  return found.sort()
+}
+
 export function walkDir(root, opts = {}) {
   const ignoreNames = opts.ignoreNames || DEFAULT_IGNORE
   const maxFiles = Number.isFinite(opts.maxFiles) && opts.maxFiles > 0 ? opts.maxFiles : Infinity
