@@ -1,185 +1,107 @@
-# Changelog
+## 0.5.12 (2026-09-26)
 
-## 0.5.12 (2026-09-27)
-
-### 修复：storeCache 的驻留估算量错了对象（多 root 场景下的冷加载抖动）
-
-`estimateResidentBytes()` 用 `Math.max(_residentChars, entries * 2500)` 估一个 store 占多少内存。
-两个口径都错：
-
-1. **量的是读盘文本，不是驻留对象。** `_residentChars` 是 `loadJson` 读进来的 JSON 文本长度
-   （UTF-16 字符数）。它还把**加载时就被丢掉**的字节算了进去：老分片仍带着 `searchText` /
-   `linkedSymbols`，`load()` 会 `stripPersistedDerived` 把它们删掉。`/home/sxt/project` 的 store
-   实测读盘文本 **212.6MB**，真实驻留 **101.7MB**——一半的账是读进来就扔的。
-2. **时点错位。** 它在 `load()` 里就被调用（`evictStoreCache`），而 `searchText` 要到
-   `allEntries()` 才物化。同一个 store 在物化前后估出两个数。
-
-**实测（不是合成语料）**：`deepseek-harness`（11698 文件 / 70119 条目，读盘 35.3MB）
-
-| 口径 | load() 后 | 物化 `searchText` 后 |
-|---|---|---|
-| 旧估算 | **167.2MB**（真实 63.5MB） | 167.2MB（真实 97.8MB） |
-| 新估算 | 75.0MB（+18.2%） | 104.8MB（+7.1%） |
-
-`/home/sxt/project` 的 store：旧估算 **212.6MB** vs 真实 101.7MB（**高估 2.09 倍**）。
-
-**因果方向要说清**：不是"低估 → 以为装得下"，而是**高估 → 本可以共存的 store 被过早逐出**。
-实测这台机器上 5 个 store 的旧估算合计 **434.7MB > 256MB**，于是 `A(/home/sxt/project)` 被逐出、
-下次 `load()` 重读 9081 个分片；按新估算合计约 230MB，两个大 store 都能留在缓存里。
-对 Windows（Defender 实时扫描，一次重读是秒级）这一步就是"每个 step 都可能重读全库"的开关。
-
-- **换成精确计数 + 按版本记忆化**。`_estimateResidentBytes()` 数**内存里的对象图**：
-  形状开销 + `Buffer.byteLength()`（用编码字节而不是 `String.length`，CJK 在 UTF-8 里 3 字节/字符）。
-  失效键有两个：`_entriesVersion`（`setEntries` / `removeFile` / `_loadSharded`）与新增的
-  `_materializeVersion`（`allEntries()` 物化 `searchText`）——**漏掉后者就是上面那个时点错位**。
-- **必须记忆化**：`evictStoreCache` 是对**整个缓存**逐 store 求和的，不记忆化等于每次冷加载都把
-  缓存里所有 store 重数一遍。代价是版本变化后的**一次**全量遍历（70119 条目实测 ~40ms，
-  冷加载实测 249–287ms → 282–307ms，即 **+8~11%**（≈一次遍历的 20–40ms），且每个 `(store, 版本)` 只付一次）。
-- **`_residentChars` 删除**。它唯一的用途就是喂这个错口径，留着是下一个坑（顺带删掉 `loadJson`
-  的 `sizeSink` 参数）。
-- **`keepKey` 豁免不再静默**（D4）。"刚加载的 store 即使超预算也保留"是**有意**的（否则加载完
-  立刻不可用），但它的代价是"单实例超预算时 256MB 不再是上界"。现在这种情况每个 root 告警一次。
-
-**行为变化**：逐出**变少**（估算不再虚高），内存上限更接近 256MB 的本意；只有在**真**超预算时
-才会像以前一样逐出。多 root 用户会看到更少的重读。
-
-- **`storeCache` 首次有测试覆盖**：新增 `test/store-cache.test.mjs`（14 项）——此前 `test/` 下只有
-  两处提到它，都是为了"绕开缓存"。四条断言分别钉住：物化 `searchText` 后估算必须上升、`setEntries`
-  的增量必须反映真实体积、超预算确实逐出且 `keepKey` 豁免、重复调用不重算。（把实现换回旧公式，
-  这 14 项会挂 7 项。）
-
-**已知未修（本次记录，不改）**：`stripPersistedDerived` 用 `delete` 剥离派生字段，会把 entry 推进
-V8 **字典模式**——实测每条反而**多占 ~700B**（无派生字段 836B/条 → 带派生字段 1155B/条 →
-`delete` 之后 1539B/条）。这正是存量 store 估算仍偏低 ~18% 的来源（压实后消失）。修法是改成
-按非派生键重建对象，属于写入路径改动，单独评估。
-
-### 修复：watch 根不再钉住 store，也不再在启动时急切读盘
-
-上一节把预估改准了，但 `storeCache` 还有一条独立的问题：**`WatchManager` 自己长期持有每个
-watch 根的 store 实例**（`this.roots.get(root).store`），而 `removeRoot()` 的唯一调用方是
-`watch_repo --watch false`。两个后果：
-
-1. **逐出对 watch 根完全不省内存**——`storeCache` 丢了 key，watcher 还攥着那份；
-2. 一旦真被逐出，下一次 `load()` 会从盘上**再建一份**。实测同一个 root 在同一进程里
-   两份 `deepseek-harness` store 共存（估算 **104.8MB × 2 = 209.6MB**），各写各的脏分片
-   → **最后写者赢，存在丢更新的窗口**。这条不依赖 256MB 这个数：只要缓存被判超预算就会发生。
-
-同一个 `store` 字段还是**启动路径上的急切加载**：`restorePersisted()` 会对会话 cwd 那条
-`watchlist` 逐个 `addRoot()`，而 `addRoot()` 里就 `load()`。watch 过多少个根，启动就同步读
-多少个 store 的全部 shard。真实数据实测（6 个真实根、其中一个 11698 分片）：
-
-| | `addRoot × 6` | 缓存条目 | 进程堆 |
-|---|---|---|---|
-| 修复前 | **5246 ms** | 6 | **166.3 MB** |
-| 修复后 | **0 ms** | 0 | **5.2 MB** |
-
-- `addRoot()` 只登记 `{ snapshot, failures }`，**不读盘**；新增 `storeFor(root)` 在 `pollRoot()`
-  真正需要时按需取（命中 `storeCache` 是 O(1)），整个 `pollRoot` 期间共用同一个实例。
-- 于是**每个 root 全进程只有一个活实例**，逐出即真正释放，下一轮 poll 重新读盘（缓存该有的语义），
-  内存上界回到 `STORE_CACHE_MAX_BYTES`，不再由「watch 了多少个根」决定。
-
-- **测试**：`test/store-cache.test.mjs` 增加 8 项 watch 契约（`addRoot` 不读盘、watch 状态不持有
-  实例、按需取到同一缓存实例、逐出后不再有第二份），**14 → 22 项**；`npm test` **476 → 498 项 / 27 个文件**。
-  （把 `watch.js` 换回旧实现，这 8 项里的结构性断言即失败。）
-- `npm run typecheck` 通过；`npm run eval:injection` 逐项不变（命中 14 / 假阳性 0 / 漏召 0，
-  注入 7 次 857 字符，P = R = 1.00）——本次不碰注入路径。
-
-### 修复：父根不再重复索引嵌套的项目根
-
-上面的估算与持有问题解决后，缓存里还剩一块**纯重复**的内存。实测本机真实的
-`/home/sxt/project`：它的 store 里 **9081 个文件中有 9079 个（99.9%）属于子根**——
-8984 个 `deepseek-harness/…`、91 个 `dsh-project-memory/…`、4 个 `voice/…`，
-而这三者**各自都有自己的 store**。原因不是 bug 而是两件事叠加：
-
-- `/home/sxt/project` **没有任何项目标记**（无 `.git`、无 `package.json`），于是它经由
-  "标记缺失 → 回退到会话 cwd" 成为根；
-- `walkDir()` 只跳过点目录与默认忽略表，**不认识嵌套根**，于是整棵树被索引一遍。
-
-更糟的是它的内容是**过期快照**：那 9079 条里有 436 条对应的源文件已经不在盘上，
-连它"自己"的 2 个文件（`PLAN-signal-loop.md` / `PLAN-file-hotspot-continuity.md`）也已删除。
-也就是说这份 store **零独有价值**，却常年占着 84MB 堆、并在父根下 `query_memory` 时
-返回 9 月 21 日的陈旧内容。
-
-- **`walkDir()` 支持 `nestedStoreName`**：子目录自带 store 时不再往下走，并把跳过的目录
-  放进返回值的新字段 `skipped`。判据是子目录下存在 `<子目录>/<memoryDir>/format.json`——
-  只有**真的存过盘**的 store 才算数，误建的空 `.dsh-project-memory` 目录不作数
-  （否则父根一跳过，内容两头都没了）。
-- 判据与解析规则一致：`findProjectRoot()` 对子树里的文件返回的**就是**那个子根，扫描现在同意它。
-- `index_repo` 与 watch 轮询都启用；`index_repo` 在结果里列出被跳过的子根，watch 每个根告警一次。
-- **存量重复自动收敛**，不需要新写的删除逻辑：被跳过的子树不在 `seen` 里，既有的
-  `commitFileUpdates(..., { unseen })` 清理路径就会把它们当"本根不再拥有"移除
-  （截断时照旧不清理）。真实数据实测：`index_repo /home/sxt/project` → `removed: 9081`，
-  **9081 个分片 → 1 个，219MB → 60KB，耗时 1.0s**。
-- **三种时序都覆盖**：升级存量（首次 `index_repo` 或一次 watch 轮询即收敛）；子根后建索引
-  （父根下一轮扫描发现子根的 store → 收敛）；子根先建索引（父根从一开始就不重复建）。
-
-**缓存口径实测**（本机 6 个真实 store 全部进缓存）：
-
-| | 合计 | 占 256MB 预算 |
-|---|---|---|
-| 修复前 | 216.6MB | 85% |
-| 修复后 | **133.0MB** | **52%** |
-
-- **测试**：`test/run-test.mjs` 增加 9 项（空 store 不算嵌套根、跳过后不再产出子树文件、
-  存量重复被清除、报告里说明跳过）；`npm test` **498 → 507 项 / 27 个文件**。
-- `npm run typecheck` 通过；`npm run eval:injection` 逐项不变。
-
-### 新增：父根未命中时告诉模型「这里有哪些独立子索引」
-
-上一节的排除逻辑带来一个可发现性缺口：父根的 store **不再保存**子项目的内容，于是在父根下
-`query_memory` 问子项目的事必然查不到，而模型并不知道"换个 root 就能问到"。
-
-现在**本根的记忆层（doc/symbol）一条都没命中**时，`query_memory` 会在输出**最前面**列出该根下
-自带 store 的子目录，并明确提示换 `root: <path>` 再问一次：
-
-```
-Note: this root keeps no copy of 5 nested project(s) — each has its own index.
-Re-run query_memory with `root: <path>` for the one you want:
-- /home/sxt/project/Demon
-- /home/sxt/project/deepseek-harness
-  ...
-```
-
-- 触发条件是「**记忆层**无命中」，不是「全部层无命中」：insight/experience 是全局层，跟根无关，
-  它们有命中时不该盖掉这条指路（实测第一版会因此漏报）。
-- 提示放**最前**而非最后：`truncate()` 截的是尾部，而 procedure 类 insight 单条就能到 600+ 字符，
-  放末尾在 8000 字符预算下必被整段截掉（实测）。
-- 只走 `query_memory`（工具输出），**不碰注入文案** —— 注入侧的 P/R 闸门一字未动。
-- 成本只在未命中路径上：BFS 限深 3 层、最多列 8 个、最多看 300 个目录。
-- **测试**：`test/recall.test.mjs` 增加 2 项（未命中要列出子根路径 / 本根命中时不得追加提示），
-  `npm test` **516 → 518 项**。
+本版四个修复 + 一个新增，主题是记忆的驻留与索引归属。`npm test` **476 → 518 项 / 26 → 28 个文件**。
 
 ### 修复：TS 增强队列的 TDZ 会打死宿主（`dsh: fatal load failure`）
 
 ```
 dsh: fatal load failure: ReferenceError: Cannot access 'p' before initialization
-    at enhancer.js:317:61  →  Array.findIndex  →  enqueueEnhance (enhancer.js:320:5)
-    at onFileChanged (enhancer.js:418:3)
-    at WatchManager.pollRoot (watch.js:220:9)
+    at enqueueEnhance (enhancer.js)  →  onFileChanged  →  WatchManager.pollRoot
 ```
 
-`enqueueEnhance()` 把队列条目登记在任务**启动之后**，并在任务的 `finally` 里用
-`enhanceQueue.findIndex(q => q.promise === p)` 反查自己。而 `deepParseWithTS()` 是**同步**的：
-文件产不出增强符号时任务体根本走不到那个 `await`，`finally` 会在**同步阶段**执行 ——
-此时 `const p = <IIFE>()` 尚未完成初始化。两件事决定了它是否现形：
+`enqueueEnhance()` 先启动任务、后登记队列条目，并在 `finally` 里用
+`enhanceQueue.findIndex(q => q.promise === p)` 反查自己。`deepParseWithTS()` 是同步的，文件
+产不出增强符号时任务体走不到 `await`，`finally` 就在同步阶段执行——此时 `const p` 尚未完成
+初始化。队列为空时 `findIndex` 回调不被调用，问题不显形；队列非空时读到 TDZ 的 `p`，抛
+ReferenceError。watch 轮询对每个改动的 `.js` 都在同一个同步循环里调 `onFileChanged`，且丢弃了
+返回的 promise，未处理的 rejection 被宿主当成致命错误。
 
-- 队列**为空**时 `findIndex` 的回调压根不被调用，`p` 不被求值 → 看起来一切正常；
-- 队列**非空**（`scheduleProcess` 正忙时后面几条会积压）→ 回调被调用 → 读到 TDZ 的 `p`。
+- 队列条目改为先入队，`finally` 按对象身份摘除自己。
+- 三个 fire-and-forget 入口各挂 catch。
+- 顺带修掉同步完成的任务把一条已 resolve 的僵尸条目永久留在队列里的问题：同一路径同内容的
+  后续调用会命中它，导致再也不增强。
+- 测试：新增 `test/enhancer.test.mjs`（6 项），`src/enhancer.js` 此前无测试覆盖。
 
-`WatchManager.pollRoot()` 在**同一个同步循环**里对每个改动的代码文件调用 `onFileChanged`，
-一轮轮询就是十几个 `.js`，正是这个形状；而 watch 路径丢掉了返回的 promise，未处理的 rejection
-被宿主当成致命错误。
+### 修复：storeCache 的驻留估算量错了对象
 
-- 条目**先入队**，`finally` 按**对象身份**（`enhanceQueue.indexOf(entry)`）摘除自己，不再引用
-  尚未初始化的绑定；顺带修掉"同步完成的任务会把一条已 resolve 的僵尸条目永久留在队列里
-  （同路径同内容的后续调用命中它 → 再也不增强）"。
-- 三个 fire-and-forget 入口（`onFileObserved` / `onFileChanged` / `onFileIndexed`）各自挂 catch：
-  任务体内部已兜底，但**未处理的 rejection 会打死宿主**，这条路径不该有任何机会向上抛。
-- **测试**：新增 `test/enhancer.test.mjs`（6 项）——`src/enhancer.js` 此前**零测试覆盖**
-  （`test/` 下没有任何文件 import 它）。含批 TDZ 回归、僵尸条目、以及"一次 watch 轮询里连续
-  改动多个 `.js`（其中一个产不出符号）"的真实形状。**换回旧实现，测试进程直接以
-  `ReferenceError` 退出**（与线上同一处栈帧）。
-- `npm test` **507 → 516 项 / 28 个文件**。
+`estimateResidentBytes()` 用 `Math.max(_residentChars, entries * 2500)` 估算一个 store 的内存占用，
+两个口径都不成立：
+
+1. `_residentChars` 是 `loadJson` 读进来的 JSON 文本长度，其中包含 `load()` 随即被
+   `stripPersistedDerived` 删掉的字节——老分片仍带 `searchText` / `linkedSymbols`。
+   实测一个 store 的读盘文本是真实驻留的 **2.09 倍**。
+2. 估算在 `load()` 内就被调用，而 `searchText` 要到 `allEntries()` 才物化，同一个 store
+   在物化前后估出两个不同的数。
+
+结果是高估：本可共存的 store 被过早逐出，下一次 `load()` 重读全部分片。在 Windows 上
+（Defender 实时扫描放大每次文件读）尤其明显。
+
+`deepseek-harness`（11698 文件 / 70119 条目）实测：
+
+| 口径 | load() 后 | 物化 `searchText` 后 |
+|---|---|---|
+| 旧估算 | **167.2MB**（真实 63.5MB） | 167.2MB（真实 97.8MB） |
+| 新估算 | 75.0MB（**+18.2%**） | 104.8MB（**+7.1%**） |
+
+- 改为 `_estimateResidentBytes()` 统计内存中的对象图（形状开销 + `Buffer.byteLength()`，
+  CJK 在 UTF-8 里 3 字节/字符，用 `String.length` 会再低估一半），按 `_entriesVersion` 与
+  新增的 `_materializeVersion` 记忆化——`evictStoreCache` 每次要对整个缓存逐 store 求和。
+  代价是版本变化后的一次全量遍历，冷加载 +8~11%。
+- 删除 `_residentChars` 及 `loadJson` 的 `sizeSink` 参数。
+- `keepKey` 豁免（刚加载的 store 即使超预算也保留）保留，但不再静默：单实例超预算时按 root
+  告警一次。
+
+行为变化：逐出变少，内存上限更接近 256MB 的本意；只有真正超预算时才像以前一样逐出。
+
+测试：新增 `test/store-cache.test.mjs`（22 项），`storeCache` 此前无测试覆盖。
+
+### 修复：watch 根不再钉住 store，也不在启动时急切读盘
+
+`WatchManager` 长期持有每个 watch 根的 store 实例（`this.roots.get(root).store`），而
+`removeRoot()` 的唯一调用方是 `watch_repo --watch false`。两个后果：
+
+1. 逐出对 watch 根不省内存——`storeCache` 丢了 key，watcher 还持有那份；
+2. 一旦被逐出，下一次 `load()` 会从盘上再建一份。同一个 root 出现两份互不可见的内存状态，
+   各写各的脏分片，存在丢更新的窗口。
+
+同一个字段还让 `restorePersisted()` 在启动时对整条 `watchlist` 急切读盘：watch 过多少个根，
+启动就同步读多少个 store 的全部 shard。
+
+- `addRoot()` 只登记 `{ snapshot, failures }`；新增 `storeFor(root)` 在 `pollRoot()` 需要时
+  按需取，整个 `pollRoot` 期间共用一个实例。
+- 每个 root 全进程只有一个活实例，内存上界回到 `STORE_CACHE_MAX_BYTES`。
+
+### 修复：父根不再重复索引嵌套的项目根
+
+一个没有项目标记（无 `.git`、无 `package.json`）的容器目录经由「标记缺失 → 回退到会话 cwd」
+成为根后，`walkDir()` 会把整棵树索引一遍，而树里的每个子项目各自都有自己的 store。实测某个
+父根的 store 里 **99.9% 的条目是子根的重复副本**，且是过期快照（部分源文件已从盘上删除）——
+这份 store 没有独有价值，却占用内存，并在父根下 `query_memory` 时返回陈旧内容。
+
+- `walkDir()` 新增 `nestedStoreName`：子目录自带 store 时不再往下走，跳过的目录放进返回值的
+  `skipped` 字段。判据是子目录下存在 `<子目录>/<memoryDir>/format.json`——只有真正存过盘的
+  store 才算数，误建的空目录不作数。与 `findProjectRoot()` 的解析规则一致。
+- `index_repo` 与 watch 轮询都启用；`index_repo` 在结果里列出被跳过的子根。
+- 存量重复自动收敛：被跳过的子树不在 `seen` 里，既有的 `commitFileUpdates(..., { unseen })`
+  清理路径会将其移除。升级后首次 `index_repo` 或一次 watch 轮询即生效，不需要迁移脚本。
+
+### 新增：父根未命中时列出独立子索引
+
+上一节之后，父根不再保存子项目的内容，在父根下 `query_memory` 问子项目必然查不到。现在本根
+记忆层（doc/symbol）无命中时，输出最前面会列出该根下自带 store 的子目录：
+
+```
+Note: this root keeps no copy of N nested project(s) — each has its own index.
+Re-run query_memory with `root: <path>` for the one you want:
+- <path>
+```
+
+- 触发条件只看记忆层：insight/experience 是全局层，与根无关，不应盖掉这条提示。
+- 提示置于最前，因为 `truncate()` 截的是尾部，而 procedure 类条目单条可超 600 字符。
+- 只影响 `query_memory` 的未命中路径，不涉及注入。
+
+**验证**：`npm test` 518 项 / 28 个文件全绿；`npm run typecheck` 通过；`npm run eval:injection`
+逐项不变（命中 14 / 假阳性 0 / 漏召 0，P = R = 1.00）。
 
 ## 0.5.11 (2026-09-25)
 
