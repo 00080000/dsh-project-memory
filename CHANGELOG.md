@@ -1,6 +1,6 @@
 ## 0.5.12 (2026-09-26)
 
-本版四个修复 + 一个新增，主题是记忆的驻留与索引归属。`npm test` **476 → 518 项 / 26 → 28 个文件**。
+本版五个修复 + 一个新增，主题是记忆的驻留、索引归属，以及两处让 TS 增强层失效 / 失真的缺陷。`npm test` **476 → 539 项 / 26 → 28 个文件**。
 
 ### 修复：TS 增强队列的 TDZ 会打死宿主（`dsh: fatal load failure`）
 
@@ -21,6 +21,88 @@ ReferenceError。watch 轮询对每个改动的 `.js` 都在同一个同步循�
 - 顺带修掉同步完成的任务把一条已 resolve 的僵尸条目永久留在队列里的问题：同一路径同内容的
   后续调用会命中它，导致再也不增强。
 - 测试：新增 `test/enhancer.test.mjs`（6 项），`src/enhancer.js` 此前无测试覆盖。
+
+### 修复：TS 增强层对 `.js` 文件从未生效（不分平台）
+
+`deepParseWithTS()` 调 `ts.createProgram([filePath], {}, host)`，`options` 是空的。
+TypeScript 在**调用 host 之前**就有一道扩展名闸门：`getSourceFileFromReferenceWorker` 先比对
+`getSupportedExtensions(options)`，`.js/.jsx/.mjs/.cjs` 不在其中就直接返回——host 根本不会被问。
+
+而插件的 `isTypeScriptFile()` 明确把这四种扩展名列为可增强对象，watch / 懒索引 / `index_repo`
+三条入口也照常喂进去。**结果是 TS 增强层（README 承诺的"推导返回类型、解析泛型、抽取接口"）
+对绝大多数真实文件一直没有产出，且没有任何日志。**
+
+- `createProgram` 改用 `{ allowJs: true, noLib: true }`。`.js` / `.jsx` / `.mjs` / `.cjs` 从 0 个符号
+  恢复到正常产出（`isTypeScriptFile()` 认的 8 种扩展名逐一断言），`.ts` 行为不变。
+- **顺带修掉 L2 对无注解 JS 的文本损伤。** `applyEnhancedSymbols()` 是**就地重写** L1 条目的
+  `text`，而旧实现把参数一律渲染成 `${name}: ${type}`：本仓库 51 个 `.js/.mjs` 实测 334 条条目被
+  重写，86% 的参数成了 `: any`，52 个带默认值的条目里 36 个把默认值丢了——
+
+  ```
+  chunkText(text, chunkChars = 3000, maxChunks = 40) — src/chunker.js:1          ← L1
+  chunkText(text: any, chunkChars: any, maxChunks: any): any -- src/chunker.js:1  ← 旧 L2
+  ```
+
+  现在参数用**源码文本**（`= 默认值` / `?` / `...rest` / 解构模式都保住），推导出的返回类型只在
+  有信息量时才追加（`any` / `unknown` / `{}` 不写）。改后同一份语料：默认值 0 丢失，被重写的条目
+  里 51% 的文本与 L1 逐字相同（升级不再是损伤），其余 49% 多出一个真实返回类型（`: boolean` /
+  `: void` / `: () => void` / 对象形状）。
+- `.cjs` 的惯用写法 `module.exports.foo = function () {}` 此前产不出符号：它的父节点是
+  `BinaryExpression`，不在函数表达式的名字白名单里——而 `isTypeScriptFile()` 明确把 `.cjs` 列为
+  可增强对象。现在按 `module.exports.foo` / `exports.foo` / 字符串下标取名字。
+- 增强条目的一行声明改用与 L1 `buildSymbol()` 相同的 ` — ` 分隔（旧为 ` -- `）：L2 重写的正是
+  L1 的文本，两种分隔符会让同一个文件里的条目混排两种格式。
+- **测试同步加固**：`test/enhancer.test.mjs` 原先的断言是 `existsSync(store.dir)`——store 目录
+  只要有任何一次 commit 就会存在，前面几个用例已经把它建好，这条因此永远为真；它验的是
+  "跑过了"而不是"处理了"。换成 `store.entries[rel].some(e => e.enhanced)`，并补 `.js` 与
+  `.mjs` 的直接断言。固定 `setTimeout` 也改成轮询到条件成立，慢 CI 上不再靠运气。新增扩展名
+  覆盖面、文本保真、CJS 断言与静默契约四组（共 13 项；前三组的 11 项在旧代码上为红，静默契约
+  那 2 项锁的是"不加日志"这个决定，新旧都绿——它防的是将来有人把告警加回来）。
+
+### 修复：TS 增强在 Windows 上因路径写法不同而整层失效
+
+compiler host 用 `fileName === filePath` 严格相等来认自己的文件。TypeScript 内部一律走
+`normalizePath`（反斜杠转正斜杠、消解 `.`/`..`、绝对化），而 `path.join` 给出的是平台原生形态。
+Windows 上两边字符串不同 → `getSourceFile` 返回 undefined → `deepParseWithTS` 返回 `[]`。
+POSIX 上路径本就是正斜杠，因此从不现形。
+
+2026-09-26 的 Windows CI 就是这样暴露的（唯一失败断言是 enhancer 的「增强结果落进 store」）。
+
+- 路径比较改用 `ts.normalizePath`（带 `typeof` 兜底：它在运行时导出但 `typescript.d.ts` 里
+  没有声明，而 peer 范围覆盖 TS 5/6/7）。
+- `useCaseSensitiveFileNames` 不再硬编码 `true`，改为跟随 `ts.sys`——TS 在 macOS 上是探测真实
+  文件系统而非写死 `false`，跟随它才是正确语义。
+- 预建唯一的 `SourceFile` 并按**对象身份**确认 TS 收下了它，不再用 `program.getSourceFile(filePath)`
+  回查（那一步内部会把相对路径拼上 cwd，同样是脆弱点）。
+- 回归断言改成**字符串形态**：反斜杠（Windows 形态）、裸 `./` 段、裸 `..` 段。原先那条用的是
+  `path.join(dir, '.', 'shape.ts')`，而 `path.join` 自己就会消解 `.`——它与 `path.join(dir, 'shape.ts')`
+  是同一个字符串，断言在旧代码上也是绿的，等于没测。TS 的 `normalizePath` 在**任何平台**都把 `\`
+  归一成 `/`，所以这三条在 Linux 上就能判定，不必等 Windows CI。
+- 两条"本该有结果却没有"的路径**保持静默**（host 没认出 root path、`readFileSync` 失败），
+  但不再是无从分辨的黑盒：调用方契约（入队 resolve、返回 `[]`）由断言正面锁住，理由写在代码里。
+  不做日志是代价与收益的权衡——watch 每 15s 一轮、每个不受支持的 root 都会撞上它，按文件去重
+  也只是把"每轮一条"换成"每个文件一条"，而"这轮没增强"不会产出任何错误结果。2026-09-26 的
+  教训是"静默"藏住了整层失效，但解法是补测试（见上一组断言），不是往终端打字。
+
+### 已知限制（本版未做）：L2 不加载 TypeScript 的默认 lib
+
+compiler host 里的 `getDefaultLibLocation: () => ts.getDefaultLibFilePath({})` 返回的是**文件**
+路径而不是目录，于是默认 lib 从来没有被加载过——显式标注的类型正常，依赖全局类型（`Promise` /
+`Array` / DOM）的一律塌成 `any` / `unknown`：
+
+```
+export function f() { return [1, 2, 3].map(n => n * 2) }   →   (): any       （载入 lib 后是 number[]）
+export const g = async () => 1                             →   (): unknown   （载入 lib 后是 Promise<number>）
+```
+
+本版把它换成**显式**的 `noLib: true` 并在代码里写明理由：行为不变（实测两者产出的符号完全一致），
+但"没生效"不再是一个没人写下来的意外。
+
+修它不止一行：目录给对之后 host 还必须按需提供 `lib.d.ts` 及其引用的 6 个文件（`lib.es5` /
+`lib.decorators` / `lib.decorators.legacy` / `lib.dom` / `lib.webworker.importscripts` /
+`lib.scripthost`，共 ~2.1MB 文本）。实测代价：每个 program 重解析 **p50=102ms/文件**；把解析好的
+`SourceFile` 缓存跨 program 复用（或走 `ts.DocumentRegistry`）则是一次性 ~100ms + 每文件 ~1ms。
+这是"性能换质量"的产品选择，留到下一个版本单独做。
 
 ### 修复：storeCache 的驻留估算量错了对象
 
