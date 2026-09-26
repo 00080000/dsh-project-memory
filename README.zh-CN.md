@@ -301,7 +301,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ```bash
 npm install
-npm test                    # 516 项测试（核心 214 + TaskBridge 16 + insight-store 12 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 10 + reflection 5 + llm-route 4 + client-hints 2 + recall 8 + readiness 14 + insight-derive 7 + readiness-eval 7 + ops 6 + injection-audit 11 + injection-budget 5 + injection-scenarios 6 + bugfix-0.5.7 18 + client-icons 3 + client-slash 10 + workflow-command 5 + client-session-id 7 + task-view 6 + root-guards 79 + store-gitignore 9 + store-cache 22 + enhancer 6）
+npm test                    # 518 项测试（核心 214 + TaskBridge 16 + insight-store 12 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 10 + reflection 5 + llm-route 4 + client-hints 2 + recall 10 + readiness 14 + insight-derive 7 + readiness-eval 7 + ops 6 + injection-audit 11 + injection-budget 5 + injection-scenarios 6 + bugfix-0.5.7 18 + client-icons 3 + client-slash 10 + workflow-command 5 + client-session-id 7 + task-view 6 + root-guards 79 + store-gitignore 9 + store-cache 22 + enhancer 6）
 npm run eval:injection      # 合成池上的场景 P/R：命中 14/14、假阳性 0、对照组零注入
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）

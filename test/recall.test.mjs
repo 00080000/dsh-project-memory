@@ -170,4 +170,33 @@ function exec0(root, sessionId = 'sess_unbound') {
   ok('recallItems：按层分桶 + 层先验，insight 层可检索')
 }
 
+
+// ---- 9. 父根未命中时，把"这里有独立子索引"告诉模型（走 root= 再问一次） ----
+// 父根不再重复保存子项目的内容（walkDir 跳过自带 store 的嵌套根），所以这一步必须指路，
+// 否则"在父根下问子项目的事"就是静默无结果。
+{
+  const root = mkdtempSync(path.join(tmpdir(), 'pm-nested-note-'))
+  writeFileSync(path.join(root, 'package.json'), '{}')
+  // 父根自己的 store（有内容，但对下面的 query 不命中）
+  const parentStore = new ProjectMemoryStore(memoryRootFor(root, CONFIG.memoryDir)).load()
+  parentStore.setEntries('own.md', [{ id: 'own', type: 'doc', relPath: 'own.md', sourcePath: 'own.md', title: 'parent own doc', summary: 'about widgets' }])
+  parentStore.save()
+  // 子根：自带 store → 应被列出来
+  const child = path.join(root, 'childproj')
+  const childStore = new ProjectMemoryStore(memoryRootFor(child, CONFIG.memoryDir)).load()
+  childStore.setEntries('x.md', [{ id: 'x', type: 'doc', relPath: 'x.md', sourcePath: 'x.md', title: 'child doc', summary: 'about gadgets' }])
+  childStore.save()
+
+  const tool = queryMemoryTool({}, CONFIG)
+  const miss = await tool.execute({ query: 'zzz-no-such-thing-zzz', root, type: 'doc' }, exec0(root))
+  assert.match(miss, /nested project\(s\)/, '未命中时要提示存在独立子索引')
+  assert.ok(miss.includes(child), `提示里要给出子根路径：${miss.slice(-300)}`)
+  ok('query_memory：本根未命中 → 列出独立子索引并让模型换 root')
+
+  // 命中时不该出现这段提示（否则每次查询都刷屏）
+  const hit = await tool.execute({ query: 'widgets', root, type: 'doc' }, exec0(root))
+  assert.ok(!/nested project\(s\)/.test(hit), '本根命中时不得追加指路提示')
+  ok('query_memory：本根命中 → 不追加提示')
+}
+
 console.log(`\nrecall tests: ${passed} passed`)
