@@ -109,32 +109,78 @@ export function isTypeScriptFile(filePath) {
          ext === '.mjs' || ext === '.cjs' || ext === '.mts' || ext === '.cts'
 }
 
+/**
+ * 路径归一化。
+ *
+ * 旧实现在 host 里用 `fileName === filePath` 认自己的文件。TypeScript 内部一律走
+ * `normalizePath`（`\`→`/`、消解 `.`/`..`、绝对化），而 `path.join` 给出的是平台原生形态 ——
+ * Windows 上是反斜杠。两边字符串不同 → `getSourceFile` 返回 undefined → `deepParseWithTS`
+ * 静默返回 `[]`：增强整层失效且无日志。2026-09-26 的 Windows CI 就是这样挂的
+ * （`test/enhancer.test.mjs` 的「增强结果落进了 store」），同一份代码在 POSIX 上从不现形。
+ *
+ * 用 TS 自己的 `normalizePath` 而不是自己拼：它才是权威口径。**该函数只在运行时导出、
+ * `typescript.d.ts` 里没有声明**，peer 范围覆盖 TS 5/6/7，所以必须做 `typeof` 兜底。
+ */
+function canonicalTsPath(fileName) {
+  const s = String(fileName)
+  return typeof ts?.normalizePath === 'function' ? ts.normalizePath(s) : s.replace(/\\/g, '/')
+}
+
+/** 跟随 ts.sys 的实际大小写语义；拿不到时按平台回落。 */
+function tsPathCaseSensitive() {
+  if (ts && ts.sys && typeof ts.sys.useCaseSensitiveFileNames === 'boolean') {
+    return ts.sys.useCaseSensitiveFileNames
+  }
+  return process.platform !== 'win32' && process.platform !== 'darwin'
+}
+
 export function deepParseWithTS(filePath, content) {
   if (!ts) return null
 
+  const caseSensitive = tsPathCaseSensitive()
+  const target = caseSensitive ? canonicalTsPath(filePath) : canonicalTsPath(filePath).toLowerCase()
+  const isTarget = (fileName) => {
+    const a = canonicalTsPath(fileName)
+    return (caseSensitive ? a : a.toLowerCase()) === target
+  }
+  // 预建唯一的 SourceFile：它就是"这个文件"的真身，host 只需把它交出去。
+  // 后面按**对象身份**确认 TS 真的收下了它，不依赖 TS 内部怎么命名。
+  const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true)
+
   // Create a compiler host that provides the source file from memory
   const host = {
-    getSourceFile: (fileName, languageVersion, onError) => {
-      if (fileName === filePath) {
-        return ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true)
-      }
-      return undefined
-    },
+    getSourceFile: (fileName, languageVersion, onError) => (isTarget(fileName) ? sourceFile : undefined),
     getDefaultLibFileName: (options) => ts.getDefaultLibFileName(options),
-    getDefaultLibLocation: () => ts.getDefaultLibFilePath({}),
-    getCanonicalFileName: (fileName) => fileName,
+    getCanonicalFileName: (fileName) => (caseSensitive ? canonicalTsPath(fileName) : canonicalTsPath(fileName).toLowerCase()),
     getCurrentDirectory: () => process.cwd(),
     getNewLine: () => '\n',
-    useCaseSensitiveFileNames: () => true,
-    fileExists: (fileName) => fileName === filePath,
-    readFile: (fileName) => fileName === filePath ? content : undefined,
+    useCaseSensitiveFileNames: () => caseSensitive,
+    fileExists: (fileName) => isTarget(fileName),
+    readFile: (fileName) => (isTarget(fileName) ? content : undefined),
     directoryExists: () => true,
     getDirectories: () => [],
   }
 
-  const program = ts.createProgram([filePath], {}, host)
-  const sourceFile = program.getSourceFile(filePath)
-  if (!sourceFile) return []
+  // 刻意不加载默认 lib（`noLib: true`）：host 手里只有这一个文件的内容，加载 lib 需要把
+  // lib.d.ts 及其引用的 6 个文件（lib.es5 / lib.decorators / lib.decorators.legacy / lib.dom /
+  // lib.webworker.importscripts / lib.scripthost，共 ~2.1MB 文本）一并读盘并重解析。
+  // 实测：每个 program 重解析 p50=102ms/文件；把解析好的 SourceFile 缓存跨 program 复用
+  // （或走 ts.DocumentRegistry）是一次性 ~100ms + 每文件 ~1ms。本版不做，代价是全局类型
+  // （Promise/Array/DOM）在 typeSig 里塌成 any/unknown —— 见 CHANGELOG「已知限制（本版未做）」。
+  // 旧实现在这里留的是 `getDefaultLibLocation: () => ts.getDefaultLibFilePath({})`，返回的是
+  // **文件**路径而不是目录，于是这层加载既没生效、也没人把它写下来。现在把"不载"写成声明。
+  const program = ts.createProgram([filePath], { allowJs: true, noLib: true }, host)
+  // 按**对象身份**确认 TS 收下了这个 SourceFile。`program.getSourceFile(filePath)` 也能问，
+  // 但它内部用 `toPath(name, cwd, getCanonicalFileName)` 拼 key，对相对路径还会拼上 cwd ——
+  // 正是上面那条脆弱路径。`sourceFile.parent` 恒为 undefined，不能用它判断。
+  if (program.getSourceFileByPath(sourceFile.path) !== sourceFile) {
+    // 走到这里 = host 没认出 root path（本该有结果却没有）。**刻意不写终端**：
+    //   · 代价：watch 每 15s 一轮、每个不受支持的 root 都会撞上它，"逐轮一条"去重后仍会变成
+    //     "每个文件一条"，在真实终端里就是刷屏；
+    //   · 收益为 0：返回 [] 只是"这轮没有增强结果"，不会产出错误结果，调用方本来就按空处理。
+    // 这个不变量的看护在 test/enhancer.test.mjs（「路径形态」那组 + 末尾的静默契约），不靠日志。
+    return []
+  }
   const checker = program.getTypeChecker()
 
   const symbols = []
@@ -171,60 +217,79 @@ export function deepParseWithTS(filePath, content) {
     return sourceFile.getLineAndCharacterOfPosition(pos).line + 1
   }
 
+  /**
+   * 参数列表的渲染：用**源码文本**，不是 checker 的类型串。
+   *
+   * 旧实现拼 `${p.name.getText()}: ${type}`，两个副作用都被「L2 会就地重写 L1 文本」放大：
+   *   · 无注解的参数一律写成 `: any`（本仓库 51 个 .js/.mjs 实测：86% 的参数如此），把 L1 正则
+   *     已经提取到的 `chunkChars = 3000` 换成纯噪音；
+   *   · `= 默认值` / `?` / `...rest` / 解构模式全被丢掉（实测 52 个带默认值的条目里丢了 36 个）。
+   * 源码文本两者都保得住，还省掉每个参数一次 checker 调用。单参数限长 80，整行仍由
+   * oneLineDeclaration 收到 200 字符。
+   */
+  function renderParams(node) {
+    return node.parameters.map((p) => oneLineDeclaration(p.getText(), 80)).join(', ')
+  }
+
+  /**
+   * 返回类型只在**有信息量**时落进文本：`any`（无注解 JS 的常态）、`unknown`（未载 lib 时 async
+   * 的推导结果）、`{}`（"任意非空值"）都只会把一行声明撑长，旧实现无条件写 `): any`。
+   * `void` 保留 —— 它至少说明"没有返回值"。
+   */
+  function renderReturn(type) {
+    const s = getTypeStr(type)
+    return s === 'any' || s === 'unknown' || s === '{}' ? '' : `: ${s}`
+  }
+
+  /**
+   * 函数表达式/箭头函数的名字。旧白名单只有 `const x = fn` / `{ m: fn }` / `class { m = fn }`，
+   * 于是 CJS 最常见的 `module.exports.foo = function () {}` 产不出符号（它的父节点是
+   * BinaryExpression）—— 而 isTypeScriptFile() 明确把 `.cjs` 列为可增强对象，等于承诺了拿不到。
+   */
+  function callableName(node) {
+    const parent = node.parent
+    if (!parent) return null
+    if (ts.isVariableDeclaration(parent) || ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent)) {
+      return parent.name?.getText() || '(anonymous)'
+    }
+    if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const left = parent.left
+      if (ts.isPropertyAccessExpression(left)) {
+        // `module.exports = function () {}`（CJS 的默认导出）：只取最后一段会得到名字
+        // "exports"，既看不出它是默认导出，也容易与 `exports.foo` 混淆。保留全名。
+        if (ts.isIdentifier(left.expression) && left.expression.text === 'module' && left.name.text === 'exports') {
+          return 'module.exports'
+        }
+        return left.name.getText()
+      }
+      if (ts.isIdentifier(left)) return left.getText()
+      if (ts.isElementAccessExpression(left) && ts.isStringLiteralLike(left.argumentExpression)) {
+        return left.argumentExpression.text
+      }
+    }
+    return null
+  }
+
+  /** 三个 callable 分支共用：名字与种类由调用方给，类型串的渲染只此一处。 */
+  function pushCallable(node, name, kind) {
+    const typeParams = node.typeParameters?.map((tp) => tp.getText()) || []
+    const generics = typeParams.length ? `<${typeParams.join(', ')}>` : ''
+    symbols.push({
+      name,
+      kind,
+      typeSig: `${generics}(${renderParams(node)})${renderReturn(getReturnType(getSignature(node)))}`,
+      line: getLine(node)
+    })
+  }
+
   function visit(node) {
     if (ts.isFunctionDeclaration(node) && node.name) {
-      const signature = getSignature(node)
-      const returnType = getReturnType(signature)
-      const typeParams = node.typeParameters?.map(tp => tp.getText()) || []
-      const params = node.parameters.map(p => {
-        const type = p.type ? getTypeStr(checker.getTypeAtLocation(p.type)) : 'any'
-        return `${p.name.getText()}: ${type}`
-      })
-      const returnTypeStr = getTypeStr(returnType)
-      const generics = typeParams.length ? `<${typeParams.join(', ')}>` : ''
-      symbols.push({
-        name: node.name.getText(),
-        kind: 'function',
-        typeSig: `${generics}(${params.join(', ')}): ${returnTypeStr}`,
-        line: getLine(node)
-      })
+      pushCallable(node, node.name.getText(), 'function')
     } else if (ts.isMethodDeclaration(node) && node.name) {
-      const signature = getSignature(node)
-      const returnType = getReturnType(signature)
-      const typeParams = node.typeParameters?.map(tp => tp.getText()) || []
-      const params = node.parameters.map(p => {
-        const type = p.type ? getTypeStr(checker.getTypeAtLocation(p.type)) : 'any'
-        return `${p.name.getText()}: ${type}`
-      })
-      const returnTypeStr = getTypeStr(returnType)
-      const generics = typeParams.length ? `<${typeParams.join(', ')}>` : ''
-      symbols.push({
-        name: node.name.getText(),
-        kind: 'method',
-        typeSig: `${generics}(${params.join(', ')}): ${returnTypeStr}`,
-        line: getLine(node)
-      })
+      pushCallable(node, node.name.getText(), 'method')
     } else if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
-      const parent = node.parent
-      if (parent && (ts.isVariableDeclaration(parent) || ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent))) {
-        const signature = getSignature(node)
-        const returnType = getReturnType(signature)
-        const typeParams = node.typeParameters?.map(tp => tp.getText()) || []
-        const params = node.parameters.map(p => {
-          const type = p.type ? getTypeStr(checker.getTypeAtLocation(p.type)) : 'any'
-          return `${p.name.getText()}: ${type}`
-        })
-        const returnTypeStr = getTypeStr(returnType)
-        const generics = typeParams.length ? `<${typeParams.join(', ')}>` : ''
-        const name = parent.name?.getText() || '(anonymous)'
-        const kind = ts.isArrowFunction(node) ? 'arrow' : 'function'
-        symbols.push({
-          name,
-          kind,
-          typeSig: `${generics}(${params.join(', ')}): ${returnTypeStr}`,
-          line: getLine(node)
-        })
-      }
+      const name = callableName(node)
+      if (name) pushCallable(node, name, ts.isArrowFunction(node) ? 'arrow' : 'function')
     } else if (ts.isClassDeclaration(node) && node.name) {
       const typeParams = node.typeParameters?.map(tp => tp.getText()) || []
       const generics = typeParams.length ? `<${typeParams.join(', ')}>` : ''
@@ -266,10 +331,9 @@ export function deepParseWithTS(filePath, content) {
     }
   }
 
-  const sf = program.getSourceFile(filePath)
-  if (sf) {
-    visit(sf)
-  }
+  // 用预建的那个（上面已按对象身份确认它进了 program），不再按名字回查——
+  // 回查依赖 TS 内部的命名，正是 Windows 上出问题的那一步。
+  visit(sourceFile)
   return symbols
 }
 
@@ -280,7 +344,10 @@ export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BAT
   try {
     content = readFileSync(filePath, 'utf8')
   } catch {
-    // File disappeared between detection and enqueue - skip silently
+    // 文件在"检测到变化"和"入队"之间消失了（编辑器原子保存 = 写临时文件 + rename，正好落在
+    // 这个窗口）。**刻意不写终端**：这不是故障而是常态，watch 每 15s 一轮还会反复重试同一个
+    // 文件 —— 即使按文件去重也仍会刷屏，而"这轮不增强"不会产出任何错误结果（返回 resolved，
+    // 与成功路径对调用方无差别）。诊断靠断言，不靠日志。
     return Promise.resolve()
   }
   const cacheKey = getCacheKey(content)
@@ -376,7 +443,9 @@ function applyEnhancedSymbols(fn, relPath, enhanced) {
       ...e,
       // 一行声明（限长）。typeSig 只是构建期的中间量，不落进 entry：它没有读取方，
       // 且 interface 的 typeSig 就是整个类型体，是符号条目变胖的主因。
-      text: oneLineDeclaration(`${enh.name}${enh.typeSig} -- ${relPath}:${enh.line}`),
+      // 分隔符与 L1 的 buildSymbol 保持一致（` — `）：L2 是**就地重写** L1 文本，
+      // 用不同的分隔符会让同一个文件里的条目混排两种格式。
+      text: oneLineDeclaration(`${enh.name}${enh.typeSig} — ${relPath}:${enh.line}`),
       typeSig: undefined,
       enhanced: true
     }
@@ -400,7 +469,7 @@ function applyEnhancedSymbols(fn, relPath, enhanced) {
       type: 'symbol',
       title: `${s.name} (${s.kind})`,
       keywords: [s.name, s.kind],
-      text: oneLineDeclaration(`${s.name}${s.typeSig} -- ${relPath}:${s.line}`),
+      text: oneLineDeclaration(`${s.name}${s.typeSig} — ${relPath}:${s.line}`),
       enhanced: true
     })
   }
