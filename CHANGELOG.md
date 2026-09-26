@@ -124,6 +124,31 @@ watch 根的 store 实例**（`this.roots.get(root).store`），而 `removeRoot(
   存量重复被清除、报告里说明跳过）；`npm test` **498 → 507 项 / 27 个文件**。
 - `npm run typecheck` 通过；`npm run eval:injection` 逐项不变。
 
+### 新增：父根未命中时告诉模型「这里有哪些独立子索引」
+
+上一节的排除逻辑带来一个可发现性缺口：父根的 store **不再保存**子项目的内容，于是在父根下
+`query_memory` 问子项目的事必然查不到，而模型并不知道"换个 root 就能问到"。
+
+现在**本根的记忆层（doc/symbol）一条都没命中**时，`query_memory` 会在输出**最前面**列出该根下
+自带 store 的子目录，并明确提示换 `root: <path>` 再问一次：
+
+```
+Note: this root keeps no copy of 5 nested project(s) — each has its own index.
+Re-run query_memory with `root: <path>` for the one you want:
+- /home/sxt/project/Demon
+- /home/sxt/project/deepseek-harness
+  ...
+```
+
+- 触发条件是「**记忆层**无命中」，不是「全部层无命中」：insight/experience 是全局层，跟根无关，
+  它们有命中时不该盖掉这条指路（实测第一版会因此漏报）。
+- 提示放**最前**而非最后：`truncate()` 截的是尾部，而 procedure 类 insight 单条就能到 600+ 字符，
+  放末尾在 8000 字符预算下必被整段截掉（实测）。
+- 只走 `query_memory`（工具输出），**不碰注入文案** —— 注入侧的 P/R 闸门一字未动。
+- 成本只在未命中路径上：BFS 限深 3 层、最多列 8 个、最多看 300 个目录。
+- **测试**：`test/recall.test.mjs` 增加 2 项（未命中要列出子根路径 / 本根命中时不得追加提示），
+  `npm test` **516 → 518 项**。
+
 ### 修复：TS 增强队列的 TDZ 会打死宿主（`dsh: fatal load failure`）
 
 ```
