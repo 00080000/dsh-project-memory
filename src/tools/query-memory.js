@@ -1,6 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
-import { memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
+import { memoryDirName, memoryRootFor, nestedStoreRoots, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
 import { expandQuery } from '../llm.js'
 import { resolveRoute } from '../llm-route.js'
@@ -11,6 +11,22 @@ import { truncate } from '../util/text.js'
 import { stepContent, stepStatus } from '../util/task-view.js'
 function toAbs(root, rel) {
   return path.isAbsolute(rel) ? rel : path.join(root, rel)
+}
+
+/**
+ * 本根未命中记忆层时，把"这里有哪几个独立子索引"告诉模型。
+ *
+ * 父根不再重复保存子项目的内容（`walkDir()` 跳过自带 store 的嵌套根），所以"在父根下问子项目的
+ * 事"必然查不到；换 `root=` 再问一次是唯一正确的下一步。只在未命中时算，不在热路径上。
+ */
+function nestedIndexNote(root, config) {
+  const nested = nestedStoreRoots(root, memoryDirName(config))
+  if (!nested.length) return ''
+  return (
+    `\n\nNote: this root keeps no copy of ${nested.length} nested project(s) — each has its own index. ` +
+    'Re-run query_memory with `root: <path>` for the one you want:\n' +
+    nested.map((p) => `- ${p}`).join('\n')
+  )
 }
 
 export function queryMemoryTool(ctx, config) {
@@ -66,6 +82,8 @@ export function queryMemoryTool(ctx, config) {
       const boundTaskId = sessionId && typeof store.getBoundTaskId === 'function' ? store.getBoundTaskId(sessionId) : null
       const globalStore = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()
       const wantMemory = type === 'all' || type === 'doc' || type === 'symbol'
+      /** 本根记忆层（doc/symbol）的命中数：0 且存在子索引时，末尾要指路。 */
+      let memHitCount = 0
       const wantInsight = type === 'all' || type === 'insight'
       // 一次 recall 覆盖全部层：doc/symbol/experience/insight 共用同一个检索核心（src/recall.js）。
       const recalled = recallItems({
@@ -100,6 +118,7 @@ export function queryMemoryTool(ctx, config) {
           .flatMap((l) => l.hits)
           .sort((a, b) => b.weightedScore - a.weightedScore)
           .slice(0, limit)
+        memHitCount = memHits.length
         if (memHits.length) {
           const top = memHits[0].weightedScore || 1
           lines.push(`## Memory (${type === 'all' ? 'docs + symbols' : type})`)
@@ -196,12 +215,16 @@ export function queryMemoryTool(ctx, config) {
             : overview.latest
               ? `, last indexed at ${overview.latest}. Use memory_stats to see what the store contains.`
               : '. Use memory_stats to see what the store contains.'
+        const nestedNote = wantMemory && memHitCount === 0 ? nestedIndexNote(root, config) : ''
         return (
           `No memory matches for "${args.query}" in ${root}. ${hint}\n` +
-          `Store overview: ${overview.files} files indexed, ${overview.entries} entries, ${overview.experience} experience notes${tail}`
+          `Store overview: ${overview.files} files indexed, ${overview.entries} entries, ${overview.experience} experience notes${tail}${nestedNote}`
         )
       }
-      return truncate(lines.join('\n\n'), config.maxOutputChars)
+      // 提示放在**最前**：`truncate()` 截的是尾部，而 insight/procedure 类条目单条就能到 600+
+      // 字符，放末尾会被整段截掉（实测 8000 字符预算下必被截）。
+      const note = wantMemory && memHitCount === 0 ? nestedIndexNote(root, config).trimStart() + '\n\n' : ''
+      return truncate(note + lines.join('\n\n'), config.maxOutputChars)
     },
   })
 }
