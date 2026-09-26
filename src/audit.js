@@ -8,8 +8,9 @@
 //  - 只在确有决策（本条真的进了上下文）时写一行：dropped 单独出现不写，否则每步刷屏；
 //  - 任何异常（目录不可写、磁盘满、记录序列化失败）一律吞掉，绝不影响宿主请求；
 //  - 单文件超限就地轮转一份 `.1`，不引入新的清理线程或后台任务。
-import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import path from 'node:path'
+import { hasProjectMarker } from './util/fs.js'
 
 export const AUDIT_FILE = 'injection-audit.jsonl'
 const DEFAULT_MAX_BYTES = 256 * 1024
@@ -75,10 +76,34 @@ export function shadowRecordFrom(input) {
  * 追加一行影子记录。返回是否写入成功（仅供测试断言）。与主审计同约定：任何异常一律吞掉，
  * 绝不影响宿主请求。
  */
-export function appendShadowAudit(memoryDir, record, cfg) {
+
+/**
+ * 审计**只为"已经存在"或"结论明确"的根创建 store 目录**。
+ *
+ * 本插件里会在"什么都没索引过"的空目录里造出 `.dsh-project-memory` 的就是下面那句
+ * `mkdirSync`（`load()` 不建目录，`ensureSelfIgnore()` 也要求目录已存在）。于是任何一次
+ * "**在容器目录里**开会话"都会留下一个只装着审计日志的空 store —— 而那个目录随后还会被
+ * `resolveProjectMemoryRoot()` 当成项目根。审计是旁路，没有 store 就没有可对照的候选。
+ *
+ * 两个放行条件：
+ *   - store 目录已存在 → 真被索引/写过，照旧；
+ *   - 该根**自身带项目标记**（`hasProjectMarker`）→ 是"声明过的项目"，即便还没落过盘，
+ *     也该留下第一步的记录（`rootNotice` 用的是同一个判据，两处口径一致）。
+ * "根是推定的（无标记）且还没有内容"→ 跳过。这正是容器目录的那种情况。
+ *
+ * @param {string} memoryDir `<root>/.dsh-project-memory`
+ * @param {string} [root] 项目根；省略时退回 `path.dirname(memoryDir)`
+ */
+function auditDirReady(memoryDir, root) {
+  if (existsSync(memoryDir)) return true
+  return hasProjectMarker(root || path.dirname(memoryDir))
+}
+
+export function appendShadowAudit(memoryDir, record, cfg, root) {
   const c = cfg || {}
   if (c.enabled === false) return false
   if (!memoryDir || !record) return false
+  if (!auditDirReady(memoryDir, root)) return false
   try {
     mkdirSync(memoryDir, { recursive: true })
     const file = shadowFileFor(memoryDir)
@@ -124,10 +149,11 @@ export function auditRecordFrom(input) {
  * @param {object} record {@link auditRecordFrom} 的产物
  * @param {{enabled?: boolean, maxBytes?: number}} [cfg] {@link cfgAudit} 的产物
  */
-export function appendInjectionAudit(memoryDir, record, cfg) {
+export function appendInjectionAudit(memoryDir, record, cfg, root) {
   const c = cfg || {}
   if (c.enabled === false) return false
   if (!memoryDir || !record) return false
+  if (!auditDirReady(memoryDir, root)) return false
   try {
     mkdirSync(memoryDir, { recursive: true })
     const file = auditFileFor(memoryDir)

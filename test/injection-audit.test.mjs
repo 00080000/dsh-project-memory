@@ -8,6 +8,7 @@ import path from 'node:path'
 import { appendInjectionAudit, appendShadowAudit, auditFileFor, auditRecordFrom, cfgAudit, cfgShadow, shadowFileFor, shadowRecordFrom } from '../src/audit.js'
 import { installAutoInject, isOwnInjection } from '../src/auto-inject.js'
 import { GlobalStore } from '../src/insight-store.js'
+import { ProjectMemoryStore } from '../src/store.js'
 
 let passed = 0
 const ok = (name) => {
@@ -201,6 +202,37 @@ const dir = () => {
   assert.equal(lastRec.injected.length, 0, '静默步 injected 为空')
   assert.equal(lines(auditFile).length, auditBefore, '静默步主审计不新增行（影子记录的差别就在这里）')
   ok('影子记录：零注入的静默步也落一行（主审计零新增）')
+}
+
+
+// --- 10. 审计不为"推定的空根"创建 store 目录（容器目录不该被审计造出一个 store）---
+// 全插件里会在什么都没索引过的目录里造出 .dsh-project-memory 的就是审计那句 mkdirSync；
+// 于是一次"在容器目录里开会话"就会留下一个只装审计日志的空 store，随后还会被
+// resolveProjectMemoryRoot 当成项目根。
+{
+  const container = mkdtempSync(path.join(tmpdir(), 'audit-bare-'))
+  const memDir = path.join(container, '.dsh-project-memory')
+  assert.equal(appendShadowAudit(memDir, shadowRecordFrom({ sessionId: 's', step: 1 }), cfgShadow({})), false)
+  assert.equal(appendInjectionAudit(memDir, auditRecordFrom({ sessionId: 's', step: 1, text: 'x' }), cfgAudit({})), false)
+  assert.ok(!existsSync(memDir), '无标记、无内容的根：审计不创建 store 目录')
+  ok('容器目录：审计不创建 store 目录')
+
+  // 声明过的项目（有标记）即便还没落过盘，也该留下第一步的记录 —— 判据与 rootNotice 一致。
+  const declared = mkdtempSync(path.join(tmpdir(), 'audit-decl-'))
+  writeFileSync(path.join(declared, 'package.json'), '{}')
+  const dMem = path.join(declared, '.dsh-project-memory')
+  assert.equal(appendShadowAudit(dMem, shadowRecordFrom({ sessionId: 's', step: 1 }), cfgShadow({}), declared), true)
+  assert.ok(existsSync(shadowFileFor(dMem)), '有项目标记的根：照常建目录并落一行')
+  ok('有标记的根：审计照常工作（口径与 rootNotice 一致）')
+
+  // 无标记但已经有内容（纯 md 笔记目录被懒索引过）→ 目录已存在，照写。
+  const notes = mkdtempSync(path.join(tmpdir(), 'audit-notes-'))
+  const nMem = path.join(notes, '.dsh-project-memory')
+  const s = new ProjectMemoryStore(nMem)
+  s.setEntries('a.md', [{ id: 'a', relPath: 'a.md', title: 'a', summary: 'a' }])
+  s.save()
+  assert.equal(appendShadowAudit(nMem, shadowRecordFrom({ sessionId: 's', step: 1 }), cfgShadow({}), notes), true)
+  ok('无标记但已有内容的根：审计照常工作')
 }
 
 console.log(`\ninjection-audit tests: ${passed} passed`)
