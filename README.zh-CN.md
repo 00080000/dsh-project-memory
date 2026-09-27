@@ -48,12 +48,6 @@ cd dsh-project-memory && dsh plugin --profile web add . -w
 dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 ```
 
-每个版本会附带预构建 tarball，无需构建步骤即可安装：
-
-```bash
-dsh plugin --profile web add /path/to/dsh-project-memory.tgz
-```
-
 每个被索引的项目在 `<root>/.dsh-project-memory/` 下有独立存储。如无需入库，可加入 `.gitignore`。
 
 ## 用法
