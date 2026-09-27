@@ -49,12 +49,6 @@ The plugin is also published on npm as a scoped package:
 dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 ```
 
-A prebuilt tarball is published with each release, installable without a build step:
-
-```bash
-dsh plugin --profile web add /path/to/dsh-project-memory.tgz
-```
-
 Each indexed project has its own store at `<root>/.dsh-project-memory/`. Add it to `.gitignore` if it should not be committed.
 
 ## Usage
