@@ -1,3 +1,42 @@
+## 0.5.13 (2026-09-28)
+
+适配 DSH 0.2.x。`npm test` **539 → 540 项 / 28 个文件**。
+
+### 修复：0.2.x 上插件被整个停用
+
+DSH 在 profile 组合阶段用运行版本核对插件的 `@deepseek-ai/dsh*` peer 范围，对不上就把该行
+`disabled = true`。本插件三段范围的上限都是 `<0.2.0-0`，`0.2.0-rc.1` 落在范围外。后果不是
+"某个功能失效"：`cordis.patch.yml` 插入层从未进入组合树，工具 / 命令 / 面板 / 自动注入全部
+消失，插件管理器也拒绝安装或启用。
+
+- `@deepseek-ai/dsh-llm` / `@deepseek-ai/dsh-tools` 的 peer 范围追加 `|| >=0.2.0-rc.1 <0.3.0-0`。
+- devDependencies 从 `0.1.5-rc.1` 升到 `0.2.0-rc.1`（`@deepseek-ai/cordis` → `^4.0.4`），
+  类型检查与测试对齐运行版本。
+- 验证：DSH 自身的 `evaluatePluginCompatibility()` 判定为兼容；隔离 `DSH_HOME` 下真实挂载，
+  12/12 个工具注册进真实 ToolRuntime。
+
+### 修复：`BlockAssembler.message(source)` 在 0.2.0 变为必填
+
+签名由 `message(source?)` 收紧为 `message(source)`。`chatText()` 原先无参调用：运行时**不抛错**
+（展开 `undefined` 合法），所以测试全绿、故障静默，但组装出的 assistant 消息丢掉了
+`provider`/`model` 归属。改为传入已解析出的路由，并在 `test/llm-route.test.mjs` 补一项断言
+（曾用无参调用复现为红灯）。
+
+### 构建：client 产物不再每次构建都变
+
+`tsdown.config.ts` 里 CSS 模块的类名映射直接遍历 lightningcss 的 `exports`，而它由 Rust
+`HashMap` 支撑，hasher 每进程随机播种 —— 同一份 CSS 每次构建的键序都不同。类名与哈希本身稳定，
+键序在运行时也只按键取值、不可观测，但 `client/client.js` 是提交进仓库的产物，后果是每次
+`npm run build:client` 都产生纯键序 diff，真实改动淹没在噪音里。改为按键排序输出后，连续三次
+构建产物逐字节一致（本版 `client/client.js` 因此有一次性的键序重排，无语义变化）。
+
+### 其余宿主契约
+
+逐包比对 0.1.5 / 0.1.7 → 0.2.0 的公共 API，插件用到的部分（`defineTool`、`ToolRunContext`、
+`agent/pre-step`、`session/event`、`fs/observed`、`commands.register`、client 槽位与
+`inputTriggers`、`sessions.list` 快照形状等）均为纯增量，无需改代码。本版唯一需要改源码的
+破坏点就是上面那条 `BlockAssembler.message`。
+
 ## 0.5.12 (2026-09-26)
 
 本版五个修复 + 一个新增，主题是记忆的驻留、索引归属，以及两处让 TS 增强层失效 / 失真的缺陷。`npm test` **476 → 539 项 / 26 → 28 个文件**。

@@ -36,7 +36,10 @@ export async function chatText(llm, system, user, { timeoutMs = 120000, route } 
   } finally {
     clearTimeout(timer)
   }
-  return textOf(assembler.message())
+  // 0.2.0 起 BlockAssembler.message(source) 的 source 是**必填**（Omit<ModelMessageSource,'kind'>）；
+  // 不传在运行时仍能跑（createAssistantMessage 只做 `{kind:'model', ...source}`），但得到的
+  // assistant 消息会缺 provider/model 归属。我们本来就知道路由，直接如实带上。
+  return textOf(assembler.message({ provider: route.provider, model: route.model }))
 }
 
 export function parseStructuredJson(text) {

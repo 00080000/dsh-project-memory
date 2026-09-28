@@ -1,6 +1,7 @@
 // 召回期可选 LLM 的路由测试（索引期零 LLM 见 test/doc-index.test.mjs）
 //   node test/llm-route.test.mjs
 import assert from 'node:assert/strict'
+import { BlockAssembler } from '@deepseek-ai/dsh-llm'
 import { chatText, expandQuery } from '../src/llm.js'
 import { resolveRoute, rememberRoute, resetRouteState, degradedList } from '../src/llm-route.js'
 
@@ -41,6 +42,26 @@ function strictLLM(seen, body = JSON.stringify(['payment', 'fees', '支付费用
   ok('chatText 透传 provider/model（宿主不再抛 NO_ADAPTER）')
 }
 
+// ---- 1b. 组装出的 assistant 消息必须带 provider/model 归属 ----
+// dsh 0.2.0 起 `BlockAssembler.message(source)` 的 source 是必填参数；旧写法 `message()`
+// 在运行时仍不抛错（`{kind:'model', ...undefined}`），但产出的消息会缺路由归属。
+{
+  resetRouteState()
+  const original = BlockAssembler.prototype.message
+  let captured
+  BlockAssembler.prototype.message = function (source) {
+    captured = source
+    return original.call(this, source)
+  }
+  try {
+    await chatText(strictLLM([]), 'sys', 'user', { route: ROUTE })
+  } finally {
+    BlockAssembler.prototype.message = original
+  }
+  assert.deepEqual(captured, { provider: ROUTE.provider, model: ROUTE.model })
+  ok('chatText 给 BlockAssembler.message 传 provider/model（0.2.0 source 必填）')
+}
+
 // ---- 2. chatText 缺路由时显式失败（不静默） ----
 {
   const seen = []
@@ -48,6 +69,7 @@ function strictLLM(seen, body = JSON.stringify(['payment', 'fees', '支付费用
   assert.equal(seen.length, 0)
   ok('chatText 无路由时显式抛错，不尝试裸调用')
 }
+
 
 // ---- 3. expandQuery：有路由走 LLM，无路由返回原查询 ----
 {
