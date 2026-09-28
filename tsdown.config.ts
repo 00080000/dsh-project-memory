@@ -68,8 +68,12 @@ export default defineConfig([
           minify: true,
           targets: { chrome: 90 << 16, firefox: 100 << 16, safari: 13 << 16, edge: 90 << 16 },
         })
-        const classMap = {}
-        for (const [local, exp] of Object.entries(cssExports ?? {})) classMap[local] = exp.name
+        // 键必须显式排序：lightningcss 的 `exports` 由 Rust HashMap 支撑，其 hasher 每进程随机
+        // 播种，同一份 CSS 每次构建的键序都不同。类名映射的键序在运行时不可观测（只按键取值），
+        // 但产物是提交进仓库的，不排序会让每次 `npm run build:client` 都产生无意义 diff。
+        const classMap: Record<string, string> = {}
+        const exportsByLocal = cssExports ?? {}
+        for (const local of Object.keys(exportsByLocal).sort()) classMap[local] = exportsByLocal[local].name
         return [
           `const css = ${JSON.stringify(code.toString())};`,
           `const tagId = ${JSON.stringify(`${id}/${basename(fileId)}`)};`,
