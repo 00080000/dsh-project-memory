@@ -35,7 +35,7 @@ A persistent **project development memory** for [DeepSeek Harness](https://githu
 
 ## Installation
 
-The plugin relies exclusively on stable public APIs (`defineTool`, `llm.stream`, `Schema`) declared via peerDependencies, ensuring compatibility with future rc/alpha releases without changes.
+The plugin relies only on stable public APIs (`defineTool`, `llm.stream`, `Schema`) declared through peerDependencies.
 
 ```bash
 cd dsh-project-memory && dsh plugin --profile web add . -w

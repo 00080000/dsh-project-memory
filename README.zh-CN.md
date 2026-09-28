@@ -34,7 +34,7 @@
 
 ## 安装
 
-插件仅依赖通过 peerDependencies 声明的稳定公共 API（`defineTool`、`llm.stream`、`Schema`），保证与后续 rc/alpha 版本无需改动即兼容。
+插件只依赖通过 peerDependencies 声明的稳定公共 API（`defineTool`、`llm.stream`、`Schema`）。
 
 ```bash
 cd dsh-project-memory && dsh plugin --profile web add . -w
