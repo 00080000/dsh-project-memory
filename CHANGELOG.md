@@ -1,3 +1,22 @@
+## Unreleased
+
+`npm test` **540 → 546 项 / 28 → 29 个文件**。
+
+### 修复：`writeJsonAtomic` 的两份副本已漂移
+
+同一个函数在 `store.js` 与 `insight-store.js` 各有一份。`f9a1389` 给前一份补了「失败即删自己的
+`.tmp`」，v0.5.0 后加的那份没有，写成了「失败后重试同一个 rename」—— 瞬时失败下可能重试成功，
+然后照样抛错。两份的父目录契约也不同（一份要求已存在，一份自建）。
+
+后果落在 global insight 文件上：它写失败会永久留下 `<file>.<pid>.tmp`，因为
+`cleanStaleTmp()` 只扫项目 store 目录，够不着 `~/.config/dsh-project-memory/`。
+
+- 抽成 `src/util/fs.js` 的单一实现：先建父目录，失败时删掉自己的 `.tmp` 并原样抛出。
+- 两份副本删除；`insight-store.js` 清掉随之无用的 import。
+- `store.js` 两处 `mkdirSync(shards)` 已冗余，一并删除。分片写的 mkdir 次数不变（1 次，
+  只是挪进函数内）。
+- 测试：新增 `test/atomic-write.test.mjs`（6 项），含「`shards/` 被删后 store 仍写得进去」。
+
 ## 0.5.13 (2026-09-28)
 
 适配 DSH 0.2.x。`npm test` **539 → 540 项 / 28 个文件**。

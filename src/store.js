@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { rankExperience, tokenize, tokenizeRaw, extractCjkPhrases, makeSearchText } from './util/search.js'
+import { writeJsonAtomic } from './util/fs.js'
 import { backfillDerivedTriggers } from './readiness.js'
 
 const FORMAT_FILE = 'format.json'
@@ -188,21 +189,6 @@ function loadJson(filePath, fallback) {
   }
 }
 
-function writeJsonAtomic(filePath, data) {
-  const tmp = `${filePath}.${process.pid}.tmp`
-  try {
-    writeFileSync(tmp, JSON.stringify(data))
-    renameSync(tmp, filePath)
-  } catch (err) {
-    try {
-      unlinkSync(tmp)
-    } catch {
-      // tmp already gone (rename succeeded) or undeletable; nothing to do
-    }
-    throw err
-  }
-}
-
 function shardRelPath(dir, rel) {
   return path.join(dir, SHARDS_DIR, createHash('sha256').update(rel).digest('hex') + '.json')
 }
@@ -315,8 +301,8 @@ export class ProjectMemoryStore {
         `[dsh-project-memory] migration dropped ${orphans.length} entry group(s) with no index record: ${orphans.slice(0, 3).join(', ')}${orphans.length > 3 ? ' …' : ''}`,
       )
     }
-    mkdirSync(path.join(this.dir, SHARDS_DIR), { recursive: true })
     for (const rel of Object.keys(files)) {
+      // 父目录由 writeJsonAtomic 保证
       writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: files[rel], entries: (entries[rel] || []).map(withoutPersistedDerived) })
     }
     writeJsonAtomic(formatPath, { version: 2, layout: 'sharded' })
@@ -524,7 +510,7 @@ export class ProjectMemoryStore {
     }
     for (const rel of this._dirtyShards) {
       if (this.files[rel]) {
-        mkdirSync(path.join(this.dir, SHARDS_DIR), { recursive: true })
+        // 父目录由 writeJsonAtomic 保证
         writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: this.files[rel], entries: (this.entries[rel] || []).map(withoutPersistedDerived) })
       } else {
         this._removedShards.add(rel)

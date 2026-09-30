@@ -1,8 +1,40 @@
-import { accessSync, constants, existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import {
+  accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
+  unlinkSync, writeFileSync,
+} from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
+
+/**
+ * 原子写 JSON：先写同目录的 `<file>.<pid>.tmp`，再 rename 覆盖目标。
+ *
+ * 两点语义，别再各写一份副本：
+ * - 先建父目录（global insight 文件首次写入时父目录可能不存在）。
+ * - 失败时删掉自己的 `.tmp`，不重试 rename：同样的参数重试没有意义，而 `.tmp` 留下只有
+ *   `cleanStaleTmp()` 会清，它扫不到 `~/.config/dsh-project-memory/`。
+ *
+ * 崩溃（kill -9 / 断电）走不到 catch，那种残留由 `cleanStaleTmp()` 兜底。
+ * @param {string} file - 目标文件绝对路径。
+ * @param {unknown} data - 要序列化的 JSON 值。
+ * @throws 序列化失败或写盘/rename 失败时原样抛出（调用方决定回退策略）。
+ */
+export function writeJsonAtomic(file, data) {
+  mkdirSync(path.dirname(file), { recursive: true })
+  const tmp = `${file}.${process.pid}.tmp`
+  try {
+    writeFileSync(tmp, JSON.stringify(data))
+    renameSync(tmp, file)
+  } catch (err) {
+    try {
+      unlinkSync(tmp)
+    } catch {
+      // tmp 已不在（rename 其实成功了）或不可删；两种都无需处理
+    }
+    throw err
+  }
+}
 
 export function assertReadableFile(filePath, maxFileSizeMb) {
   if (typeof filePath !== 'string' || !filePath) {
