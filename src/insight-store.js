@@ -6,10 +6,11 @@
 // - 归档 = 软删（archived:true，不进召回/注入）；物理删除只发生在容量溢出
 // - 写盘前密文过滤：命中密钥/token/私钥形态 → 拒绝写入
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { readFileSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { normalizedTokenOverlap, findBestOverlapMatch, insightMatchText } from './similarity.js'
+import { writeJsonAtomic } from './util/fs.js'
 import { backfillDerivedTriggers } from './readiness.js'
 
 export const INSIGHT_KINDS = ['lesson', 'decision', 'procedure', 'experience']
@@ -329,22 +330,6 @@ function readJson(file, fallback) {
       // 保留现场，回退默认
     }
     return fallback
-  }
-}
-
-function writeJsonAtomic(file, data) {
-  mkdirSync(path.dirname(file), { recursive: true })
-  const tmp = `${file}.${process.pid}.tmp`
-  try {
-    writeFileSync(tmp, JSON.stringify(data))
-    renameSync(tmp, file)
-  } catch (err) {
-    try {
-      renameSync(tmp, file) // fsync 无关紧要：单文件覆盖 + 崩溃后 .tmp 清理即可
-    } catch {
-      /* ignore */
-    }
-    throw err
   }
 }
 
