@@ -106,8 +106,11 @@ export const Config = Schema.object({
     // Schema 里声明过：走 cordis.patch.yml 配它们会被宿主按「not a declared property」拒掉，
     // 等于文档里的旋钮是假的。默认值以 cfgEngine 的兜底值为准（那里是权威，这里只负责暴露）。
     gateCooldownSteps: Schema.number().default(2),
-    maxItemsPerSession: Schema.number().default(12),
-    maxItemCharsPerSession: Schema.number().default(4000),
+    // 这两个是**保险丝**不是节流阀：节流由 gateCooldownSteps 与单轮 maxTokens 负责。
+    // 旧默认 12 / 4000 ≈ 11 条，实测真实日志里 11/81 个会话打满、打满后永久静默（1234 步失明）；
+    // 实测最长会话用 35 条 / 8640 字符，故抬到 60 / 24000。显式配小值可复现旧行为。
+    maxItemsPerSession: Schema.number().default(60),
+    maxItemCharsPerSession: Schema.number().default(24000),
     hintMinCoverage: Schema.number().default(0.45),
     hintMinMatched: Schema.number().default(2),
     hintMinSupport: Schema.number().default(0.15),
