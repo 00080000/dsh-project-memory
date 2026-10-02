@@ -43,6 +43,7 @@ function harness(items, autoContext) {
   const ctx = { on: (event, fn) => { if (event === 'agent/pre-step') handler = fn } }
   installAutoInject(ctx, { memoryDir: '.dsh-project-memory', autoContext, insight: { globalFile } })
 
+  let lastOwn = null
   const step = async (human, sessionId = 'sessBudget') => {
     const payload = {
       agent: { session: { id: sessionId, header: { cwd: root } } },
@@ -50,7 +51,8 @@ function harness(items, autoContext) {
     }
     const decision = await handler(payload, async () => ({ kind: 'enter', messages: payload.messages }))
     const last = decision.messages[decision.messages.length - 1]
-    return Boolean(last && isOwnInjection(last.source))
+    lastOwn = last && isOwnInjection(last.source) ? last : null
+    return Boolean(lastOwn)
   }
   const audit = () => {
     const file = auditFileFor(path.join(root, '.dsh-project-memory'))
@@ -62,7 +64,7 @@ function harness(items, autoContext) {
     if (!existsSync(file)) return []
     return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
   }
-  return { step, audit, shadow }
+  return { step, audit, shadow, lastOwn: () => lastOwn }
 }
 
 // --- 1. 冷却步数：条目通道每一步只允许出声一次 ---
@@ -157,6 +159,55 @@ function harness(items, autoContext) {
   assert.deepEqual([...new Set(passed.map((c) => c.outcome))], ['quota'], 'maxItems=0 → 全部归因 quota')
   assert.ok(typeof built.scoreQuery === 'string' && built.scoreQuery.length > 0, '必须带出实际评分查询')
   ok('预算结局归因：decision=cand 的候选带 outcome=quota；空块早退不丢候选')
+}
+
+// --- 8. 配额是远离真实用量的保险丝；细缝丢弃必须带出数字 ---
+{
+  const cfg = cfgEngine({})
+  assert.equal(cfg.maxItemsPerSession, 60, '默认条数额度必须是远离真实用量的保险丝')
+  assert.equal(cfg.maxItemCharsPerSession, 24000, '默认字符额度同上')
+
+  const globalFile = path.join(mkdtempSync(path.join(tmpdir(), 'budgetg-')), 'global.json')
+  const gs = new GlobalStore(globalFile).load()
+  gs.doc.items.push({ id: 'h1', kind: 'lesson', scope: 'global', title: '阈值 要改 的经验', fix: '阈值 要改 的做法', confidence: 1, archived: false })
+  gs.commit(() => 0)
+  // 余额 30 < 提示最小正文 120：旧日志只有 reason='budget'，看不出"还剩多少 / 需要多少"。
+  const built = buildInjection({ query: '阈值 要改', task: null, store: null, globalStore: gs, projectTagsList: [], cfg, maxChars: 30 })
+  const d = built.dropped.find((x) => x.channel === 'hint')
+  assert.ok(d, '应有被预算拿掉的提示候选')
+  assert.equal(d.reason, 'budget')
+  assert.equal(d.remaining, 30)
+  assert.equal(d.need, 120)
+  ok('配额降级为保险丝（60 / 24000）；细缝丢弃带 remaining / need')
+}
+
+// --- 9. 注入块抬头必须能让模型看到生产者 ---
+// `source.kind` 只有宿主看得到（provider 序列化只取 role/content），所以抬头是唯一可见面。
+{
+  const h = harness([lesson('a', '阈值')], { enabled: true, maxTokens: 400, gateCooldownSteps: 0 })
+  assert.equal(await h.step('阈值要改'), true)
+  const text = h.lastOwn().content[0].text
+  assert.ok(text.includes('[Memory Inject] dsh-project-memory · auto-context'), `抬头应含插件名：${JSON.stringify(text.slice(0, 60))}`)
+  ok('注入块抬头标注插件名（模型可见，source.kind 模型不可见）')
+}
+
+// --- 10. 长会话不再在第 ~12 条处永久失明（旧默认 12 的直接回归） ---
+// 这是本次改动要治的症状：配额是会话累计且单调不减，打满之后**永久**静默。
+// 实测真实日志里 11/81 个会话打满，打满的会话平均尾部失明 64 步。
+// 注意：夹具的意图词必须是**非数字**的中文双字——`hintQueryText` 会剔除 1~3 字符的拉丁词
+// （`主题0要改` 会被剔成 `主题 要改`），否则所有步骤塌成同一个查询、一步注完。
+{
+  const pool = '阈值预算去重召回日志噪音超时内存并发迁移注入配额影子候选门槛排序缓存索引'
+  const intents = []
+  for (const a of pool) for (const b of pool) { if (a !== b && intents.length < 50) intents.push(a + b) }
+  const hint = (i) => ({ id: `h${i}`, kind: 'lesson', scope: 'global', title: `${intents[i]}要改的经验`, fix: `${intents[i]}要改的做法`, confidence: 1, archived: false })
+  const h = harness(intents.map((_, i) => hint(i)), { enabled: true, maxTokens: 400, gateCooldownSteps: 0 })
+  for (let i = 0; i < intents.length; i++) await h.step(`${intents[i]}要改`)
+  const injectedItems = h.audit().reduce((n, r) => n + r.injected.length, 0)
+  assert.ok(injectedItems > 12, `不得在旧的 12 条处熔断，实得 ${injectedItems}`)
+  assert.ok(injectedItems >= 45, `50 个新条目应几乎全部注入，实得 ${injectedItems}`)
+  assert.ok(h.audit().at(-1).budget.items > 12, `审计里的会话用量应远超旧上限`)
+  ok(`长会话：50 步注入 ${injectedItems} 条（旧默认在第 12 条后永久静默）`)
 }
 
 console.log(`\ninjection-budget tests: ${passed} passed`)
