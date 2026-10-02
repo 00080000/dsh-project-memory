@@ -1,14 +1,15 @@
 // 会话级限流测试（PLAN S3）：node test/injection-budget.test.mjs
 // 验收：冷却步数真的会拦住条目；会话额度真的是上限而不是目标；注入次数随步数增长被压住。
-// 观测口用审计文件（`injection-audit.jsonl`），它同时记录 budget 快照与本轮为什么沉默。
+// 观测口用审计文件（`injection-audit.jsonl`）与影子记录（`admission-shadow.jsonl`）：
+// 前者记 budget 快照与沉默原因，后者记**每一步**的候选与其门槛/预算两层结局。
 import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import { installAutoInject, isOwnInjection } from '../src/auto-inject.js'
+import { installAutoInject, isOwnInjection, buildInjection, cfgEngine } from '../src/auto-inject.js'
 import { GlobalStore } from '../src/insight-store.js'
-import { auditFileFor } from '../src/audit.js'
+import { auditFileFor, shadowFileFor } from '../src/audit.js'
 
 let passed = 0
 const ok = (name) => {
@@ -56,7 +57,12 @@ function harness(items, autoContext) {
     if (!existsSync(file)) return []
     return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
   }
-  return { step, audit }
+  const shadow = () => {
+    const file = shadowFileFor(path.join(root, '.dsh-project-memory'))
+    if (!existsSync(file)) return []
+    return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+  }
+  return { step, audit, shadow }
 }
 
 // --- 1. 冷却步数：条目通道每一步只允许出声一次 ---
@@ -113,6 +119,44 @@ function harness(items, autoContext) {
   // 任务卡由 host-contract 的用例单独覆盖（它要求任务卡变了就更新）。
   assert.equal(await h.step('阈值要改'), false)
   ok('冷却窗口内即便还有候选，也保持沉默')
+}
+
+// --- 6. 静默步的影子记录必须留下候选（只算不注入） ---
+// 改进前 `skipItems` 直接把候选池置空，实测 1420 个静默步一个候选都没落盘 ——
+// 于是"如果不限流这步会注入什么"用日志答不出来，而那正是限流期间最该答的问题。
+{
+  // 无 trigger → 走统计提示通道；静默步的候选只可能来自这条通道。
+  const hint = (id, intent) => ({ id, kind: 'lesson', scope: 'global', title: `${intent}要改的经验`, fix: `${intent}要改的做法`, confidence: 1, archived: false })
+  const h = harness([hint('h1', '阈值'), hint('h2', '预算')], { enabled: true, maxTokens: 400, gateCooldownSteps: 0, maxItemsPerSession: 1 })
+  assert.equal(await h.step('阈值要改'), true)
+  assert.equal(await h.step('预算要改'), false, '额度用尽 → 条目通道沉默')
+  const silenced = h.shadow().filter((l) => l.silence === 'session-items')
+  assert.ok(silenced.length >= 1, `应有 session-items 静默步，实得 ${silenced.length}`)
+  const last = silenced[silenced.length - 1]
+  assert.ok(last.candidates.length > 0, `静默步也必须记录候选，实得 ${last.candidates.length}`)
+  assert.ok(last.candidates.every((c) => c.outcome === 'idle'), '静默步候选的 outcome 恒为 idle')
+  assert.ok(last.scoreQuery.length > 0, '影子记录必须留下实际评分查询')
+  ok(`静默步影子记录：候选 ${last.candidates.length} 条、outcome=idle（此前为 0 条）`)
+}
+
+// --- 7. 预算结局可归因：过了全部门槛却被预算拿走，必须写清是谁拿的 ---
+// 这一条同时覆盖两处：① `outcome` 与 `decision` 正交；② 空块早退路径不再丢 candidates
+//（此处无绑定任务 → 常驻块为空；maxItems=0 → 全部候选进不了块 → 走的正是早退分支）。
+{
+  const globalFile = path.join(mkdtempSync(path.join(tmpdir(), 'budgetg-')), 'global.json')
+  const gs = new GlobalStore(globalFile).load()
+  // 无 trigger：走的是统计提示通道，才可能"过了门槛却被预算挤掉"。
+  gs.doc.items.push({ id: 'h1', kind: 'lesson', scope: 'global', title: '阈值 要改 的经验', fix: '阈值 要改 的做法', confidence: 1, archived: false })
+  gs.commit(() => 0)
+  const cfg = cfgEngine({ autoContext: { maxTokens: 400, gateCooldownSteps: 0 } })
+  const built = buildInjection({ query: '阈值 要改', task: null, store: null, globalStore: gs, projectTagsList: [], cfg, maxItems: 0 })
+  assert.equal(built.text, '', '没有常驻块、条目又全被拿掉 → 本轮无内容')
+  assert.ok(built.candidates.length > 0, `空块早退也必须带 candidates，实得 ${built.candidates.length}`)
+  const passed = built.candidates.filter((c) => c.decision === 'cand')
+  assert.ok(passed.length > 0, '夹具应产生至少一条过了全部门槛的候选')
+  assert.deepEqual([...new Set(passed.map((c) => c.outcome))], ['quota'], 'maxItems=0 → 全部归因 quota')
+  assert.ok(typeof built.scoreQuery === 'string' && built.scoreQuery.length > 0, '必须带出实际评分查询')
+  ok('预算结局归因：decision=cand 的候选带 outcome=quota；空块早退不丢候选')
 }
 
 console.log(`\ninjection-budget tests: ${passed} passed`)
