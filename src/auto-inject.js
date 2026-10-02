@@ -259,7 +259,10 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped }) {
   // 现有两类记录都只覆盖"过得了相对阈值的那部分"，恰恰缺了"因为没到阈值而从未被考虑"的候选，
   // 而那正是离线重放阈值时需要的那批。这里只做加法，不动任何现有判据。
   const candidates = []
-  if (!cands.length) return { hints, candidates }
+  // 真正用于评分的查询文本。影子记录必须留下它：`query`（人类消息原文）与它不是一回事，
+  // 写目标驱动的那些步 `query` 为空、候选却非空。少了它，判据无法离线重放。
+  const q = hintQueryText(hintQuery)
+  if (!cands.length) return { hints, candidates, scoreQuery: q }
   if (typeof cfg.relevanceMin === 'number') {
     // 兼容：显式 relevanceMin → 旧的绝对 overlap 判据（老 profile 行为不变）
     for (const it of cands) {
@@ -267,10 +270,9 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped }) {
       if (score >= cfg.relevanceMin) hints.push({ it, score, why: `overlap:${score.toFixed(3)}` })
     }
     hints.sort((a, b) => b.score - a.score)
-    return { hints, candidates } // 旧判据路径不产出影子候选（已废弃，无重放价值）
+    return { hints, candidates, scoreQuery: q } // 旧判据路径不产出影子候选（已废弃，无重放价值）
   }
-  const q = hintQueryText(hintQuery)
-  if (!q) return { hints, candidates }
+  if (!q) return { hints, candidates, scoreQuery: q }
   const byId = new Map(cands.map((it) => [it.id, it]))
   // 覆盖率语料必须与 BM25 排序同源（insightScoringText）：否则"只在 fix/solution 里有匹配"
   // 的查询词 df=0 → supportRatio=0 → 整条提示通道沉默，而排序明明给了它高分。
@@ -334,7 +336,7 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped }) {
       })
     }
   }
-  return { hints, candidates }
+  return { hints, candidates, scoreQuery: q }
 }
 
 /**
@@ -378,8 +380,11 @@ export function buildInjection(opts) {
   }
   // procedure 不进提示通道：它要过 trigger.scope（见 scoreHints 注释）。
   const consumed = new Set(triggered.map((t) => t.it.id))
-  const hintCands = skipItems ? [] : cands.filter((it) => !consumed.has(it.id) && it.kind !== 'procedure')
-  const { hints, candidates } = scoreHints({
+  // 限流命中时**照旧评分**（只算不注入，`place()` 仍按 skipItems 跳过）：影子记录要能回答
+  // "这一步如果不限流会注入什么"——那正是限流期间最需要回答的问题。此前这里直接置空，
+  // 实测 1420 个静默步一个候选都没留下。
+  const hintCands = cands.filter((it) => !consumed.has(it.id) && it.kind !== 'procedure')
+  const { hints, candidates, scoreQuery } = scoreHints({
     cands: hintCands,
     query,
     humanText: ctx.humanText,
@@ -425,12 +430,33 @@ export function buildInjection(opts) {
     place('hint', hints, MIN_BODY_CHARS.hint, () => 'hint')
   }
 
+  // 预算层结局写回候选。`decision` 是**门槛层**的结论（support/coverage/thin/relative/cand），
+  // `outcome` 是**预算层**的结论——两者正交。"过了全部门槛却没注入"必须能归因，
+  // 否则日志只能证明门槛做了什么，证明不了预算拿走了什么。
+  {
+    const outcomeById = new Map()
+    for (const r of reasons) outcomeById.set(`${r.channel}\u0000${r.id}`, 'injected')
+    for (const d of dropped) {
+      const key = `${d.channel}\u0000${d.id}`
+      if (!outcomeById.has(key)) outcomeById.set(key, d.reason)
+    }
+    for (const c of candidates) {
+      c.outcome = skipItems ? 'idle'
+        : c.decision !== 'cand' ? 'gate'
+          : outcomeById.get(`hint\u0000${c.id}`) || 'unscheduled'
+    }
+  }
+
   const total = [entry, ...parts].filter(Boolean)
-  if (!total.length) return { text: '', entry, labels, reasons, dropped }
+  // 早退也必须带上 candidates/scoreQuery：空块不等于"没有候选"（无任务卡 + 全部被预算挤掉
+  // 就是这种形状），此前这里把两者一起丢了。
+  if (!total.length) {
+    return { text: '', entry, labels, reasons, dropped, candidates, scoreQuery, itemChars: itemUsed }
+  }
   // 整块只受单轮预算（maxTokens）约束；会话条目额度已在 place() 里单独扣过。
   const clamp = (t) => (t.length > stepBudget ? `${t.slice(0, stepBudget)}\n…(截断)` : t)
   const dedupeText = clamp([entryStable, ...parts].filter(Boolean).join('\n'))
-  return { text: clamp(total.join('\n')), entry, entryStable, labels, reasons, dropped, candidates, dedupeText, itemChars: itemUsed }
+  return { text: clamp(total.join('\n')), entry, entryStable, labels, reasons, dropped, candidates, scoreQuery, dedupeText, itemChars: itemUsed }
 }
 
 // 每会话状态的会话数上限：六张表共用（旧实现把同一个 200 在五处各写一遍）。
@@ -618,6 +644,8 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     writes: readiness.targets,
     reasons: built.reasons,
     candidates: built.candidates,
+    scoreQuery: built.scoreQuery,
+    dropped: built.dropped,
     silence: silence.reason,
   }), shadow, root)
 

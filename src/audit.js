@@ -52,11 +52,12 @@ export function shadowFileFor(memoryDir) {
  *  - **每步都写**（含零注入的静默步与对照组），所以"没注入"也留下了可复盘的事实；
  *  - 带**全部候选**的判据特征（cov/matched/support/relative）与场景（query/ops/writes），
  *    所以能离线回答"阈值换成 0.40 会注入什么"、并攒出"特征 → 该不该注入"的样本。
- * @param {object} input { sessionId, root, step, query, ops, writes, reasons, candidates, silence }
+ * @param {object} input { sessionId, root, step, query, scoreQuery, ops, writes, reasons, dropped, candidates, silence }
  */
 export function shadowRecordFrom(input) {
   const reasons = Array.isArray(input.reasons) ? input.reasons : []
   const candidates = Array.isArray(input.candidates) ? input.candidates : []
+  const dropped = Array.isArray(input.dropped) ? input.dropped : []
   return {
     at: new Date().toISOString(),
     session: input.sessionId || null,
@@ -64,10 +65,17 @@ export function shadowRecordFrom(input) {
     step: typeof input.step === 'number' ? input.step : null,
     // 人类消息截断保存：没有它就判不了"这次注入该不该"——标签要能回放到当时的场景。
     query: typeof input.query === 'string' ? input.query.slice(0, 300) : '',
+    // **实际用于评分**的查询文本（intent + 写目标的拼合）。它和 `query` 不是一回事：
+    // 写目标驱动的那些步 `query` 是空的、候选却非空。少了这一栏，判据无法离线重放。
+    scoreQuery: typeof input.scoreQuery === 'string' ? input.scoreQuery.slice(0, 300) : '',
     ops: (Array.isArray(input.ops) ? input.ops : []).slice(0, 12),
     writes: (Array.isArray(input.writes) ? input.writes : []).slice(0, 12),
     injected: reasons.map((r) => ({ id: r.id, channel: r.channel, why: r.why })),
+    // candidates 的 `decision` 只说明"过没过门槛"，进不进上下文看 `outcome`
+    // （injected / budget / quota / idle / gate / unscheduled）。两者正交。
     candidates,
+    // 触发通道的丢弃不在 candidates 里（候选只收提示通道），单列；有界，避免长候选池撑爆一行。
+    dropped: dropped.slice(0, 40),
     silence: input.silence || null,
   }
 }
