@@ -158,8 +158,8 @@ TaskPanel (Container)
 | `reflection.enabled` | false | v0.5 LLM 反思，**只写任务级草稿**（触发于任务切走/归档）。`cooldownMs` `1800000`、`maxLessonsPerReflect` `3`、`maxDecisionsPerReflect` `2` |
 | `autoContext.enabled` | true | v0.5 静默注入包装（entry 常驻块 + relevance）。宿主无法解析会话 cwd 时完全透传（零副作用）；`maxTokens` `400`、`editedMax` `3`（resident 任务卡显示最近"编辑中"文件数）、`signalMinRatio` `0.5`（提示至少要达到该层最高分的一半）、`skipEchoSelfTodo` `true`（模型自己写/维护任务清单后、无新人类消息时不回声任务卡，省 token；相关 insights 仍注入）、`budgetLog` `off`（预算丢弃审计写到 stderr：`off` 静默 / `once` 每会话最多一行 / `all` 丢弃组合每变化一次一行。注入按优先级排程，预算不够时丢掉低优先级条目属于**正常降级而非故障**，所以默认不占用用户终端）、`reinjectItemsAfter` `0`（同一条 insight 重复注入的冷却步数；`0` = 正文没变就不在本会话内再注入——注入消息留在会话历史里，重发只是重复占位）、`rootNotice` `true`（记忆根是从无标记的工作目录**推定**出来时，向模型通告一次根在哪、怎么改） |
 | `autoContext.gateCooldownSteps` | 2 | **准入旋钮**：两次*条目*注入之间至少隔几步（常驻任务卡不受限——它是状态快照，内容变了就该更新）。这是"别频繁注入"的主旋钮 |
-| `autoContext.maxItemsPerSession` | 12 | 每会话条目注入条数硬上限；预算是上限不是目标，用尽后条目通道持续沉默 |
-| `autoContext.maxItemCharsPerSession` | 4000 | 同上，按字符计 |
+| `autoContext.maxItemsPerSession` | 60 | **runaway 保险丝，不是节流阀** —— 节流由 `maxTokens`（单轮）与 `gateCooldownSteps` 负责。它是每会话硬上限：一旦触顶，本会话余下部分条目通道持续沉默。0.5.14 之前默认 12，而真实用量确实到得了（实测最长会话 35 条），于是长会话的后段被永久致盲。配小值可复现旧行为 |
+| `autoContext.maxItemCharsPerSession` | 24000 | 同上，按字符计 |
 | `autoContext.hintMinCoverage` | 0.45 | 提示通道的**绝对**下限：条目覆盖了查询多少 IDF 加权信息量。只用相对阈值分不出"有信号"和"矮子里拔将军"（实测无关条目也拿 `relative:1.00`）。0.5.8 从 0.30 上调：真实 43 条 store 上对照组以 cov 0.32~0.35 注入了 3 条无关提示——同源语料会把 IDF 分辨力拉平 |
 | `autoContext.hintMinMatched` | 2 | 提示还必须至少共享这么多个词：单个通用词（"插件"）不构成证据 |
 | `autoContext.hintMinSupport` | 0.15 | 通道级沉默：查询里能在语料中找到对应的词占比低于此值时，提示通道本轮整体不出声——否则一句只碰巧共享一个词的长句子会报出 `cov:1.00` |

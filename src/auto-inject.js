@@ -24,6 +24,16 @@ import { appendInjectionAudit, appendShadowAudit, auditRecordFrom, cfgAudit, cfg
 export const INJECT_MARK = '[Memory Inject]'
 
 /**
+ * 注入块抬头里的插件名。
+ *
+ * 消息的 `source.kind`（= {@link SOURCE_KIND}）只有宿主看得到：请求序列化只取 `role` 与
+ * `content`（provider 侧对 `.source` 零引用），所以模型从元数据里读不到"这是谁注入的"。
+ * 抬头是**唯一**能让模型（和 GUI 里的用户）看见生产者的地方。抬头不是行为契约：
+ * 客户端不解析它，判据也不读它。
+ */
+export const PLUGIN_NAME = 'dsh-project-memory'
+
+/**
  * 本插件在 `message.source` 上声明的生产者 kind。
  *
  * 会话格式 v4 起 `MessageSourceMap` 是「每个生产者声明自己的 kind」的可合并联合类型，
@@ -97,9 +107,14 @@ export function cfgEngine(config) {
     // 条目通道的步间隔：两次"条目注入"之间至少隔这么多步（常驻任务卡不受限——它是状态快照，
     // 内容变了就该更新）。这是"不频繁"的主要旋钮。
     gateCooldownSteps: typeof c.gateCooldownSteps === 'number' && c.gateCooldownSteps >= 0 ? c.gateCooldownSteps : 2,
-    // 每会话条目注入的上限（条数 / 字符）：预算只能是上限，不是目标。
-    maxItemsPerSession: typeof c.maxItemsPerSession === 'number' && c.maxItemsPerSession >= 0 ? c.maxItemsPerSession : 12,
-    maxItemCharsPerSession: typeof c.maxItemCharsPerSession === 'number' && c.maxItemCharsPerSession >= 0 ? c.maxItemCharsPerSession : 4000,
+    // 每会话条目注入的上限（条数 / 字符）：这是**保险丝**，不是节流阀。
+    // 节流由单轮 maxTokens 与 gateCooldownSteps 负责；这两个数的唯一职责是兜住病态的
+    // runaway，所以默认值必须远高于任何真实会话的用量。旧默认 12 条 / 4000 字符 ≈ 11 条，
+    // 实测真实日志里 11/81 个会话打满，打满之后是**永久**静默（实测 1234 步失明），
+    // 而"会话后段"恰是关键时刻概率最高的地方。实测最长会话用 35 条 / 8640 字符，故取
+    // 60 / 24000（≈1.7× 与 ≈2.8× 余量）。想复现旧行为显式配小值即可。
+    maxItemsPerSession: typeof c.maxItemsPerSession === 'number' && c.maxItemsPerSession >= 0 ? c.maxItemsPerSession : 60,
+    maxItemCharsPerSession: typeof c.maxItemCharsPerSession === 'number' && c.maxItemCharsPerSession >= 0 ? c.maxItemCharsPerSession : 24000,
     // 提示通道的**绝对**覆盖底线（IDF 加权覆盖率）：相对阈值分不出"有信号"和"矮子里拔将军"，
     // 只有归一在 [0,1]、有真零点才谈得上下限。0.30 时的实测反例：真实 store（43 条同源洞察）上，
     // 对照组场景「改 pptx 时间戳」以 cov 0.32~0.35 注入了 3 条无关条目——语料同源时共享词多、
@@ -416,7 +431,9 @@ export function buildInjection(opts) {
       const remaining = Math.min(stepBudget - used, itemBudget - itemUsed)
       const body = fitBody(insightBody(it), remaining, minChars)
       if (body === null) {
-        dropped.push({ id: it.id, channel, reason: 'budget' })
+        // 带出数字：旧的 `budget` 没有量纲，"还剩 38 字符、这条最少要 120" 与"根本没预算"
+        // 在日志里长得一样 —— 配额逼近上限时那条永久静默的细缝因此完全不可诊断。
+        dropped.push({ id: it.id, channel, reason: 'budget', remaining, need: minChars })
         continue
       }
       used += body.length + 1
@@ -768,7 +785,7 @@ function recordDropped({ sessions, sessionId, dropped, budgetLog }) {
 /** 追加的注入消息：必须是带 source 的完整消息——裸 {role,content} 会让宿主读 message.source 时崩。 */
 function injectionMessage(text) {
   return createUserMessage({
-    content: [{ type: 'text', text: `\n\n${INJECT_MARK} auto-context\n${text}` }],
+    content: [{ type: 'text', text: `\n\n${INJECT_MARK} ${PLUGIN_NAME} · auto-context\n${text}` }],
     // 这一块是「同一生产者后续快照会取代的当前状态」，不是一次性通知。
     // 宿主 ContextFormed 是判别联合：snapshot 必须带 sections（notice 才需要 summary）。
     // kind 必须是生产者自有的（v4 没有 'plugin' 兜底 kind），见 SOURCE_KIND 的注释。
