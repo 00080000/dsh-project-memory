@@ -138,6 +138,12 @@ const dir = () => {
   })
   assert.equal(rec.query.length, 300, 'query 截断到 300 字')
   assert.equal(rec.candidates[0].decision, 'coverage')
+  // 查询级支持度提到行级（同步内逐条恒定，实测 139/139 步）：单候选省 ~25 B。
+  assert.equal(rec.support, 4, 'support 提到行级')
+  assert.equal(rec.terms, 19, 'terms 提到行级')
+  assert.equal('support' in rec.candidates[0], false, '候选上不再重复携带 support')
+  assert.equal('channel' in rec.candidates[0], false, '候选只可能来自提示通道，不再逐条记 channel')
+  assert.equal(rec.candidatesTotal, 1)
   assert.deepEqual(rec.ops, ['git-commit'])
   assert.equal(rec.silence, 'cooldown')
   const d = dir()
@@ -146,6 +152,28 @@ const dir = () => {
   assert.equal(appendShadowAudit(d, rec, cfgShadow({})), true)
   assert.ok(existsSync(shadowFileFor(d)), '默认开启 → 一行 JSONL')
   ok('影子记录：每步一行（候选特征 + query + ops/writes），可显式关闭')
+}
+
+// --- 7b. 影子候选有上限，但**过了全部门槛的候选一个都不能丢** ---
+// 影子日志 90.6% 的体积是 candidates（实测 210 行 / 965KB，候选占 875KB），而真实 store
+// 单步就能产生 40~60 条（中位 42）。截断规则：全部 `decision === 'cand'` + 按排名补足到 16；
+// 截断前的总数记在 `candidatesTotal`，不静默。
+{
+  const many = []
+  for (let i = 0; i < 40; i++) {
+    many.push({
+      id: `c${i}`, channel: 'hint', rel: Math.max(0, 1 - i / 100), coverage: 0.1, matched: 1,
+      support: 9, terms: 20, decision: i === 39 ? 'cand' : 'coverage',
+    })
+  }
+  const rec = shadowRecordFrom({ sessionId: 's', step: 1, candidates: many })
+  assert.equal(rec.candidates.length, 16, '候选截断到 16 条')
+  assert.equal(rec.candidatesTotal, 40, '截断前的总数必须留下')
+  assert.ok(rec.candidates.some((c) => c.id === 'c39'), '排名第 40 但过了门槛的候选必须被保住')
+  const keep = shadowRecordFrom({ sessionId: 's', step: 2, candidates: many.slice(0, 16) })
+  assert.equal(keep.candidates.length, 16, '未超限时不截断')
+  assert.equal(keep.candidatesTotal, 16)
+  ok('影子候选上限 16：过门槛的全部保住，candidatesTotal 记录截断量')
 }
 
 // --- 8. 端到端：**零注入的静默步**也留下影子行（主审计此时零写入）---

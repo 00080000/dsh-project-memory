@@ -120,8 +120,10 @@ export const Config = Schema.object({
     // 影子记录（admission-shadow.jsonl）：**每步**一行，含全部候选的判据特征与场景。
     // 主审计只在真的注入时写，静默步零痕迹 → 无法离线重放"换个阈值会怎样"，也攒不出样本。
     // 只写盘、不进 prompt、不花 token，所以默认开。
+    // 512KB 而不是 2MB：轮转只留 `.1` 一代，所以单项目日志的硬上限是
+    // `2 × shadowMaxBytes + 2 × auditMaxBytes`（原 4.6MB）；512KB 下约 1.5MB。
     shadowLog: Schema.boolean().default(true),
-    shadowMaxBytes: Schema.number().default(2097152),
+    shadowMaxBytes: Schema.number().default(524288),
   }).default({}),
 })
 

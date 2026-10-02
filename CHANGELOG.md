@@ -1,7 +1,43 @@
 ## 0.5.14 (2026-10-02)
 
-`npm test` **540 → 554 项 / 28 → 29 个文件**；`npm run eval:injection` 逐项不变
+`npm test` **540 → 561 项 / 28 → 30 个文件**；`npm run eval:injection` 逐项不变
 （命中 14 / 假阳性 0 / 漏召 0，P/R 1.00/1.00，7 次注入 857 字符）。
+
+### 修复：`show_task_panel` 从来没有打开过面板
+
+这个工具读 `exec.ctx` 再 `emit('dsh:task-panel:show')`，而宿主契约里**没有 `ctx`**：
+`ToolRunContext` 只扩了 `deferContext()` / `concludeTurn()` 两个自有成员
+（`packages/core/tools/src/index.ts:418`）。于是它每次都只返回「无法获取上下文」，
+那个事件名也是编出来的 —— 面板从未被它打开过。
+
+面板的 `closed` / `minimized` 是**浏览器侧** UI store 的状态，宿主进程碰不到，所以正确的
+位置是宿主给出的扩展点：`ui-tool` 在 `conversation.chat.node`（key `tool-call`）下声明了按
+**工具名**分发的子槽 `tool.call.toolview`（契约原文：*"Any name is allowed, including tools
+registered by your package. Register with `key: '<tool name>'`"*）。
+
+- 新增 `src/client/ShowTaskPanelNode.tsx`：认领 `show_task_panel` 这个 key，工具结果一渲染
+  就调 `taskUIStore.open()`。**只在现场执行时打开** —— 历史节点（刷新 / 切会话后）会直接以
+  `result` 阶段挂载，那时只展示不开面板，否则每次打开会话都弹一次（与 `/tasks` 命令节点的
+  `live` 判据同款）。
+- 宿主侧删掉那段触碰不到 `ctx` 的代码，改为只让调用真实发生并返回可读结果。
+- 测试：新增 `test/client-toolview.test.mjs`（5 项：注册 key、历史回放不弹、现场执行弹、
+  槽缺失时降级、畸形 ctx 不抛）+ `test/task-view.test.mjs` 补一项（不依赖 `exec`）。
+
+### 性能：影子日志瘦身 2×，单项目日志上限 4.5 MB → 1.5 MB
+
+`admission-shadow.jsonl` 的体积 **90.6% 是 `candidates`**（实测 210 行 / 965 KB，候选占
+875 KB），而真实 store 单步就能产生 40~60 条（中位 42）。三处都是纯冗余：
+
+- `support` / `terms` 是**查询级**量，同一个 pre-step 内逐条恒定（实测 139/139 步）→ 提到行级；
+- 候选只可能来自提示通道（trigger 在 `injected` / `dropped` 里）→ 不再逐条记 `channel`；
+- 候选按分数降序、`decision === 'cand'` 必然在最前 → **全部 cand + 按排名补足到 16 条**，
+  截断前的总数记在 `candidatesTotal`，不静默。
+
+实测单行 **6071 B → 2935 B（48%）**。同时把 `shadowMaxBytes` 默认 2 MB 降到 512 KB：
+轮转只保留一代 `.1`，所以单项目日志硬上限从 `2×2MB + 2×256KB ≈ 4.5MB` 降到 **≈1.5MB**
+（按每行 ~1.5KB 算仍有 ~680 步历史窗口，远超"离线重放最近历史"所需）。
+日志**本来就是有上限的**（`rotateIfOversized` 覆盖旧的 `.1`，不是无限追加）；
+要彻底不要日志，`autoContext.shadowLog: false` 即可。
 
 ### 修复：会话配额把长会话的后段永久致盲
 
