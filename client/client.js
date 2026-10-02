@@ -365,6 +365,20 @@ window.__ModuleLoader__.load({
 		* - 启动/刷新强制 closed: true，面板默认不显示
 		*/
 		const STORAGE_KEY = "dsh-pm-task-panel-ui";
+		/**
+		* 面板的三个视图页。**单一事实来源**：面板的切页按钮与 `/` 菜单的三行都读它。
+		* 两边各抄一份必然漂移 —— 实测就是这样：菜单行去执行宿主命令"开记忆页"，而面板的 view
+		* 是组件内部 state，谁也够不着它，于是点击没有任何可见效果。
+		*/
+		const PANEL_VIEWS = [
+			"task",
+			"project",
+			"global"
+		];
+		/** 把任意值收敛成一个合法视图页（脏 localStorage / 外部传入都要过这一关）。 */
+		function normalizeView(value) {
+			return PANEL_VIEWS.includes(value) ? value : "task";
+		}
 		function defaultPosition() {
 			if (typeof window !== "undefined") return {
 				x: Math.max(16, window.innerWidth - 408),
@@ -391,7 +405,8 @@ window.__ModuleLoader__.load({
 						minimized: parsed.minimized !== false,
 						closed: true,
 						theme: typeof parsed.theme === "string" ? parsed.theme : "native",
-						showHints: parsed.showHints !== false
+						showHints: parsed.showHints !== false,
+						view: normalizeView(parsed.view)
 					};
 				}
 			} catch {}
@@ -401,7 +416,8 @@ window.__ModuleLoader__.load({
 				minimized: true,
 				closed: true,
 				theme: "native",
-				showHints: true
+				showHints: true,
+				view: "task"
 			};
 		}
 		function persistUI(state) {
@@ -451,6 +467,36 @@ window.__ModuleLoader__.load({
 				open() {
 					setUIState({
 						...uiState,
+						minimized: false,
+						closed: false
+					});
+				},
+				/**
+				* 切页但不动开合状态（面板里那个循环按钮用）。
+				* 非法值一律忽略 —— 这个入口会被菜单行与脏 localStorage 碰到，静默归一比抛错合适。
+				*/
+				setView(view) {
+					if (!PANEL_VIEWS.includes(view)) return;
+					if (uiState.view === view) return;
+					setUIState({
+						...uiState,
+						view
+					});
+				},
+				/**
+				* 打开面板并切到指定页 —— `/` 菜单那三行的**全部**动作。
+				*
+				* 纯客户端：不再绕 `remote.commands.execute('/tasks insight list …')` 一圈。那条路
+				* 只在对话里留下一个命令节点，而客户端渲染命令节点的是按**命令名**分发的
+				* `TaskCommandNode`（`name === 'tasks'`），它拿任务解析器去解记忆载荷，解析必然失败
+				* —— 于是点菜单"开记忆页"什么都不会发生。
+				* @param view - 目标视图页；非法值直接忽略（不打开面板，避免"点了没反应还弹窗"）。
+				*/
+				openView(view) {
+					if (!PANEL_VIEWS.includes(view)) return;
+					setUIState({
+						...uiState,
+						view,
 						minimized: false,
 						closed: false
 					});
@@ -1769,11 +1815,7 @@ window.__ModuleLoader__.load({
 			"in_progress",
 			"completed"
 		];
-		const VIEW_CYCLE = [
-			"task",
-			"project",
-			"global"
-		];
+		const VIEW_CYCLE = PANEL_VIEWS;
 		function getT(ctx) {
 			return createTranslate(ctx?.locale?.getSnapshot?.()?.active === "zh" ? zh : en);
 		}
@@ -1816,14 +1858,14 @@ window.__ModuleLoader__.load({
 			const [syncedAt, setSyncedAt] = (0, react.useState)(0);
 			const [syncError, setSyncError] = (0, react.useState)(null);
 			const showHints = ui.showHints;
-			const [view, setView] = (0, react.useState)("task");
-			const cycleView = () => {
-				const i = VIEW_CYCLE.indexOf(view);
-				setView(VIEW_CYCLE[(i + 1) % VIEW_CYCLE.length]);
-			};
-			const viewTitle = view === "task" ? t("panel.title") : view === "global" ? t("view.global") : t("view.project");
 			const dataActions = useTaskDataActions();
 			const uiActions = useTaskUIActions();
+			const view = ui.view;
+			const cycleView = () => {
+				const i = VIEW_CYCLE.indexOf(view);
+				uiActions.setView(VIEW_CYCLE[(i + 1) % VIEW_CYCLE.length]);
+			};
+			const viewTitle = view === "task" ? t("panel.title") : view === "global" ? t("view.global") : t("view.project");
 			const tasks = Array.isArray(data.tasks) ? data.tasks : [];
 			const activeTasks = tasks.filter((task) => !task.archived);
 			const boundTask = data.boundTaskId ? tasks.find((task) => task.id === data.boundTaskId) ?? null : null;
@@ -2359,7 +2401,7 @@ window.__ModuleLoader__.load({
 				descriptionKey: "slash.tasks-desc",
 				icon: IconChecklistOutline16,
 				match: ["tasks", "task"],
-				line: "/tasks"
+				view: "task"
 			},
 			{
 				labelKey: "view.project",
@@ -2370,7 +2412,7 @@ window.__ModuleLoader__.load({
 					"project",
 					"insight"
 				],
-				line: "/tasks insight list project"
+				view: "project"
 			},
 			{
 				labelKey: "view.global",
@@ -2381,7 +2423,7 @@ window.__ModuleLoader__.load({
 					"global",
 					"insight"
 				],
-				line: "/tasks insight list global"
+				view: "global"
 			}
 		];
 		/** 按当前语言取翻译函数。 */
@@ -2408,7 +2450,6 @@ window.__ModuleLoader__.load({
 					description: t(row.descriptionKey),
 					icon: row.icon,
 					section: t("slash.group"),
-					line: row.line,
 					terms: [title, ...row.match].map((term) => term.toLowerCase())
 				};
 			}).filter((row) => query === "" || row.terms.some((term) => term.startsWith(query))).map(({ terms: _terms, ...candidate }) => candidate);
@@ -2432,13 +2473,18 @@ window.__ModuleLoader__.load({
 			}
 		}
 		/**
-		* 一次菜单点击：消费掉触发 token 后立刻执行该行对应的命令行。
+		* 一次菜单点击：消费掉触发 token 后**直接打开面板的对应页**。
 		*
-		* 不返回 claim（回填 `/xxx ` 再等回车）：这三行都是「打开某个视图」，claim 会多要一次回车，
-		* 而且子动词（`insight list project`）也没法由一个 claim token 表达。消费失败时仍然执行，
-		* 只是草稿里残留的触发文本要用户自己清掉 —— 比回填一个会执行错命令的 claim 安全。
+		* 这三行是「打开某个视图」，不是「执行某条命令」，所以走客户端自己的 UI store：
+		* 面板的 `closed` / `view` 都是浏览器侧状态，宿主命令碰不到它们。旧实现执行
+		* `remote.commands.execute('/tasks insight list project')`，只在对话里留下一个命令节点，
+		* 而客户端渲染命令节点的是按**命令名**分发的 `TaskCommandNode`（`name === 'tasks'`），
+		* 它拿任务解析器去解记忆载荷 → 解析失败 → 对面板零影响。**这就是"点了没反应"的原因。**
+		*
+		* 不返回 claim（回填 `/xxx ` 再等回车）：claim 会多要一次回车，而这三行没有参数要填。
+		* 消费失败时仍然切页 —— 草稿里残留的触发文本要用户自己清掉，比"点了完全没反应"好。
 		* @param t - 翻译函数（按当前语言把候选 name 映射回 ROWS）。
-		* @param deps - 会话服务与命令执行通道。
+		* @param deps - 会话服务与 UI store 动作。
 		* @param pick - 宿主给的点击载荷。
 		* @returns PickOutcome；拿不到可用形状时返回 undefined（菜单照常关闭，草稿不动）。
 		*/
@@ -2448,9 +2494,11 @@ window.__ModuleLoader__.load({
 			const row = ROWS.find((candidate) => t(candidate.labelKey) === title);
 			if (row === void 0) return void 0;
 			consumeSpan(deps, pick);
-			deps.run(pick.session, row.line, []).catch((err) => {
-				console.warn(`[dsh-project-memory] ${row.line} failed:`, err);
-			});
+			try {
+				deps.openView(row.view);
+			} catch (err) {
+				console.warn(`[dsh-project-memory] open view ${row.view} failed:`, err);
+			}
 			return "handled";
 		}
 		/**
@@ -2499,34 +2547,6 @@ window.__ModuleLoader__.load({
 			"locale"
 		];
 		/**
-		* 执行一条命令行，映射成 composer 的 SubmitOutcome。
-		* 与 TaskPanel 走同一个 remote.commands.execute 通道（同样的返回信封）。
-		* @param commands - ctx.remote.commands
-		* @param session - 会话投影（只读 sessionId）
-		* @param line - 完整命令行（含前导斜杠）
-		* @param attachments - 提交附件（菜单路径恒为空）
-		* @returns {kind:'success'|'error', text?}
-		*/
-		async function runCommand(commands, session, line, attachments = []) {
-			const sessionId = session?.sessionId;
-			if (typeof sessionId !== "string" || !commands || typeof commands.execute !== "function") return {
-				kind: "error",
-				text: `no session / commands service for ${line}`
-			};
-			const envelope = await commands.execute(sessionId, line, [...attachments]);
-			if (envelope && typeof envelope === "object" && envelope.ok === false) return {
-				kind: "error",
-				text: `command.execute failed: ${envelope.error?.code ?? "unknown"}`
-			};
-			const execution = envelope && typeof envelope === "object" && "value" in envelope ? envelope.value : envelope;
-			const result = execution?.result ?? execution;
-			if (result?.kind === "error") return {
-				kind: "error",
-				text: result.text ?? `${line} failed`
-			};
-			return { kind: "success" };
-		}
-		/**
 		* 注册自建的 `/` 菜单源（见 slash.ts）。
 		*
 		* 整段都是**可选增强**：宿主没有 `inputTriggers` 服务、或该服务换了契约时，绝不能因此
@@ -2553,7 +2573,7 @@ window.__ModuleLoader__.load({
 						}
 						const source = createSlashSource(scope, {
 							sessions: scope.sessions,
-							run: (session, line, attachments) => runCommand(scope?.remote?.commands, session, line, attachments)
+							openView: (view) => taskUIStore.actions.openView(view)
 						});
 						scope.effect(() => inputTriggers.registerSource(source), "dsh-project-memory: slash source");
 					} catch (err) {

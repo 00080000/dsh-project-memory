@@ -31,7 +31,10 @@ const docStub = {
   createElement: () => ({ dataset: {}, style: {}, setAttribute() {}, appendChild() {} }),
   head: { appendChild() {}, append() {} },
 }
-const storageStub = { getItem: () => null, setItem() {}, removeItem() {} }
+// UI store 持久化到 localStorage：菜单行是"打开面板的某一页"的**纯客户端**动作，
+// 所以"有没有真的切页"只能从这里观测（旧实现发宿主命令，那条路对面板零影响）。
+const storageWrites = []
+const storageStub = { getItem: () => null, setItem: (k, v) => { storageWrites.push([k, v]) }, removeItem: () => {} }
 const navStub = { clipboard: { writeText: async () => {} } }
 class ReactComponent {
   constructor(props) {
@@ -187,8 +190,8 @@ function mounted(options) {
     assert.equal(typeof row.icon, 'function', `${row.name}: 行图标（宿主目录行拿不到图标，这是本源存在的理由）`)
     assert.equal(row.hint, undefined, `${row.name}: 不声明 input → 不受宿主位置过滤影响`)
   }
-  assert.deepEqual(rows.map((r) => r.line), ['/tasks', '/tasks insight list project', '/tasks insight list global'],
-    '每行对应一条完整命令行（都走唯一的宿主命令 /tasks）')
+  assert.ok(rows.every((r) => r.line === undefined),
+    '视图入口不得携带命令行：它们是纯客户端切页，绕宿主命令那条路对面板零影响')
   ok('候选带图标 / 标题 / section（section 承载分组标题）')
 }
 
@@ -222,40 +225,46 @@ function mounted(options) {
   ok('候选过滤：前导/行内位置与查询过滤符合预期')
 }
 
-// ---- 6. 点击语义：消费触发 token 后立刻执行该行的命令行 ----
+// ---- 6. 点击语义：消费触发 token 后**打开面板的对应页**（纯客户端，不发宿主命令） ----
+// 旧实现执行 `/tasks insight list project` 这类宿主命令，但客户端渲染命令节点的是按命令名
+// 分发的 TaskCommandNode（name === 'tasks'），它拿任务解析器去解记忆载荷 → 解析失败 →
+// 对面板零影响。用户看到的就是"点了没反应"。
 {
   const { host, source } = mounted()
+  const lastState = () => {
+    const write = storageWrites.at(-1)
+    return write ? JSON.parse(write[1]) : null
+  }
 
   const handled = source.onPick(pickOf('项目记忆'))
-  assert.equal(handled, 'handled', '菜单点击应当立刻执行（不回填 claim，不多要一次回车）')
-  assert.equal(host.bails.length, 1, '执行前先消费掉草稿里的触发 token')
+  assert.equal(handled, 'handled', '菜单点击应当立刻生效（不回填 claim，不多要一次回车）')
+  assert.equal(host.bails.length, 1, '生效前先消费掉草稿里的触发 token')
   assert.equal(host.bails[0][1], 'slash/input-consume-token', '走宿主公开的 consume-token 契约事件')
   assert.deepEqual(host.bails[0][2], { guard: { kind: 'span', span: { start: 0, end: 5 } } }, '用 span 做 CAS 守卫')
-  await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.deepEqual(host.executes.at(-1), ['sess_slash', '/tasks insight list project', []],
-    '行 → 命令行映射正确')
+  assert.equal(lastState()?.view, 'project', '项目记忆行必须切到 project 页')
+  assert.equal(lastState()?.closed, false, '并且把面板打开')
+  assert.equal(host.executes.length, 0, '视图入口不得再绕宿主命令')
 
   source.onPick(pickOf('任务'))
-  await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.equal(host.executes.at(-1)[1], '/tasks', '任务视图就是裸 /tasks')
-
+  assert.equal(lastState()?.view, 'task', '任务行切到 task 页')
   source.onPick(pickOf('全局记忆'))
-  await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.equal(host.executes.at(-1)[1], '/tasks insight list global')
+  assert.equal(lastState()?.view, 'global', '全局记忆行切到 global 页')
 
   assert.equal(source.onPick(pickOf('nope')), undefined, '未知行不得引发任何动作')
   assert.equal(source.onPick({ candidate: {} }), undefined, '缺 name 时安全返回')
-  ok('点击语义：消费 token 后立刻执行对应命令行')
+  ok('点击语义：消费 token 后打开面板对应页（不发宿主命令）')
 }
 
-// ---- 7. 消费失败仍然执行（只是草稿残留触发文本），不能静默丢动作 ----
+// ---- 7. 消费失败仍然切页（只是草稿残留触发文本），不能静默丢动作 ----
 {
-  const { host, source } = mounted({ consumeOk: false })
+  const { source } = mounted({ consumeOk: false })
   const outcome = source.onPick(pickOf('任务'))
   assert.equal(outcome, 'handled', '消费失败也要报 handled，否则菜单会留下一个「什么都没发生」的点击')
-  await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.equal(host.executes.at(-1)[1], '/tasks', '消费失败时命令照常执行')
-  ok('consume-token 失败时仍执行命令，不静默丢动作')
+  const write = storageWrites.at(-1)
+  const state = write ? JSON.parse(write[1]) : null
+  assert.equal(state?.view, 'task', '消费失败时切页照常发生')
+  assert.equal(state?.closed, false)
+  ok('consume-token 失败时仍切页，不静默丢动作')
 }
 
 // ---- 8. 降级：宿主没有 slash 服务 / 注册抛错，都不得带崩整个 client 插件 ----
