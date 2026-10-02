@@ -9,7 +9,7 @@ export function watchRepoTool(watchManager, config) {
     description:
       'Start silent auto-refresh for a project: the plugin polls the root (configurable interval), ' +
       'detects changed/new docs and code files via mtime+content-hash, and re-indexes only those silently. ' +
-      'No GUI, no manual re-index needed after this. Stop by reloading the plugin or calling with watch=false.',
+      'No manual re-index needed after this. Call again with watch=false to stop.',
     parameters: {
       root: {
         type: 'string',

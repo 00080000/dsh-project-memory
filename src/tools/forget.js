@@ -11,7 +11,7 @@ export function forgetTool(config) {
       id_or_query: {
         type: 'string',
         required: true,
-        description: 'Experience note id (from remember/search output), or keywords to match.',
+        description: 'Experience note id (from remember or query_memory output), or keywords to match.',
       },
       root: {
         type: 'string',

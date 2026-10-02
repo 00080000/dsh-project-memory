@@ -6,9 +6,11 @@ export function rememberTool(config) {
   return defineTool({
     name: 'remember',
     description:
-      'Save an experience note (problem -> solution) into project memory, e.g. a bug you just fixed or a decision made. ' +
-      'Retrieved later only when search_experience / query_memory matches the problem, never auto-injected. ' +
-      'If a note with a similar problem exists, it is superseded instead of duplicated.',
+      'Save an experience note (problem -> solution) into project memory, e.g. a bug you just fixed. ' +
+      'Retrieved later only when query_memory matches the problem, never auto-injected. ' +
+      'A note for a similar problem is superseded instead of duplicated. ' +
+      'This writes the standalone experience file: for lessons / decisions / procedures prefer save_lesson ' +
+      '(the tiered insight store) — query_memory searches both.',
     parameters: {
       problem: {
         type: 'string',
