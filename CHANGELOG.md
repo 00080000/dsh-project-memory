@@ -3,6 +3,25 @@
 `npm test` **540 → 561 项 / 28 → 30 个文件**；`npm run eval:injection` 逐项不变
 （命中 14 / 假阳性 0 / 漏召 0，P/R 1.00/1.00，7 次注入 857 字符）。
 
+### 修复：`/` 菜单里「工作流」三行点了没反应
+
+同一个病根：**UI 动作被写成了宿主命令**。那三行的实现是
+`remote.commands.execute(sessionId, '/tasks insight list project')` —— 命令在宿主侧确实执行了，
+但客户端渲染命令节点的是按**命令名**分发的 `TaskCommandNode`（`key: 'tasks'`）：它拿到
+`name === 'tasks'` 就用**任务**解析器去解**记忆**载荷，`parseTaskPayloadText` 必然返回 null，
+于是对面板零影响，只在对话里留下一个 `/tasks 已执行` 节点。用户看到的就是「点了没反应」。
+
+根因是面板的视图页是 `TaskPanel` 组件**内部**的 `useState('task')` —— 组件外面没有任何可寻址
+的落点，所以菜单行只能绕宿主命令，而那条路又够不到面板。
+
+- `view` 移进 UI store（`task-ui-store.ts`）：新增 `PANEL_VIEWS` / `normalizeView()` 与
+  `setView()` / `openView()`，持久化且可从组件外寻址；面板的切页按钮改为读它（不再各抄一份）。
+- `/` 菜单三行改为**纯客户端**：`consumeSpan()` 之后直接 `openView(view)`，不再发宿主命令
+  （`SlashSourceDeps.run` 随之删除，`client.ts` 里的 `runCommand` 变成死代码也删掉）。
+- 候选不再携带 `line` 字段。
+- 测试：`test/client-slash.test.mjs` 的点击语义改为断言 **localStorage 里的 `view` / `closed`**
+  （旧断言是"命令行映射正确"，正是它把 bug 放了过去），并加一条"视图入口不得携带命令行"。
+
 ### 修复：`show_task_panel` 从来没有打开过面板
 
 这个工具读 `exec.ctx` 再 `emit('dsh:task-panel:show')`，而宿主契约里**没有 `ctx`**：
