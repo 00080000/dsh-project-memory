@@ -359,6 +359,18 @@ console.log('\n== IDF caching & streaming TF ==')
   store.save()
   check('只写经验不重建 IDF', store.getIdfCache() === beforeExp)
 
+  // IDF 语料必须与**检索**同源（title×5 + keywords + summary + terms + sourcePath）。
+  // 此前这里手抄的副本缺了后两项，于是只出现在 `terms` 里的词 df=0 → 虚高 IDF。
+  {
+    const alignStore = new ProjectMemoryStore(memoryRootFor(mkdtempSync(path.join(tmpdir(), 'pm-idf-align-')), config.memoryDir)).load()
+    alignStore.setEntries('terms.md', [
+      { id: 'x1', type: 'doc', sourcePath: 'terms.md', sourceLine: 1, title: 'Plain', summary: 'plain summary', keywords: ['plain'], terms: 'zebra' },
+    ])
+    const idfAlign = alignStore.getIdfCache()
+    check('只在 terms 里的词进了 IDF 语料', (idfAlign.zebra || 0) > 0)
+    check('只在 sourcePath 里的词进了 IDF 语料', (idfAlign.terms || 0) > 0)
+  }
+
   // Test streaming rank function directly
   const { rankEntriesStreaming } = await import('../src/util/search.js')
   const entries = store.allEntries()
