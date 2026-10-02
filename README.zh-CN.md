@@ -165,8 +165,8 @@ TaskPanel (Container)
 | `autoContext.hintMinSupport` | 0.15 | 通道级沉默：查询里能在语料中找到对应的词占比低于此值时，提示通道本轮整体不出声——否则一句只碰巧共享一个词的长句子会报出 `cov:1.00` |
 | `autoContext.legacyScope` | `filter` | 旧 `trigger.scope` 的处理：`filter` 保留旧语义，`ignore` 丢弃。`npm run selfcheck:triggers` 会列出 scope 值与项目画像 tag 空间不可能相交的条目 |
 | `autoContext.auditLog` | true | 每次**真实**注入往 `<root>/.dsh-project-memory/injection-audit.jsonl` 追加一行（注入了什么、为什么命中、丢了什么、会话额度快照）；超过 `auditMaxBytes`（`262144`）轮转 `.1`。任何 IO 失败都静默，绝不影响宿主请求 |
-| `autoContext.shadowLog` | true | **每步**（含什么都没注入的步）往 `admission-shadow.jsonl` 追加一行：本步全部被评分的候选 + 判据特征（`rel` / `coverage` / `matched` / `support` / `terms` / `decision`）+ 场景（`query` / `ops` / `writes`）。它让"换个阈值会怎样"可以在真实历史上离线回答（`decision` 直接指出每条候选卡在哪一关）。超过 `shadowMaxBytes`（`2097152`）轮转。只写盘，不进 prompt、不花 token |
-| `autoContext.shadowMaxBytes` | 2097152 | `admission-shadow.jsonl` 的轮转上限 |
+| `autoContext.shadowLog` | true | **每步**（含什么都没注入的步）往 `admission-shadow.jsonl` 追加一行：排名靠前的被评分候选（`rel` / `coverage` / `matched` / `decision` / `outcome`）+ 场景（`query` / `scoreQuery` / `ops` / `writes`）。它让"换个阈值会怎样"可以在真实历史上离线回答（`decision` 指出每条候选卡在哪一关，`outcome` 指出预算拿它怎么办）。超过 `shadowMaxBytes`（`524288`）轮转，只保留一代 `.1`，所以单项目日志硬上限 ≈ `2 × shadowMaxBytes + 2 × auditMaxBytes` ≈ 1.5 MB。只写盘，不进 prompt、不花 token |
+| `autoContext.shadowMaxBytes` | 524288 | `admission-shadow.jsonl` 的轮转上限（保留一代 `.1`） |
 
 ### 注入的准入化（为什么它保持安静）
 
@@ -295,7 +295,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ```bash
 npm install
-npm test                    # 554 项测试（核心 216 + TaskBridge 16 + insight-store 12 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 10 + reflection 5 + llm-route 5 + client-hints 2 + recall 10 + readiness 15 + insight-derive 7 + readiness-eval 7 + ops 6 + injection-audit 11 + injection-budget 10 + injection-scenarios 6 + bugfix-0.5.7 18 + client-icons 3 + client-slash 10 + workflow-command 5 + client-session-id 7 + task-view 6 + root-guards 79 + store-gitignore 9 + atomic-write 6 + store-cache 22 + enhancer 27）
+npm test                    # 561 项测试（核心 216 + TaskBridge 16 + insight-store 12 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 10 + reflection 5 + llm-route 5 + client-hints 2 + recall 10 + readiness 15 + insight-derive 7 + readiness-eval 7 + ops 6 + injection-audit 12 + injection-budget 10 + injection-scenarios 6 + bugfix-0.5.7 18 + client-icons 3 + client-slash 10 + client-toolview 5 + workflow-command 5 + client-session-id 7 + task-view 7 + root-guards 79 + store-gitignore 9 + atomic-write 6 + store-cache 22 + enhancer 27）
 npm run eval:injection      # 合成池上的场景 P/R：命中 14/14、假阳性 0、对照组零注入
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）

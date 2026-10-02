@@ -19,7 +19,21 @@ const DEFAULT_MAX_BYTES = 256 * 1024
 // "本该零注入"的步）完全不落痕，于是日志回答不了"换个阈值/换个判据会怎样"。影子记录每步都写，
 // 带全部候选的特征与判据结果，用来 (a) 离线重放任一阈值、(b) 攒"特征 → 该不该注入"的训练样本。
 export const SHADOW_FILE = 'admission-shadow.jsonl'
-const DEFAULT_SHADOW_MAX_BYTES = 2 * 1024 * 1024
+// 512KB 而不是 2MB：轮转只保留 `.1` 一代，所以单项目日志的硬上限是
+// `2 × shadowMaxBytes + 2 × auditMaxBytes`，之前是 4.6MB（在小项目上比 store 本身还大，
+// 实测本插件自己的 store 里 3.1M/4.2M 是日志）。512KB 下上限降到 ≈1.5MB，
+// 而按每行 ~1.5KB 算仍有 ~680 步的历史窗口 —— 远超"离线重放最近的历史"所需。
+const DEFAULT_SHADOW_MAX_BYTES = 512 * 1024
+
+/**
+ * 一行影子记录最多保留多少个候选。
+ *
+ * 影子日志 **90.6% 的体积是 `candidates`**（实测 210 行 / 965KB，候选占 875KB），而真实 store
+ * 单步就能产生 40~60 条（中位 42）。候选按分数降序排列，`decision === 'cand'` 必然排在最前
+ * （相对阈值就是分数比），所以「**全部 cand + 按排名补足**」既保住离线重放最需要的那批，
+ * 又砍掉远处必然被 coverage/relative 拦掉的尾巴。截断量记在 `candidatesTotal`，不静默。
+ */
+const SHADOW_MAX_CANDIDATES = 16
 
 /** 审计配置：默认开（观测是这个插件唯一的仪表盘），显式 `auditLog: false` 才关。 */
 export function cfgAudit(config) {
@@ -58,6 +72,28 @@ export function shadowRecordFrom(input) {
   const reasons = Array.isArray(input.reasons) ? input.reasons : []
   const candidates = Array.isArray(input.candidates) ? input.candidates : []
   const dropped = Array.isArray(input.dropped) ? input.dropped : []
+  // `support` / `terms` 是**查询级**量（语料里有几个词能表示这条查询），同一个 pre-step 内
+  // 逐条恒定（实测 139/139 步）。把它们从每条候选提到行级：单候选省 ~25 B，整行省 ~23%。
+  const first = candidates[0]
+  const slim = candidates.map((c) => ({
+    id: c.id,
+    rel: c.rel,
+    coverage: c.coverage,
+    matched: c.matched,
+    // `decision` 是门槛层结论，`outcome` 是预算层结论，两者正交（见 auto-inject.js）。
+    decision: c.decision,
+    outcome: c.outcome,
+  }))
+  // 候选**只有提示通道**（trigger 的结果在 `injected` / `dropped` 里），所以不再逐条记 channel。
+  const bounded = slim.length <= SHADOW_MAX_CANDIDATES ? slim : (() => {
+    const keep = new Set()
+    for (const c of slim) if (c.decision === 'cand') keep.add(c.id)
+    for (const c of slim) {
+      if (keep.size >= SHADOW_MAX_CANDIDATES) break
+      keep.add(c.id)
+    }
+    return slim.filter((c) => keep.has(c.id))
+  })()
   return {
     at: new Date().toISOString(),
     session: input.sessionId || null,
@@ -71,9 +107,14 @@ export function shadowRecordFrom(input) {
     ops: (Array.isArray(input.ops) ? input.ops : []).slice(0, 12),
     writes: (Array.isArray(input.writes) ? input.writes : []).slice(0, 12),
     injected: reasons.map((r) => ({ id: r.id, channel: r.channel, why: r.why })),
+    // 查询级支持度：语料能表示查询里多少个词（`terms` 是查询词数）—— 通道级沉默判据用的就是它。
+    support: typeof first?.support === 'number' ? first.support : null,
+    terms: typeof first?.terms === 'number' ? first.terms : null,
     // candidates 的 `decision` 只说明"过没过门槛"，进不进上下文看 `outcome`
     // （injected / budget / quota / idle / gate / unscheduled）。两者正交。
-    candidates,
+    candidates: bounded,
+    // 截断前的候选总数：不静默，读日志的人能一眼看出这一步被裁掉了多少。
+    candidatesTotal: candidates.length,
     // 触发通道的丢弃不在 candidates 里（候选只收提示通道），单列；有界，避免长候选池撑爆一行。
     dropped: dropped.slice(0, 40),
     silence: input.silence || null,
