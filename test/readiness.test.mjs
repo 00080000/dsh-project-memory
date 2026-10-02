@@ -263,4 +263,31 @@ const PUBLIC_FACE = {
   ok('预算压力下：宁可丢弃也不输出无意义的截断 stub')
 }
 
+// ---- 12. idfCoveragePrepared 与 idfCoverage 必须逐字段一致 ----
+// 把语料词集合提出候选循环是**纯性能**优化（实测真实 store 单步 147ms → 1.3ms，109×），
+// 但它改了评分路径，所以把"等价"钉成回归：任何字段不一致都是静默的判据漂移。
+{
+  const { idfCoverage, idfCoveragePrepared, corpusTermSets } = await import('../src/readiness.js')
+  const corpus = [
+    '数据库连接池 配置 参数 调优 maxPoolSize',
+    '连接池 耗尽 报错 泄漏 排查',
+    'pptx 时间戳 修改 文件',
+    'npm publish 发版 版本号 核对 package.json',
+    '注入 配额 滑动窗口 影子 记录 候选 门槛',
+  ]
+  const sets = corpusTermSets(corpus)
+  assert.equal(sets.length, corpus.length)
+  for (const q of ['连接池 配置', 'npm publish 发版', '配额 候选', 'zzz 不存在的词']) {
+    for (let i = 0; i < corpus.length; i++) {
+      assert.deepEqual(
+        idfCoveragePrepared(q, corpus[i], sets),
+        idfCoverage(q, corpus[i], corpus),
+        `prepared 与 wrapped 结果必须一致：q=${q} i=${i}`,
+      )
+    }
+  }
+  assert.deepEqual(idfCoveragePrepared('', corpus[0], sets), { coverage: 0, matched: 0, supported: 0, terms: 0 })
+  ok('idfCoveragePrepared ≡ idfCoverage（语料提出循环外，逐字段等价）')
+}
+
 console.log(`\nreadiness tests: ${passed} passed`)
