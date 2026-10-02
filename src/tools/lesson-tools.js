@@ -16,6 +16,7 @@ export function lessonTool(config) {
     name: 'save_lesson',
     description:
       'Save a lesson/decision/procedure/experience into the tiered memory (single insight entity). ' +
+      'Prefer this over remember for anything new: entries here carry scope, merge/reinforce, and auto-promote. ' +
       'Call it when the task hit a real pitfall, got corrected, or made a deliberate choice worth remembering — not for routine work. ' +
       'Similar entries auto-merge (bidirectional token overlap >= 0.7) or reinforce (0.65~0.7, accumulating task hits); ' +
       'when the same insight is hit by 2+ tasks it auto-promotes task -> project, 3+ tasks project -> global. ' + kindDesc + ' ' + scopeDesc,

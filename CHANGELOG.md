@@ -1,6 +1,58 @@
-## Unreleased
+## 0.5.14 (2026-10-02)
 
-`npm test` **540 → 546 项 / 28 → 29 个文件**。
+`npm test` **540 → 554 项 / 28 → 29 个文件**；`npm run eval:injection` 逐项不变
+（命中 14 / 假阳性 0 / 漏召 0，P/R 1.00/1.00，7 次注入 857 字符）。
+
+### 修复：会话配额把长会话的后段永久致盲
+
+`maxItemsPerSession` / `maxItemCharsPerSession` 从 12 / 4000 抬到 **60 / 24000**。它们是**保险丝**，
+不是节流阀——节流一直由单轮 `maxTokens` 与 `gateCooldownSteps` 负责，但默认值太小、真实用量
+确实到得了：实测 5 个 root 的 2781 个 pre-step（含轮转历史）里 **11/81 个会话打满**，打满之后
+再无条目注入（`session-chars` 1115 步 + `session-items` 119 步），且**全部尾部失明步的 72% 来自
+这 11 个会话**（最坏的一个 223 步里 168 步静默，末次注入停在 step 54）。机制一行未改，显式配小值
+即可复现旧行为。
+
+### 修复：配额邻近上限时的「细缝」静默不可诊断
+
+配额逼近上限却未触顶时（实测 `4000 − 3962 = 38` 字符），每条候选都过得了全部门槛，却永远塞不下
+最小正文（提示 120 / 触发 48），于是**永久**静默——而日志里只有一条无量纲的 `budget`。
+现在丢弃会带出 `remaining` / `need` 两个数字。
+
+### 修复：注入判据的观测缺口（三处）
+
+- 会话限流命中时 `hintCands` 被整个置空，静默步**一个候选都不落盘**（实测 1420 步全空）→
+  改为照旧评分、只不注入，影子记录才答得出「不限流这一步会注入什么」。
+- `buildInjection` 的空块早退分支漏掉了 `candidates`，把候选一并丢了。
+- 候选只有门槛结论、没有预算结论 → 每个候选新增 `outcome`
+  （`injected` / `budget` / `quota` / `idle` / `gate` / `unscheduled`），与 `decision` 正交；
+  影子行另记 `scoreQuery`（**实际**用于评分的 intent + 写目标拼合，与人类消息 `query` 不是一回事）
+  与 `dropped`。
+
+### 性能：每步评分从 O(C²) 降到 O(C)
+
+`idfCoverage` 对**每个候选**都重建一遍整个语料的词集合。真实 store（72 条）实测单步
+`buildInjection` **113 ms → 9 ms**；只看覆盖率那段是 147.5 → 1.3 ms（109×），且逐字段一致
+（已固化为回归用例）。评分在每个 pre-step 都跑，所以这是「每条模型消息」级别的开销。
+
+### 修复：IDF 语料与检索语料不同源
+
+`store.js` 的 `_rebuildIdf` 手抄了一份 `title×5 + keywords + summary`，而检索侧的
+`weightedFieldText` 是 `title×5 + keywords + summary + **terms** + sourcePath`。于是只出现在
+`terms` 里的词 `df=0` → 被当成极稀有词拿虚高 IDF（`terms` 正是为修「只有前 300 字符可检索」
+加的主检索面）。改为直接调 `makeSearchText`，权重自动对齐。
+
+### 观察：注入块抬头标注生产者
+
+`[Memory Inject] auto-context` → `[Memory Inject] dsh-project-memory · auto-context`。
+`source.kind` 只有宿主看得到（请求序列化只取 `role` / `content`，provider 对 `.source` 零引用），
+抬头是模型与 GUI 用户唯一能看到生产者的地方。
+
+### 工具描述修订
+
+- `remember` 指向了一个**不存在**的工具（`search_experience`）→ 改为 `query_memory`。
+- `remember` 与 `save_lesson` 职责相邻却都没说清怎么选 → 两处互相点名（`remember` 写独立的
+  经验文件；新建内容优先 `save_lesson`，它带 scope / 合并 / 晋升）；`forget` 的参数说明同步。
+- `watch_repo` 不再建议「重载插件」（模型做不到这件事）。
 
 ### 修复：`writeJsonAtomic` 的两份副本已漂移
 
