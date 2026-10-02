@@ -566,11 +566,11 @@ export class ProjectMemoryStore {
     if (N === 0) return {}
     const df = {}
     for (const entry of entries) {
-      const text = entry.title || ''
-      const keywords = (entry.keywords || []).join(' ')
-      const summary = entry.summary || ''
-      const combined = `${text} ${text} ${text} ${text} ${text} ${keywords} ${summary}`.toLowerCase()
-      const terms = tokenizeRaw(combined)
+      // 语料必须与**检索**同源：检索走 search.js 的 weightedFieldText = title×5 + keywords
+      // + summary + **terms** + sourcePath。此前这里手抄了一份少了 `terms`/`sourcePath` 的
+      // 副本，于是只出现在 `terms` 里的词 df=0 → 被当成极稀有词拿虚高 IDF（而 `terms` 正是
+      // 0.5.x 为修"只有前 300 字符可检索"加的主检索面）。直接调 makeSearchText，权重自动对齐。
+      const terms = tokenizeRaw(makeSearchText(entry))
       const seen = new Set(terms)
       for (const t of seen) {
         df[t] = (df[t] || 0) + 1
