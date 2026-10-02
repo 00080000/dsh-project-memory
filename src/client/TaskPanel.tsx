@@ -14,7 +14,7 @@ import {
 } from './icons.ts'
 import { createTranslate, zh, en } from './locales.ts'
 import { useTaskData, useTaskDataActions, taskDataStore, parseTaskPayloadText, type TaskStep } from './task-data-store.ts'
-import { useTaskUI, useTaskUIActions } from './task-ui-store.ts'
+import { useTaskUI, useTaskUIActions, PANEL_VIEWS } from './task-ui-store.ts'
 import { MiniBar, TaskCard } from './TaskComponents.tsx'
 import { MemoryView, type InsightScope } from './MemoryView.tsx'
 import { pickSessionId } from './session-id.js'
@@ -23,8 +23,8 @@ import css from './TaskPanel.module.css'
 const NS = 'dsh-project-memory'
 
 const STATUS_CYCLE = ['pending', 'in_progress', 'completed'] as const
-const VIEW_CYCLE = ['task', 'project', 'global'] as const
-type PanelView = (typeof VIEW_CYCLE)[number]
+// 视图列表的唯一事实来源在 UI store（`/` 菜单那三行也读它）；这里不再抄一份。
+const VIEW_CYCLE = PANEL_VIEWS
 
 function getT(ctx: any) {
   const locale = ctx?.locale?.getSnapshot?.()?.active === 'zh' ? zh : en
@@ -77,18 +77,18 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   const [syncError, setSyncError] = useState<string | null>(null)
   // 提示信息开关落在 UI store（持久化）：关掉后面板内所有悬停 title 气泡都不再弹出。
   const showHints = ui.showHints
-  const [view, setView] = useState<PanelView>('task')
+  const dataActions = useTaskDataActions()
+  const uiActions = useTaskUIActions()
+  // 视图页同样落在 UI store：`/` 菜单的三行是"打开某一页"，它们必须能从这个组件外面切页。
+  const view = ui.view
   const cycleView = () => {
     const i = VIEW_CYCLE.indexOf(view)
-    setView(VIEW_CYCLE[(i + 1) % VIEW_CYCLE.length])
+    uiActions.setView(VIEW_CYCLE[(i + 1) % VIEW_CYCLE.length])
   }
   const viewTitle =
     view === 'task' ? t('panel.title')
       : view === 'global' ? t('view.global')
         : t('view.project')
-
-  const dataActions = useTaskDataActions()
-  const uiActions = useTaskUIActions()
 
   const tasks = Array.isArray(data.tasks) ? data.tasks : []
   const activeTasks = tasks.filter((task) => !task.archived)

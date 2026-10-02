@@ -18,11 +18,18 @@
  * 与「指令」组的重复：合并前插件注册了 /tasks、/task、/insight 三条宿主命令，菜单里就是三行
  * 去不掉的原始行 —— 宿主命令只要注册就会出现在目录里，`commands.list()` 与
  * `commands.execute()` 读同一个视图，`CommandDefinition` 也没有 hidden 字段，插件无法隐藏。
- * 现在宿主只剩一条 /tasks（见 src/commands/workflow.js），重复降到一行；那一行也是插件
- * 执行宿主侧工作的唯一通道（插件没有自己的 client→host RPC）。
+ * 现在宿主只剩一条 /tasks（见 src/commands/workflow.js），重复降到一行；那一行是插件执行
+ * 宿主侧工作的唯一通道（插件没有自己的 client→host RPC）。
+ *
+ * **这三行不发命令。** 它们是「打开面板的某一页」，而面板的 `closed` / `view` 是浏览器侧
+ * UI store 的状态 —— 宿主命令碰不到。旧实现绕了一圈 `remote.commands.execute('/tasks insight
+ * list project')`：命令确实在宿主执行了，但客户端渲染命令节点的是按**命令名**分发的
+ * `TaskCommandNode`（`name === 'tasks'`），它拿任务解析器去解记忆载荷 → 解析失败 → 面板毫无
+ * 变化。于是用户看到的就是"点了没反应"。现在直接调 `openView(view)`。
  */
 import type { ComponentType } from 'react'
 import { createTranslate, en, zh } from './locales.ts'
+import type { PanelView } from './task-ui-store.ts'
 import { IconChecklistOutline16, IconGlobeOutline16, IconLightOutline16 } from './icons.ts'
 
 /** 源的稳定标识：同一 trigger 内唯一，重复注册会抛错。 */
@@ -47,7 +54,8 @@ interface SlashRow {
   /** 额外搜索词：候选 name 是中文，拉丁输入（task / memory…）靠这些命中。 */
   readonly match: readonly string[]
   /** 点击后经 remote.commands.execute 执行的完整命令行。 */
-  readonly line: string
+  /** 点击后要打开的面板视图页。**纯客户端动作**，不绕宿主命令。 */
+  readonly view: PanelView
 }
 
 /** 菜单三行。顺序即渲染顺序；标题复用面板已有的 view.* 文案，保证与面板视图名一致。 */
@@ -57,21 +65,21 @@ const ROWS: readonly SlashRow[] = [
     descriptionKey: 'slash.tasks-desc',
     icon: IconChecklistOutline16,
     match: ['tasks', 'task'],
-    line: '/tasks',
+    view: 'task',
   },
   {
     labelKey: 'view.project',
     descriptionKey: 'slash.project-desc',
     icon: IconLightOutline16,
     match: ['memory', 'project', 'insight'],
-    line: '/tasks insight list project',
+    view: 'project',
   },
   {
     labelKey: 'view.global',
     descriptionKey: 'slash.global-desc',
     icon: IconGlobeOutline16,
     match: ['memory', 'global', 'insight'],
-    line: '/tasks insight list global',
+    view: 'global',
   },
 ]
 
@@ -79,8 +87,9 @@ const ROWS: readonly SlashRow[] = [
 export interface SlashSourceDeps {
   /** 会话服务（`sessions`）：把 sessionId 换回会话 scope，用于消费触发 token。 */
   readonly sessions: any
-  /** 执行一条完整命令行；返回 composer 认得的 SubmitOutcome 形状。 */
-  run(session: any, line: string, attachments?: readonly unknown[]): Promise<{ kind: 'success' | 'error'; text?: string }>
+  /** 打开面板并切到指定页（`taskUIStore.actions.openView`）。注入而非直接 import，
+   *  这样源本身可以在最小替身里单测，不需要真的挂一个 React 面板。 */
+  openView(view: PanelView): void
 }
 
 /** 翻译函数签名（key 来自 ROWS，不是字面量，故不做类型约束）。 */
@@ -114,7 +123,7 @@ export function buildSlashCandidates(t: Translate, req: any): readonly Record<st
       icon: row.icon,
       // 每一行都带 section → MenuView 不渲染组标题行，只渲染这个标题。
       section: t('slash.group'),
-      line: row.line,
+      // **不带 line**：这三行不是命令，是打开面板某一页；动作在 onPick 里按 name 查表得到。
       terms: [title, ...row.match].map((term) => term.toLowerCase()),
     }
   })
@@ -142,13 +151,18 @@ function consumeSpan(deps: SlashSourceDeps, pick: any): boolean {
 }
 
 /**
- * 一次菜单点击：消费掉触发 token 后立刻执行该行对应的命令行。
+ * 一次菜单点击：消费掉触发 token 后**直接打开面板的对应页**。
  *
- * 不返回 claim（回填 `/xxx ` 再等回车）：这三行都是「打开某个视图」，claim 会多要一次回车，
- * 而且子动词（`insight list project`）也没法由一个 claim token 表达。消费失败时仍然执行，
- * 只是草稿里残留的触发文本要用户自己清掉 —— 比回填一个会执行错命令的 claim 安全。
+ * 这三行是「打开某个视图」，不是「执行某条命令」，所以走客户端自己的 UI store：
+ * 面板的 `closed` / `view` 都是浏览器侧状态，宿主命令碰不到它们。旧实现执行
+ * `remote.commands.execute('/tasks insight list project')`，只在对话里留下一个命令节点，
+ * 而客户端渲染命令节点的是按**命令名**分发的 `TaskCommandNode`（`name === 'tasks'`），
+ * 它拿任务解析器去解记忆载荷 → 解析失败 → 对面板零影响。**这就是"点了没反应"的原因。**
+ *
+ * 不返回 claim（回填 `/xxx ` 再等回车）：claim 会多要一次回车，而这三行没有参数要填。
+ * 消费失败时仍然切页 —— 草稿里残留的触发文本要用户自己清掉，比"点了完全没反应"好。
  * @param t - 翻译函数（按当前语言把候选 name 映射回 ROWS）。
- * @param deps - 会话服务与命令执行通道。
+ * @param deps - 会话服务与 UI store 动作。
  * @param pick - 宿主给的点击载荷。
  * @returns PickOutcome；拿不到可用形状时返回 undefined（菜单照常关闭，草稿不动）。
  */
@@ -158,9 +172,11 @@ export function dispatchSlashPick(t: Translate, deps: SlashSourceDeps, pick: any
   const row = ROWS.find((candidate) => t(candidate.labelKey) === title)
   if (row === undefined) return undefined
   consumeSpan(deps, pick)
-  void deps.run(pick.session, row.line, []).catch((err: unknown) => {
-    console.warn(`[dsh-project-memory] ${row.line} failed:`, err)
-  })
+  try {
+    deps.openView(row.view)
+  } catch (err) {
+    console.warn(`[dsh-project-memory] open view ${row.view} failed:`, err)
+  }
   return 'handled'
 }
 
