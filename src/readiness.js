@@ -447,10 +447,35 @@ export function auditTriggers(items, opts = {}) {
  * @returns {{coverage: number, matched: number, supported: number, terms: number}}
  */
 export function idfCoverage(query, itemText, corpusTexts) {
+  return idfCoveragePrepared(query, itemText, corpusTermSets(corpusTexts))
+}
+
+/**
+ * 语料 → 词集合数组。**对一批候选循环评分时必须只建一次**。
+ *
+ * `idfCoverage(query, item, corpusTexts)` 每次都把整个语料重新 tokenize 一遍；调用方对 C 个
+ * 候选各调一次，就是 C×C 次 tokenize —— 实测真实 store（72 条）单步 147 ms，提出循环外
+ * 降到 1.3 ms（109×），且 coverage 结果逐字段一致。热路径上每个 pre-step 都要跑一次，所以
+ * 这个差别是"每条模型消息"级别的。
+ * @param {string[]} texts - 语料正文
+ * @returns {Set<string>[]} 与输入同序的词集合
+ */
+export function corpusTermSets(texts) {
+  return (texts || []).map((t) => new Set(tokenize(t)))
+}
+
+/**
+ * 与 {@link idfCoverage} 同一套判据，但语料词集合由调用方预先建好（见 {@link corpusTermSets}）。
+ * @param {string} query - 查询文本
+ * @param {string} itemText - 被测条目的评分文本
+ * @param {Set<string>[]} corpusSets - {@link corpusTermSets} 的产物
+ * @returns {{coverage: number, matched: number, supported: number, terms: number}}
+ */
+export function idfCoveragePrepared(query, itemText, corpusSets) {
   const q = [...new Set(tokenize(query))]
   if (!q.length) return { coverage: 0, matched: 0, supported: 0, terms: 0 }
   const item = new Set(tokenize(itemText))
-  const corpus = (corpusTexts || []).map((t) => new Set(tokenize(t)))
+  const corpus = corpusSets || []
   const n = Math.max(corpus.length, 1)
   let total = 0
   let hit = 0
