@@ -149,13 +149,14 @@ export function showTaskPanelTool(config) {
       'Show the task panel in the UI. Call this when the user asks to see the task list or when you want to display the task panel to the user.',
     parameters: {},
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
-    async execute(_args, exec) {
-      const ctx = exec?.ctx
-      if (!ctx) return '无法获取上下文'
-      // 通过 BroadcastChannel 通知客户端打开面板
-      try {
-        ctx.events?.emit?.('dsh:task-panel:show', {})
-      } catch { /* ignore */ }
+    async execute() {
+      // 开面板的动作在**客户端**：这个工具名被 src/client/ShowTaskPanelNode.tsx 认领，
+      // 结果节点一渲染就由浏览器侧调 `taskUIStore.open()`。
+      //
+      // 宿主进程没有触碰面板状态的通道 —— 面板的 closed/minimized 是浏览器侧 UI store，
+      // 而 `ToolRunContext` 只有 `deferContext()` / `concludeTurn()` 两个自有成员
+      // （packages/core/tools/src/index.ts:418），**没有 `ctx`**。旧实现读 `exec.ctx` 再
+      // `emit('dsh:task-panel:show')`，于是每次都返回「无法获取上下文」，面板从未打开过。
       return '已请求打开任务面板。'
     },
   })

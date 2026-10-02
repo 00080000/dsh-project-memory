@@ -17,6 +17,7 @@
 import { createElement } from 'react'
 import { TaskPanelEntry } from './TaskPanel.tsx'
 import { TaskCommandNode } from './TaskCommandNode.tsx'
+import { registerShowTaskPanelView } from './ShowTaskPanelNode.tsx'
 import { createSlashSource } from './slash.ts'
 
 const NS = 'dsh-project-memory'
@@ -116,6 +117,11 @@ export function apply(ctx: any): void {
           TaskCommandNode
         ))
       }
+
+      // 工具调用视图：`show_task_panel` 的唯一实际效果就是开面板，而面板状态在浏览器侧；
+      // 宿主进程碰不到它（宿主契约里 `ToolRunContext` 没有 `ctx`）。认领这个**工具名**后，
+      // 工具结果一渲染就把面板打开 —— 见 ShowTaskPanelNode.tsx。
+      registerShowTaskPanelView(slots)
     } catch (err) {
       console.warn(`[${NS}] task panel registration failed:`, err)
     }

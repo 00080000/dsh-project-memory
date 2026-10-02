@@ -168,8 +168,8 @@ The workflow panel is collapsible, automatically adapts to dsh and theme plugin 
 | `autoContext.hintMinSupport` | 0.15 | channel-level silence: if less than this share of the query's terms exist anywhere in the corpus, the hint channel says nothing this round — a long sentence that happens to share one word otherwise reports `cov:1.00` |
 | `autoContext.legacyScope` | `filter` | how to treat a legacy `trigger.scope`: `filter` keeps the old semantics, `ignore` drops it. `npm run selfcheck:triggers` reports entries whose scope values cannot intersect the project tag space |
 | `autoContext.auditLog` | true | append one JSONL line per **actual** injection to `<root>/.dsh-project-memory/injection-audit.jsonl` (what was injected, why it matched, what was dropped, session budget snapshot); rotates to `.1` past `auditMaxBytes` (`262144`). Silent on any I/O error — never affects the host request |
-| `autoContext.shadowLog` | true | append one JSONL line **per step** (including steps that injected nothing) to `admission-shadow.jsonl`: every scored candidate with its judgement features (`rel` / `coverage` / `matched` / `support` / `terms` / `decision`) plus the step's `query` / `ops` / `writes`. This is what makes a threshold change answerable offline on real history (`decision` shows which gate rejected each candidate). Rotates past `shadowMaxBytes` (`2097152`). Disk only — never enters the prompt, costs no tokens |
-| `autoContext.shadowMaxBytes` | 2097152 | rotation cap for `admission-shadow.jsonl` |
+| `autoContext.shadowLog` | true | append one JSONL line **per step** (including steps that injected nothing) to `admission-shadow.jsonl`: the scored candidates near the head of the ranking (`rel` / `coverage` / `matched` / `decision` / `outcome`) plus the step's `query` / `scoreQuery` / `ops` / `writes`. This is what makes a threshold change answerable offline on real history (`decision` shows which gate rejected each candidate, `outcome` what the budget did with it). Rotates past `shadowMaxBytes` (`524288`), keeping one `.1` generation, so the per-project log ceiling is `2 × shadowMaxBytes + 2 × auditMaxBytes` ≈ 1.5 MB. Disk only — never enters the prompt, costs no tokens |
+| `autoContext.shadowMaxBytes` | 524288 | rotation cap for `admission-shadow.jsonl` (one `.1` generation is kept) |
 
 ### Injection admission (why it stays quiet)
 
@@ -298,7 +298,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 554 tests (216 core + 16 TaskBridge + 12 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 10 host-contract + 5 reflection + 5 llm-route + 2 client-hints + 10 recall + 15 readiness + 7 insight-derive + 7 readiness-eval + 6 ops + 11 injection-audit + 10 injection-budget + 6 injection-scenarios + 18 bugfix-0.5.7 + 3 client-icons + 10 client-slash + 5 workflow-command + 7 client-session-id + 6 task-view + 79 root-guards + 9 store-gitignore + 6 atomic-write + 22 store-cache + 27 enhancer)
+npm test                    # 561 tests (216 core + 16 TaskBridge + 12 insight-store + 9 insight-actions + 8 doc-index + 7 auto-inject + 10 host-contract + 5 reflection + 5 llm-route + 2 client-hints + 10 recall + 15 readiness + 7 insight-derive + 7 readiness-eval + 6 ops + 12 injection-audit + 10 injection-budget + 6 injection-scenarios + 18 bugfix-0.5.7 + 3 client-icons + 10 client-slash + 5 client-toolview + 5 workflow-command + 7 client-session-id + 7 task-view + 79 root-guards + 9 store-gitignore + 6 atomic-write + 22 store-cache + 27 enhancer)
 npm run eval:injection      # scenario P/R on the synthetic pool: 14/14 hits, 0 false positives, control group clean
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)
