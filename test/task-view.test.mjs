@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict'
 import { STEP_STATUSES, sessionIdOf, stepContent, stepProgress, stepStatus, timeAgo } from '../src/util/task-view.js'
 import { adoptStepsToSession } from '../src/setup/taskbridge.js'
+import { showTaskPanelTool } from '../src/tools/task-tools.js'
 
 let passed = 0
 const ok = (name) => {
@@ -77,6 +78,24 @@ ok('sessionIdOf：优先 agent.session，退化 ctx.session')
   assert.equal(adoptStepsToSession(session, { steps: [] }), false)
   assert.equal(adoptStepsToSession(session, {}), false)
   ok('adoptStepsToSession：用同一套 stepContent/stepStatus 归一，空步骤不推')
+}
+
+// ---- show_task_panel：宿主侧不得再依赖不存在的 exec.ctx ----
+// 面板状态（closed/minimized）在浏览器侧，宿主没有触碰它的通道：`ToolRunContext` 只有
+// `deferContext()` / `concludeTurn()`（packages/core/tools/src/index.ts:418），**没有 `ctx`**。
+// 旧实现读 `exec.ctx`，于是永远返回「无法获取上下文」，面板从未打开过。真正的动作由客户端
+// 视图完成（src/client/ShowTaskPanelNode.tsx 认领 `tool.call.toolview` 的 show_task_panel key），
+// 所以这个工具只需要让调用真实发生并给出可读结果 —— 传不传 exec 都必须一样。
+{
+  const tool = showTaskPanelTool({})
+  assert.equal(tool.name, 'show_task_panel')
+  const noExec = await tool.execute({}, undefined)
+  const withExec = await tool.execute({}, {})
+  assert.equal(typeof noExec, 'string')
+  assert.ok(noExec.length > 0, '不得返回空串')
+  assert.equal(noExec, withExec, '结果不得依赖 exec（宿主契约里没有 ctx）')
+  assert.ok(!/无法获取上下文/.test(noExec), '不得再出现「无法获取上下文」')
+  ok('show_task_panel：不依赖 exec.ctx，任何情况下都给出可读结果')
 }
 
 console.log(`\ntask-view tests: ${passed} passed`)
