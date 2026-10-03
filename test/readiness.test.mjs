@@ -64,7 +64,15 @@ const PUBLIC_FACE = {
   const paths = readiness.extractPaths('git add README.md CHANGELOG.md && npm pack')
   assert.ok(paths.includes('README.md'), `应抽到 README.md：${paths}`)
   assert.ok(paths.includes('CHANGELOG.md'))
-  ok('extractPaths：从工具参数里抽路径 token')
+  // 点开头的裸文件名也要抽到。这一类原先只有 readiness 有，ops 那份副本漏了，
+  // 两份注释却写着"同规则" —— 现在收在 util/path-token.js，是同一份实现。
+  const dotted = readiness.extractPaths('rm -f .gitignore && cp .env .env.bak')
+  for (const p of ['.gitignore', '.env', '.env.bak']) assert.ok(dotted.includes(p), `应抽到 ${p}：${dotted}`)
+  const { extractPathTokens } = await import('../src/util/path-token.js')
+  for (const t of ['git add README.md', 'rm -f .gitignore', '.env', '']) {
+    assert.deepEqual(readiness.extractPaths(t), extractPathTokens(t), `必须与共享规则同源：${JSON.stringify(t)}`)
+  }
+  ok('extractPaths：从工具参数里抽路径 token（含点开头文件名，与共享规则同源）')
 }
 
 // ---- 3. matchTrigger：准入化后的三类判据（op / write / intent）+ 旧 trigger 不再触发 ----
@@ -115,6 +123,16 @@ const PUBLIC_FACE = {
   assert.equal(readiness.normalizeTrigger(n).trigger, n.trigger, '幂等：已是新 schema 就原样返回')
   assert.equal(legacy.trigger.when, undefined, '纯函数：不改原对象')
   ok('normalizeTrigger：actions→ops、具体 paths→writes、keywords→intents、坏 glob 丢弃')
+}
+
+// ---- 3c. 点开头的写目标要贯通到 when.writes（本轮收敛的真实收益）----
+// 反应窗口从已观察到的 shell 命令抽写目标，`ops.targets` 就是这里的来源；
+// 它原先漏掉点文件名，于是 `rm -f .gitignore` 这条明确的写意图到不了 writes 判据。
+{
+  const ctx = readiness.buildReadinessContext({ humanText: '', actionText: 'rm -f .gitignore' })
+  assert.ok(ctx.targets.includes('.gitignore'), `shell 写目标应含 .gitignore：${JSON.stringify(ctx.targets)}`)
+  assert.equal(readiness.matchTrigger({ when: { writes: ['.gitignore'] } }, ctx), 'write:.gitignore')
+  ok('点开头写目标贯通：rm -f .gitignore 命中 when.writes')
 }
 
 // ---- 4. 动机回归：lesson 的 authored trigger 必须让人在动手前看到它 ----

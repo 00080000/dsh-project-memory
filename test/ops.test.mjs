@@ -12,6 +12,7 @@ import {
   classifyToolCall,
   opForLegacyAction,
 } from '../src/ops.js'
+import { extractPathTokens } from '../src/util/path-token.js'
 
 let passed = 0
 const ok = (name) => {
@@ -52,9 +53,34 @@ const ok = (name) => {
 {
   assert.deepEqual(classifyShellCommand('ls -la de-TODO.md').targets, [])
   assert.deepEqual(classifyShellCommand('rm -f de-TODO.md').targets, ['de-TODO.md'])
+  // 点开头的裸文件名同样是写目标。ops 原先只顾「带扩展名的路径」，把这一类漏了，
+  // 而 ops.targets 正是 when.writes 的匹配面 —— 漏掉等于一条 writes:['.gitignore']
+  // 的教训静默漏召（实测 rm -f .gitignore 曾抽出 targets=[]）。语义已与 readiness 收敛为同源。
+  assert.deepEqual(classifyShellCommand('rm -f .gitignore').targets, ['.gitignore'])
+  assert.deepEqual(classifyShellCommand('echo x >> .npmrc').targets, ['.npmrc'])
+  assert.deepEqual(classifyShellCommand('touch .eslintrc').targets, ['.eslintrc'])
+  // 刻意的边界：点文件只认 token 起始处。中缀的 `src/.env` 与普通点号无法区分，
+  // 不在文本抽取规则内（调用方已知完整路径时应直接并入 path，而不是指望从这里猜）。
+  assert.deepEqual(classifyShellCommand('sed -i s/a/b/ src/.env').targets, [])
   const wsl = classifyShellCommand('powershell.exe -Command SetFileTime /mnt/c/x/a.pptx')
   assert.deepEqual(wsl.hosts, ['wsl'], '命令里出现 /mnt/* 或 powershell.exe → host=wsl')
-  ok('写目标只来自写盘命令；WSL 主机可被识别')
+  ok('写目标只来自写盘命令（含点开头文件名）；WSL 主机可被识别')
+}
+
+// --- 3b. 共享路径 token 模块：边缘输入、去重与顺序确定 ---
+// 规则是 readiness 与 ops **同一份实现**（src/util/path-token.js），这里把边缘输入钉死。
+{
+  assert.deepEqual(extractPathTokens(''), [])
+  assert.deepEqual(extractPathTokens(null), [])
+  assert.deepEqual(extractPathTokens(undefined), [])
+  assert.deepEqual(extractPathTokens('   '), [])
+  assert.deepEqual(extractPathTokens('a.md a.md'), ['a.md'], '去重')
+  // 顺序确定：先「带扩展名」、后「点开头」，各自按出现顺序
+  assert.deepEqual(extractPathTokens('.gitignore src/a.js .env'), ['src/a.js', '.gitignore', '.env'])
+  assert.deepEqual(extractPathTokens('v1.10 版本'), [], '版本号的点后面是数字，不是扩展名')
+  assert.deepEqual(extractPathTokens('.env'), ['.env'])
+  assert.deepEqual(extractPathTokens('.x'), [], '点文件名至少要 2 个字符（.x 不是文件名）')
+  ok('extractPathTokens：空/缺失/去重/顺序/版本号与点文件名边界')
 }
 
 // --- 4. 本会话那 7 次真实调用的回归：不产出标识符类噪音 ---
