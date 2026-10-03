@@ -6,15 +6,10 @@
 //
 // 分工：ops.js 只负责"把调用读成什么动作"，不负责决定注入什么（那是 readiness/auto-inject）。
 // 刻意不 import readiness：readiness 要 import 本模块的 op 闭集，反向依赖会造成循环。
+// 路径 token 的规则因此收在 util/path-token.js —— 它谁也不依赖，两个模块都能 import
+// （原先这里就地抄了一份，注释还写着"与 readiness.extractPaths 同规则"，实际已漂移）。
 
-/** 带扩展名的路径 token（与 readiness.extractPaths 同规则；这里就地实现以免循环依赖）。 */
-const PATH_TOKEN = /(?:[A-Za-z0-9_.@-]+\/)*[A-Za-z0-9_.@-]+\.[A-Za-z][A-Za-z0-9]{0,7}\b/g
-
-function extractPaths(text) {
-  const s = String(text || '')
-  if (!s) return []
-  return [...new Set([...s.matchAll(PATH_TOKEN)].map((m) => m[0]))]
-}
+import { extractPathTokens } from './util/path-token.js'
 
 /** op 闭集。新增一个 op 必须同时想清楚：它是动作，不是话题。 */
 export const OP_IDS = [
@@ -133,7 +128,7 @@ export function classifyShellCommand(command) {
     }
   }
   if (!ops.length) ops.push('shell-run')
-  const targets = SHELL_WRITE_RE.test(cmd) ? extractPaths(cmd) : []
+  const targets = SHELL_WRITE_RE.test(cmd) ? extractPathTokens(cmd) : []
   const hosts = WSL_HINT_RE.test(cmd) || /\b(powershell|pwsh|cmd)\.exe\b/i.test(cmd) ? ['wsl'] : []
   return { ops, targets, hosts }
 }
@@ -152,7 +147,7 @@ export function classifyToolCall(name, argsText) {
   if (FETCH_TOOLS.has(tool)) return { ops: ['fetch-web'], targets: [], hosts: [] }
   if (QUERY_TOOLS.has(tool)) return { ops: ['query-memory'], targets: [], hosts: [] }
   if (WRITE_TOOLS.has(tool)) {
-    const targets = path ? [path, ...extractPaths(path)] : []
+    const targets = path ? [path, ...extractPathTokens(path)] : []
     const hosts = targets.some((t) => WSL_HINT_RE.test(t)) ? ['wsl'] : []
     return { ops: ['file-write'], targets: [...new Set(targets)], hosts }
   }
