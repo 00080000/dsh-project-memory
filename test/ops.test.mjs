@@ -113,7 +113,17 @@ const ok = (name) => {
   assert.ok(a.targets.includes('src/a.js'))
   // 纯文本行不该退化成 shell-run（那是噪音源）
   assert.ok(!activityFromText('这是一句普通的话').ops.includes('shell-run'))
-  ok('activityFromText：工具调用行与裸命令都能读，纯文本不产生 shell-run')
+  assert.deepEqual(activityFromText('这是一句普通的话').targets, [])
+  // 丢掉噪音 op ≠ 丢掉整行的事实：写目标要靠路径 token 这种具体签名才抽得出，
+  // 泛泛散文产不出来，所以 shell-run-only 的行仍要留下写目标。
+  // 结构化行更明显：`bash {"command":"echo x >> .gitignore"}` 曾连写目标一起被吞。
+  const structured = activityFromText('bash {"command":"echo x >> .gitignore"}')
+  assert.deepEqual(structured.ops, [], '没有 shell 动作规则命中时不产出 shell-run')
+  assert.deepEqual(structured.targets, ['.gitignore'], '结构化调用行的写目标不得连带丢失')
+  const bare = activityFromText('cp .env .env.bak')
+  assert.deepEqual(bare.ops, [])
+  assert.deepEqual(bare.targets.sort(), ['.env', '.env.bak'])
+  ok('activityFromText：工具调用行与裸命令都能读；噪音 op 不带走写目标')
 }
 
 // --- 6. 旧 action → op 映射：死值显式返回 null（供自检报出来）---
