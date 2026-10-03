@@ -186,9 +186,12 @@ export function activityFromText(text) {
     // 先按"工具调用"解析（`edit {"file_path":"..."}`）：结构化参数比正则猜命令可靠得多。
     const call = /^\s*([A-Za-z_][\w-]*)\s+(\{[\s\S]*\})\s*$/.exec(line)
     const r = call ? classifyToolCall(call[1], call[2]) : classifyShellCommand(line)
-    // 纯文本行里没有 shell 动作时不要退化成 shell-run（那是噪音源）
-    if (r.ops.length === 1 && r.ops[0] === 'shell-run' && !/\b\w+\s+-/.test(line)) continue
-    for (const op of r.ops) ops.add(op)
+    // 纯文本行里没有 shell 动作时不要退化成 shell-run（那是噪音源）。但**只丢这个 op**：
+    // 行里的写目标/主机是具体事实（要靠路径 token、/mnt/ 这类签名才抽得出，泛泛的散文产不出来），
+    // 一起丢掉会让 `bash {"command":"echo x >> .gitignore"}` 这种 shell-run-only 的写意图
+    // 到不了 when.writes —— 实测它连结构化工具调用行的写目标都会被静默吞掉。
+    const noiseOp = r.ops.length === 1 && r.ops[0] === 'shell-run' && !/\b\w+\s+-/.test(line)
+    if (!noiseOp) for (const op of r.ops) ops.add(op)
     for (const t of r.targets) targets.add(t)
     for (const h of r.hosts) hosts.add(h)
   }

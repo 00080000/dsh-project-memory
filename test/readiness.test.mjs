@@ -127,12 +127,16 @@ const PUBLIC_FACE = {
 
 // ---- 3c. 点开头的写目标要贯通到 when.writes（本轮收敛的真实收益）----
 // 反应窗口从已观察到的 shell 命令抽写目标，`ops.targets` 就是这里的来源；
-// 它原先漏掉点文件名，于是 `rm -f .gitignore` 这条明确的写意图到不了 writes 判据。
+// 它原先漏掉点文件名，并且 shell-run-only 的行会把写目标整个吞掉。
 {
   const ctx = readiness.buildReadinessContext({ humanText: '', actionText: 'rm -f .gitignore' })
   assert.ok(ctx.targets.includes('.gitignore'), `shell 写目标应含 .gitignore：${JSON.stringify(ctx.targets)}`)
   assert.equal(readiness.matchTrigger({ when: { writes: ['.gitignore'] } }, ctx), 'write:.gitignore')
-  ok('点开头写目标贯通：rm -f .gitignore 命中 when.writes')
+  // 结构化调用行 + 无 op 规则命中（echo >> 不是删除）：写目标仍须到达 writes 判据
+  const echo = readiness.buildReadinessContext({ humanText: '', actionText: 'bash {"command":"echo x >> .gitignore"}' })
+  assert.deepEqual(echo.ops, [], '不产出 shell-run 噪音 op')
+  assert.equal(readiness.matchTrigger({ when: { writes: ['.gitignore'] } }, echo), 'write:.gitignore')
+  ok('点开头写目标贯通：rm -f .gitignore 与 bash 写 .gitignore 都命中 when.writes')
 }
 
 // ---- 4. 动机回归：lesson 的 authored trigger 必须让人在动手前看到它 ----
