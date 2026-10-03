@@ -17,6 +17,7 @@
  */
 
 import { FALLBACK_OPS, WEAK_OPS, activityFromText, opForLegacyAction } from './ops.js'
+import { extractPathTokens } from './util/path-token.js'
 import { CJK_RANGE, tokenize } from './util/search.js'
 
 /**
@@ -35,11 +36,6 @@ export const ACTION_LEXICON = [
   ['deploy', [/\bdeploy\b/i, /部署/]],
 ]
 
-/** 带扩展名的路径 token（README.md、src/util/fs.js …）。 */
-const PATH_TOKEN = /(?:[A-Za-z0-9_.@-]+\/)*[A-Za-z0-9_.@-]+\.[A-Za-z][A-Za-z0-9]{0,7}\b/g
-/** 点开头的裸文件名（.gitignore、.npmrc …）。 */
-const DOTFILE_TOKEN = /(?:^|[\s"'`(])(\.[A-Za-z0-9_-]{2,})/g
-
 /**
  * 文本 → 动作 id 列表（确定性、去重、词典序稳定）。
  * @param {string} text - 人类消息或工具调用参数。
@@ -56,17 +52,14 @@ export function detectActions(text) {
 }
 
 /**
- * 文本 → 路径 token（用于 trigger.paths 的 glob 匹配）。
+ * 文本 → 路径 token（用于 trigger 的 `writes` / `guard.paths` 匹配）。
+ * 规则收在 `util/path-token.js`：与 ops 抽写目标是**同一份实现**
+ * （原先这里与 ops.js 各抄一份，ops 那份漏了点开头文件名且已漂移）。
  * @param {string} text - 工具调用参数或人类消息。
  * @returns {string[]} 去重后的路径 token。
  */
 export function extractPaths(text) {
-  const s = String(text || '')
-  if (!s) return []
-  const out = new Set()
-  for (const m of s.matchAll(PATH_TOKEN)) out.add(m[0])
-  for (const m of s.matchAll(DOTFILE_TOKEN)) out.add(m[1])
-  return [...out]
+  return extractPathTokens(text)
 }
 
 /**
