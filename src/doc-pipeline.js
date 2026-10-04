@@ -6,6 +6,7 @@ import { summarizeText } from './util/text.js'
 import { parsePdf } from './parsers/pdfjs-parser.js'
 import { chunkText } from './chunker.js'
 import { extractKeywords, extractTermText } from './doc-index.js'
+import { entryIdPrefix } from './util/entry-id.js'
 
 export async function extractTextFromFile(filePath, { maxFileSizeMb = 50, maxPdfPages = 1000 } = {}) {
   const ext = path.extname(filePath).toLowerCase()
@@ -40,7 +41,7 @@ export async function buildDocEntries(relPath, filePath, opts = {}) {
 
   const chunks = chunkText(text, opts.chunkChars, opts.maxChunks)
   return chunks.map((chunk, i) => ({
-    id: `${relativeId(relPath)}#${i}`,
+    id: `${entryIdPrefix(relPath)}#${i}`,
     sourcePath: relPath,
     sourceLine: chunk.line,
     type: 'doc',
@@ -51,8 +52,4 @@ export async function buildDocEntries(relPath, filePath, opts = {}) {
     terms: extractTermText(chunk.text),
     hash,
   }))
-}
-
-function relativeId(filePath) {
-  return String(filePath).replace(/[\\/:\s]/g, '_')
 }

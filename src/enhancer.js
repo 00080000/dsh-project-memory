@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { oneLineDeclaration } from './util/text.js'
+import { entryIdPrefix } from './util/entry-id.js'
 
 const require = createRequire(import.meta.url)
 
@@ -95,8 +96,22 @@ const PRIORITY = {
   BACKLOG: 3
 }
 
+/**
+ * TS 增强队列的上界。
+ *
+ * 为什么需要它（0.5.15 加固）：`index_repo` 对**全部** TS/JS 一次性入队，而队列此前
+ * 没有任何 cap。配合下面的"出队才解析"，队列里每条只剩元数据（≈ 几百字节），默认
+ * `maxScanFiles`（20000）量级下上限约几 MB —— 这个数取成与扫描上限同量级，正常仓库够不到，
+ * 它只是防御"被抬高的 maxScanFiles / 异常调用方"的兜底阀。
+ */
+const ENHANCE_QUEUE_MAX = 20000
+
 const enhanceQueue = []
+let enhanceQueueMax = ENHANCE_QUEUE_MAX
 let processing = false
+/** `dropped` 计数两类丢弃：被挤掉的旧任务与被拒的新任务；`parsed` 是"出队后才解析"的证据。 */
+const enhanceStats = { dropped: 0, parsed: 0 }
+let droppedWarned = false
 
 function getCacheKey(content) {
   const hash = createHash('sha256').update(content).digest('hex').slice(0, 16)
@@ -337,6 +352,20 @@ export function deepParseWithTS(filePath, content) {
   return symbols
 }
 
+/**
+ * 入队一个 TS 增强任务。两条不变式（0.5.15 加固）：
+ *
+ * 1. **任务体在出队时才跑**。入队只读一次文件算 `cacheKey`（16 字节哈希），正文与解析结果
+ *    都不留在队列里；真正读正文 + `deepParseWithTS` + 提交发生在 `runEnhance()`。
+ *    旧实现在入队时就同步跑到第一个 `await`，于是 `index_repo` 对整棵 TS 树一次性入队 =
+ *    同时持有**所有**文件的正文与符号数组 —— 长驻 `dsh web` 的 RSS 单调爬升就是这个形状。
+ * 2. **有界**。队列长度不超过 `enhanceQueueMax`，超了先挤队尾（最不紧急的），挤不动就丢新
+ *    来的那条；被丢的任务 promise 立刻 resolve（调用方都是 fire-and-forget），丢弃计数由
+ *    `enhanceQueueStats()` 暴露、并由 `index_repo` 写进报告 —— 不静默。
+ *
+ * 去重语义与旧实现一致（同 relPath 同内容复用，内容变了换掉）。已经开始跑的任务不在队列里，
+ * 因此不受替换/挤掉影响。
+ */
 export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BATCH, config, root) {
   if (!ts) return Promise.resolve()
 
@@ -352,59 +381,92 @@ export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BAT
   }
   const cacheKey = getCacheKey(content)
 
-  // Dedupe by (relPath, contentHash) - if same content, skip; if different, replace
+  // 去重语义与旧实现一致：同 relPath 同内容 → 复用队列里那条 promise；内容变了 → 换掉它。
   const existingIdx = enhanceQueue.findIndex(q => q.relPath === relPath)
   if (existingIdx >= 0) {
     const existing = enhanceQueue[existingIdx]
     if (existing.cacheKey === cacheKey) {
-      // Same content, just update priority if higher
       if (priority < existing.priority) {
-        enhanceQueue[existingIdx].priority = priority
+        existing.priority = priority
         enhanceQueue.sort((a, b) => a.priority - b.priority)
       }
       return existing.promise
+    }
+    // 内容变了：那条还没开始跑（跑起来的早已出队）→ 换掉，并让它的 promise 立刻 resolve，
+    // 否则调用方 await 的那个 promise 永远悬着。
+    existing.resolve()
+    enhanceQueue.splice(existingIdx, 1)
+  }
+
+  const task = { store, relPath, filePath, priority, cacheKey, promise: null, resolve: null }
+  task.promise = new Promise((resolve) => { task.resolve = resolve })
+
+  if (enhanceQueue.length >= enhanceQueueMax) {
+    // 满了：优先挤掉队尾（`priority` 数字最大 = 最不紧急）的那条；挤不动（对方更紧急）
+    // 就丢掉新来的这条。两条路都计数 + 一次告警，绝不静默。
+    const last = enhanceQueue[enhanceQueue.length - 1]
+    if (last && last.priority > priority) {
+      enhanceQueue.pop()
+      last.resolve()
+      warnDropped()
     } else {
-      // Content changed - replace the task
-      enhanceQueue[existingIdx] = { relPath, filePath, priority, cacheKey, promise: null }
-      // Will create new promise below
+      warnDropped()
+      task.resolve()
+      return task.promise
     }
   }
 
-  // 先登记队列条目，再启动任务。
-  //
-  // 任务体可能在**同步阶段**就跑完：`deepParseWithTS` 是同步的，没有增强结果时根本走不到
-  // 那个 `await`，于是 `finally` 立刻执行。旧实现在任务启动**之后**才登记条目，并在 finally
-  // 里用 `enhanceQueue.findIndex(q => q.promise === p)` 反查自己 ——
-  //   · 队列为空时 `findIndex` 的回调根本不会被调用，`p` 不被求值，看不出问题；
-  //   · 队列非空（真实的 watch 轮询里必然如此）时回调被调用，读到尚未初始化的 `const p`
-  //     → `ReferenceError: Cannot access 'p' before initialization`。
-  // `scheduleProcess` 会 await 这个 promise，但 watch 路径上抛出的那一个没人接，未处理的
-  // rejection 直接把宿主打成 `dsh: fatal load failure`。
-  //
-  // 现在：条目先入队，finally 按**对象身份**摘除自己，完全不引用尚未初始化的绑定。
-  const entry = { relPath, filePath, priority, cacheKey, promise: null }
-  if (existingIdx >= 0) enhanceQueue[existingIdx] = entry
-  else enhanceQueue.push(entry)
-
-  entry.promise = (async () => {
-    try {
-      const content = readFileSync(filePath, 'utf8')
-      const enhanced = deepParseWithTS(filePath, content)
-      if (enhanced?.length) {
-        await store.commit(fn => applyEnhancedSymbols(fn, relPath, enhanced))
-      }
-    } catch (err) {
-      console.warn(`[dsh-project-memory] enhance failed for ${relPath}: ${err.message}`)
-    } finally {
-      // 只摘自己那一条：同 relPath 的新任务可能已经把它替换掉了（那种情况这里是 -1）。
-      const idx = enhanceQueue.indexOf(entry)
-      if (idx >= 0) enhanceQueue.splice(idx, 1)
-    }
-  })()
+  enhanceQueue.push(task)
   enhanceQueue.sort((a, b) => a.priority - b.priority)
-
   scheduleProcess()
-  return entry.promise
+  return task.promise
+}
+
+/** 只打一次：这是**降级说明**（有些文件这轮没有 L2 增强），不是每轮都刷屏的故障。 */
+function warnDropped() {
+  enhanceStats.dropped++
+  if (droppedWarned) return
+  droppedWarned = true
+  console.warn(
+    `[dsh-project-memory] TS 增强队列已满（上限 ${enhanceQueueMax}）：优先级最低的任务被丢弃。` +
+      '这些文件仍有 L1 正则符号，只是没有 L2 类型增强；下次索引 / 改动会重新入队。',
+  )
+}
+
+/**
+ * 队列现状。`index_repo` 用它把"这轮丢了多少"写进报告（不静默），测试用它断言
+ * 「入队同步阶段只解析 1 个」与上界。
+ */
+export function enhanceQueueStats() {
+  return { queued: enhanceQueue.length, max: enhanceQueueMax, dropped: enhanceStats.dropped, parsed: enhanceStats.parsed }
+}
+
+/** 仅供测试：临时收窄队列上限（返回恢复函数），免得测试真去排两万条。 */
+export function _setEnhanceQueueMaxForTest(n) {
+  const previous = enhanceQueueMax
+  enhanceQueueMax = Number.isFinite(n) && n > 0 ? n : ENHANCE_QUEUE_MAX
+  return () => { enhanceQueueMax = previous }
+}
+
+/** 出队之后才真正干活：此刻才读正文、才解析（正文与解析结果只活到这一步结束）。 */
+async function runEnhance(task) {
+  let content
+  try {
+    content = readFileSync(task.filePath, 'utf8')
+  } catch {
+    return // 同入队路径：文件没了不是故障，安静跳过
+  }
+  enhanceStats.parsed++
+  try {
+    const enhanced = deepParseWithTS(task.filePath, content)
+    if (enhanced?.length) {
+      await task.store.commit(fn => applyEnhancedSymbols(fn, task.relPath, enhanced))
+    }
+  } catch (err) {
+    console.warn(`[dsh-project-memory] enhance failed for ${task.relPath}: ${err.message}`)
+  } finally {
+    task.resolve()
+  }
 }
 
 function scheduleProcess() {
@@ -415,9 +477,11 @@ function scheduleProcess() {
     while (enhanceQueue.length > 0) {
       const task = enhanceQueue.shift()
       try {
-        await task.promise
+        await runEnhance(task)
       } catch (err) {
+        // runEnhance 内部已兜底；这里再兜一层，保证调度循环不会因单条任务死掉。
         console.warn(`[dsh-project-memory] enhance task failed: ${err.message}`)
+        task.resolve()
       }
       await new Promise(r => setImmediate(r))
     }
@@ -457,7 +521,7 @@ function applyEnhancedSymbols(fn, relPath, enhanced) {
   const newEntries = []
   for (const s of enhanced) {
     if (existingKeys.has(`${s.name}#${s.line}`)) continue
-    const base = `${relPath.replace(/[\/:\s]/g, '_')}#${s.line}`
+    const base = `${entryIdPrefix(relPath)}#${s.line}`
     let id = base
     if (usedIds.has(id)) id = `${base}-${s.kind}`
     for (let n = 2; usedIds.has(id); n++) id = `${base}-${s.kind}-${n}`

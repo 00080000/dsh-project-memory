@@ -4,7 +4,7 @@ import { statSync } from 'node:fs'
 import { assertIndexRoot, assertSafeRoot, memoryDirName, memoryRootFor, relativePath, scanLimits, storeKey, walkDir } from '../util/fs.js'
 import { DROP, OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from '../index-pipeline.js'
 import { ProjectMemoryStore } from '../store.js'
-import { onFileIndexed, isTypeScriptFile } from '../enhancer.js'
+import { onFileIndexed, isTypeScriptFile, enhanceQueueStats } from '../enhancer.js'
 
 /**
  * 每批提交的文件数。旧实现把整棵树的 updates 攒到最后一次性 commit：一次全量扫描的
@@ -38,7 +38,7 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
     batch = []
   }
 
-  const { files, truncated, skipped: nestedRoots } = walkDir(root, {
+  const { files, truncated, capped, skipped: nestedRoots, unreadable } = walkDir(root, {
     ...scanLimits(config),
     nestedStoreName: memoryDirName(config),
   })
@@ -78,7 +78,8 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
   }
 
   // 收尾：写完最后一批 + 清理本轮未见到的旧条目。
-  // 截断时**不做 unseen 清理**：没扫到的文件不等于被删了。
+  // 截断时**不做 unseen 清理**：没扫到的文件不等于被删了（`truncated` 同时覆盖"读不到的
+  // 目录"——那种情况下清理会静默删掉派生索引，见 src/util/fs.js walkDir）。
   const { removed } = commitFileUpdates(store, {
     updates: batch,
     unseen: truncated ? null : seen,
@@ -88,7 +89,13 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
     `Indexed project: ${root}\n` +
     `docs indexed: ${indexed}, code symbols updated: ${updated}, unchanged skipped: ${skipped}, removed: ${removed}\n` +
     `memory store: ${stats.files} files, ${stats.entries} entries, ${stats.experience} experience notes`
-  if (truncated) {
+  if (unreadable.length) {
+    const rels = unreadable.map((p) => storeKey(relativePath(root, p)))
+    report +=
+      `\ncould not read ${unreadable.length} director${unreadable.length === 1 ? 'y' : 'ies'} (permissions?): ${rels.join(', ')}` +
+      '\n(scan incomplete → nothing is treated as deleted: previously indexed files under them are kept as-is; fix permissions and re-run)'
+  }
+  if (capped) {
     const { maxFiles, maxDepth } = scanLimits(config)
     report +=
       `\nscan truncated at the safety limit (maxFiles=${maxFiles}, maxDepth=${maxDepth}): only part of the tree was indexed.` +
@@ -106,8 +113,15 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
   }
 
   // Trigger TS enhancement for code files (TS/JS only), now that the base entries are on disk.
+  const dropsBefore = enhanceQueueStats().dropped
   for (const [rel, filePath] of tsFiles) {
     onFileIndexed(store, rel, filePath, config, root)
+  }
+  const dropped = enhanceQueueStats().dropped - dropsBefore
+  if (dropped) {
+    report +=
+      `\n${dropped} file(s) skipped TS enhancement (queue cap reached, lowest priority dropped first)` +
+      ': their L1 regex symbols are unaffected; they are re-queued on the next index or change.'
   }
 
   return report

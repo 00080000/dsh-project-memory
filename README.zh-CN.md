@@ -189,7 +189,7 @@ TaskPanel (Container)
 
 **排除名单。** 以下目录不会作为根，精确匹配（子目录不受影响）：文件系统根、家目录、临时目录（`os.tmpdir()` 与共享的 `/tmp`、`/var/tmp`、`%TEMP%`、`%SystemRoot%\Temp`），以及系统/包管理器前缀（POSIX 上的 `/opt/homebrew`，Windows 上的 `%SystemRoot%`、`%ProgramFiles%`、`%ProgramData%`）。这些目录下的会话不启用记忆，stderr 输出一行说明。
 
-**扫描上限。** 单次扫描最多 `maxScanFiles` 个文件（20000）、`maxScanDepth` 层目录（12）。被截断时，`index_repo` 的结果里会说明，watcher 每个根记一行，且不会删除没扫到的条目。目录树更大就调高这两个值。
+**扫描上限。** 单次扫描最多 `maxScanFiles` 个文件（20000）、`maxScanDepth` 层目录（12）。被截断时，`index_repo` 的结果里会说明，watcher 每个根记一行，且不会删除没扫到的条目。**读不到的目录**（如 `EACCES`）同样算一次截断扫描并在结果里点名：读失败不等于被删除。目录树更大就调高这两个值。
 
 store 建在被索引的目录树里，并且**自我忽略**：它在自己目录内写入一条 `*` 规则（`<store>/.gitignore`）。git 会读取任意目录下的 `.gitignore`，所以 `git status` / `git add -A` 里都看不到它，你自己的 `.gitignore` 一个字都不用加（`git clean -fd` 也因此不会删它）。确实想把记忆跟着仓库提交：`git add -f .dsh-project-memory`——已跟踪的文件不受忽略规则影响。
 
@@ -286,7 +286,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 - **面向模型的记忆：agent 自己写，不把人放进回路** — 不要求人工批准：记忆的消费方是 agent，而 agent 通常是无头的，只在有人点卡片时才升级的记忆等于永远不会升级。`draft` 是「来源标记 + 佐证门槛」而不是审批队列——唯一的推断型写入者 `reflection`（默认关闭）只写任务级草稿，草稿不进召回与注入。
 - **直接返回完整条目** — 条目本就紧凑，完整返回更可核验，也少一轮往返。
 - **`forget` 按关键词激进；精确请用 ID** — 不做确认弹窗、回收站或仅精确匹配：经验笔记低风险、高量、仅用于检索，陈旧噪音比误删更伤。精确删用 `query_memory` 输出里的 ID。
-- **TS 增强可选、异步、缓存** — L2 TS Compiler API 在优先级队列异步跑（P0 `fs/observed`、P1 `watch`、P2 `index_repo`），结果按内容哈希缓存；不强制 TS、也不阻塞索引：强制会让非 TS 项目装不上，阻塞会卡死大项目的 `index_repo`；`npm i -D typescript@5|6` 即自动启用，没有 TS 时回退 L1 正则。**默认 lib 不加载**（编译期 `noLib`）：依赖全局类型（`Promise`/`Array`/DOM）的推导会退化成 `any`/`unknown`，显式标注的类型不受影响。
+- **TS 增强可选、异步、缓存** — L2 TS Compiler API 在优先级队列异步跑（P0 `fs/observed`、P1 `watch`、P2 `index_repo`），结果按内容哈希缓存；不强制 TS、也不阻塞索引：强制会让非 TS 项目装不上，阻塞会卡死大项目的 `index_repo`。队列只放逐文件的记账信息、且**有上界**（20000）：真溢出时按优先级丢掉最不紧急的条目，并在 `index_repo` 报告里给出丢弃条数——这些文件仍有 L1 正则符号，下次索引或改动会重新入队。`npm i -D typescript@5|6` 即自动启用，没有 TS 时回退 L1 正则。**默认 lib 不加载**（编译期 `noLib`）：依赖全局类型（`Promise`/`Array`/DOM）的推导会退化成 `any`/`unknown`，显式标注的类型不受影响。
 - **子代理会话暂不纳入（以后可能做）** 
 
 ## 开发（面向贡献者）
@@ -295,7 +295,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ```bash
 npm install
-npm test                    # 561 项测试（核心 216 + TaskBridge 16 + insight-store 12 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 10 + reflection 5 + llm-route 5 + client-hints 2 + recall 10 + readiness 15 + insight-derive 7 + readiness-eval 7 + ops 6 + injection-audit 12 + injection-budget 10 + injection-scenarios 6 + bugfix-0.5.7 18 + client-icons 3 + client-slash 10 + client-toolview 5 + workflow-command 5 + client-session-id 7 + task-view 7 + root-guards 79 + store-gitignore 9 + atomic-write 6 + store-cache 22 + enhancer 27）
+npm test                    # 592 项测试（核心 227 + TaskBridge 16 + insight-store 12 + insight-actions 9 + doc-index 8 + auto-inject 7 + host-contract 10 + reflection 5 + llm-route 5 + client-hints 2 + recall 10 + readiness 16 + insight-derive 7 + readiness-eval 7 + ops 7 + injection-audit 12 + injection-budget 10 + injection-scenarios 6 + bugfix-0.5.7 18 + client-icons 3 + client-slash 10 + client-toolview 5 + workflow-command 5 + client-session-id 7 + task-view 7 + root-guards 79 + store-gitignore 9 + atomic-write 6 + store-cache 34 + enhancer 33）
 npm run eval:injection      # 合成池上的场景 P/R：命中 14/14、假阳性 0、对照组零注入
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）
