@@ -41,7 +41,7 @@ cd dsh-project-memory && dsh plugin --profile web add . -w
 dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 ```
 
-每个被索引的项目在 `<root>/.dsh-project-memory/` 下有独立存储。如无需入库，可加入 `.gitignore`。
+每个被索引的项目在 `<root>/.dsh-project-memory/` 下有独立存储；它默认就把自己排除在 git 之外，`.gitignore` 无需任何添加。
 
 ## 用法
 
@@ -63,7 +63,7 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 | `forget id_or_query` | 删除过期经验笔记。 |
 | `save_lesson` | 在 task/project/global 任一作用域保存教训 / 决策 / 流程。近重复按 overlap ≥ 0.7 合并、0.65–0.7 强化；同一 insight 被 2+ 任务命中自动 task→project、3+ → global。主要参数：`title`、`kind`、`scope`、正文（`pattern`/`fix`、`choice`/`reason` 或 `steps`）、`trigger`（`when` 是唯一触发面，`guard` 只能收窄，`prevents` 记下没有它会坏在哪）。 |
 
-`/tasks` 在 web 的 `/` 菜单里以带图标的**「工作流」**组呈现 —— 三个视图入口：任务 / 项目记忆 / 全局记忆（标题随界面语言切换）。宿主命令只要注册就会出现在一贯的**「指令」**小节里，且插件无法隐藏它，所以插件的宿主命令**只保留 `/tasks` 一条**，其余动作全部作为它的子动词由卡片按钮驱动。
+`/tasks` 在 web 的 `/` 菜单里以带图标的**「工作流」**组呈现 —— 三个视图入口：任务 / 项目记忆 / 全局记忆（标题随界面语言切换）。它是插件唯一注册的命令，其余动作全部作为它的子动词由卡片按钮驱动。
 
 ## 工作原理
 
@@ -158,7 +158,7 @@ TaskPanel (Container)
 
 **扫描上限。** 单次扫描最多 `maxScanFiles` 个文件（20000）、`maxScanDepth` 层目录（12）。被截断时，`index_repo` 的结果里会说明，watcher 每个根记一行，且不会删除没扫到的条目。**读不到的目录**（如 `EACCES`）同样算一次截断扫描并在结果里点名：读失败不等于被删除。
 
-store 建在被索引的目录树里，并且**自我忽略**：它在自己目录内写入一条 `*` 规则（`<store>/.gitignore`）。git 会读取任意目录下的 `.gitignore`，所以 `git status` / `git add -A` 里都看不到它，你自己的 `.gitignore` 一个字都不用加（`git clean -fd` 也因此不会删它）。确实想把记忆跟着仓库提交：`git add -f .dsh-project-memory`。
+store 建在被索引的目录树里，并且**自我忽略**：自己目录内的一条 `*` 规则让它不出现在 `git status` / `git add -A` 里，`git clean -fd` 也不会删它。确实想把记忆跟着仓库提交：`git add -f .dsh-project-memory`——已跟踪文件不受忽略规则影响。
 
 配置存放在插件的 config 对象中。修改方式：在 profile 的 `cordis.patch.yml` 里加一条覆盖项——web profile 对应 `~/.dsh/profiles/web/cordis.patch.yml`：
 
