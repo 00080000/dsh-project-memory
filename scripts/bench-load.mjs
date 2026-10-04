@@ -9,12 +9,27 @@
  * 用法：node --expose-gc scripts/bench-load.mjs <storeDir>
  */
 import { performance } from 'node:perf_hooks'
+import { statSync } from 'node:fs'
+import path from 'node:path'
 
 import { ProjectMemoryStore } from '../src/store.js'
 
-const dir = process.argv[2]
-if (!dir) {
+const rawDir = process.argv[2]
+if (!rawDir) {
   console.error('usage: node --expose-gc scripts/bench-load.mjs <storeDir>')
+  process.exit(2)
+}
+
+const dir = path.resolve(rawDir)
+let dirStat
+try {
+  dirStat = statSync(dir)
+} catch {
+  console.error(`invalid storeDir: ${rawDir} (does not exist)`)
+  process.exit(2)
+}
+if (!dirStat.isDirectory()) {
+  console.error(`invalid storeDir: ${rawDir} (not a directory)`)
   process.exit(2)
 }
 
