@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, utimesSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, utimesSync, chmodSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -515,6 +515,45 @@ console.log('\n== query_memory streaming path (IDF cache) ==')
   // Second query uses cached IDF
   out = await streamTool.execute({ root: streamRoot, query: 'constraint' })
   check('cached IDF query returns results', out.includes('API') && out.toLowerCase().includes('constraint'))
+}
+
+console.log('\n== entry id 前缀必须是单射（旧 relativeId 会把两个文件撞成一个）==')
+{
+  // 旧规则 `replace(/[\\/:\s]/g, '_')` 之于 `a b.md` 与 `a_b.md` 是同一条前缀 → `${prefix}#0`
+  // 同 id。撞 id 的后果不是"不好看"：rankEntriesStreaming 按 id 合并多查询命中，两个文件的条目
+  // 会被合成一条、低分的那条静默消失。
+  const { entryIdPrefix } = await import('../src/util/entry-id.js')
+  const paths = [
+    'a b.md', 'a_b.md', 'a/b.md', 'a\\b.md', 'a:b.md', 'a  b.md', 'a%b.md', 'a#0.md',
+    'a%5Fb.md', '面试 演示.md', '面试_演示.md', 'x.md', 'x.md#0', 'src/foo_bar.js', 'src/foo bar.js',
+  ]
+  const prefixes = paths.map(entryIdPrefix)
+  check(`${paths.length} 个不同路径 → ${paths.length} 个不同前缀（实际 ${new Set(prefixes).size}）`, new Set(prefixes).size === paths.length)
+  check('空格与下划线不再等价', entryIdPrefix('a b.md') !== entryIdPrefix('a_b.md'))
+  check('旧实现会撞的完整 id 也不相等', `${entryIdPrefix('a b.md')}#0` !== `${entryIdPrefix('a_b.md')}#0`)
+  const symA = scanSymbols('a b.ts', 'a b.ts', 'export function alpha() { return 1 }\n').map((s) => s.id)
+  const symB = scanSymbols('a_b.ts', 'a_b.ts', 'export function alpha() { return 1 }\n').map((s) => s.id)
+  check('符号表那条路径同样单射', symA.length > 0 && symB.length > 0 && !symA.some((id) => symB.includes(id)))
+}
+
+console.log('\n== 检索合并键不再把两个文件合成一条 ==')
+{
+  const collideRoot = mkdtempSync(path.join(tmpdir(), 'pm-idcollide-'))
+  writeFileSync(path.join(collideRoot, 'a b.md'), '# Alpha\n\nshared needletoken gateway constraint\n')
+  writeFileSync(path.join(collideRoot, 'a_b.md'), '# Beta\n\nshared needletoken refund constraint\n')
+  await indexRepoTool(ctx, { ...config, llmQueryExpansion: false }).execute({ root: collideRoot })
+  const collideStore = new ProjectMemoryStore(memoryRootFor(collideRoot, config.memoryDir)).load()
+  const docIds = collideStore
+    .allEntries()
+    .filter((e) => e.type === 'doc' && String(e.sourcePath).endsWith('.md'))
+    .map((e) => e.id)
+  check(`两个文件的 doc id 不同（${docIds.join(' | ')}）`, docIds.length === 2 && new Set(docIds).size === 2)
+  const merged = rankEntriesStreaming(collideStore.allEntries(), ['shared needletoken'], {}, 8)
+  const sources = new Set(merged.map((r) => r.entry.sourcePath))
+  check(
+    `两条 doc 都还在检索结果里（实际 ${[...sources].join(', ') || '空'}）`,
+    sources.has('a b.md') && sources.has('a_b.md'),
+  )
 }
 
 console.log('\n== no-hit introspection & stats tool ==')
@@ -1280,6 +1319,43 @@ console.log('\n== nested project roots are not indexed twice ==')
   check('index_repo does not index the nested root', !after.fileRecord('child/src/inner.js'))
   check('a stale duplicate from before is removed', !after.fileRecord('child/src/inner.js') && after.entries['child/src/inner.js'] === undefined)
   check('the report says what was skipped', report.includes('nested project root(s) with their own store') && report.includes('child'))
+}
+
+console.log('\n== 读不到的目录不等于"已删除"（walkDir / index_repo）==')
+{
+  // 旧实现 walkDir 对 readdirSync 失败直接 `continue`：那棵子树既不进 `seen`、又不置 truncated，
+  // 于是 index_repo 收尾把它当"本轮没见到 = 已删除"清掉了派生索引（静默），下次索引再重建一遍。
+  const { walkDir } = await import('../src/util/fs.js')
+  const { indexRepository } = await import('../src/tools/index-repo.js')
+  const lockRoot = mkdtempSync(path.join(tmpdir(), 'pm-eacces-'))
+  const locked = path.join(lockRoot, 'locked')
+  mkdirSync(locked, { recursive: true })
+  writeFileSync(path.join(lockRoot, 'ok.js'), 'export function ok() {}\n')
+  writeFileSync(path.join(locked, 'hidden.js'), 'export function hidden() {}\n')
+
+  // Windows 上 chmod 不拦 readdir；root 无视权限位。这两种环境下 EACCES 构造不出来。
+  const canLock = process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() !== 0
+  if (!canLock) {
+    console.log('  --  skip: Windows 或 root（chmod 拦不住 readdir，本用例无法构造 EACCES）')
+  } else {
+    await indexRepository(ctx, config, lockRoot)
+    const seeded = new ProjectMemoryStore(memoryRootFor(lockRoot, config.memoryDir)).load()
+    check('前置：locked/hidden.js 已被索引', !!seeded.fileRecord('locked/hidden.js'))
+
+    chmodSync(locked, 0o000)
+    let report = ''
+    try {
+      const walked = walkDir(lockRoot)
+      check('读不到的目录被列进 unreadable', walked.unreadable.includes(locked))
+      check('读不到也置 truncated（调用方据此跳过 unseen 清理）', walked.truncated === true && walked.capped === false)
+      report = await indexRepository(ctx, config, lockRoot)
+    } finally {
+      chmodSync(locked, 0o755)
+    }
+    const after = new ProjectMemoryStore(memoryRootFor(lockRoot, config.memoryDir)).load()
+    check('EACCES 目录下的既有条目不得被清', !!after.fileRecord('locked/hidden.js'))
+    check('报告点明"读不到"，且不谎报成撞上限', report.includes('could not read') && !report.includes('safety limit'))
+  }
 }
 
 

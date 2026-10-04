@@ -155,12 +155,19 @@ export function scanLimits(config) {
 }
 
 /**
- * 遍历目录，返回 `{ files, truncated }`。
+ * 遍历目录，返回 `{ files, truncated, capped, skipped, unreadable }`。
  *
  * 与旧版的两点区别都是 OOM 的直接修复：
  *   - **有上限**：`maxFiles` / `maxDepth` 封顶，超限只做截断标记，不再一路吃内存；
  *   - `truncated` 让调用方区分「这棵树扫完了」和「只扫了一部分」——后者绝不能拿
  *     本轮未见到的文件去删旧条目（见 index-repo/watch 的 unseen 用法）。
+ *
+ * `truncated` 现在有**两个来源**，必须分开报告：
+ *   - `capped`：撞到 `maxFiles` / `maxDepth`；
+ *   - `unreadable`：某个目录 `readdirSync` 失败（EACCES/EPERM…）。
+ * 旧实现把读失败当"这个目录不存在"直接 `continue` —— 于是那棵子树里的文件既不在 `seen` 里、
+ * 又不置 `truncated`，调用方就会把它们当"已删除"清掉（派生索引静默丢失，且每次索引都白清一遍）。
+ * 读不到 ≠ 不存在：置 `truncated` 是最保守的处置。
  */
 /**
  * 一个目录是否**自带 store**（即它自己已经是一个被索引过的项目根）。
@@ -218,7 +225,9 @@ export function walkDir(root, opts = {}) {
   const nestedStoreName = opts.nestedStoreName || null
   const out = []
   const skipped = []
+  const unreadable = []
   const stack = [[root, 0]]
+  let capped = false
   let truncated = false
   let hitFileCap = false
   while (stack.length) {
@@ -227,6 +236,10 @@ export function walkDir(root, opts = {}) {
     try {
       entries = readdirSync(dir, { withFileTypes: true })
     } catch {
+      // 读不到 ≠ 不存在。旧实现直接 continue，于是这片子树被当成"已删除"（调用方拿
+      // seen 去清 unseen），而且失败是静默的。置 truncated 让调用方跳过清理。
+      unreadable.push(dir)
+      truncated = true
       continue
     }
     for (const entry of entries) {
@@ -240,12 +253,14 @@ export function walkDir(root, opts = {}) {
         }
         if (depth + 1 > maxDepth) {
           truncated = true
+          capped = true
           continue
         }
         stack.push([full, depth + 1])
       } else {
         if (out.length >= maxFiles) {
           truncated = true
+          capped = true
           hitFileCap = true
           break
         }
@@ -256,7 +271,8 @@ export function walkDir(root, opts = {}) {
   }
   out.sort()
   skipped.sort()
-  return { files: out, truncated, skipped }
+  unreadable.sort()
+  return { files: out, truncated, capped, skipped, unreadable }
 }
 
 export function isSupportedDoc(ext) {

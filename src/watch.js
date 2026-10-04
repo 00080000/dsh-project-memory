@@ -13,6 +13,8 @@ export class WatchManager {
     this.timer = null
     this._polling = false
     this._truncationWarned = new Set()
+    /** 已就「读不到的目录」告警过的根：同上，只提示一次。 */
+    this._unreadableWarned = new Set()
     /** 已就「跳过了嵌套项目根」告警过的根：同上，只提示一次。 */
     this._nestedStoreWarned = new Set()
   }
@@ -165,7 +167,7 @@ export class WatchManager {
     // 本轮用的 store：命中缓存即 O(1)，被逐出则重新读盘。整个 pollRoot 期间共用同一个实例。
     const store = this.storeFor(root)
 
-    const { files, truncated, skipped: nestedRoots } = walkDir(root, {
+    const { files, truncated, capped, skipped: nestedRoots, unreadable } = walkDir(root, {
       ...scanLimits(this.config),
       nestedStoreName: memoryDirName(this.config),
     })
@@ -178,7 +180,16 @@ export class WatchManager {
           'their content is refreshed by their own root, and any duplicate copy previously indexed here is being removed.',
       )
     }
-    if (truncated && !this._truncationWarned.has(root)) {
+    if (unreadable.length && !this._unreadableWarned.has(root)) {
+      // 读不到 ≠ 已删除：本轮跳过快照清理（见下方 unseen），既有条目原样保留。只提示一次。
+      this._unreadableWarned.add(root)
+      const rels = unreadable.map((p) => storeKey(relativePath(root, p)))
+      console.error(
+        `[dsh-project-memory] watch of ${root} could not read ${unreadable.length} director${unreadable.length === 1 ? 'y' : 'ies'} ` +
+          `(${rels.join(', ')}); they are skipped and nothing under them is treated as deleted.`,
+      )
+    }
+    if (capped && !this._truncationWarned.has(root)) {
       // 只提示一次：这是一条**永久**的降级说明，不是每轮都要刷屏的故障。
       this._truncationWarned.add(root)
       const { maxFiles, maxDepth } = scanLimits(this.config)
@@ -237,7 +248,8 @@ export class WatchManager {
 
     // 单事务写盘；CAS 失败的条目本轮不落快照，下一轮自然重试。
     // 截断时**不传 unseen**：没扫到的文件不等于被删了，否则一份被上限截掉的树每轮都会
-    // 把自己的记忆删掉一半（先删再下轮重新索引，纯粹的抖动）。
+    // 把自己的记忆删掉一半（先删再下轮重新索引，纯粹的抖动）。`truncated` 同样覆盖
+    // "有目录读不到"（EACCES）这一路。
     const { stale, removed } = commitFileUpdates(store, {
       updates,
       unseen: truncated ? null : seen,
