@@ -42,7 +42,7 @@ The plugin is also published on npm as a scoped package:
 dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 ```
 
-Each indexed project has its own store at `<root>/.dsh-project-memory/`. Add it to `.gitignore` if it should not be committed.
+Each indexed project has its own store at `<root>/.dsh-project-memory/`. It keeps itself out of git by default — there is nothing to add to your `.gitignore`.
 
 ## Usage
 
@@ -64,7 +64,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | `forget id_or_query` | Delete stale experience notes. |
 | `save_lesson` | Save a lesson / decision / procedure at task, project or global scope. Near-duplicates merge (≥ 0.7 overlap) or reinforce (0.65–0.7); two tasks hitting the same insight promote it task → project, three or more → global. Key params: `title`, `kind`, `scope`, the content (`pattern`/`fix`, `choice`/`reason` or `steps`), and `trigger` (`when` is the only trigger surface, `guard` narrows it, `prevents` records what breaks without it). |
 
-`/tasks` appears in the web `/` menu inside an icon-bearing **Workflow** group with three view entries — Tasks / Project Memory / Global Memory (labelled in the UI language). A host command cannot be hidden from the built-in **Commands** section, so the plugin registers **only `/tasks`** and every other action rides it as a sub-verb driven by card buttons.
+`/tasks` appears in the web `/` menu inside an icon-bearing **Workflow** group, with three view entries — Tasks / Project Memory / Global Memory (labelled in the UI language). It is the plugin's only registered command; every other action rides it as a sub-verb driven by card buttons.
 
 ## How it works
 
@@ -159,7 +159,7 @@ When the root comes from the working directory, the model gets one notice per se
 
 **Scan limits.** One pass covers at most `maxScanFiles` files (20000) and `maxScanDepth` directory levels (12). A truncated pass is reported in the `index_repo` result and logged once per root by the watcher, and it does not remove entries it did not reach. A directory that cannot be read (e.g. `EACCES`) counts as a truncated pass too and is named in the result: a read failure is not a deletion.
 
-The store lives in the tree it indexes and **ignores itself**: it writes a `*` rule into its own `<store>/.gitignore`, so nothing shows up in `git status` or `git add -A` and you have nothing to add to your own `.gitignore`. (It also means `git clean -fd` leaves the store alone.) To commit project memory deliberately, `git add -f .dsh-project-memory` — tracked files are not affected by ignore rules.
+The store lives in the tree it indexes and **ignores itself**: a `*` rule inside the store keeps it out of `git status` and `git add -A`, and means `git clean -fd` leaves it alone. To commit project memory deliberately, `git add -f .dsh-project-memory` — tracked files are not affected by ignore rules.
 
 Settings live in the plugin's config object. To change them, add an override entry to your profile's `cordis.patch.yml` — for the web profile that is `~/.dsh/profiles/web/cordis.patch.yml`:
 
