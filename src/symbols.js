@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { oneLineDeclaration } from './util/text.js'
+import { entryIdPrefix } from './util/entry-id.js'
 
 const JS_LIKE = new Set(['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.jsx', '.tsx'])
 const PYTHON = new Set(['.py'])
@@ -460,7 +461,7 @@ function buildSymbol(matched, relPath, rawLine, lineNo) {
   const identity = `${prefix}${typeSig}${overloadPart} — ${relPath}:${lineNo}`
 
   return {
-    id: `${String(relPath).replace(/[\\/:\s]/g, '_')}#${lineNo}`,
+    id: `${entryIdPrefix(relPath)}#${lineNo}`,
     sourcePath: relPath,
     sourceLine: lineNo,
     type: 'symbol',

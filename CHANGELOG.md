@@ -1,3 +1,79 @@
+## 0.5.15 (2026-10-04)
+
+`npm test` **563 → 592 项 / 30 个文件**；`npm run eval:injection` 逐项不变
+（命中 14 / 假阳性 0 / 漏召 0，P/R 1.00/1.00，7 次注入 857 字符）。
+
+### 修复：读不到的目录被当成「已删除」，静默清掉派生索引
+
+`walkDir` 对 `readdirSync` 失败直接 `catch { continue }`：那棵子树既不进 `seen`，又不置
+`truncated`，而 `index_repo` 只在 `truncated` 时跳过 unseen 清理 —— 于是读失败的目录下的既有
+条目被当「本轮没见到 = 已删除」清掉，下一次索引再把它们建回来。
+
+- `walkDir` 新增 `unreadable`（失败的目录）与 `capped`（撞 `maxFiles`/`maxDepth`），
+  `truncated = capped || unreadable.length > 0`。**读不到 ≠ 不存在**，两者都按"扫描不完整"处理。
+- `index_repo` 的报告区分两种截断：`could not read N director(y|ies) (permissions?): …` 与
+  `scan truncated at the safety limit (maxFiles=…, maxDepth=…)` —— 旧文案会把权限问题谎报成撞上限。
+- watcher 同样分类告警（每个根一次），并照旧不传 `unseen`。
+- 后果本来就有界：`removeFile()` 只删 `files`/`entries`（派生索引），insights / tasks /
+  experience 与源文件都不动 → 重新索引即恢复。但失败是静默的，所以照修。
+- 测试：`walkDir` 报 `unreadable` 且 `truncated`（`capped=false`）；EACCES 目录下的既有条目
+  在重跑 `index_repo` 后**仍在**，报告点名"读不到"。Windows / root 下 chmod 拦不住 `readdir`，
+  该用例显式跳过并打印原因。
+
+### 修复：`a b.md` 与 `a_b.md` 撞同一个 entry id，检索静默少结果
+
+id 前缀规则 `replace(/[\\/:\s]/g, '_')` 曾在**三处各写一份**（`doc-pipeline.js` 的 `relativeId`、
+`symbols.js` 的 `buildSymbol`、`enhancer.js` 的 `applyEnhancedSymbols`），且把 `/ \ : 空白` 全部
+映射成同一个 `_`。于是 `a b.md`、`a_b.md`、`a/b.md`、`a:b.md` 生成同一个 `${prefix}#0`。
+
+撞 id 的代价不是"不好看"：`rankEntriesStreaming` 按 id 合并多查询命中，两条不同文件的条目会被
+合成一条、低分的那条**静默消失**。
+
+- 新增 `src/util/entry-id.js`：`entryIdPrefix(relPath)` 单射编码 —— `/` → `_`（保持
+  `src/foo.js` 可读），其余风险字符（`\` `:` 各空白 `_` `%` `#`）→ `%` + 码点十六进制。
+  三处副本全部改为调用它。
+- 单射理由：输出里的 `%` 只可能来自转义（源里的 `%` 一定是 `%25`），每个风险字符的转义串互不
+  相同且都不是 `_`；其余字符原样输出。CJK 不受影响（不像 `encodeURIComponent` 会把每个字变成
+  9 字节，那会让 id 变长、把 store 撑大）。
+- 存量 store 不需要迁移：id 不是存储键（键是 `relPath`），旧 id 照常可比对；文件变化时自然换新。
+- 测试：15 个互相"危险"的路径 → 15 个不同前缀；符号表路径同款单射；端到端 —— 索引
+  `a b.md` + `a_b.md` 后两个 doc id 不同，且**两条都留在检索结果里**（旧规则下必为 1 条）。
+
+### 内存：剥离派生字段不再用 `delete`（1196 B/条 → 406 B/条）
+
+`stripPersistedDerived` / `withoutPersistedDerived` 原本 `{...entry}` / 原地 `delete` 掉
+`linkedSymbols` / `searchText` / `typeSig`。`delete` 会把 entry 推进 V8 字典模式，之后每个属性
+都变成哈希表项 —— 加载路径上这是常驻内存（`storeCache` 里所有 store 都算），写盘路径同款浪费。
+
+- 改为**按非派生键重建**：没有派生字段时原对象返回（零分配热路径），有则重建；
+  值为 `undefined` 的键（`typeSig: undefined` 是 enhancer 的实现细节）也不再占槽位。
+  `__proto__` 用 `Object.defineProperty` 写入，避免 `out[key] = value` 走去改原型。
+- 实测（20k 条真实条目形状，`--expose-gc`）：字典模式 **1196 B/条** → 重建 **406 B/条**；
+  按本仓库量级（10^5 条目）折算，加载后驻留省 10^1 MB 量级。
+- 测试：行为面（键集、原对象不被改、零分配路径、存量 store 加载即剥离 + 下一次 `save()` 压实
+  磁盘）＋ 形状面（子进程 `--expose-gc` 对照旧 `delete` 版本，断言至少省 25%）。
+
+### 加固：TS 增强队列有上界，且正文/解析推迟到出队时
+
+`enqueueEnhance` 原本在入队时就同步读正文 + `deepParseWithTS`（同步跑到第一个 `await`），
+于是 `index_repo` 对整棵 TS 树一次性入队 = 同时持有**所有**文件的正文与符号数组；队列本身也没有
+任何 cap。长驻 `dsh web` 的 RSS 单调爬升就是这个形状。
+
+- 任务体推迟到出队：入队只读一次文件算 `cacheKey`（16 字节），正文与解析结果不留在队列里，
+  真正读正文/解析/提交发生在 `runEnhance()`。队列每条只剩元数据。
+- 队列有界：`ENHANCE_QUEUE_MAX = 20000`（与 `maxScanFiles` 默认同量级，正常仓库够不到，是兜底阀）。
+  满了先挤队尾（最不紧急的），挤不动就丢新来的那条；被丢/被挤掉的任务 promise **立刻 resolve**
+  （调用方都是 fire-and-forget，不能让谁悬着），丢弃计数与一次告警不静默，
+  `index_repo` 把它写进报告（`N file(s) skipped TS enhancement …`）。
+- 去重语义不变（同 relPath 同内容复用，内容变了换掉 —— 被换掉的那条 promise 同样 resolve）。
+- 测试：入队上限收窄到 3 后断言队列不超上限、**同步阶段只解析 1 个文件**、超限计数 +1、
+  所有 promise 都 settle、队列最终排空且增强结果仍落进 store。
+
+### 文档：README 测试数断言审计
+
+README（英/中）的测试数此前停在 561，而 `npm test` 实测已是 563（`readiness` 15→16、
+`ops` 6→7 两处漏更）。本次与新增用例一起对齐到 **592**，逐项相加与实测一致。
+
 ## 0.5.14 (2026-10-02)
 
 `npm test` **540 → 561 项 / 28 → 30 个文件**；`npm run eval:injection` 逐项不变
