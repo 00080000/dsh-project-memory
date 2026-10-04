@@ -10,7 +10,9 @@
 //   2. 增量口径：`load()` 之后 `setEntries` 写进来的条目必须计入（旧实现只让常数那条腿动）；
 //   3. 驱逐行为：超预算时最旧的真的被丢掉，刚加载的 keepKey 被**有意**豁免且不静默；
 //   4. 记忆化：版本没变不重算（`evictStoreCache` 是对整个缓存求和，不记忆化就是每次冷加载重数全缓存）。
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
@@ -18,6 +20,7 @@ import {
   _estimateResidentBytes as estimate,
   _setStoreCacheBudgetForTest as setCacheBudget,
   _storeCacheKeysForTest as cacheKeys,
+  _stripPersistedDerivedForTest as stripDerived,
 } from '../src/store.js'
 import { WatchManager } from '../src/watch.js'
 import { memoryRootFor } from '../src/util/fs.js'
@@ -146,6 +149,83 @@ console.log('\n== watch 根不再钉住 store（0.5.12，附七结论七）==')
   check('逐出后 watcher 不再握有旧副本（唯一实例由缓存决定）', wm.roots.get(root).store === undefined)
   check('逐出后按需取到的是新实例', wm.storeFor(root) !== a)
   wm.stop()
+}
+
+console.log('\n== 剥离派生字段：按非派生键重建，不用 delete（0.5.15）==')
+{
+  // `delete` 会把 entry 推进 V8 字典模式：本仓库真实条目形状实测 1196 B/条 → 重建后 436 B/条
+  // （20k 条 / --expose-gc）。加载路径上这是常驻内存（storeCache 里所有 store 都算），
+  // 写盘路径同款浪费。行为面先锁住，形状面用子进程量。
+  const plain = { id: 'x#1', title: 'x', text: 't' }
+  check('没有派生字段时零分配（原对象返回）', stripDerived(plain) === plain)
+
+  const withDerived = { id: 'y#1', title: 'y', text: 't', linkedSymbols: ['a'], searchText: 'k', typeSig: undefined }
+  const stripped = stripDerived(withDerived)
+  check('派生字段全部消失', !('linkedSymbols' in stripped) && !('searchText' in stripped) && !('typeSig' in stripped))
+  check('事实字段一个不少', stripped.id === 'y#1' && stripped.title === 'y' && stripped.text === 't')
+  check('值为 undefined 的键也不留（JSON 里本来就没有它）', !Object.prototype.hasOwnProperty.call(stripped, 'typeSig'))
+  check('原对象不被改动（写盘路径可能传内存里的对象）', 'linkedSymbols' in withDerived)
+
+  // 存量 store：加载时剥掉 + 下一次 save 把磁盘也压实
+  const legacyDir = path.join(mkdtempSync(path.join(tmpdir(), 'pm-strip-')), '.dsh-project-memory')
+  const legacyEntry = {
+    id: 'f.ts#1', sourcePath: 'f.ts', sourceLine: 1, type: 'symbol', title: 'f (function)',
+    text: 'export function f() {}', linkedSymbols: ['a'], searchText: 'needle', typeSig: '() => void',
+  }
+  mkdirSync(path.join(legacyDir, 'shards'), { recursive: true })
+  writeFileSync(path.join(legacyDir, 'format.json'), JSON.stringify({ version: 2, layout: 'sharded' }))
+  const shardFile = path.join(legacyDir, 'shards', createHash('sha256').update('f.ts').digest('hex') + '.json')
+  writeFileSync(shardFile, JSON.stringify({ relPath: 'f.ts', record: { hash: 'h', size: 1 }, entries: [legacyEntry] }))
+  const legacyStore = new ProjectMemoryStore(legacyDir).load()
+  const loaded = legacyStore.entries['f.ts'][0]
+  check('加载即剥离（内存里没有派生字段）', !('linkedSymbols' in loaded) && !('searchText' in loaded) && !('typeSig' in loaded))
+  check('加载后事实字段可读', loaded.id === 'f.ts#1' && loaded.text === 'export function f() {}')
+  legacyStore.save()
+  const onDisk = JSON.parse(readFileSync(shardFile, 'utf8')).entries[0]
+  check('下一次 save 把磁盘上的派生字段也压实', !('linkedSymbols' in onDisk) && !('searchText' in onDisk) && !('typeSig' in onDisk))
+  check('压实后磁盘条目仍保有事实字段', onDisk.id === 'f.ts#1' && onDisk.title === 'f (function)')
+
+  // 形状面：同一份数据，重建 vs 旧 delete 对照（必须真的比旧实现省，否则这条就白测了）
+  const child = path.join(mkdtempSync(path.join(tmpdir(), 'pm-strip-gc-')), 'probe.mjs')
+  writeFileSync(
+    child,
+    [
+      `import { _stripPersistedDerivedForTest as strip } from ${JSON.stringify(new URL('../src/store.js', import.meta.url).href)}`,
+      'const N = 20000',
+      'const make = (i) => ({',
+      "  id: 'f' + i + '.ts#1', sourcePath: 'f' + i + '.ts', sourceLine: 1, type: 'symbol',",
+      "  title: 'fn' + i + ' (function)', keywords: ['fn', 'function'], text: 'x'.repeat(80),",
+      "  linkedSymbols: new Array(40).fill('y'.repeat(30)),",
+      "  searchText: 'z'.repeat(400),",
+      "  typeSig: '(a: number, b: string): void',",
+      '})',
+      'global.gc()',
+      'const base = process.memoryUsage().heapUsed',
+      'const kept = []',
+      'for (let i = 0; i < N; i++) kept.push(strip(make(i)))',
+      'global.gc()',
+      'const rebuiltPerEntry = (process.memoryUsage().heapUsed - base) / N',
+      'const naive = []',
+      "for (let i = 0; i < N; i++) { const e = make(i); for (const k of ['linkedSymbols', 'searchText', 'typeSig']) delete e[k]; naive.push(e) }",
+      'global.gc()',
+      'const deletePerEntry = (process.memoryUsage().heapUsed - base) / N - rebuiltPerEntry',
+      // `naive[0]` 必须在最后被读到：否则 V8 会把"从未被读取的顶层 const"整个省掉，
+      // 第二次 gc 直接把对照数组收走 —— 量出来是 0，测试反而变成永远绿。
+      'console.log(JSON.stringify({ rebuiltPerEntry, deletePerEntry, keys: Object.keys(kept[0]).length, naiveKeys: Object.keys(naive[0]).length }))',
+    ].join('\n'),
+  )
+  const run = spawnSync(process.execPath, ['--expose-gc', child], { encoding: 'utf8' })
+  let probe = null
+  try {
+    probe = JSON.parse(String(run.stdout).trim().split('\n').pop())
+  } catch {}
+  if (!probe) {
+    check(`内存探针能跑起来（stderr: ${String(run.stderr).trim().split('\n').slice(-1)[0] || '空'}）`, false)
+  } else {
+    check(`重建每条约 ${probe.rebuiltPerEntry.toFixed(0)} B，旧 delete 约 ${probe.deletePerEntry.toFixed(0)} B`, probe.rebuiltPerEntry < probe.deletePerEntry)
+    check('重建至少省 25%（否则字典模式没被真正绕开）', probe.rebuiltPerEntry < probe.deletePerEntry * 0.75)
+    check('两侧条目都只剩 7 个事实字段', probe.keys === 7 && probe.naiveKeys === 7)
+  }
 }
 
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECKS FAILED`} (${passed} passed)`)

@@ -17,7 +17,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { ProjectMemoryStore } from '../src/store.js'
-import { deepParseWithTS, enqueueEnhance, getTsVersion, initTypeScript, onFileChanged, onFileIndexed } from '../src/enhancer.js'
+import { deepParseWithTS, enqueueEnhance, enhanceQueueStats, getTsVersion, initTypeScript, onFileChanged, onFileIndexed, _setEnhanceQueueMaxForTest } from '../src/enhancer.js'
 import { WatchManager } from '../src/watch.js'
 
 let passed = 0
@@ -298,6 +298,37 @@ console.log('\n== 真实形状：一次 watch 轮询里连续改动多个 .js ==
   // 旧用例只看 rejection，`.js` 增强全灭也照样绿。补一条"真的处理了"——这正是
   // `allowJs` 缺失能长期藏身的原因。
   check('watch 轮询里的 .js 真的被增强了（a.js 带 enhanced 标记）', enhanced(wStore, 'a.js'))
+}
+
+console.log('\n== 队列有上界，且正文/解析只发生在出队时 ==')
+{
+  // 动机（0.5.15）：旧实现在 `enqueueEnhance` 里就同步跑到第一个 await，
+  // 于是 `index_repo` 对整棵 TS 树一次性入队 = 同时持有**所有**文件的正文与符号数组
+  // （长驻 `dsh web` 的 RSS 单调爬升）；而队列本身没有任何 cap。
+  // 这里用测试钩子把上限收窄到 3，避免真去排两万条。
+  await waitFor(() => enhanceQueueStats().queued === 0)
+  const restore = _setEnhanceQueueMaxForTest(3)
+  try {
+    const names = ['q1.ts', 'q2.ts', 'q3.ts', 'q4.ts', 'q5.ts']
+    const files = names.map((n) => write(n, `export function ${n.replace('.ts', '')}(x: number): number { return x }\n`))
+    const before = enhanceQueueStats()
+    // 关键：整个入队循环是**同步**的 —— 事件循环还没转过一轮。
+    const promises = files.map((f, i) => enqueueEnhance(store, names[i], f, 2, { enableTypeScript: true }, dir))
+    const mid = enhanceQueueStats()
+    check(`队列不超过上限（max=${mid.max}，实际 ${mid.queued}）`, mid.queued <= mid.max)
+    check(
+      `入队同步阶段只解析 1 个文件（实际 ${mid.parsed - before.parsed}）`,
+      mid.parsed - before.parsed === 1,
+    )
+    check(`超限的被丢弃并计数（dropped +${mid.dropped - before.dropped}）`, mid.dropped - before.dropped >= 1)
+    const settled = await Promise.allSettled(promises)
+    check('被丢弃/被挤掉的任务 promise 也 resolve（调用方不悬空）', settled.every((r) => r.status === 'fulfilled'))
+    await waitFor(() => enhanceQueueStats().queued === 0)
+    check('队列最终排空（没有僵尸条目）', enhanceQueueStats().queued === 0)
+    check('排空后增强结果仍然落进了 store', enhanced(store, 'q4.ts') || enhanced(store, 'q3.ts'))
+  } finally {
+    restore()
+  }
 }
 
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECKS FAILED`} (${passed} passed)`)
