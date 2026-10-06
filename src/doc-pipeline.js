@@ -8,7 +8,7 @@ import { chunkText } from './chunker.js'
 import { extractKeywords, extractTermText } from './doc-index.js'
 import { entryIdPrefix } from './util/entry-id.js'
 
-export async function extractTextFromFile(filePath, { maxFileSizeMb = 50, maxPdfPages = 1000 } = {}) {
+export async function extractTextFromFile(filePath, { maxFileSizeMb = 10, maxPdfPages = 1000 } = {}) {
   const ext = path.extname(filePath).toLowerCase()
   if (ext === '.pdf') {
     if (maxFileSizeMb) {
