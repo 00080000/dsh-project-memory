@@ -121,7 +121,7 @@ The workflow panel is collapsible, adapts to dsh and theme plugin styles, and of
 |---|---|---|
 | `memoryDir` | `.dsh-project-memory` | store directory inside each indexed root |
 | `chunkChars` / `maxChunksPerFile` | 3000 / 40 | max chars per document chunk, max chunks per document |
-| `maxFileSizeMb` | 50 | skip documents (incl. PDF) and code files larger than this (MB) |
+| `maxFileSizeMb` | 10 | skip documents (incl. PDF) and code files larger than this (MB); see the per-file memory budget below |
 | `maxPdfPages` | 1000 | PDF page cap |
 | `maxOutputChars` | 8000 | cap for `query_memory` result text (chars) |
 | `lazyIndexing` | true | index files the moment the model reads them |
@@ -158,6 +158,8 @@ When the root comes from the working directory, the model gets one notice per se
 **Excluded directories.** Not used as a root, matched exactly (subdirectories are unaffected): the filesystem root, the home directory, temp directories — `os.tmpdir()` and the shared ones (`/tmp`, `/var/tmp`, `%TEMP%`, `%SystemRoot%\Temp`) — and system / package-manager prefixes (`/opt/homebrew` on POSIX; `%SystemRoot%`, `%ProgramFiles%`, `%ProgramData%` on Windows). A session in one of these runs without memory, with one line on stderr.
 
 **Scan limits.** One pass covers at most `maxScanFiles` files (20000) and `maxScanDepth` directory levels (12). A truncated pass is reported in the `index_repo` result and logged once per root by the watcher, and it does not remove entries it did not reach. A directory that cannot be read (e.g. `EACCES`) counts as a truncated pass too and is named in the result: a read failure is not a deletion.
+
+**Per-file memory budget.** `maxFileSizeMb` is a memory gate, not a disk-space preference. Indexing a file first materializes it — the whole buffer plus decoded text for code, or every PDF page's text plus the joined markdown for documents — and the peak scales with the file's size. Measured on this machine with `npm run bench:peak` (peak RSS fitted against disk size over a 1–50 MB ladder, one fresh process per point): **≈10×** for typical source code (1 declaration per ~1.2 KB), **≈21×** for symbol-dense code (1 per 240 B), **≈19×** for a text-heavy PDF, plus a one-off ≈150 MB floor the first time a PDF is parsed. The 10 MB default therefore keeps a single file at roughly **+300 MB RSS**; raising the cap raises that ceiling proportionally. The old default of 50 MB let one ordinary-sized file drive the host process to ~1.2 GB.
 
 The store lives in the tree it indexes and **ignores itself**: a `*` rule inside the store keeps it out of `git status` and `git add -A`, and means `git clean -fd` leaves it alone. To commit project memory deliberately, `git add -f .dsh-project-memory` — tracked files are not affected by ignore rules.
 
@@ -268,6 +270,7 @@ npm run eval:injection      # scenario P/R on the synthetic pool: 14/14 hits, 0 
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)
 npm run bench -- /path/to/project   # index/query performance on any project — no dsh needed
+npm run bench:peak          # peak-RSS budget of maxFileSizeMb, measured on a 1–50 MB ladder
 npm run schema:size         # per-tool fixed prompt cost: chars and a same-scale token estimate
 ```
 
