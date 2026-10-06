@@ -14,7 +14,7 @@ export function watchRepoTool(watchManager, config) {
       root: {
         type: 'string',
         required: true,
-        description: 'Absolute path to the project root to watch.',
+        description: '要监听的项目根目录（绝对路径）。',
       },
       watch: {
         type: 'boolean',

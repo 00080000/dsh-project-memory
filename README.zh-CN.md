@@ -267,6 +267,7 @@ npm run eval:injection      # 合成池上的场景 P/R：命中 14/14、假阳�
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）
 npm run bench -- /你的/项目路径   # 对任意项目量索引/查询性能，不需要 dsh
+npm run schema:size         # 每个工具的固定 prompt 开销：字符数 + 同口径 token 粗估
 ```
 
 发布说明见 [`CHANGELOG.md`](CHANGELOG.md) 与 [GitHub Releases](https://github.com/00080000/dsh-project-memory/releases)。
