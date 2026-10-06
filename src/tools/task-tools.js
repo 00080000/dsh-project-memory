@@ -19,9 +19,9 @@ export function listTasksTool(config) {
   return defineTool({
     name: 'list_tasks',
     description:
-      'List all task records in this project (archived included, marked). Call this first in a new session or before continuing work, to see what tasks exist and pick one with select_task.',
+      '列出本项目的任务记录（含归档，带标记）。新会话或续接工作前先看它，再用 select_task 选一个。',
     parameters: {
-      root: { type: 'string', description: 'Project root. Defaults to current working directory.' },
+      root: { type: 'string', description: '项目根目录，默认当前工作目录。' },
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args, exec) {
@@ -44,11 +44,12 @@ export function selectTaskTool(config, host) {
   return defineTool({
     name: 'select_task',
     description:
-      'Bind the current session to a task record so its todo list and read files sync into it. When starting NEW work, call select_task(title="任务名") FIRST, then maintain your plan with todo_write — you choose the task title (short, no need to restate the user message). taskId: exact id from list_tasks (auto-unarchives; pass title too to rename). title: exact match only; multiple matches return candidates; no match creates a new task. Returns a task card (title, steps, files) to rebuild the session todo from. Call list_tasks first in a new session.',
+      '把会话绑定到一个任务：此后 todo 清单与读过的文件都同步进该任务。开始新工作前先调它（title 自取，短的就行，不用复述用户原话），再用 todo_write 维护计划。' +
+      'taskId：list_tasks 里的精确 id（会自动解归档；同时给 title 则改名）。title：完全匹配，多个同名返回候选，无匹配则新建。返回任务卡（title/steps/files）用于重建会话清单。',
     parameters: {
       taskId: { type: 'string', description: 'Exact task id, e.g. tsk_ab12cd34_...' },
       title: { type: 'string', description: 'Exact task title; creates a new task when absent' },
-      root: { type: 'string', description: 'Project root. Defaults to current working directory.' },
+      root: { type: 'string', description: '项目根目录，默认当前工作目录。' },
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args, exec) {
@@ -168,7 +169,7 @@ export function archiveTaskTool(config, host) {
     description: 'Archive a task: hide from default views, exclude from capacity, stop syncing. Restore by selecting it again.',
     parameters: {
       taskId: { type: 'string', required: true, description: 'Task id to archive (from list_tasks / select_task)' },
-      root: { type: 'string', description: 'Project root. Defaults to current working directory.' },
+      root: { type: 'string', description: '项目根目录，默认当前工作目录。' },
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args, exec) {
