@@ -24,7 +24,10 @@ export const Config = Schema.object({
   memoryDir: Schema.string().default('.dsh-project-memory'),
   chunkChars: Schema.number().default(3000),
   maxChunksPerFile: Schema.number().default(40),
-  maxFileSizeMb: Schema.number().default(50),
+  // 单文件内存闸门，不是磁盘设置：索引一个文件要先把它整个物化，峰值随文件大小线性走。
+  // 实测边际系数（峰值 RSS / 磁盘 MB，见 bench/file-peak.mjs 与 README「单文件内存预算」）：
+  // 典型源码 ~10×、符号密集代码 ~21×、文本型 PDF ~19×。10 把单文件增量压在 ~+300 MB。
+  maxFileSizeMb: Schema.number().default(10),
   maxOutputChars: Schema.number().default(8000),
   maxPdfPages: Schema.number().default(1000),
   llmQueryExpansion: Schema.boolean().default(false),
