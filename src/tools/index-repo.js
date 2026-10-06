@@ -139,7 +139,7 @@ export function indexRepoTool(ctx, config) {
       root: {
         type: 'string',
         required: true,
-        description: 'Absolute path to the project root to index.',
+        description: '要索引的项目根目录（绝对路径）。',
       },
       reindex: {
         type: 'boolean',

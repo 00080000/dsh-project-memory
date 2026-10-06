@@ -8,18 +8,19 @@ import { INSIGHT_KINDS, INSIGHT_SCOPES } from '../insight-store.js'
 import { sessionIdOf } from '../util/task-view.js'
 
 export function lessonTool(config) {
-  const kindDesc = `insight 语义：lesson(曾踩坑/纠偏, pattern→fix) | decision(权衡选型, choice→reason) | procedure(多步指南, steps) | experience(problem→solution，v0.4 兼容)。默认 lesson。所有 kind 都可带 trigger：命中即在动手前确定性注入。`
+  // 描述预算：这两段以前同时出现在「工具描述」和「参数描述」里，等于付两遍钱。
+  // 现在只在参数上写一次 —— 语义一条没少，只是不再重复。
+  const kindDesc = 'lesson(踩坑/纠偏, 用 pattern+fix) | decision(选型, choice+reason) | procedure(步骤, steps) | experience(problem→solution, v0.4 兼容)；默认 lesson。'
   const scopeDesc =
-    '作用域：task(任务私有，随任务归档，不进共享注入) | project(项目资产) | global(个人能力库，跨项目，建议配 trigger 关键词以便将来技能命中)。' +
+    'task(任务私有，随任务归档) | project(项目资产) | global(个人能力库，跨项目)；默认 project。' +
     '解析顺序：显式 scope > task_id > 当前绑定任务 > project。'
   return defineTool({
     name: 'save_lesson',
     description:
-      'Save a lesson/decision/procedure/experience into the tiered memory (single insight entity). ' +
-      'Prefer this over remember for anything new: entries here carry scope, merge/reinforce, and auto-promote. ' +
-      'Call it when the task hit a real pitfall, got corrected, or made a deliberate choice worth remembering — not for routine work. ' +
-      'Similar entries auto-merge (bidirectional token overlap >= 0.7) or reinforce (0.65~0.7, accumulating task hits); ' +
-      'when the same insight is hit by 2+ tasks it auto-promotes task -> project, 3+ tasks project -> global. ' + kindDesc + ' ' + scopeDesc,
+      '把一条教训 / 决策 / 流程写进分层记忆（单条 insight）。新的经验优先用它，而不是 remember。' +
+      '在踩到坑、被纠正、做了值得记住的取舍时调用；日常琐事不要写。' +
+      '近重复按词重叠 ≥0.7 合并、0.65~0.7 强化；同一 insight 被 2+ 任务命中自动 task→project、3+ →global。' +
+      'kind / scope / trigger 的语义见对应参数。',
     parameters: {
       title: { type: 'string', description: 'One-line title (lesson: the failure pattern; decision: the topic; procedure: the name).' },
       kind: { type: 'string', enum: INSIGHT_KINDS, description: kindDesc },
@@ -54,23 +55,25 @@ export function lessonTool(config) {
             },
             description: '收窄条件：全部满足才注入。',
           },
-          prevents: { type: 'string', description: '准入条件：不知道这条，这一步会做错什么。写不出来 → 不该进自动注入。' },
-          keywords: { type: 'array', items: { type: 'string' }, description: '【旧字段】降级为 intents 与被动召回排序。' },
+          prevents: { type: 'string', description: '准入条件：不知道这条，这一步会做错什么；写不出来就不该自动注入。' },
+          // 旧字段：只为兼容历史条目与旧调用而保留 schema 形状，描述不再占 prompt 预算。
+          // 语义（keywords→intents 与召回排序、actions→when.ops、paths→when.writes、scope→画像 tag）
+          // 见 README「save_lesson」与 autoContext.legacyScope。
+          keywords: { type: 'array', items: { type: 'string' } },
           symbols: { type: 'array', items: { type: 'string' } },
-          actions: { type: 'array', items: { type: 'string' }, description: '【旧字段】映射为 when.ops；死值丢弃并计入自检。' },
-          paths: { type: 'array', items: { type: 'string' }, description: '【旧字段】具体文件映射为 when.writes；扩展名/泛名 glob 丢弃。' },
-          scope: { type: 'array', items: { type: 'string' }, description: '【旧字段】默认忽略（值不在项目画像 tag 空间里）。' },
+          actions: { type: 'array', items: { type: 'string' } },
+          paths: { type: 'array', items: { type: 'string' } },
+          scope: { type: 'array', items: { type: 'string' } },
         },
         description:
-          'authored trigger：命中即在**动手前**确定性注入。' +
-          'when = 唯一触发面（ops / writes / intents 取或）；guard 只能收窄；prevents 是准入条件。' +
-          '没有 when 的条目不会自动推送，只出现在记忆目录里供按需拉取。',
+          'authored trigger：命中即在动手前确定性注入。when 是唯一触发面（ops / writes / intents 取或），' +
+          'guard 只能收窄，没有 when 的条目不会自动推送。',
       },
       task_id: { type: 'string', description: '目标任务 id（scope 缺省时优先于绑定任务）' },
       files: { type: 'array', items: { type: 'string' }, description: '关联文件（项目相对路径）' },
       symbols: { type: 'array', items: { type: 'string' }, description: '关联符号' },
       confidence: { type: 'number', description: '置信 0..1（默认 0.8）' },
-      root: { type: 'string', description: 'Project root. Defaults to current working directory.' },
+      root: { type: 'string', description: '项目根目录，默认当前工作目录。' },
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args, exec) {

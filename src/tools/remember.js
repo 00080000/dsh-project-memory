@@ -24,7 +24,7 @@ export function rememberTool(config) {
       },
       root: {
         type: 'string',
-        description: 'Project root of the memory store. Defaults to the current working directory.',
+        description: '项目根目录，默认当前工作目录。',
       },
       source_file: {
         type: 'string',
