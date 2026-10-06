@@ -107,36 +107,6 @@ export async function parsePdf(filePath, { pages = null, maxPages = 1000, backen
   }
 }
 
-export async function parsePdfInfo(filePath, maxPages = 1000) {
-  const data = new Uint8Array(await readFile(filePath))
-  const { getDocument } = await loadPdfjs()
-  const loadingTask = getDocument({ data, ...PDFJS_OPTIONS })
-  try {
-    const doc = await loadingTask.promise
-    if (doc.numPages > maxPages) {
-      throw new Error(`PDF has ${doc.numPages} pages, over the maxPages limit of ${maxPages}`)
-    }
-    let meta = {}
-    try {
-      meta = await doc.getMetadata()
-    } catch {
-      // metadata is optional
-    }
-    const info = meta.info || {}
-    return {
-      pageCount: doc.numPages,
-      title: info.Title ?? null,
-      author: info.Author ?? null,
-      subject: info.Subject ?? null,
-      created: info.CreationDate ?? null,
-      modified: info.ModDate ?? null,
-      encrypted: doc.isEncrypted,
-    }
-  } finally {
-    await loadingTask.destroy()
-  }
-}
-
 export function configurePdfjsWorker(workerSrc) {
   configuredWorkerSrc = workerSrc
   if (pdfjsPromise) {

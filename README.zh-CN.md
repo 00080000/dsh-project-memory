@@ -120,7 +120,7 @@ TaskPanel (Container)
 |---|---|---|
 | `memoryDir` | `.dsh-project-memory` | 每个被索引根目录内的存储目录 |
 | `chunkChars` / `maxChunksPerFile` | 3000 / 40 | 每个文档块最大字符数、每文档最大块数 |
-| `maxFileSizeMb` | 50 | 大于该值（MB）的文档（含 PDF）/代码文件跳过 |
+| `maxFileSizeMb` | 10 | 大于该值（MB）的文档（含 PDF）/代码文件跳过；峰值系数见下文「单文件内存预算」 |
 | `maxPdfPages` | 1000 | PDF 页数上限 |
 | `maxOutputChars` | 8000 | `query_memory` 返回文本上限（字符） |
 | `lazyIndexing` | true | 模型读取文件的瞬间即索引 |
@@ -157,6 +157,8 @@ TaskPanel (Container)
 **排除名单。** 以下目录不会作为根，精确匹配（子目录不受影响）：文件系统根、家目录、临时目录（`os.tmpdir()` 与共享的 `/tmp`、`/var/tmp`、`%TEMP%`、`%SystemRoot%\Temp`），以及系统/包管理器前缀（POSIX 上的 `/opt/homebrew`，Windows 上的 `%SystemRoot%`、`%ProgramFiles%`、`%ProgramData%`）。这些目录下的会话不启用记忆，stderr 输出一行说明。
 
 **扫描上限。** 单次扫描最多 `maxScanFiles` 个文件（20000）、`maxScanDepth` 层目录（12）。被截断时，`index_repo` 的结果里会说明，watcher 每个根记一行，且不会删除没扫到的条目。**读不到的目录**（如 `EACCES`）同样算一次截断扫描并在结果里点名：读失败不等于被删除。
+
+**单文件内存预算。** `maxFileSizeMb` 管的是内存而不是磁盘偏好。索引一个文件要先把它整个物化——代码是整个 buffer 加解码后的正文，文档是逐页正文再加拼出来的 markdown——峰值随文件大小线性走。本机用 `npm run bench:peak` 实测（1–50 MB 阶梯，每档一个独立进程，对「峰值 RSS = a + b × 磁盘 MB」做最小二乘）：典型源码（约 1 个声明 / 1.2 KB）**≈10×**，符号密集的代码（1 个 / 240 B）**≈21×**，文本型 PDF **≈19×**，另外首次解析 PDF 有一次性约 150 MB 的底座。默认 10 MB 因此把单个文件的增量压在 **+300 MB RSS** 量级；调大它就按比例抬高这个上限。旧的 50 MB 默认值允许一个普通大小的文件把宿主进程推到 ~1.2 GB。
 
 store 建在被索引的目录树里，并且**自我忽略**：自己目录内的一条 `*` 规则让它不出现在 `git status` / `git add -A` 里，`git clean -fd` 也不会删它。确实想把记忆跟着仓库提交：`git add -f .dsh-project-memory`——已跟踪文件不受忽略规则影响。
 
@@ -267,6 +269,7 @@ npm run eval:injection      # 合成池上的场景 P/R：命中 14/14、假阳�
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）
 npm run bench -- /你的/项目路径   # 对任意项目量索引/查询性能，不需要 dsh
+npm run bench:peak          # maxFileSizeMb 的峰值 RSS 预算，1–50 MB 阶梯实测
 npm run schema:size         # 每个工具的固定 prompt 开销：字符数 + 同口径 token 粗估
 ```
 
