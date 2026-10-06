@@ -20,7 +20,7 @@ export function indexDocTool(ctx, config) {
       },
       root: {
         type: 'string',
-        description: 'Project root where the .dsh-project-memory store lives. Defaults to the session\'s project root.',
+        description: '项目根目录（store 存放处），默认会话的项目根。',
       },
     },
     output: {

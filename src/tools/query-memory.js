@@ -46,7 +46,7 @@ export function queryMemoryTool(ctx, config) {
       },
       root: {
         type: 'string',
-        description: 'Project root of the memory store to search. Defaults to the current working directory.',
+        description: '搜索用的项目根目录，默认当前工作目录。',
       },
       type: {
         type: 'string',

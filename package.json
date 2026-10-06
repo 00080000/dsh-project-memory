@@ -25,6 +25,7 @@
     "selfcheck:triggers": "node test/injection-scenarios.test.mjs --selfcheck",
     "bench": "node scripts/bench.mjs",
     "bench:synthetic": "node scripts/bench-synthetic.mjs",
+    "schema:size": "node scripts/tool-schema-size.mjs",
     "build:client": "tsdown"
   },
   "keywords": [
