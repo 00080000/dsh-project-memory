@@ -127,7 +127,7 @@ TaskPanel (Container)
 | `maxOutputChars` | 8000 | `query_memory` 返回文本上限（字符） |
 | `lazyIndexing` | true | 模型读取文件的瞬间即索引 |
 | `autoIndexOnFirstUse` | false | 插件加载时对当前工作目录做全量扫描（可选） |
-| `watch` / `watchInterval` | true / 30 | 后台刷新；基础轮询间隔（秒），空闲时逐步退避到最长 2 分钟，一有变化立即回到该值 |
+| `watch` / `watchInterval` | true / 30 | 后台刷新；基础轮询间隔（秒）；回合进行中静默（5 分钟兜底，外部改动仍会自愈），回合结束立刻合并扫一次；空闲时逐步退避到最长 2 分钟，一有变化立即回到该值 |
 | `maxScanFiles` / `maxScanDepth` | 20000 / 12 | 单次扫描的文件数与目录深度硬上限；被截断时会在报告里说明，且不会删除没扫到的条目。设 `0` 取消 |
 | `allowUnsafeRoots` | false | 允许**显式**工具调用指向排除名单上的目录。自动路径（懒索引、会话审计、TaskBridge、`autoIndexOnFirstUse`）无论此项如何都不会越权 |
 | `llmQueryExpansion` / `expansionCount` | false / 6 | 检索前用 LLM 扩展查询（默认关闭，节省 token）；扩展变体上限 |
@@ -173,7 +173,7 @@ store 建在被索引的目录树里，并且**自我忽略**：自己目录内�
     autoIndexOnFirstUse: false  # 关闭：不做加载时的全量扫描（默认）
     llmQueryExpansion: false    # 关闭：不用 LLM 扩展查询，节省 token（默认）
     watch: true                 # 开启：被监听根目录后台保持新鲜（默认）
-    watchInterval: 30           # 基础轮询间隔；空闲时退避到最长 2 分钟
+    watchInterval: 30           # 基础轮询间隔；回合进行中静默、回合结束补扫，空闲退避到最长 2 分钟
     maxScanFiles: 20000         # 单次扫描文件上限（截断会报告，且不会误删旧条目）
     maxScanDepth: 12            # 单次扫描目录深度上限
     enableTypeScript: true      # 开启：装了 TS 时启用类型感知增强（默认）
@@ -266,7 +266,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ```bash
 npm install
-npm test                    # 598 项测试
+npm test                    # 602 项测试
 npm run eval:injection      # 合成池上的场景 P/R：命中 14/14、假阳性 0、对照组零注入
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）

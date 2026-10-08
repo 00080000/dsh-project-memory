@@ -100,30 +100,3 @@ export function later(ctx: any, delay: number, fn: () => void): void {
     // 没有可用计时器：插件照常挂载，降级原因仍由面板渲染时显示。
   }
 }
-
-/**
- * 「这些服务到齐了」的通知：宿主是异步装配的，apply 时读不到**不等于**永远读不到。
- *
- * 用嵌套 `ctx.inject` 挂一个只负责通知的回调（嵌套注入只门控这一段，插件本身照常挂载），
- * 服务迟到时调用方据此重渲染/重订阅。拿不到 `ctx.inject`（老宿主）时是 no-op。
- * @param ctx - client 上下文。
- * @param names - 要等的服务路径。
- * @param fn - 到齐回调。
- * @returns 取消订阅；调用方应在卸载时调用它。
- */
-export function whenServicesReady(ctx: any, names: readonly string[], fn: () => void): () => void {
-  if (names.length === 0 || typeof ctx?.inject !== 'function') return () => {}
-  try {
-    const fiber: any = ctx.inject([...names], () => { fn() })
-    return () => {
-      try {
-        fiber?.dispose?.()
-      } catch {
-        // 已经随插件一起回收：无需再处理。
-      }
-    }
-  } catch {
-    return () => {}
-  }
-}
-

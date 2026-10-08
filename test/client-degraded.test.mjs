@@ -33,9 +33,7 @@ const winStub = { __ModuleLoader__: null, innerWidth: 1440, innerHeight: 900 }
 
 /** 副作用队列：替身里 useEffect 只入队，由 renderPanelText 在渲染后统一执行（等价于一次挂载）。 */
 const pendingEffects = []
-/** 计数：状态更新请求（真实 React 里每次都会重渲染；用来证明"服务到齐"确实把面板叫醒了）。 */
-let stateUpdates = 0
-const stateUpdatesSeen = () => stateUpdates
+
 
 /** React 替身：hooks 有最小实现，`useSyncExternalStore` 直接给快照（面板因此真的能渲染）。 */
 const reactStub = {
@@ -44,7 +42,7 @@ const reactStub = {
     type,
     props: { ...(props ?? {}), children: children.length > 1 ? children : children[0] },
   }),
-  useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => { stateUpdates++ }],
+  useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
   useEffect: (fn) => { pendingEffects.push(fn) },
   useLayoutEffect: (fn) => { pendingEffects.push(fn) },
   useRef: (initial) => ({ current: initial }),
@@ -103,7 +101,7 @@ function captureWarnings(fn) {
   return warns
 }
 
-/** 各服务的替身（迟到用例里要按同一形状补 provide）。 */
+/** 各服务的替身。 */
 const slotsStub = (regs) => ({
   inject: (_name, callback) => { callback() },
   register: (meta, render) => { regs.push({ ...meta, render }) },
@@ -125,13 +123,11 @@ const inputTriggersStub = (sources) => ({ registerSource: (source) => { sources.
  * @param options.services 装配里**存在**的服务名（'slots' / 'sessions' / 'remote' / 'locale' / 'inputTriggers'）
  * @param options.bare 连 `ctx.inject` 都没有的老宿主（软依赖只剩属性回退那条路）
  * @param options.activeLocale `locale` 服务报的语言
- * @returns ctx 与观测点；`provide()` 用来模拟"服务迟到"（唤醒等它的嵌套注入）
  */
 function fakeHost({ services = [], bare = false, activeLocale = 'zh' } = {}) {
-  const regs = []           // slots.register 记录
-  const sources = []        // inputTriggers.registerSource 记录
-  const scheduled = []      // ctx.setTimeout 捕获（宽限期检查），测试里手动触发
-  const pendingInjects = [] // 依赖不齐、正在等的嵌套注入（cordis 语义：到齐才回调）
+  const regs = []       // slots.register 记录
+  const sources = []    // inputTriggers.registerSource 记录
+  const scheduled = []  // ctx.setTimeout 捕获（宽限期检查），测试里手动触发
   const ctx = { setTimeout: (fn) => { scheduled.push(fn); return 0 } }
 
   const resolveDep = (dep) => {
@@ -140,15 +136,6 @@ function fakeHost({ services = [], bare = false, activeLocale = 'zh' } = {}) {
     let value = ctx[head]
     for (const key of rest) value = value?.[key]
     return value
-  }
-  const scopeFor = (deps) => {
-    const scope = { effect: (fn) => fn() }
-    for (const dep of deps) {
-      const value = resolveDep(dep)
-      if (value === undefined) return null
-      scope[dep.split('.')[0]] = value
-    }
-    return scope
   }
 
   if (services.includes('slots')) ctx.slots = slotsStub(regs)
@@ -159,33 +146,19 @@ function fakeHost({ services = [], bare = false, activeLocale = 'zh' } = {}) {
 
   if (!bare) {
     ctx.inject = (deps, callback) => {
-      const scope = scopeFor(deps)
-      if (scope !== null) {
-        callback(scope)
-        return { dispose() {} }
+      // cordis 语义：依赖齐了就回调，不齐就一直等（永不回调）。
+      const scope = { effect: (fn) => fn() }
+      for (const dep of deps) {
+        const value = resolveDep(dep)
+        if (value === undefined) return { dispose() {} }
+        scope[dep.split('.')[0]] = value
       }
-      const entry = { deps, callback }
-      pendingInjects.push(entry)
-      return { dispose() { const i = pendingInjects.indexOf(entry); if (i >= 0) pendingInjects.splice(i, 1) } }
+      callback(scope)
+      return { dispose() {} }
     }
   }
 
-  /**
-   * 服务迟到：补上一个服务，并唤醒所有因它而等待的嵌套注入。
-   * @param name 服务名
-   * @param value 服务值
-   */
-  const provide = (name, value) => {
-    ctx[name] = value
-    for (const entry of [...pendingInjects]) {
-      const scope = scopeFor(entry.deps)
-      if (scope === null) continue
-      pendingInjects.splice(pendingInjects.indexOf(entry), 1)
-      entry.callback(scope)
-    }
-  }
-
-  return { ctx, regs, sources, scheduled, pendingInjects, provide }
+  return { ctx, regs, sources, scheduled }
 }
 
 /** 触发宽限期检查（`later()` 把回调交给了替身的 setTimeout）。 */
@@ -197,7 +170,7 @@ function runGraceChecks(host) {
 /**
  * 渲染一次已注册的面板，返回其中所有文本片段。
  * 直接调用 `TaskPanelView`（跳过 class 形式的错误边界）：这里要断言的是它渲染出的**文本**；
- * 渲染后统一跑一遍 effect（等价于一次挂载）—— 等服务的嵌套注入就是在 effect 里挂上的。
+ * 渲染后跑一遍 effect（等价于一次挂载），顺带证明缺服务的宿主上 effect 也不抛。
  */
 function renderPanelText(regs) {
   const record = regs.find((r) => r.name === 'shell.overlay')
@@ -279,34 +252,7 @@ const client = loadClient()
   ok('缺 remote：面板渲染出降级原因（中文），且不误报会话缺失')
 }
 
-// ---- 5. 服务迟到（宿主异步装配）：等到齐时唤醒，面板不再显示降级 ----
-// 顶层 inject 被去掉后 apply 会更早跑：某个服务"现在没有、几百毫秒后有"是正常装配，
-// 不能因为 apply 时读不到就永远订阅不上（那样面板不跟随会话切换，只是换了个姿势静默）。
-{
-  const host = fakeHost({ services: ['slots', 'locale'] })
-  captureWarnings(() => { client.apply(host.ctx) })
-  assert.ok(renderPanelText(host.regs).join(' | ').includes('缺少客户端服务'),
-    'sessions/remote 还没到 → 先显示降级')
-  const waited = host.pendingInjects.map((entry) => entry.deps.join('.'))
-  for (const name of ['sessions', 'remote']) {
-    assert.ok(waited.includes(name), `必须挂上等 ${name} 的嵌套注入（否则迟到就是永久缺失）：${waited.join(' | ')}`)
-  }
-
-  // 装配补齐（cordis 语义：依赖一到位，等它的嵌套注入立即回调）
-  const bumpsBefore = stateUpdatesSeen()
-  host.provide('sessions', sessionsStub())
-  host.provide('remote', remoteStub())
-  assert.ok(stateUpdatesSeen() > bumpsBefore,
-    '服务到齐必须叫醒面板一次（真实 React 里就是重渲染 → useSessionId 重新订阅）')
-  assert.ok(!host.pendingInjects.some((entry) => ['sessions', 'remote', 'remote.commands'].includes(entry.deps.join('.'))),
-    '服务到齐后不得留下仍在等它们的注入（面板据此重渲染 / 重订阅）')
-  const after = renderPanelText(host.regs).join(' | ')
-  assert.ok(!after.includes('缺少客户端服务'), `服务到齐后不该再显示降级：${after}`)
-  assert.ok(after.includes('工作流任务'), '面板本体照常渲染')
-  ok('服务迟到：等到齐时唤醒，降级提示消失（面板重新订阅会话）')
-}
-
-// ---- 6. 静态守卫：源码里不得再直接取 ctx.<必需服务>（一律走 services.ts 软探测） ----
+// ---- 5. 静态守卫：源码里不得再直接取 ctx.<必需服务>（一律走 services.ts 软探测） ----
 {
   const FILES = ['client.ts', 'TaskPanel.tsx', 'TaskComponents.tsx', 'MemoryView.tsx', 'slash.ts', 'ShowTaskPanelNode.tsx', 'TaskCommandNode.tsx']
   const DIRECT = /\bctx\??\.(slots|sessions|remote|locale)\b/
