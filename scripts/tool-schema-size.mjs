@@ -15,10 +15,10 @@
  *
  * 用法: node scripts/tool-schema-size.mjs [--json]
  */
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 
-const HERE = path.dirname(new URL(import.meta.url).pathname)
+const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC = path.join(HERE, '..', 'src')
 
 // 工厂函数只需要在构造期读少量配置；用 Proxy 兜住所有未定义字段，

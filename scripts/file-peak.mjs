@@ -23,6 +23,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdirSync, statSync, writeFileSync, existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const argv = process.argv.slice(2)
 const mode = argv[0] && !argv[0].startsWith('--') ? argv[0] : null
@@ -273,7 +274,7 @@ function genPdf(file, targetBytes) {
 // ---------- 编排 ----------
 
 function runChild(childMode, file) {
-  const r = spawnSync(process.execPath, ['--expose-gc', new URL(import.meta.url).pathname, childMode, file], {
+  const r = spawnSync(process.execPath, ['--expose-gc', fileURLToPath(import.meta.url), childMode, file], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   })
