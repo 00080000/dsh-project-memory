@@ -154,6 +154,16 @@ export function apply(ctx, config) {
   // 跟踪会话路由（request/header 事件），为无会话上下文的召回期可选 LLM（查询扩展 / 反思）兜底
   ctx.on('session/event', (session, event) => {
     if (event?.type === 'request/header') rememberRoute(session)
+    // 会话活跃信号：有人正在跑回合时把 watch 轮询压到最低，回合结束立刻补扫一次（见 watch.js）。
+    // 这是"轮询只在空闲时发生"的落点 —— 交互期间把 I/O 全让给模型，停下那一刻才整理索引。
+    const key = session?.id ?? 'unknown'
+    if (event?.type === 'turn/start' || event?.type === 'step/start') watchManager.setSessionActive(key, true)
+    else if (event?.type === 'turn/end') watchManager.setSessionActive(key, false)
+  })
+  // 会话被销毁时也要摘掉活跃标记：否则一个没有正常 turn/end 的会话会把轮询**永久**压在兜底节拍
+  // （不会卡死，但"空闲时高速刷新"再也不会回来）。
+  ctx.on('session/disposed', (session) => {
+    watchManager.setSessionActive(session?.id ?? 'unknown', false)
   })
   ctx.tools.register(listTasksTool(config))
   ctx.tools.register(selectTaskTool(config, { llm: ctx.llm, ctx }))

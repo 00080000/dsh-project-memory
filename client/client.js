@@ -352,31 +352,6 @@ window.__ModuleLoader__.load({
 				if (handle !== null && typeof handle === "object" && typeof handle.unref === "function") handle.unref();
 			} catch {}
 		}
-		/**
-		* 「这些服务到齐了」的通知：宿主是异步装配的，apply 时读不到**不等于**永远读不到。
-		*
-		* 用嵌套 `ctx.inject` 挂一个只负责通知的回调（嵌套注入只门控这一段，插件本身照常挂载），
-		* 服务迟到时调用方据此重渲染/重订阅。拿不到 `ctx.inject`（老宿主）时是 no-op。
-		* @param ctx - client 上下文。
-		* @param names - 要等的服务路径。
-		* @param fn - 到齐回调。
-		* @returns 取消订阅；调用方应在卸载时调用它。
-		*/
-		function whenServicesReady(ctx, names, fn) {
-			if (names.length === 0 || typeof ctx?.inject !== "function") return () => {};
-			try {
-				const fiber = ctx.inject([...names], () => {
-					fn();
-				});
-				return () => {
-					try {
-						fiber?.dispose?.();
-					} catch {}
-				};
-			} catch {
-				return () => {};
-			}
-		}
 		//#endregion
 		//#region src/client/task-data-store.ts
 		/**
@@ -1947,29 +1922,13 @@ window.__ModuleLoader__.load({
 		function getT(ctx) {
 			return createTranslate(service(ctx, "locale")?.getSnapshot?.()?.active === "zh" ? zh : en);
 		}
-		/**
-		* 服务到齐版本号：必需服务迟到（宿主异步装配）时 bump 一次，让渲染与订阅重新求值。
-		* 只在降级状态下挂着通知，服务齐全时零开销。
-		* @param ctx - client 上下文
-		* @returns 每次有服务到齐就 +1 的版本号
-		*/
-		function useServiceArrival(ctx) {
-			const [version, bump] = (0, react.useState)(0);
-			(0, react.useEffect)(() => {
-				const disposers = missingServices(ctx).map((name) => whenServicesReady(ctx, [name], () => bump((n) => n + 1)));
-				return () => {
-					for (const dispose of disposers) dispose();
-				};
-			}, [ctx, version]);
-			return version;
-		}
-		function useSessionId(ctx, servicesVersion) {
+		function useSessionId(ctx) {
 			const [, force] = (0, react.useState)(0);
 			(0, react.useEffect)(() => {
 				const list = service(ctx, "sessions")?.list;
 				if (!list || typeof list.subscribe !== "function") return;
 				return list.subscribe(() => force((n) => n + 1));
-			}, [ctx, servicesVersion]);
+			}, [ctx]);
 			return pickSessionId(service(ctx, "sessions")?.list?.getSnapshot?.());
 		}
 		var PanelErrorBoundary = class extends react.Component {
@@ -1997,9 +1956,8 @@ window.__ModuleLoader__.load({
 			const t = getT(ctx);
 			const data = useTaskData();
 			const ui = useTaskUI();
-			const servicesVersion = useServiceArrival(ctx);
 			const degraded = missingServices(ctx);
-			const sessionId = useSessionId(ctx, servicesVersion);
+			const sessionId = useSessionId(ctx);
 			const [syncing, setSyncing] = (0, react.useState)(false);
 			const [syncedAt, setSyncedAt] = (0, react.useState)(0);
 			const [syncError, setSyncError] = (0, react.useState)(null);
