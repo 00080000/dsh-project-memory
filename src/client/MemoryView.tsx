@@ -5,6 +5,7 @@
  */
 import { useEffect, useCallback, useRef, useState } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+import { service } from './services.ts'
 import css from './TaskPanel.module.css'
 
 export type InsightScope = 'task' | 'project' | 'global'
@@ -96,9 +97,10 @@ export function MemoryView({
 
   const runLine = useCallback(
     async (line: string): Promise<{ ok: boolean; text: string }> => {
-      const commands = ctx?.remote?.commands
+      // 软探测（services.ts）：`remote` 服务缺失时 `ctx.remote` 会抛错，取属性前必须过它。
+      const commands = service(ctx, 'remote')?.commands
       if (!sessionId || !commands || typeof commands.execute !== 'function') {
-        return { ok: false, text: 'no session / commands service' }
+        return { ok: false, text: 'data channel unavailable (missing client service)' }
       }
       try {
         const response = await commands.execute(sessionId, line, [])

@@ -151,21 +151,22 @@ function mounted(options) {
   return { client, host, source: host.registered[0] }
 }
 
-// ---- 1. 顶层 inject 不得硬依赖 inputTriggers ----
+// ---- 1. 顶层 inject 必须是空的（任何硬依赖 = 缺服务宿主上整个 client 半边静默消失） ----
 {
   const client = loadClient()
   assert.equal(typeof client.apply, 'function', 'client 必须导出 apply')
-  assert.ok(client.inject.includes('slots'), 'slots 仍是硬依赖')
-  assert.ok(!client.inject.includes('inputTriggers'),
-    'inputTriggers 必须是软依赖：写进顶层 inject 后，没有 slash 服务的宿主根本不会加载本插件（面板一起消失）')
-  ok('inputTriggers 是软依赖（不进顶层 inject）')
+  assert.deepEqual([...client.inject], [],
+    '顶层 inject 必须为空：cordis 的门控只要缺一项就根本不调用 apply()，'
+    + '表现是"插件出问题、界面上却静默消失"（面板与 `/` 组一起没了，也没有一行报错）')
+  assert.doesNotThrow(() => client.apply({}), '贫服务宿主上 apply 也必须跑完（降级而不是不挂载）')
+  ok('顶层 inject 为空：服务缺失时插件照常挂载（降级原因由 apply 内部说明）')
 }
 
 // ---- 2. 源的身份与排序 ----
 {
   const { host, source } = mounted()
-  assert.deepEqual(host.injected, [['inputTriggers', 'sessions', 'remote.commands']],
-    '按软依赖注入注册 slash 源')
+  assert.deepEqual(host.injected, [['slots'], ['inputTriggers', 'sessions', 'remote.commands']],
+    'slots 与 slash 依赖都走嵌套 inject（软依赖），不进顶层声明')
   assert.equal(host.registered.length, 1, '应当注册恰好一个 slash 源')
   assert.equal(source.trigger, '/', '挂在 / 触发上')
   assert.equal(source.name, 'project-memory', '源名（组标识）')

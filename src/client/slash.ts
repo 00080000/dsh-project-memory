@@ -29,6 +29,7 @@
  */
 import type { ComponentType } from 'react'
 import { createTranslate, en, zh } from './locales.ts'
+import { service } from './services.ts'
 import type { PanelView } from './task-ui-store.ts'
 import { IconChecklistOutline16, IconGlobeOutline16, IconLightOutline16 } from './icons.ts'
 
@@ -53,7 +54,6 @@ interface SlashRow {
   readonly icon: ComponentType<{ size?: number; className?: string }>
   /** 额外搜索词：候选 name 是中文，拉丁输入（task / memory…）靠这些命中。 */
   readonly match: readonly string[]
-  /** 点击后经 remote.commands.execute 执行的完整命令行。 */
   /** 点击后要打开的面板视图页。**纯客户端动作**，不绕宿主命令。 */
   readonly view: PanelView
 }
@@ -97,7 +97,8 @@ type Translate = (key: string, params?: Record<string, string | number>) => stri
 
 /** 按当前语言取翻译函数。 */
 function translator(ctx: any): Translate {
-  const dict = ctx?.locale?.getSnapshot?.()?.active === 'zh' ? zh : en
+  // 软探测（services.ts）：宿主没有翻译服务时退英文，而不是抛错。
+  const dict = service(ctx, 'locale')?.getSnapshot?.()?.active === 'zh' ? zh : en
   return createTranslate(dict) as unknown as Translate
 }
 
