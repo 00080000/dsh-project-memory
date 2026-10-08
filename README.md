@@ -113,6 +113,8 @@ TaskPanel (Container)
 
 The workflow panel is collapsible, adapts to dsh and theme plugin styles, and offers four card styles.
 
+The client half declares **no top-level `inject`**: cordis gates `apply()` on that declaration, so one unavailable service silently removes the whole plugin (no panel, no `/` group, no error). The five services it needs — `slots`, `sessions`, `remote`, `remote.commands`, `locale` — are therefore probed at runtime: the plugin always mounts, the panel header names whatever is missing, and one `console.warn` names it after a 3 s grace period.
+
 ![Four card styles](docs/images/image-4.png)
 
 ## Configuration
@@ -265,7 +267,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 592 tests
+npm test                    # 598 tests
 npm run eval:injection      # scenario P/R on the synthetic pool: 14/14 hits, 0 false positives, control group clean
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)
