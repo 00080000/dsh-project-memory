@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { normalizeCitationFiles } from '../src/util/fs.js'
 import { memoryRootFor } from '../src/util/fs.js'
@@ -101,7 +102,9 @@ const ROOT = path.resolve('/tmp/cite-root')
       })
     }
   }
-  walk(new URL('../src', import.meta.url).pathname)
+  // `URL.pathname` 在 Windows 上是 `/C:/…/src`（前导斜杠），readdir 会去找 `C:\C:\…`；
+  // 用 fileURLToPath 取路径才是跨平台的（windows CI 红、ubuntu 绿的原因）。
+  walk(fileURLToPath(new URL('../src', import.meta.url)))
   assert.deepEqual(hits, [],
     `声明了却没有任何写入方的字段必须删干净（写侧恒 '' + 读侧永不触发）：\n${hits.join('\n')}`)
   ok('静态守卫：blindSpots 死字段（写侧与读侧）已从 src/ 删除')
