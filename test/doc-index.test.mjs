@@ -74,7 +74,7 @@ const CONFIG = { memoryDir: '.dsh-project-memory', chunkChars: 3000, maxChunksPe
   const store = new ProjectMemoryStore(memoryRootFor(root, CONFIG.memoryDir)).load()
   const doc = store.allEntries().find((e) => e.type === 'doc')
   assert.ok(doc)
-  assert.equal(doc.blindSpots, '')
+  assert.ok(!('blindSpots' in doc), '声明了却没有任何写入方的字段已删除（不再产出恒为空的 blindSpots）')
   assert.ok(doc.terms.includes('zzztokenq'))
   ok('索引期零 LLM（签名里没有 llm；带路由的 exec 也不触发调用）')
 }
