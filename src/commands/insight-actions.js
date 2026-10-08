@@ -3,7 +3,7 @@
 // 纯函数 actInsight / listInsights 操作传入的 store/gs 内存对象，持久化由调用方
 // （命令 handler：store.commit + gs.commit）统一负责，便于单测。
 import { ProjectMemoryStore } from '../store.js'
-import { memoryRootFor } from '../util/fs.js'
+import { memoryRootFor, normalizeCitationFiles } from '../util/fs.js'
 import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, INSIGHT_KINDS } from '../insight-store.js'
 import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
@@ -231,7 +231,7 @@ const KIND_CONTENT = {
 const ALL_CONTENT = ['body', 'pattern', 'fix', 'problem', 'solution', 'choice', 'reason', 'steps']
 
 /** 编辑既有条目（title/kind/正文/trigger 等白名单字段）。任务级按 id 在任务池定位。 */
-export function editMemoryItem({ store, gs, scope, id, fields }) {
+export function editMemoryItem({ store, gs, scope, id, fields, root }) {
   if (!fields || typeof fields !== 'object') return { ok: false, text: 'edit 需要字段对象' }
   const applyTo = (item) => {
     let changed = false
@@ -264,7 +264,8 @@ export function editMemoryItem({ store, gs, scope, id, fields }) {
       }
       if (key === 'steps' || key === 'tags' || key === 'files' || key === 'symbols') {
         if (!Array.isArray(v)) continue
-        item[key] = v.map(String)
+        // 写入期约束（与 save_lesson 同一判据）：files 只收项目内相对路径，项目外/逃出根的丢弃。
+        item[key] = key === 'files' ? normalizeCitationFiles(v, root).files : v.map(String)
         changed = true
         continue
       }
@@ -381,7 +382,7 @@ export function insightCommandDefinition(config, ctx) {
           }
           const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
           const gs = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()
-          const res = editMemoryItem({ store, gs, scope, id, fields })
+          const res = editMemoryItem({ store, gs, scope, id, fields, root })
           store.commit(() => 0)
           gs.commit()
           return res.ok ? { kind: 'success', text: res.text } : { kind: 'error', text: res.text }

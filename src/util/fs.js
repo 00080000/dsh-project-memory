@@ -300,6 +300,50 @@ export function relativePath(root, filePath) {
   return path.relative(root, filePath).split(path.sep).join('/')
 }
 
+/**
+ * `insight.files` 的写入期归一 —— 工具 schema 承诺的是「项目相对路径」，但此前**没有任何校验**：
+ * 项目外的绝对路径会原样落盘，事后只能靠审计发现"查不到"（实测 144 处引用里 3 处项目外、
+ * 6 处真悬空）。这里把承诺兑现成入口约束，而不是每次统计：
+ *   - 非空字符串；反斜杠 → `/`；去掉 `./` 前缀；重复值合并；
+ *   - **项目内**绝对路径 → 项目相对路径（`path.resolve` 判定，跨 OS 形态同样适用）；
+ *   - 其余（项目外绝对、`..` 逃出根、没有根时无法判定的绝对路径）**丢弃**并回报 ——
+ *     调用方负责把丢弃数量说出来，而不是静默少几行。
+ * @param {unknown} files - 原始 files（工具参数 / 编辑表单）。
+ * @param {string} root - 目标项目根（`save_lesson` 的 root 参数即权威）。
+ * @returns {{files: string[], dropped: string[]}} 归一后的相对路径，以及被丢弃的原值。
+ */
+export function normalizeCitationFiles(files, root) {
+  const kept = []
+  const dropped = []
+  const base = typeof root === 'string' && root.trim() ? path.resolve(root) : null
+  for (const raw of Array.isArray(files) ? files : []) {
+    if (typeof raw !== 'string') continue
+    const value = raw.trim().replace(/\\/g, '/')
+    if (!value) continue
+    const looksAbsolute = value.startsWith('/') || /^[A-Za-z]:\//.test(value)
+    if (base === null && looksAbsolute) {
+      dropped.push(raw)
+      continue
+    }
+    const abs = base === null ? null : path.resolve(base, looksAbsolute ? value : value.replace(/^\.\//, ''))
+    let rel = value.replace(/^\.\//, '')
+    if (abs !== null) {
+      const inside = path.relative(base, abs)
+      if (inside === '' || inside.startsWith('..') || path.isAbsolute(inside)) {
+        dropped.push(raw)
+        continue
+      }
+      rel = inside.split(path.sep).join('/')
+    }
+    if (!rel || rel.startsWith('..')) {
+      dropped.push(raw)
+      continue
+    }
+    if (!kept.includes(rel)) kept.push(rel)
+  }
+  return { files: kept, dropped }
+}
+
 export const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin'
 
 export function storeKey(rel, platform = process.platform) {

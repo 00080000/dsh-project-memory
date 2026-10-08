@@ -47,7 +47,6 @@ export async function buildDocEntries(relPath, filePath, opts = {}) {
     type: 'doc',
     title: chunk.title || relPath,
     summary: summarizeText(chunk.text),
-    blindSpots: '',
     keywords: extractKeywords(chunk.title, chunk.text),
     terms: extractTermText(chunk.text),
     hash,
