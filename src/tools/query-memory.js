@@ -125,15 +125,7 @@ export function queryMemoryTool(ctx, config) {
           for (const { item: e, weightedScore } of memHits) {
             const absSource = e.sourceLine ? `${toAbs(root, e.sourcePath)}:${e.sourceLine}` : toAbs(root, e.sourcePath)
             const rel = Math.round((weightedScore / top) * 100)
-            let summaryLine = `- ${e.summary}`
-            if (e.type === 'doc' && e.blindSpots) {
-              const queryTokens = queries.flatMap(q => q.split(/[\s\-_]+/)).map(t => t.toLowerCase()).filter(Boolean)
-              const blindTokens = e.blindSpots.split(/[\s\-\u3000、，,、;；.。]+/).map(t => t.toLowerCase()).filter(Boolean)
-              const hit = queryTokens.some(qt => blindTokens.some(bt => bt.includes(qt) || qt.includes(bt)))
-              if (hit) {
-                summaryLine += `\n- ⚠️ 摘要未覆盖：${e.blindSpots.replace(/^\s*\/\/\s*未覆盖[:：]\s*/, '')}。建议读原文 ${absSource}`
-              }
-            }
+            const summaryLine = `- ${e.summary}`
             // 条目状态占位（可证伪状态机落地前恒为 exact）。
             // 先立字段，后续状态机到位时只改值、不改输出契约。
             lines.push(`### ${e.title} (score: ${rel})\n- source: ${absSource}\n- status: ${e.status || 'exact'}\n${summaryLine}`)

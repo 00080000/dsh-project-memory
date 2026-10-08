@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { assertIndexRoot, memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
+import { assertIndexRoot, memoryRootFor, normalizeCitationFiles, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { truncate } from '../util/text.js'
 import { cfgInsight, saveInsight, defaultGlobalFile, GlobalStore } from '../insight-store.js'
@@ -79,6 +79,8 @@ export function lessonTool(config) {
     async execute(args, exec) {
       const root = resolveSafeIndexRoot(exec, args.root, config)
       assertIndexRoot(root, args.root || root)
+      // 写入期约束：files 只收项目内相对路径（schema 早就这么承诺，此前没有校验）。
+      const citationFiles = normalizeCitationFiles(args.files, root)
       const memoryDir = memoryRootFor(root, config.memoryDir)
       const store = new ProjectMemoryStore(memoryDir).load()
       const cfg = cfgInsight(config)
@@ -95,7 +97,7 @@ export function lessonTool(config) {
         reason: args.reason,
         steps: args.steps,
         trigger: args.trigger,
-        files: args.files,
+        files: citationFiles.files,
         symbols: args.symbols,
         confidence: args.confidence,
       }
@@ -124,7 +126,11 @@ export function lessonTool(config) {
       const body = result.ok
         ? `Saved insight ${result.id} [scope=${result.scope || scope}] action=${result.action}${result.hint ? ` — ${result.hint}` : ''}`
         : `Failed: ${result.error}`
-      return truncate(body, config.maxOutputChars || 8000)
+      // 丢弃必须说出来：静默少几行引用，事后只能靠审计发现"查不到"。
+      const note = citationFiles.dropped.length
+        ? `\n（${citationFiles.dropped.length} 个 files 既不是项目内相对路径也不是项目内绝对路径，已丢弃：${citationFiles.dropped.slice(0, 3).join(', ')}${citationFiles.dropped.length > 3 ? ' …' : ''}）`
+        : ''
+      return truncate(body + note, config.maxOutputChars || 8000)
     },
   })
 }
