@@ -17,6 +17,12 @@ export class WatchManager {
     this._unreadableWarned = new Set()
     /** 已就「跳过了嵌套项目根」告警过的根：同上，只提示一次。 */
     this._nestedStoreWarned = new Set()
+    /** 正在跑回合的会话 id 集合：**多会话**下任一在跑就算活跃（见 setSessionActive）。 */
+    this._activeSessions = new Set()
+    /** 当前是否处于"有人正在用"的活跃态。 */
+    this._active = false
+    /** 活跃态下的兜底间隔（见 start）：活跃 ≠ 永不扫描，只是把节拍压到最低。 */
+    this._activeInterval = undefined
   }
 
   /** 包含该路径的已注册根（最长前缀）：懒索引据此把文件归到显式 watch 过的无标记项目里。 */
@@ -111,13 +117,44 @@ export class WatchManager {
     // 轮询本身是 O(树) 的 walkDir + 逐文件 stat（本仓库一轮实测 58–87ms），
     // 常驻 15s 一轮意味着不管有没有改动都在磨 I/O。
     this._maxInterval = Math.max(this._baseInterval, Math.min(this._baseInterval * 8, 120000))
+    // 活跃兜底：**有人正在跑回合**时把节拍压到最低（默认 5 分钟、且不小于 base 的 10 倍）。
+    // 不是"永不扫描"——外部编辑器改文件、或回合一直不结束（崩溃/长任务）时，索引仍会自愈。
+    this._activeInterval = Math.max(this._baseInterval * 10, 300000)
     this._interval = this._baseInterval
     this._stopped = false
     this._schedule()
   }
 
-  _schedule() {
-    this.timer = setTimeout(() => this._tick(), this._interval)
+  /**
+   * 会话活跃信号：有会话在跑就把轮询压到最低，**回合结束立刻合并扫一次**。
+   *
+   * 为什么：轮询是唯一"用户没在等、却仍在花机器"的地方，而它扫描的时机（用户正打字/模型正在
+   * 跑）恰恰是最不该抢 CPU 的时候。活跃期间真实改动会由下一轮兜底（≤ activeInterval）覆盖，
+   * 回合一结束就把这一轮攒下的改动一次性并进来——索引还比"边跑边扫"更新鲜。
+   * @param key - 会话标识（`session.id`）；多会话下任一活跃即活跃。
+   * @param active - 该会话是否正在跑回合。
+   */
+  setSessionActive(key, active) {
+    const id = String(key)
+    if (active) this._activeSessions.add(id)
+    else this._activeSessions.delete(id)
+    const next = this._activeSessions.size > 0
+    if (next === this._active) return
+    this._active = next
+    // 没 start()（watch: false）或已 stop()：只记状态，不碰定时器。
+    if (this._stopped || this._activeInterval === undefined) return
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = null
+    }
+    if (next) {
+      this._interval = this._activeInterval
+      this._schedule(this._activeInterval)
+    } else void this._tick() // 回合结束：立刻补扫，然后回到常规节拍
+  }
+
+  _schedule(interval = this._interval) {
+    this.timer = setTimeout(() => this._tick(), interval)
     if (this.timer.unref) this.timer.unref()
   }
 
@@ -130,7 +167,9 @@ export class WatchManager {
       // poll() 内部已逐根兜底；这里保证无论发生什么都一定排下一轮，不会静默停掉 watch。
     }
     if (this._stopped) return // 轮询期间被 stop() 了，不要再排下一轮
-    this._interval = changed ? this._baseInterval : Math.min(this._interval * 2, this._maxInterval)
+    this._interval = this._active
+      ? this._activeInterval
+      : changed ? this._baseInterval : Math.min(this._interval * 2, this._maxInterval)
     this._schedule()
   }
 

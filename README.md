@@ -128,7 +128,7 @@ The client half declares **no top-level `inject`**: cordis gates `apply()` on th
 | `maxOutputChars` | 8000 | cap for `query_memory` result text (chars) |
 | `lazyIndexing` | true | index files the moment the model reads them |
 | `autoIndexOnFirstUse` | false | full scan of the current working directory on plugin load (opt-in) |
-| `watch` / `watchInterval` | true / 30 | background refresh; base poll interval in seconds (idle polls back off up to 2 minutes and reset on any change) |
+| `watch` / `watchInterval` | true / 30 | background refresh; base poll interval in seconds (polls stay quiet while a turn is running — a 5-minute fallback keeps external edits fresh — and one merged scan runs at turn end; idle polls back off up to 2 minutes and reset on any change) |
 | `maxScanFiles` / `maxScanDepth` | 20000 / 12 | per-scan caps on files and directory depth; a truncated pass is reported and never removes what it did not reach. Set `0` to disable |
 | `allowUnsafeRoots` | false | allow **explicit** tool calls to target a directory on the excluded list. Automatic paths (lazy indexing, session audit, TaskBridge, `autoIndexOnFirstUse`) stay inert there regardless |
 | `llmQueryExpansion` / `expansionCount` | false / 6 | expand queries via the LLM before search (off by default to save tokens); max variants |
@@ -174,7 +174,7 @@ Settings live in the plugin's config object. To change them, add an override ent
     autoIndexOnFirstUse: false  # off: no upfront full scan (default)
     llmQueryExpansion: false    # off: do not spend tokens on LLM query expansion (default)
     watch: true                 # on: background refresh for watched roots (default)
-    watchInterval: 30           # base poll interval; idle polls back off to at most 2 min
+    watchInterval: 30           # base poll interval; quiet during a turn, one merged scan at turn end, idle backoff to 2 min
     maxScanFiles: 20000         # per-scan file cap (truncation is reported, never deletes)
     maxScanDepth: 12            # per-scan directory-depth cap
     enableTypeScript: true      # on: type-aware enhancement when TS is installed (default)
@@ -267,7 +267,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 598 tests
+npm test                    # 602 tests
 npm run eval:injection      # scenario P/R on the synthetic pool: 14/14 hits, 0 false positives, control group clean
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)
