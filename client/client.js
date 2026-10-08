@@ -106,6 +106,8 @@ window.__ModuleLoader__.load({
 			"panel.empty": "暂无任务",
 			"panel.empty-desc": "让模型开始工作并维护 todo 清单后会自动建档",
 			"panel.no-session": "还没有会话",
+			"panel.no-channel": "数据通道不可用（客户端服务缺失）",
+			"panel.degraded": "插件降级：缺少客户端服务 {names}",
 			"task.progress": "进度",
 			"task.steps": "步骤",
 			"task.files": "文件",
@@ -184,6 +186,8 @@ window.__ModuleLoader__.load({
 			"panel.empty": "No Tasks",
 			"panel.empty-desc": "Tasks are created automatically when the model maintains a todo list",
 			"panel.no-session": "No session yet",
+			"panel.no-channel": "data channel unavailable (missing client service)",
+			"panel.degraded": "Plugin degraded — missing client service(s): {names}",
 			"task.progress": "Progress",
 			"task.steps": "Steps",
 			"task.files": "Files",
@@ -248,6 +252,130 @@ window.__ModuleLoader__.load({
 				if (params) for (const [k, v] of Object.entries(params)) text = text.replace(new RegExp(`\\{${k}\\}`, "g"), String(v));
 				return text;
 			};
+		}
+		//#endregion
+		//#region src/client/services.ts
+		/**
+		* Client 服务软探测 —— 顶层 `inject` 是「整半边静默消失」的开关，这里把它降级成运行时探测。
+		*
+		* cordis 的顶层 `inject` 是**装配期门控**：只要声明的一项在当前客户端装配里不可用，
+		* 它根本不会调用 `apply()`。这是插件能遇到的最坏失败形态 —— 没有面板、没有 `/` 组、
+		* 也没有任何报错（0.1.7 会话格式变更、0.2.0 装配差异都踩过这一条）。
+		*
+		* 所以本插件的 client 半边把必需服务全部当**软依赖**：
+		*   - 顶层 `inject` 留空 → `apply()` 一定被调用，插件一定挂载；
+		*   - 每个服务用 `ctx.get(name)` 现场读（cordis 里它**不需要 inject**），读不到就降级；
+		*   - 缺什么由 {@link missingServices} 说清楚：面板上显示、日志里告警，而不是静默消失。
+		*/
+		/**
+		* 必需服务（`a.b` 形式表示从服务上取的属性路径，如 `remote.commands`）。
+		* 顺序即告警文案里的顺序，从"没有它就没有界面"到"没有它只是少个数据通道"。
+		*/
+		const REQUIRED_SERVICES = [
+			"slots",
+			"sessions",
+			"remote",
+			"remote.commands",
+			"locale"
+		];
+		/**
+		* 读一个服务（或它的属性路径），**永不抛出**。
+		*
+		* 两条路都要走：`ctx.get()` 是 cordis 官方的"无 inject 读取"入口；老宿主没有它时回退到
+		* `ctx[name]` —— 但那条路在"没有 inject 又没有实现"时会**抛错**而不是返回 undefined，
+		* 所以必须接住：软依赖的全部意义就是不能让它带崩调用方。
+		* @param ctx - client 上下文（宿主没给上下文时返回 undefined）。
+		* @param path - 服务名，或 `服务名.属性.属性`。
+		* @returns 服务值；缺失/不可读时为 undefined。
+		*/
+		function service(ctx, path) {
+			const [head, ...rest] = path.split(".");
+			let value = readService(ctx, head);
+			for (const key of rest) {
+				if (value === null || value === void 0) return void 0;
+				try {
+					value = value[key];
+				} catch {
+					return;
+				}
+			}
+			return value;
+		}
+		/**
+		* 读一层服务实现：先 `ctx.get(name)`，再回退到属性访问。
+		* @param ctx - client 上下文。
+		* @param name - 服务名（不含路径）。
+		* @returns 服务值，或 undefined。
+		*/
+		function readService(ctx, name) {
+			if (ctx === null || ctx === void 0) return void 0;
+			try {
+				const get = ctx.get;
+				if (typeof get === "function") {
+					const found = get.call(ctx, name);
+					if (found !== void 0) return found;
+				}
+			} catch {}
+			try {
+				return ctx[name];
+			} catch {
+				return;
+			}
+		}
+		/**
+		* 当前装配里读不到的必需服务。
+		* @param ctx - client 上下文。
+		* @param names - 待检查的服务路径，默认 {@link REQUIRED_SERVICES}。
+		* @returns 缺失的服务路径；全都在时为 `[]`。
+		*/
+		function missingServices(ctx, names = REQUIRED_SERVICES) {
+			return names.filter((name) => service(ctx, name) === void 0);
+		}
+		/**
+		* 降级检查的宽限期（毫秒）。装配是异步的：`apply()` 时某个服务还没到位**不算缺失**
+		* （它可能几百毫秒后才 provide），所以只在过了宽限期仍然读不到时才告警。
+		*/
+		const DEGRADED_GRACE_MS = 3e3;
+		/**
+		* 延后执行一次（宿主 ctx 有 `setTimeout` 就用它的，能随 fiber 一起回收）。
+		* @param ctx - client 上下文。
+		* @param delay - 毫秒。
+		* @param fn - 回调。
+		*/
+		function later(ctx, delay, fn) {
+			try {
+				if (typeof ctx?.setTimeout === "function") {
+					ctx.setTimeout(fn, delay);
+					return;
+				}
+				const handle = globalThis.setTimeout(fn, delay);
+				if (handle !== null && typeof handle === "object" && typeof handle.unref === "function") handle.unref();
+			} catch {}
+		}
+		/**
+		* 「这些服务到齐了」的通知：宿主是异步装配的，apply 时读不到**不等于**永远读不到。
+		*
+		* 用嵌套 `ctx.inject` 挂一个只负责通知的回调（嵌套注入只门控这一段，插件本身照常挂载），
+		* 服务迟到时调用方据此重渲染/重订阅。拿不到 `ctx.inject`（老宿主）时是 no-op。
+		* @param ctx - client 上下文。
+		* @param names - 要等的服务路径。
+		* @param fn - 到齐回调。
+		* @returns 取消订阅；调用方应在卸载时调用它。
+		*/
+		function whenServicesReady(ctx, names, fn) {
+			if (names.length === 0 || typeof ctx?.inject !== "function") return () => {};
+			try {
+				const fiber = ctx.inject([...names], () => {
+					fn();
+				});
+				return () => {
+					try {
+						fiber?.dispose?.();
+					} catch {}
+				};
+			} catch {
+				return () => {};
+			}
 		}
 		//#endregion
 		//#region src/client/task-data-store.ts
@@ -1307,10 +1435,10 @@ window.__ModuleLoader__.load({
 			});
 			const [savedTip, setSavedTip] = (0, react.useState)(null);
 			const runLine = (0, react.useCallback)(async (line) => {
-				const commands = ctx?.remote?.commands;
+				const commands = service(ctx, "remote")?.commands;
 				if (!sessionId || !commands || typeof commands.execute !== "function") return {
 					ok: false,
-					text: "no session / commands service"
+					text: "data channel unavailable (missing client service)"
 				};
 				try {
 					const envelope = await commands.execute(sessionId, line, []);
@@ -1817,16 +1945,32 @@ window.__ModuleLoader__.load({
 		];
 		const VIEW_CYCLE = PANEL_VIEWS;
 		function getT(ctx) {
-			return createTranslate(ctx?.locale?.getSnapshot?.()?.active === "zh" ? zh : en);
+			return createTranslate(service(ctx, "locale")?.getSnapshot?.()?.active === "zh" ? zh : en);
 		}
-		function useSessionId(ctx) {
+		/**
+		* 服务到齐版本号：必需服务迟到（宿主异步装配）时 bump 一次，让渲染与订阅重新求值。
+		* 只在降级状态下挂着通知，服务齐全时零开销。
+		* @param ctx - client 上下文
+		* @returns 每次有服务到齐就 +1 的版本号
+		*/
+		function useServiceArrival(ctx) {
+			const [version, bump] = (0, react.useState)(0);
+			(0, react.useEffect)(() => {
+				const disposers = missingServices(ctx).map((name) => whenServicesReady(ctx, [name], () => bump((n) => n + 1)));
+				return () => {
+					for (const dispose of disposers) dispose();
+				};
+			}, [ctx, version]);
+			return version;
+		}
+		function useSessionId(ctx, servicesVersion) {
 			const [, force] = (0, react.useState)(0);
 			(0, react.useEffect)(() => {
-				const list = ctx?.sessions?.list;
+				const list = service(ctx, "sessions")?.list;
 				if (!list || typeof list.subscribe !== "function") return;
 				return list.subscribe(() => force((n) => n + 1));
-			}, [ctx]);
-			return pickSessionId(ctx?.sessions?.list?.getSnapshot?.());
+			}, [ctx, servicesVersion]);
+			return pickSessionId(service(ctx, "sessions")?.list?.getSnapshot?.());
 		}
 		var PanelErrorBoundary = class extends react.Component {
 			state = { failed: false };
@@ -1853,7 +1997,9 @@ window.__ModuleLoader__.load({
 			const t = getT(ctx);
 			const data = useTaskData();
 			const ui = useTaskUI();
-			const sessionId = useSessionId(ctx);
+			const servicesVersion = useServiceArrival(ctx);
+			const degraded = missingServices(ctx);
+			const sessionId = useSessionId(ctx, servicesVersion);
 			const [syncing, setSyncing] = (0, react.useState)(false);
 			const [syncedAt, setSyncedAt] = (0, react.useState)(0);
 			const [syncError, setSyncError] = (0, react.useState)(null);
@@ -1882,9 +2028,9 @@ window.__ModuleLoader__.load({
 				return true;
 			};
 			const runLine = async (line) => {
-				const commands = ctx?.remote?.commands;
+				const commands = service(ctx, "remote")?.commands;
 				if (!sessionId || !commands || typeof commands.execute !== "function") {
-					setSyncError("no session / commands service");
+					setSyncError(t("panel.no-channel"));
 					return false;
 				}
 				let response;
@@ -2165,7 +2311,11 @@ window.__ModuleLoader__.load({
 							]
 						})]
 					}),
-					!sessionId && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+					degraded.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: TaskPanel_module_css_default.notice,
+						children: t("panel.degraded", { names: degraded.join(", ") })
+					}),
+					!sessionId && service(ctx, "sessions") !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						className: TaskPanel_module_css_default.notice,
 						children: t("panel.no-session")
 					}),
@@ -2428,7 +2578,7 @@ window.__ModuleLoader__.load({
 		];
 		/** 按当前语言取翻译函数。 */
 		function translator(ctx) {
-			return createTranslate(ctx?.locale?.getSnapshot?.()?.active === "zh" ? zh : en);
+			return createTranslate(service(ctx, "locale")?.getSnapshot?.()?.active === "zh" ? zh : en);
 		}
 		/**
 		* 一轮候选：把三行装配成菜单行，再按查询与位置过滤。
@@ -2526,6 +2676,11 @@ window.__ModuleLoader__.load({
 		* dsh web (rc.1) 的 client 插件契约为 cordis client plugin：
 		*   export const inject = [<client 服务名>...]
 		*   export function apply(ctx) { ... }
+		*
+		* 本插件**不用顶层 `inject` 声明必需服务**（见 services.ts）：它是装配期门控，缺一项宿主
+		* 就根本不调用 apply()，表现是"插件出问题、界面上却静默消失"。服务改由 `service()` 现场探测，
+		* 缺了照常挂载、面板上显示原因、日志里打一条点名缺失项的告警。
+		*
 		* 面板注册进 `shell.overlay`（Frame 级浮动层，additive 列表槽）：
 		* 该槽由 ui-layout 的 AppFrame 声明渲染（scope root，独立于滚动容器），
 		* 默认 click-through，条目自身需开启 pointer-events。
@@ -2538,20 +2693,21 @@ window.__ModuleLoader__.load({
 		*/
 		const NS = "dsh-project-memory";
 		const name = NS;
-		/** Required client services: slots registry, session scopes, commands remote (data 通道). */
-		const inject = [
-			"slots",
-			"sessions",
-			"remote",
-			"remote.commands",
-			"locale"
-		];
+		/**
+		* 顶层 `inject` **留空**（必需服务的软依赖清单在 services.ts 的 `REQUIRED_SERVICES`）。
+		*
+		* 这不是省略，而是契约选择：cordis 的顶层 inject 是装配期门控，缺一项就根本不调用
+		* `apply()` —— 整个 client 半边静默消失。留空后 apply() 一定会被调用，服务缺失由
+		* `missingServices()` 在运行时说清楚（面板上显示 + 日志告警）。
+		*/
+		const inject = [];
 		/**
 		* 注册自建的 `/` 菜单源（见 slash.ts）。
 		*
 		* 整段都是**可选增强**：宿主没有 `inputTriggers` 服务、或该服务换了契约时，绝不能因此
-		* 让整个 client 插件挂掉——那会连任务面板一起消失。`inputTriggers` 因此不进顶层 `inject`
-		* （顶层 inject 未满足时 cordis 根本不会调用 apply），而是走嵌套 inject + 两层 try/catch。
+		* 让整个 client 插件挂掉——那会连任务面板一起消失。`inputTriggers` 因此不进任何 `inject`
+		* 声明，而是走嵌套 `ctx.inject` + 两层 try/catch（顶层 inject 未满足时 cordis 根本不会
+		* 调用 apply，见 services.ts）。
 		* @param ctx - client 根上下文
 		*/
 		function registerSlashSource(ctx) {
@@ -2584,24 +2740,60 @@ window.__ModuleLoader__.load({
 				console.warn(`[${NS}] slash source injection failed:`, err);
 			}
 		}
-		function apply(ctx) {
-			const slots = ctx?.slots;
-			if (!slots || typeof slots.inject !== "function") console.warn(`[${NS}] host has no slots service — task panel disabled`);
-			else try {
-				slots.inject("shell.overlay", () => slots.register({
-					name: "shell.overlay",
-					id: "dsh-project-memory-task-panel",
-					order: 100
-				}, () => (0, react.createElement)(TaskPanelEntry, { ctx })));
-				for (const key of ["tasks"]) slots.inject("conversation.chat.commandview", () => slots.register({
-					name: "conversation.chat.commandview",
-					key
-				}, TaskCommandNode));
-				registerShowTaskPanelView(slots);
+		/**
+		* 挂载任务面板（`shell.overlay` 浮层 + 会话内命令节点 + `show_task_panel` 工具视图）。
+		*
+		* `slots` 同样是软依赖：现成的就用；没有就**等它**（cordis 的 `ctx.inject` 是嵌套注入，
+		* 只门控这一段回调，插件本身照样挂载）。等不到时由 {@link reportDegradedLater} 说明原因。
+		* @param ctx - client 根上下文
+		*/
+		function registerTaskPanel(ctx) {
+			const mount = (slots) => {
+				if (!slots || typeof slots.inject !== "function") {
+					console.warn(`[${NS}] host has no slots service — task panel disabled`);
+					return;
+				}
+				try {
+					slots.inject("shell.overlay", () => slots.register({
+						name: "shell.overlay",
+						id: "dsh-project-memory-task-panel",
+						order: 100
+					}, () => (0, react.createElement)(TaskPanelEntry, { ctx })));
+					for (const key of ["tasks"]) slots.inject("conversation.chat.commandview", () => slots.register({
+						name: "conversation.chat.commandview",
+						key
+					}, TaskCommandNode));
+					registerShowTaskPanelView(slots);
+				} catch (err) {
+					console.warn(`[${NS}] task panel registration failed:`, err);
+				}
+			};
+			if (typeof ctx?.inject === "function") try {
+				ctx.inject(["slots"], (scope) => mount(scope?.slots ?? service(ctx, "slots")));
+				return;
 			} catch (err) {
-				console.warn(`[${NS}] task panel registration failed:`, err);
+				console.warn(`[${NS}] slots injection failed:`, err);
 			}
+			mount(service(ctx, "slots"));
+		}
+		/**
+		* 过了宽限期仍然读不到必需服务时，打**一条**点名缺失项的告警。
+		*
+		* 为什么不在 `apply()` 里立刻报：装配是异步的，apply 时某个服务还没 provide 是正常的
+		* （那样每次启动都会误报）。宽限期后还缺，就是真的缺 —— 这条日志是"静默消失"的反面。
+		* @param ctx - client 根上下文
+		*/
+		function reportDegradedLater(ctx) {
+			later(ctx, DEGRADED_GRACE_MS, () => {
+				const missing = missingServices(ctx);
+				if (missing.length === 0) return;
+				console.warn(`[${NS}] degraded: client service(s) unavailable in this assembly: ${missing.join(", ")} — the client half is mounted anyway; the task panel shows the same reason.`);
+			});
+		}
+		function apply(ctx) {
+			registerTaskPanel(ctx);
 			registerSlashSource(ctx);
+			reportDegradedLater(ctx);
 		}
 		//#endregion
 		exports.apply = apply;
