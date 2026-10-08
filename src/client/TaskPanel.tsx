@@ -13,6 +13,7 @@ import {
   IconQuestionOutline14,
 } from './icons.ts'
 import { createTranslate, zh, en } from './locales.ts'
+import { missingServices, service, whenServicesReady } from './services.ts'
 import { useTaskData, useTaskDataActions, taskDataStore, parseTaskPayloadText, type TaskStep } from './task-data-store.ts'
 import { useTaskUI, useTaskUIActions, PANEL_VIEWS } from './task-ui-store.ts'
 import { MiniBar, TaskCard } from './TaskComponents.tsx'
@@ -27,20 +28,38 @@ const STATUS_CYCLE = ['pending', 'in_progress', 'completed'] as const
 const VIEW_CYCLE = PANEL_VIEWS
 
 function getT(ctx: any) {
-  const locale = ctx?.locale?.getSnapshot?.()?.active === 'zh' ? zh : en
+  // 服务一律走软探测（services.ts）：宿主的翻译服务不在时退英文，而不是抛错带崩整个面板。
+  const locale = service(ctx, 'locale')?.getSnapshot?.()?.active === 'zh' ? zh : en
   return createTranslate(locale)
 }
 
-function useSessionId(ctx: any): string | null {
+/**
+ * 服务到齐版本号：必需服务迟到（宿主异步装配）时 bump 一次，让渲染与订阅重新求值。
+ * 只在降级状态下挂着通知，服务齐全时零开销。
+ * @param ctx - client 上下文
+ * @returns 每次有服务到齐就 +1 的版本号
+ */
+function useServiceArrival(ctx: any): number {
+  const [version, bump] = useState(0)
+  useEffect(() => {
+    const disposers = missingServices(ctx).map((name) =>
+      whenServicesReady(ctx, [name], () => bump((n) => n + 1)))
+    return () => { for (const dispose of disposers) dispose() }
+  }, [ctx, version])
+  return version
+}
+
+function useSessionId(ctx: any, servicesVersion: number): string | null {
   const [, force] = useState(0)
   useEffect(() => {
-    const list = ctx?.sessions?.list
+    const list = service(ctx, 'sessions')?.list
     if (!list || typeof list.subscribe !== 'function') return
     return list.subscribe(() => force((n) => n + 1))
-  }, [ctx])
+    // servicesVersion：sessions 迟到时 effect 必须重跑一次，否则永远订阅不上（面板不跟随切换）。
+  }, [ctx, servicesVersion])
   // 快照结构在 dsh 0.1.7 变过（current/items → ids/byId）：解析与兼容都在 session-id.js，
   // 那里有单测；这里只负责订阅与取值。
-  return pickSessionId(ctx?.sessions?.list?.getSnapshot?.())
+  return pickSessionId(service(ctx, 'sessions')?.list?.getSnapshot?.())
 }
 
 class PanelErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
@@ -71,7 +90,11 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   const t = getT(ctx)
   const data = useTaskData()
   const ui = useTaskUI()
-  const sessionId = useSessionId(ctx)
+  // 缺失的客户端服务：面板照常挂载，但必须把原因摆在界面上（否则用户看到的是
+  // "面板在、数据永远同步失败"这种没有因果的二次困惑）。
+  const servicesVersion = useServiceArrival(ctx)
+  const degraded = missingServices(ctx)
+  const sessionId = useSessionId(ctx, servicesVersion)
   const [syncing, setSyncing] = useState(false)
   const [syncedAt, setSyncedAt] = useState(0)
   const [syncError, setSyncError] = useState<string | null>(null)
@@ -104,9 +127,10 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   }
 
   const runLine = async (line: string): Promise<boolean> => {
-    const commands = ctx?.remote?.commands
+    // 软探测：`remote` 服务缺失时 `ctx.remote` 会**抛错**（cordis 语义），所以不能直接取属性。
+    const commands = service(ctx, 'remote')?.commands
     if (!sessionId || !commands || typeof commands.execute !== 'function') {
-      setSyncError('no session / commands service')
+      setSyncError(t('panel.no-channel'))
       return false
     }
     let response: any
@@ -396,7 +420,11 @@ function TaskPanelView({ ctx }: { ctx: any }) {
         </div>
       </header>
 
-      {!sessionId && <div className={css.notice}>{t('panel.no-session')}</div>}
+      {degraded.length > 0 && (
+        <div className={css.notice}>{t('panel.degraded', { names: degraded.join(', ') })}</div>
+      )}
+      {/* 会话服务本身缺失时，"还没有会话"是误导：上面那行的降级说明才是原因。 */}
+      {!sessionId && service(ctx, 'sessions') !== undefined && <div className={css.notice}>{t('panel.no-session')}</div>}
       {syncError && <div className={css.notice}>{t('panel.sync-failed')}: {syncError}</div>}
 
       {view !== 'task' ? (

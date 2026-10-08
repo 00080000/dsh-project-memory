@@ -112,6 +112,8 @@ TaskPanel (Container)
 
 工作流卡片可收起，自动适应 dsh 及主题插件风格，提供四种卡片风格切换。
 
+客户端半边**不声明顶层 `inject`**：cordis 用它做装配期门控，缺一项服务就整个插件静默不加载（没面板、没 `/` 组、也没有报错）。它需要的五个服务 —— `slots`、`sessions`、`remote`、`remote.commands`、`locale` —— 改成运行时探测：插件一定挂载，面板顶部点名缺了什么，宽限 3 秒后仍缺则再打一条 `console.warn`。
+
 ![四种卡片风格](docs/images/image-4.png)
 
 ## 配置
@@ -264,7 +266,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ```bash
 npm install
-npm test                    # 592 项测试
+npm test                    # 598 项测试
 npm run eval:injection      # 合成池上的场景 P/R：命中 14/14、假阳性 0、对照组零注入
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）
