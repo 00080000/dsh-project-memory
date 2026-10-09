@@ -109,8 +109,9 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   }
 
   const runLine = async (line: string): Promise<boolean> => {
-    // 软探测：`remote` 服务缺失时 `ctx.remote` 会**抛错**（cordis 语义），所以不能直接取属性。
-    const commands = service(ctx, 'remote')?.commands
+    // 软探测（services.ts）：`remote.commands` 是**独立注册的扁平服务**，必须按整名读；
+    // `ctx.remote.commands` 走属性路径，会被 inject 门控挡下（本插件顶层 inject 为空）。
+    const commands = service(ctx, 'remote.commands')
     if (!sessionId || !commands || typeof commands.execute !== 'function') {
       setSyncError(t('panel.no-channel'))
       return false

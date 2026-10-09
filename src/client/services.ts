@@ -9,10 +9,18 @@
  *   - 顶层 `inject` 留空 → `apply()` 一定被调用，插件一定挂载；
  *   - 每个服务用 `ctx.get(name)` 现场读（cordis 里它**不需要 inject**），读不到就降级；
  *   - 缺什么由 {@link missingServices} 说清楚：面板上显示、日志里告警，而不是静默消失。
+ *
+ * 另一条与 `inject` 同源的坑：**属性路径（`ctx.remote.commands`）也是 inject 门控的**。
+ * 子命名空间在 cordis 里是**独立注册的扁平服务**（名字就叫 `remote.commands`，由 gateway 的
+ * `RemoteNamespaceService` 在嵌套 fiber 里 provide），读它只有 `ctx.get('remote.commands')`
+ * 这一条路不需要 inject；`ctx.remote.commands` 会走 ctx 代理，报
+ * `cannot get property "remote.commands" without inject` —— 于是"宿主明明有，插件却说缺"。
+ * 见 {@link service}：整名优先，属性路径只作老宿主回退。
  */
 
 /**
- * 必需服务（`a.b` 形式表示从服务上取的属性路径，如 `remote.commands`）。
+ * 必需服务。带 `.` 的名字（`remote.commands`）是 cordis 里**独立注册的扁平服务名**，
+ * 不是"父服务上的属性"——只是老宿主可能把它挂在服务对象上，`service()` 才留了属性回退。
  * 顺序即告警文案里的顺序，从"没有它就没有界面"到"没有它只是少个数据通道"。
  */
 export const REQUIRED_SERVICES = ['slots', 'sessions', 'remote', 'remote.commands', 'locale'] as const
@@ -20,15 +28,23 @@ export const REQUIRED_SERVICES = ['slots', 'sessions', 'remote', 'remote.command
 /**
  * 读一个服务（或它的属性路径），**永不抛出**。
  *
- * 两条路都要走：`ctx.get()` 是 cordis 官方的"无 inject 读取"入口；老宿主没有它时回退到
- * `ctx[name]` —— 但那条路在"没有 inject 又没有实现"时会**抛错**而不是返回 undefined，
- * 所以必须接住：软依赖的全部意义就是不能让它带崩调用方。
+ * 读法有两条，顺序不能反：
+ *  1. **整名优先**：`ctx.get('remote.commands')`。cordis 里子命名空间就是独立注册的扁平服务，
+ *     这条路不经过 inject 门控 —— 它是"没有顶层 inject 的插件"读 `remote.commands` 的**唯一**可行路径。
+ *  2. **属性路径回退**：`ctx.get('remote').commands`。老宿主 / 测试替身把子命名空间挂在父服务对象上时走这条。
+ *
+ * `ctx.get()` 是 cordis 官方的"无 inject 读取"入口；老宿主没有它时回退到 `ctx[name]` —— 但那条路
+ * 既会因"没有 inject 又没有实现"**抛错**（而不是返回 undefined），也**读不到扁平子命名空间**，
+ * 所以必须整段接住：软依赖的全部意义就是不能让它带崩调用方，读不到就交给调用方按 undefined 处理。
  * @param ctx - client 上下文（宿主没给上下文时返回 undefined）。
  * @param path - 服务名，或 `服务名.属性.属性`。
  * @returns 服务值；缺失/不可读时为 undefined。
  */
 export function service(ctx: any, path: string): any {
+  const whole = readService(ctx, path)
+  if (whole !== undefined) return whole
   const [head, ...rest] = path.split('.')
+  if (rest.length === 0) return whole
   let value = readService(ctx, head)
   for (const key of rest) {
     if (value === null || value === undefined) return undefined
