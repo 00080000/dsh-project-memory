@@ -97,8 +97,8 @@ export function MemoryView({
 
   const runLine = useCallback(
     async (line: string): Promise<{ ok: boolean; text: string }> => {
-      // 软探测（services.ts）：`remote` 服务缺失时 `ctx.remote` 会抛错，取属性前必须过它。
-      const commands = service(ctx, 'remote')?.commands
+      // 软探测（services.ts）：`remote.commands` 是独立注册的扁平服务，按整名读（见 services.ts）。
+      const commands = service(ctx, 'remote.commands')
       if (!sessionId || !commands || typeof commands.execute !== 'function') {
         return { ok: false, text: 'data channel unavailable (missing client service)' }
       }

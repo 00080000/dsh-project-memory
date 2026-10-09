@@ -55,7 +55,10 @@ function registerSlashSource(ctx: any): void {
     return
   }
   try {
-    ctx.inject(['inputTriggers', 'sessions', 'remote.commands'], (scope: any) => {
+    // 只等真正用到的两项：`inputTriggers` 是注册入口，`sessions` 用来消费触发 token。
+    // 那三行**不发宿主命令**（纯客户端开面板页），所以不把 `remote.commands` 写进这里 ——
+    // 少一个装配期门控，就少一种"菜单组永远不出现"的静默形态。
+    ctx.inject(['inputTriggers', 'sessions'], (scope: any) => {
       try {
         const inputTriggers = scope?.inputTriggers
         if (!inputTriggers || typeof inputTriggers.registerSource !== 'function') {
