@@ -1,6 +1,6 @@
 ## 0.5.16 (2026-10-08)
 
-`npm test` **592 → 608 项 / 30 → 33 个文件**；`npm run typecheck` 通过。
+`npm test` **592 → 610 项 / 30 → 33 个文件**；`npm run typecheck` 通过。
 
 ### 修复：客户端半边不再「静默消失」——顶层 inject 去门控，缺服务改为降级挂载
 
@@ -29,12 +29,36 @@
   循环**（表现：单个标签页永久未响应、风扇满载，新开标签页却正常）。客户端半边因此立一条规矩：
   **不引入任何会自己触发渲染的机制**；缺服务的提示只在渲染时现算（面板本来就会随 store / 会话变化
   重渲染，降级行会自然消失）。
-- **测试**：新增 `test/client-degraded.test.mjs`（5 项）——顶层 inject 必须为空、贫服务宿主上
+- **测试**：新增 `test/client-degraded.test.mjs`（5 → 7 项）——顶层 inject 必须为空、贫服务宿主上
   `apply()` 跑完且不抛、宽限期前不报/宽限后恰好一条且点名每个缺失项、服务齐全时不误报、
   **面板真的渲染出降级原因**（不只是打日志），外加一条静态守卫禁止 `src/client` 里再出现
   `ctx.<必需服务>` 直取。`test/client-slash.test.mjs` 的 inject 断言同步改成"顶层为空 + 嵌套注入"。
 - **范围**：这是插件侧兜底。宿主层（客户端插件加载/装配）若不改，其他插件仍会是同样的静默形态；
   `client/client.js` 已按新源码重建入库。
+
+### 修复：客户端把 `remote.commands` 读错了门 —— 面板常驻「缺少客户端服务 remote.commands」
+
+上一节去掉顶层 `inject` 之后，服务改由 `service()` 现读；但 `service()` 把路径按 `.` 拆开、顺着父服务
+取属性（`ctx.get('remote')` 再取 `.commands`），而**属性路径同样是 inject 门控的**。cordis 里子命名空间
+是**独立注册的扁平服务**（名字就叫 `remote.commands`，由 gateway 的 `RemoteNamespaceService` 在嵌套
+fiber 里 `provide`）：读它不需要 inject 的**唯一**路径是 `ctx.get('remote.commands')`；顺着父服务取属性
+会走 ctx 代理，抛 `cannot get property "remote.commands" without inject`，被软探测吞掉 → 判成"缺失"。
+于是**宿主明明提供了它，面板却常年挂着降级行**，数据通道（`/tasks`、`/insight` 的 `execute`）也一并不可用。
+宿主自己读子命名空间用的正是整名写法（`ctx.get('remote.probe')` / `ctx.get('remote.credentials')`）。
+
+- `service()` 改成**整名优先**（`ctx.get('remote.commands')`），读不到再回退属性路径（老宿主 / 把子
+  命名空间挂在服务对象上的形状）；`TaskPanel` / `MemoryView` 的取值点从 `service(ctx, 'remote')?.commands`
+  改成 `service(ctx, 'remote.commands')`。
+- **宿主替身的形状修正**：`test/client-degraded.test.mjs` 原来的假宿主是 `ctx.remote = { commands }`
+  （没有 `ctx.get`、也没有 inject 门控）—— 它验证的是自己的假设，所以线上坏、测试全绿。现在按真实装配
+  建模：扁平服务表 + `ctx.get(name)` + 属性读按 inject 门控抛错，`remote` 服务对象上**没有** `commands`。
+- **回归闸门（+2 项）**：真实宿主形状下必须不误报、面板不渲染降级行，且数据通道**真的 `execute` 一次**
+  （只断言"没显示降级"会漏掉"通道仍然不通"）；老宿主形状（属性回退）也必须通 —— 两条路都锁住。
+  静态守卫加一条：禁止 `service(ctx, 'remote')?.…` 这类顺父服务取子命名空间。
+- 顺带：slash 的嵌套 `ctx.inject` 从 `['inputTriggers', 'sessions', 'remote.commands']` 收成
+  `['inputTriggers', 'sessions']` —— 那三行菜单只开面板页、**不发宿主命令**，多写一个依赖就是多一种
+  "菜单组永不出现"的静默形态。
+- **验证**：`npm test` **610 项 / 33 个文件**、`npm run typecheck` 通过；`client/client.js` 已重建入库。
 
 ### 修复：引用路径的写入期约束 + 删掉 `blindSpots` 死字段
 

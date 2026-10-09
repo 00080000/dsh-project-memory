@@ -114,6 +114,8 @@ TaskPanel (Container)
 
 客户端半边**不声明顶层 `inject`**：cordis 用它做装配期门控，缺一项服务就整个插件静默不加载（没面板、没 `/` 组、也没有报错）。它需要的五个服务 —— `slots`、`sessions`、`remote`、`remote.commands`、`locale` —— 改成运行时探测：插件一定挂载，面板顶部点名缺了什么，宽限 3 秒后仍缺则再打一条 `console.warn`。
 
+探测本身也有个坑：`remote.commands` 这类**子命名空间在 cordis 里是独立注册的扁平服务**，读它只有 `ctx.get('remote.commands')`（整名）这条路不受 inject 门控；顺着 `remote` 取 `.commands` 会报 `cannot get property "remote.commands" without inject` —— 顶层 inject 为空的插件因此会把"宿主明明有"判成"缺失"。读法只此一条，属性路径仅作老宿主回退，细节见 `src/client/services.ts`。
+
 ![四种卡片风格](docs/images/image-4.png)
 
 ## 配置

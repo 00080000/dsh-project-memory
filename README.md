@@ -115,6 +115,8 @@ The workflow panel is collapsible, adapts to dsh and theme plugin styles, and of
 
 The client half declares **no top-level `inject`**: cordis gates `apply()` on that declaration, so one unavailable service silently removes the whole plugin (no panel, no `/` group, no error). The five services it needs — `slots`, `sessions`, `remote`, `remote.commands`, `locale` — are therefore probed at runtime: the plugin always mounts, the panel header names whatever is missing, and one `console.warn` names it after a 3 s grace period.
 
+The probe has a trap of its own: sub-namespaces such as `remote.commands` are **separately registered flat services in cordis**, and only the full-name read `ctx.get('remote.commands')` escapes the `inject` gate. Reading `.commands` off the `remote` service raises `cannot get property "remote.commands" without inject`, which made a plugin with an empty top-level `inject` report a service the host does provide as missing. Full name first, property path only as a legacy-host fallback — see `src/client/services.ts`.
+
 ![Four card styles](docs/images/image-4.png)
 
 ## Configuration
