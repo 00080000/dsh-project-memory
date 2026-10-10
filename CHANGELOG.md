@@ -1,6 +1,6 @@
 ## 0.5.16 (2026-10-08)
 
-`npm test` **592 → 610 项 / 30 → 33 个文件**；`npm run typecheck` 通过。
+`npm test` **592 → 611 项 / 30 → 33 个文件**；`npm run typecheck` 通过。
 
 ### 修复：客户端半边不再「静默消失」——顶层 inject 去门控，缺服务改为降级挂载
 
@@ -96,6 +96,21 @@ fiber 里 `provide`）：读它不需要 inject 的**唯一**路径是 `ctx.get(
 - **测试**：新增 `test/watch-idle.test.mjs`（5 项，不打真实定时器）——间隔口径、活跃期不扫描、
   多会话任一在跑即活跃、回合结束的节拍恢复（有改动回 base / 无改动继续退避）、`watch: false` 与
   `stop()` 之后活跃信号不抛错也不复活定时器。
+
+### 修复：`budget` 掉落的两维数字在审计面被抹掉
+
+`57b464c` 给 `dropped` 加了 `remaining` / `need`（理由写在代码里："还剩 38 字符、这条最少要 120"
+与"根本没预算"在日志里长得一样，配额逼近上限时那条**永久静默的细缝**因此不可诊断）。
+但 `auditRecordFrom` 把它们投影掉了，落盘的只有 `{id, channel, reason}` —— **源码里有、日志里永远没有**。
+本仓库实测 **186 次** budget 掉落（hint 153 / trigger 33）全部无纲；而
+`test/injection-budget.test.mjs` 断言的是 `buildInjection` 的**内存产物**：
+两处各自有测试，接缝没人测。
+
+- 审计投影原样保留这两维。只对带数字的条目落键 —— coverage 等没有量纲的掉落占绝大多数，
+  不该为此多出两个 `null`。
+- **回归**：`buildInjection` → `auditRecordFrom` → `appendInjectionAudit` → 读回最后一行，
+  断言 `remaining: 30` / `need: 120` 真的落到盘上（回退修复即失败）。
+- **验证**：`npm test` **610 → 611 项 / 33 个文件**、`npm run typecheck` 通过。
 
 ## 0.5.15 (2026-10-06)
 
