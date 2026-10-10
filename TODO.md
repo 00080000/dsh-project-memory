@@ -6,7 +6,7 @@
 
 - **Async I/O / Cold Start** —— 当热路径 >5ms 或冷启动 >100ms 时再动（当前 5k 文件冷启动 43ms、热查询 p50 3.0ms，未触发）。
 
-## On Hold（等用户反馈）
+## On Hold（等反馈）
 
 - tree-sitter AST 解析（做成可选插件）
 - 其余语言的多行签名
