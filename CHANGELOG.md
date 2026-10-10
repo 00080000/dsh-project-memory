@@ -2,52 +2,39 @@
 
 `npm test` **592 → 616 项 / 30 → 34 个文件**；`npm run typecheck` 通过。
 
-### 性能：`chunkText` 改成流式——峰值不再与文件大小同阶
+### 性能：`chunkText` 改成流式，索引大文件的内存峰值不再与文件大小同阶
 
-原实现先把整份正文 `split(/\r?\n/)`，再把**所有** section 的正文同时留在内存里；索引一个大文件时
-峰值与文件大小同阶（PDF 边际 **19×**、单文件 50 MB → **~1.2 GB RSS**）。现在逐行惰性扫描、
-一个 section 处理完就放掉，并且**攒够 `maxChunks` 立刻停**。
+原实现先把整份正文 `split(/\r?\n/)`，再把所有 section 的正文同时留在内存里（PDF 边际 19×、
+单文件 50 MB → ~1.2 GB RSS）。现在逐行扫描，一个 section 处理完就放掉，攒够 `maxChunks` 就停。
 
-实测（独立子进程 + `--expose-gc`，41.6 MB markdown 语料）：
+41.6 MB markdown 语料实测（独立子进程 + `--expose-gc`）：增量 RSS 42.4 MB → **0.7 MB**，
+耗时 62 ms → **1 ms**。
 
-| | 增量 RSS | 耗时 |
-|---|---|---|
-| 旧（整份物化） | 42.4 MB | 62 ms |
-| 新（流式） | **0.7 MB** | **1 ms** |
+这次改动不改输出，所以判据是与旧实现逐字节一致：`test/chunker.test.mjs` 把旧实现当参考实现内联，
+边界输入（14 种 × 6 组参数）与随机语料（1200 例，定种子）全部一致；另核过仓库 151 个真实文件 /
+604 例，零不一致。`eval:injection` 逐项不变。
 
-**这是"不改输出"的重写，所以判据是逐字节一致**：`test/chunker.test.mjs` 把旧实现当参考实现
-内联，要求边界输入（14 种 × 6 组参数）与随机语料（1200 例，定种子）全部一致；另核过仓库里
-151 个真实文件 / 604 例 / 1.2 MB，零不一致。端到端 `eval:injection` 也逐项不变。
+- `parsePdf` 那侧的第二份全文未动（`buildMarkdown` 仍把所有页拼成一份字符串），要同样做到页级是另一件事。
 
-> 顺带留档一个走错路的版本：先试的是"按 `maxChunks` 上界**截断输入**"，被同一个差分测试拦下 ——
-> `chunkText` 会把 section 的剩余部分**整块**当一个 chunk 推出去，输出因此依赖"还剩多少输入"，
-> 截断会静默改变大文档的分片内容（1200 例里中间位置的 chunk 也不同 39 例）。
+### 修复：legacy `trigger.scope` 不再被当作过滤条件
 
-- `parsePdf` 那侧的"第二份全文"**本次未动**（`buildMarkdown` 仍会把所有页拼成一份字符串）；
-  要同样做到页级流式是另一件事，收益面与风险另计。
+`readiness.js` 的注释写的是"`scope` → 默认忽略"，但 `src/index.js` 的 schema 默认值是 `filter`，
+两处不一致。结果是唯一带 `scope` 的条目（`ins_510aa6f6`「npm 包发布流程」）永远无法命中：它的
+`scope=['release','npm','dsh-project-memory']` 与项目画像 tag 无交集，guard 直接判死。
 
-### 修复：legacy `trigger.scope` 默认不再当收窄条件（那条发布流程终于能命中）
+- 默认改为 `ignore`（`src/index.js` 的 schema 与 `cfgEngine` 两处同时改）。显式配
+  `legacyScope: 'filter'` 可保留旧语义。
+- 验收：`cfgEngine({}).legacyScope === 'ignore'`，另加一条定向断言——场景 A 必须注入 `p_npmpub`
+  （只掉这一条是 14/15 = 0.93，仍在 0.9 地板之上，地板抓不住）。
+- 两条断言旧行为的测试按新契约改写：`test/auto-inject.test.mjs`、`test/readiness-eval.test.mjs`。
+- `npm run eval:injection`：命中 14 → 15、857 → 907 字符，假阳性与漏召仍为 0。
 
-`readiness.js` 的注释一直写着"`scope` → 默认忽略"，但 schema 的默认值是 `filter` —— 注释与实现
-不一致。后果：实测唯一带 `scope` 的条目（`ins_510aa6f6`「npm 包发布流程」）**永远无法命中** ——
-它的 `scope=['release','npm','dsh-project-memory']` 与自动派生的项目画像 tag 无交集，guard 直接判死。
-而 `eval:injection` 一直把这件事打成一行 note 而不是缺陷（"既有数据问题，留给作者改 trigger"），
-于是 `precision 1.00 / recall 1.00` 把这条最该出现的记忆盖过去了。
+### 变更：合成评测集从「逐位棘轮」改成「冒烟 + 地板」
 
-- 默认改为 `ignore`：`src/index.js` 的 schema 与 `cfgEngine` **两处一起改**（只改一处等于没改）。
-  显式配 `legacyScope: 'filter'` 可恢复旧语义。
-- 验收：`cfgEngine({}).legacyScope === 'ignore'`，外加**场景 A 必须注入 `p_npmpub`** 的定向断言 ——
-  地板抓不住它（少这一条是 14/15 = 0.93，仍高于 0.9）。
-- 两条断言旧行为的测试按新契约改写：`test/auto-inject.test.mjs`（默认不过滤 + 显式 filter 收窄）、
-  `test/readiness-eval.test.mjs`（该 case 的 expect 从空集改为含 `t_scope`）。
-- `npm run eval:injection`：命中 **14 → 15**、857 → 907 字符、假阳性仍 0、漏召仍 0。
-
-### 变更：合成评测集从「逐位棘轮」退回「冒烟 + 地板」
-
-原来钉的是 `precision/recall ≥ 1.00`（= 当前实现的行为）。合成场景由写 trigger 的同一个作者构造，
-结构上测不出漏召；而任何真实改进 —— 比如上面那条 scope 修复 —— 都会以"回归"的名义被拦下。
-现在只留两条能判定失败的门：**对照组零注入**（`--store` 模式下失守即退出码 1）与
-**P/R 地板 0.9**（不再是逐位）。历史基线留在注释里（v1 P0.48/R0.72；v2 P/R 1.00/1.00）。
+原来要求 `precision/recall ≥ 1.00`，钉的是当前实现的行为；合成场景由写 trigger 的同一个作者构造，
+测不出漏召，而真实改进（比如上面那条 scope 修复）会被当成回归拦下。现在只保留两条硬门：
+对照组零注入（`--store` 模式失守即退出码 1）与 P/R 地板 0.9。历史基线留在注释里
+（v1 P0.48/R0.72；v2 P/R 1.00/1.00）。
 
 ### 修复：客户端半边不再「静默消失」——顶层 inject 去门控，缺服务改为降级挂载
 
