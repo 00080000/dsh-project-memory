@@ -185,7 +185,16 @@ export function auditRecordFrom(input) {
       why: r.why,
       chars: typeof r.chars === 'number' ? r.chars : null,
     })),
-    dropped: dropped.map((d) => ({ id: d.id, channel: d.channel, reason: d.reason })),
+    // `budget` 掉落带量纲（还剩多少 / 这条最少要多少），必须在审计面原样落地：
+    // 抹掉它们，`buildInjection` 那侧"细缝可诊断"的努力就只活在内存里。
+    // 只对带数字的条目落键——多数掉落（coverage 等）没有量纲，不该为它们付两个 null。
+    dropped: dropped.map((d) => ({
+      id: d.id,
+      channel: d.channel,
+      reason: d.reason,
+      ...(typeof d.remaining === 'number' ? { remaining: d.remaining } : {}),
+      ...(typeof d.need === 'number' ? { need: d.need } : {}),
+    })),
     // 会话级额度快照与"本轮为什么沉默"：注入频率本身是可观测指标，不该只能靠感觉。
     budget: input.budget || null,
     silence: input.silence || null,

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import { appendInjectionAudit, appendShadowAudit, auditFileFor, auditRecordFrom, cfgAudit, cfgShadow, shadowFileFor, shadowRecordFrom } from '../src/audit.js'
-import { installAutoInject, isOwnInjection } from '../src/auto-inject.js'
+import { installAutoInject, isOwnInjection, buildInjection, cfgEngine } from '../src/auto-inject.js'
 import { GlobalStore } from '../src/insight-store.js'
 import { ProjectMemoryStore } from '../src/store.js'
 
@@ -42,6 +42,31 @@ const dir = () => {
   assert.deepEqual(rec.dropped, [{ id: 'b', channel: 'hint', reason: 'budget' }])
   assert.ok(!Number.isNaN(Date.parse(rec.at)), 'at 必须是可解析的 ISO 时间')
   ok('记录形状：injected / dropped / chars / at 齐备')
+}
+
+// --- 1b. budget 掉落的量纲必须穿过审计面落盘（修前必失败） ---
+// `buildInjection` 早已给 budget 掉落带出 remaining / need，两处各自有测试，但**接缝**没人测：
+// 审计投影只留 {id, channel, reason}，于是"还剩 30 字符、这条最少要 120"在日志里永远看不到。
+{
+  const d = dir()
+  const gs = new GlobalStore(path.join(d, 'global.json')).load()
+  gs.doc.items.push({ id: 'h1', kind: 'lesson', scope: 'global', title: '阈值 要改 的经验', fix: '阈值 要改 的做法', confidence: 1, archived: false })
+  gs.commit(() => 0)
+  const built = buildInjection({ query: '阈值 要改', task: null, store: null, globalStore: gs, projectTagsList: [], cfg: cfgEngine({}), maxChars: 30 })
+  const budget = built.dropped.find((x) => x.reason === 'budget')
+  assert.ok(budget && budget.remaining === 30 && budget.need === 120, '夹具应产出带量纲的 budget 掉落')
+  const memDir = path.join(d, '.dsh-project-memory')
+  assert.equal(appendInjectionAudit(memDir, auditRecordFrom({ sessionId: 's', step: 1, text: 'x'.repeat(50), reasons: [], dropped: built.dropped }), cfgAudit({ autoContext: {} }), d), true)
+  const line = JSON.parse(readFileSync(auditFileFor(memDir), 'utf8').trim().split('\n').pop())
+  const rd = line.dropped.find((x) => x.reason === 'budget')
+  assert.equal(rd.remaining, 30, '落盘的 budget 掉落必须带 remaining')
+  assert.equal(rd.need, 120, '落盘的 budget 掉落必须带 need')
+  // 无纲的掉落（coverage 等占绝大多数）不该为此多长出两个 null。
+  assert.deepEqual(
+    auditRecordFrom({ dropped: [{ id: 'c', channel: 'hint', reason: 'coverage:0.20' }] }).dropped[0],
+    { id: 'c', channel: 'hint', reason: 'coverage:0.20' },
+  )
+  ok('budget 掉落的 remaining / need 穿过审计面落盘；无纲掉落不长出 null')
 }
 
 // --- 2. 追加写：两次注入 → 两行可解析 JSON ---
