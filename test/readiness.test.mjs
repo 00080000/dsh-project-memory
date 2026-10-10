@@ -113,16 +113,25 @@ const PUBLIC_FACE = {
     id: 'x',
     trigger: { keywords: ['ppt', 'VaporTok', '内部文档'], actions: ['npm-pack', 'interview-prep'], paths: ['*.pptx', 'src/a.js'], scope: ['npm'] },
   }
+  // 显式要求 filter 时才把 legacy scope 当收窄条件（旧语义，保留但不再是默认）
+  const nf = readiness.normalizeTrigger(legacy, { legacyScope: 'filter' })
+  assert.deepEqual(nf.trigger.when.ops.sort(), ['npm-publish'])
+  assert.deepEqual(nf.trigger.when.writes, ['src/a.js'])
+  assert.deepEqual(nf.trigger.when.intents.sort(), ['VaporTok', '内部文档'].sort())
+  assert.deepEqual(nf.trigger.guard, { tags: ['npm'] })
+  assert.ok(nf.triggerNormalized.dropped.includes('path:*.pptx'))
+  assert.ok(nf.triggerNormalized.dropped.includes('action:interview-prep'))
+  // 默认（不传 opts / 传 ignore）**不得**生成 guard.tags：实测唯一带 scope 的条目
+  // （npm 包发布流程）的 scope 值落在画像 tag 空间之外，filter 会把它永远判死。
+  for (const opts of [undefined, { legacyScope: 'ignore' }]) {
+    const n = readiness.normalizeTrigger(legacy, opts)
+    assert.equal(n.trigger.guard, undefined, `legacy scope 默认不该变成 guard（opts=${JSON.stringify(opts)}）`)
+    assert.equal(n.triggerNormalized.scopeIgnored, true, '仍要如实记下"这条带 scope，已忽略"')
+  }
   const n = readiness.normalizeTrigger(legacy)
-  assert.deepEqual(n.trigger.when.ops.sort(), ['npm-publish'])
-  assert.deepEqual(n.trigger.when.writes, ['src/a.js'])
-  assert.deepEqual(n.trigger.when.intents.sort(), ['VaporTok', '内部文档'].sort())
-  assert.deepEqual(n.trigger.guard, { tags: ['npm'] })
-  assert.ok(n.triggerNormalized.dropped.includes('path:*.pptx'))
-  assert.ok(n.triggerNormalized.dropped.includes('action:interview-prep'))
   assert.equal(readiness.normalizeTrigger(n).trigger, n.trigger, '幂等：已是新 schema 就原样返回')
   assert.equal(legacy.trigger.when, undefined, '纯函数：不改原对象')
-  ok('normalizeTrigger：actions→ops、具体 paths→writes、keywords→intents、坏 glob 丢弃')
+  ok('normalizeTrigger：actions→ops、具体 paths→writes、keywords→intents、坏 glob 丢弃；legacy scope 默认忽略（显式 filter 才收窄）')
 }
 
 // ---- 3c. 点开头的写目标要贯通到 when.writes（本轮收敛的真实收益）----

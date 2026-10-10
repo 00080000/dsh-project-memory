@@ -1,5 +1,5 @@
 // 注入准入的场景回归（PLAN S0/S5）：带标注的 8 个场景 + 四个数（命中 / 假阳性 / 字符 / 次数）。
-//   node test/injection-scenarios.test.mjs                 # 棘轮 + 闸门（精确率 ≥ 0.90、对照组零注入）
+//   node test/injection-scenarios.test.mjs                 # 合成池冒烟（P/R 地板 + 对照组零注入）
 //   node test/injection-scenarios.test.mjs --selfcheck     # trigger 自检：谁推得动、谁是死值
 //   node test/injection-scenarios.test.mjs --store <项目 insights.json> [--global <global.json>]
 //                                                          # 真实 store 回放；对照组必须零注入，否则退出码 1
@@ -75,10 +75,10 @@ const SCENARIOS = [
     tags: ['dsh-plugin', 'tsdown'],
     human: '发个 0.5.6 吧，CHANGELOG 已经写好一段了，帮我 bump 版本并发布到 npm',
     actions: [bash('npm version minor'), bash('git commit -am release && git tag v0.5.6'), read('package.json'), edit('CHANGELOG.md')],
-    // p_npmpub 缺席：scope=['release','npm','dsh-project-memory'] 与本仓库派生的依赖 tag 无交集
-    // → 被画像过滤判死。这是既有数据问题，不是引擎缺陷；--selfcheck 会把它列出来。
-    expect: ['l_changelog', 'l_pkgfiles', 'l_readmedrift'],
-    note: 'p_npmpub 被 legacy scope 过滤（既有数据问题，留给作者改 trigger）',
+    // p_npmpub 在 expect 里：它的 legacy `scope=['release','npm','dsh-project-memory']` 与派生画像
+    // tag 无交集，旧默认（`legacyScope: 'filter'`）把这条最该命中的 procedure 判死；
+    // 0.5.16 把默认改成 `'ignore'` 后它按 `when.intents`（'npm publish'）正常命中。
+    expect: ['l_changelog', 'l_pkgfiles', 'l_readmedrift', 'p_npmpub'],
   },
   {
     name: 'B 改注入触发逻辑',
@@ -220,12 +220,14 @@ function printSelfcheck(pool) {
 }
 
 // ---------------------------------------------------------------------------
-// 记录基线（棘轮）：只允许变好，不允许变差。改进之后来这里上调。
-// 2026-09-16 v1（准入化之前）：命中 13 / 假阳性 14 / 漏召 5 / 8 次注入 / 1740 字符 / P 0.48 R 0.72。
-// 2026-09-16 v2（S1–S4 落地，标注按新架构重写）：P/R = 1.00/1.00，7 次注入 / 613 字符。
-const BASELINE = { precision: 1, recall: 1 }
-// 目标闸门：精确率是硬门（一条噪声永久占上下文，代价不对称），对照组必须零注入。
+// 合成池的定位（2026-10-11 起）：**冒烟 + 地板**，不再是逐位棘轮。
+//
+// 历史基线（留档）：2026-09-16 v1（准入化前）P 0.48 / R 0.72；v2（S1–S4）P/R 1.00/1.00。
+// 为什么退掉"必须 ≥ 1.00"：那钉的是**当前实现的行为**，任何真实改进（删一个错门槛、
+// 修一条被判死的 trigger）都会以"回归"名义被拦下；而且场景由写 trigger 的同一个作者构造，
+// 结构上测不出漏召。硬门只留两条：**对照组零注入**（下面第 3 段）与下面的地板。
 const GATE_PRECISION = 0.9
+const GATE_RECALL = 0.9
 
 const argv = process.argv.slice(2)
 const gate = argv.includes('--gate')
@@ -314,17 +316,21 @@ printReport(m)
   ok(`标注集：${POOL.length} 条候选 / ${SCENARIOS.length} 个场景，expect 全部可解析`)
 }
 
-// --- 2. 棘轮：不得比记录的基线更差 ---
+// --- 2. 合成池退回**冒烟**：只报告 + 地板，不再拿"逐位不变"当棘轮 ---
+// 为什么退：原棘轮钉的是 `precision/recall ≥ 1.00`（= 当前实现的行为）。任何真实改进
+// （删一个错门槛、修一条被判死的 trigger）都会以"回归"的名义被拦下 —— 0.5.16 修好
+// legacy scope 后场景 A 多注入 p_npmpub，正是这种情形。合成场景由写 trigger 的同一个作者
+// 构造，结构上测不出漏召，所以它只配当冒烟，硬门留给"对照组零注入"与地板。
 {
   assert.ok(
-    m.precision >= BASELINE.precision - 1e-9,
-    `精确率回退：${m.precision.toFixed(2)} < 基线 ${BASELINE.precision.toFixed(2)}`,
+    m.precision >= GATE_PRECISION,
+    `精确率低于地板 ${GATE_PRECISION}：${m.precision.toFixed(2)}`,
   )
   assert.ok(
-    m.recall >= BASELINE.recall - 1e-9,
-    `召回率回退：${m.recall.toFixed(2)} < 基线 ${BASELINE.recall.toFixed(2)}`,
+    m.recall >= GATE_RECALL,
+    `召回率低于地板 ${GATE_RECALL}：${m.recall.toFixed(2)}`,
   )
-  ok(`棘轮守住：precision ≥ ${BASELINE.precision.toFixed(2)}、recall ≥ ${BASELINE.recall.toFixed(2)}`)
+  ok(`冒烟：precision ${m.precision.toFixed(2)} ≥ ${GATE_PRECISION}、recall ${m.recall.toFixed(2)} ≥ ${GATE_RECALL}（不再是逐位棘轮）`)
 }
 
 // --- 3. 闸门：精确率 + 对照组零注入（S2 之后这就是硬门）---
@@ -334,6 +340,19 @@ printReport(m)
   ok('闸门：对照组零注入（文件名 / 扩展名 / 命令都不再触发）')
   assert.ok(m.precision >= GATE_PRECISION, `精确率未达闸门 ${GATE_PRECISION}：实得 ${m.precision.toFixed(2)}`)
   ok(`闸门：precision ≥ ${GATE_PRECISION}（实得 ${m.precision.toFixed(2)}）`)
+}
+
+// --- 3b. legacy scope 必须默认忽略（定向：地板抓不住回退）---
+// 场景 A 少注入 p_npmpub 时是 14/15 = 0.93，仍高于 0.9 地板 —— 所以地板**抓不住**这条回退，
+// 必须定向断言。它测的是：引擎默认配置下，"发版 + npm publish"语境真的能把发布流程推出来。
+{
+  assert.equal(cfgEngine({}).legacyScope, 'ignore', "cfgEngine 默认必须是 'ignore'")
+  const a = m.rows.find(({ s }) => s.name.startsWith('A '))
+  assert.ok(
+    a.r.got.includes('p_npmpub'),
+    `场景 A 必须注入 p_npmpub（legacy scope 被误当收窄条件时它会消失），实得 ${a.r.got.join(',')}`,
+  )
+  ok('legacy scope 默认忽略：发版场景真的推出 p_npmpub')
 }
 
 // --- 4. 准入化不变量：没有任何可触发成员的条目一律推不动 ---
