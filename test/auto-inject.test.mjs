@@ -51,12 +51,22 @@ const BASE_CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
   ok('trigger 命中 → procedure 全步骤注入')
 }
 
-// --- 3. scope tags 过滤：画像无交集 → 跳过 procedure ---
+// --- 3. legacy `trigger.scope`：默认**忽略**，显式 filter 才当收窄条件 ---
+// 旧默认是 filter，等于把作者手写的 scope 值拿去和自动派生的画像 tag 求交集 —— 实测
+// 唯一带 scope 的条目（npm 包发布流程）因此永远不命中。现在默认忽略；要收窄必须显式配。
 {
   const gs = globalWith([PROCEDURE])
-  const out = buildInjection({ query: '发包到官方源', globalStore: gs, cfg: BASE_CFG, projectTagsList: ['vue'] })
-  assert.ok(!out.text.includes('WSL npm publish'), 'tags 无交集不注入该 procedure')
-  ok('scope tags 过滤生效')
+  const ignored = buildInjection({ query: '发包到官方源', globalStore: gs, cfg: BASE_CFG, projectTagsList: ['vue'] })
+  assert.ok(ignored.text.includes('WSL npm publish'), '默认忽略 scope：画像无交集也应注入该 procedure')
+  ok('legacy scope 默认忽略 → 不过滤')
+
+  const gs2 = globalWith([PROCEDURE])
+  const filtered = buildInjection({
+    query: '发包到官方源', globalStore: gs2, projectTagsList: ['vue'],
+    cfg: cfgEngine({ insight: {}, autoContext: { maxTokens: 400, legacyScope: 'filter' } }),
+  })
+  assert.ok(!filtered.text.includes('WSL npm publish'), '显式 filter 且 tags 无交集 → 不注入该 procedure')
+  ok('legacy scope 显式 filter → 收窄生效')
 }
 
 // --- 4. 预算截断 ---
