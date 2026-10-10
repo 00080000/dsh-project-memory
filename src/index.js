@@ -117,7 +117,11 @@ export const Config = Schema.object({
     hintMinCoverage: Schema.number().default(0.45),
     hintMinMatched: Schema.number().default(2),
     hintMinSupport: Schema.number().default(0.15),
-    legacyScope: Schema.union(['filter', 'ignore']).default('filter'),
+    // legacy `trigger.scope` 的处置。默认 **ignore**：它的值由作者手写，几乎不可能落在
+    // 自动派生的项目画像 tag 空间里（实测唯一一条带 scope 的条目因此永远无法命中），
+    // 拿它当收窄条件只会判死条目。`readiness.js` 的注释一直写的是"默认忽略"，这里此前
+    // 是 `'filter'` —— 注释与实现不一致，以注释为准。显式配 'filter' 可恢复旧语义。
+    legacyScope: Schema.union(['filter', 'ignore']).default('ignore'),
     auditLog: Schema.boolean().default(true),
     auditMaxBytes: Schema.number().default(262144),
     // 影子记录（admission-shadow.jsonl）：**每步**一行，含全部候选的判据特征与场景。

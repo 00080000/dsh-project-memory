@@ -63,11 +63,14 @@ const CASES = [
     expect: ['t_kw'],
   },
   {
-    name: 'scope 画像过滤（procedure 只走 trigger 通道）',
+    // legacy `trigger.scope` 默认**忽略**（2026-10-16 起）：值由作者手写、落不进派生画像的
+    // tag 空间，当收窄条件用等于判死条目。显式配 `legacyScope: 'filter'` 才收窄
+    // （那条路径由 test/auto-inject.test.mjs 的"显式 filter → 收窄生效"覆盖）。
+    name: 'legacy scope 默认忽略（procedure 仍走 trigger 通道）',
     insights: [P('t_scope', { trigger: { actions: ['npm-publish'], scope: ['npm'] } })],
     ctx: { humanText: '我要发包', actionText: '' },
     tags: ['vue'],
-    expect: [],
+    expect: ['t_scope'],
   },
   {
     name: '统计提示 · 强相关进、弱相关不进',

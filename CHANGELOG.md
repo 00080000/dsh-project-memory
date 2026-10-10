@@ -1,6 +1,29 @@
-## 0.5.16 (2026-10-08)
+## 0.5.16 (2026-10-11)
 
-`npm test` **592 → 611 项 / 30 → 33 个文件**；`npm run typecheck` 通过。
+`npm test` **592 → 613 项 / 30 → 33 个文件**；`npm run typecheck` 通过。
+
+### 修复：legacy `trigger.scope` 默认不再当收窄条件（那条发布流程终于能命中）
+
+`readiness.js` 的注释一直写着"`scope` → 默认忽略"，但 schema 的默认值是 `filter` —— 注释与实现
+不一致。后果：实测唯一带 `scope` 的条目（`ins_510aa6f6`「npm 包发布流程」）**永远无法命中** ——
+它的 `scope=['release','npm','dsh-project-memory']` 与自动派生的项目画像 tag 无交集，guard 直接判死。
+而 `eval:injection` 一直把这件事打成一行 note 而不是缺陷（"既有数据问题，留给作者改 trigger"），
+于是 `precision 1.00 / recall 1.00` 把这条最该出现的记忆盖过去了。
+
+- 默认改为 `ignore`：`src/index.js` 的 schema 与 `cfgEngine` **两处一起改**（只改一处等于没改）。
+  显式配 `legacyScope: 'filter'` 可恢复旧语义。
+- 验收：`cfgEngine({}).legacyScope === 'ignore'`，外加**场景 A 必须注入 `p_npmpub`** 的定向断言 ——
+  地板抓不住它（少这一条是 14/15 = 0.93，仍高于 0.9）。
+- 两条断言旧行为的测试按新契约改写：`test/auto-inject.test.mjs`（默认不过滤 + 显式 filter 收窄）、
+  `test/readiness-eval.test.mjs`（该 case 的 expect 从空集改为含 `t_scope`）。
+- `npm run eval:injection`：命中 **14 → 15**、857 → 907 字符、假阳性仍 0、漏召仍 0。
+
+### 变更：合成评测集从「逐位棘轮」退回「冒烟 + 地板」
+
+原来钉的是 `precision/recall ≥ 1.00`（= 当前实现的行为）。合成场景由写 trigger 的同一个作者构造，
+结构上测不出漏召；而任何真实改进 —— 比如上面那条 scope 修复 —— 都会以"回归"的名义被拦下。
+现在只留两条能判定失败的门：**对照组零注入**（`--store` 模式下失守即退出码 1）与
+**P/R 地板 0.9**（不再是逐位）。历史基线留在注释里（v1 P0.48/R0.72；v2 P/R 1.00/1.00）。
 
 ### 修复：客户端半边不再「静默消失」——顶层 inject 去门控，缺服务改为降级挂载
 

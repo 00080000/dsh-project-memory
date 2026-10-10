@@ -375,7 +375,10 @@ export function normalizeTrigger(it, opts = {}) {
   if (intents.length) when.intents = [...new Set(intents)]
   const out = { ...t, when }
   const scopeIgnored = Array.isArray(t.scope) && t.scope.length > 0
-  if (scopeIgnored && opts.legacyScope !== 'ignore') out.guard = { ...(t.guard || {}), tags: t.scope }
+  // legacy `scope` → guard.tags **只在显式要求 filter 时**才做：它的值由作者手写，
+  // 几乎落不进自动派生的项目画像 tag 空间，当收窄条件用等于判死条目（实测唯一一条带
+  // scope 的条目因此永远不命中）。默认 ignore —— 与 `src/index.js` 的 schema 默认一致。
+  if (scopeIgnored && opts.legacyScope === 'filter') out.guard = { ...(t.guard || {}), tags: t.scope }
   return { ...it, trigger: out, triggerNormalized: { dropped, scopeIgnored } }
 }
 
