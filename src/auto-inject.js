@@ -101,9 +101,10 @@ export function cfgEngine(config) {
     reinjectItemsAfter: typeof c.reinjectItemsAfter === 'number' && c.reinjectItemsAfter >= 0 ? c.reinjectItemsAfter : 0,
     // ---- S2/S3/S4 新增（准入化改造） ----
     // 旧 `scope` 的处理：'filter'（默认，保留旧语义——不静默改用户数据）或 'ignore'。
-    // 注意：实测里唯一带 scope 的条目，其值不在项目画像 tag 空间内，等于被判死刑；
-    // 自检会把它报出来，由作者决定改值还是改语义。
-    legacyScope: c.legacyScope === 'ignore' ? 'ignore' : 'filter',
+    // legacy `trigger.scope`：默认 **ignore**（与 `src/index.js` 的 schema 默认一致）。
+    // 值由作者手写，落不进自动派生的画像 tag 空间 → 当收窄条件用等于判死条目。
+    // 显式配 'filter' 才恢复旧的收窄语义。
+    legacyScope: c.legacyScope === 'filter' ? 'filter' : 'ignore',
     // 条目通道的步间隔：两次"条目注入"之间至少隔这么多步（常驻任务卡不受限——它是状态快照，
     // 内容变了就该更新）。这是"不频繁"的主要旋钮。
     gateCooldownSteps: typeof c.gateCooldownSteps === 'number' && c.gateCooldownSteps >= 0 ? c.gateCooldownSteps : 2,
