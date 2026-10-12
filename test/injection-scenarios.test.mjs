@@ -19,6 +19,7 @@ import path from 'node:path'
 
 import { buildInjection, cfgEngine } from '../src/auto-inject.js'
 import { auditTriggers, normalizeTrigger } from '../src/readiness.js'
+import { insightScoringText } from '../src/recall.js'
 
 let passed = 0
 const ok = (name) => {
@@ -137,6 +138,80 @@ const SCENARIOS = [
     // 整份 PLAN 的验收底线：文件名里的"调研"、扩展名 .pptx、powershell 命令，都不许触发任何东西。
     expect: [],
   },
+  // 下面三条是**自然语言对照**（2026-10-12 新增）：expect 为空，但查询是**人类口语句子**、
+  // 且刻意不含任何池内 trigger 关键词。存在的理由：原来的对照 F 是"文件名 + 扩展名 + 命令"
+  // 的**路径型**查询，向量在那种查询上天然低分（0.38 封顶），拿它当唯一对照会把"余弦能不能
+  // 当出声判据"量得过分乐观。要定阈值就必须有"自然语言但与语料无关"的对照。
+  {
+    name: 'L 对照·自然语言 改变量名',
+    tags: [],
+    human: '帮我把这个函数的变量名统一改成小驼峰',
+    actions: [],
+    expect: [],
+  },
+  {
+    name: 'M 对照·自然语言 调边距',
+    tags: [],
+    human: '这个页面在手机上的边距太大了，帮我调小一点',
+    actions: [],
+    expect: [],
+  },
+  {
+    name: 'N 对照·自然语言 排序',
+    tags: [],
+    human: '把这个列表按日期倒序排一下',
+    actions: [],
+    expect: [],
+  },
+  {
+    name: 'O 对照·自然语言 excel 时间格式',
+    tags: [],
+    human: '这个 excel 导出的时间格式不对，帮我改成 yyyy-mm-dd',
+    actions: [],
+    expect: [],
+  },
+  {
+    name: 'P 对照·自然语言 加 toString',
+    tags: [],
+    human: '帮我给这个类加一个 toString 方法',
+    actions: [],
+    expect: [],
+  },
+]
+
+/**
+ * hint-only 标注场景（2026-10-12 新增，**待复核**）：expect 只含**没有 authored trigger** 的条目，
+ * 因此只可能由统计提示通道交付——这是唯一能度量"向量重排"的标注面。
+ *
+ * 为什么必须新加：上面 8 个场景的 15 条 expect 里 14 条由 trigger 通道交付（实测），
+ * 那个 ratchet 钉的是 trigger 通道，向量臂在它上面**结构上不可能**有效果。
+ *
+ * 选词纪律：查询里不出现任何池内 trigger 的关键词（`基准`/`发版`/`版本号`/`打包`…），
+ * 也不给 actions——否则触发器会顺带命中，把"提示通道"的度量污染成假阳性。
+ * 标注由 agent 起草、**尚未经作者复核**，故默认只记分不设召回硬门（精度仍设门，见下）。
+ */
+const HINT_SCENARIOS = [
+  {
+    name: 'I hint-only WSL 小文件慢',
+    tags: [],
+    human: '我这个 WSL 环境里读小文件特别慢，是不是文件系统的问题',
+    actions: [],
+    expect: ['l_wslio'],
+  },
+  {
+    name: 'J hint-only 检索脚本骗人',
+    tags: [],
+    human: '我那个检索评测脚本明明语料是空的却给了满分，harness 是不是在骗我',
+    actions: [],
+    expect: ['l_harness'],
+  },
+  {
+    name: 'K hint-only WSL 版 pnpm',
+    tags: [],
+    human: '我在 WSL 里装的 pnpm 好像和 CI 上跑的不是同一个版本',
+    actions: [],
+    expect: ['l_wslpnpm'],
+  },
 ]
 
 const CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
@@ -145,7 +220,7 @@ function poolStore(items) {
   return { insightItems: () => items }
 }
 
-function runScenario(s, pool, cfg = CFG) {
+function runScenario(s, pool, cfg = CFG, rerank = null) {
   const out = buildInjection({
     query: s.human,
     readiness: { humanText: s.human, actionText: s.actions.join('\n') },
@@ -154,28 +229,49 @@ function runScenario(s, pool, cfg = CFG) {
     globalStore: null,
     projectTagsList: s.tags || [],
     cfg,
+    rerank,
   })
   const got = out.reasons.map((r) => r.id)
+  const hintGot = out.reasons.filter((r) => r.channel === 'hint').map((r) => r.id)
   const hit = got.filter((id) => s.expect.includes(id))
   const fp = got.filter((id) => !s.expect.includes(id))
   const fn = s.expect.filter((id) => !got.includes(id))
-  return { got, hit, fp, fn, chars: out.text.length, injections: out.text ? 1 : 0, why: out.reasons, dropped: out.dropped }
+  return { got, hintGot, hit, fp, fn, chars: out.text.length, injections: out.text ? 1 : 0, why: out.reasons, dropped: out.dropped, candidates: out.candidates }
 }
 
-function measure(pool, scenarios) {
+/**
+ * 通道 1（authored trigger）与通道 2（统计提示）必须**分开记分**。
+ *
+ * 为什么：8 个场景 15 条 expect 里 14 条由 trigger 通道交付，只有 `l_changelog` 一条走 hint
+ * （实测已验证）。也就是这个 ratchet 原先测的是 trigger 通道——而向量重排只作用于 hint。
+ * 混在一起记分会让"向量臂"看起来毫无作用（本来就已经 P/R=1.00），也会掩盖 hint 通道的真实漏召。
+ * `HINT_ONLY_IDS` = 池子里没有 authored trigger、**只可能**由 hint 通道交付的条目。
+ */
+const HINT_ONLY_IDS = new Set(['l_wslpnpm', 'l_changelog', 'l_harness', 'l_wslio'])
+
+function measure(pool, scenarios, rerank = null, cfg = CFG) {
   let tp = 0
   let fp = 0
   let fn = 0
   let chars = 0
   let injections = 0
+  let hintTp = 0
+  let hintFp = 0
+  let hintOnlyExp = 0
+  let hintOnlyGot = 0
   const rows = []
   for (const s of scenarios) {
-    const r = runScenario(s, pool)
+    const r = runScenario(s, pool, cfg, rerank)
     tp += r.hit.length
     fp += r.fp.length
     fn += r.fn.length
     chars += r.chars
     injections += r.injections
+    hintTp += r.hintGot.filter((id) => s.expect.includes(id)).length
+    hintFp += r.hintGot.filter((id) => !s.expect.includes(id)).length
+    const only = s.expect.filter((id) => HINT_ONLY_IDS.has(id))
+    hintOnlyExp += only.length
+    hintOnlyGot += only.filter((id) => r.hintGot.includes(id)).length
     rows.push({ s, r })
   }
   return {
@@ -186,6 +282,12 @@ function measure(pool, scenarios) {
     injections,
     precision: tp + fp === 0 ? 1 : tp / (tp + fp),
     recall: tp + fn === 0 ? 1 : tp / (tp + fn),
+    hintTp,
+    hintFp,
+    hintOnlyExp,
+    hintOnlyGot,
+    hintPrecision: hintTp + hintFp === 0 ? 1 : hintTp / (hintTp + hintFp),
+    hintRecall: hintOnlyExp === 0 ? 1 : hintOnlyGot / hintOnlyExp,
     rows,
   }
 }
@@ -335,9 +437,26 @@ printReport(m)
 
 // --- 3. 闸门：精确率 + 对照组零注入（S2 之后这就是硬门）---
 {
+  // 对照组 = **所有** expect 为空的场景（F 路径型 + L/M/N 自然语言型）。
   const f = m.rows.find(({ s }) => s.name.startsWith('F '))
   assert.equal(f.r.got.length, 0, `对照组不该有任何注入，实得 ${f.r.got.join(',')}`)
   ok('闸门：对照组零注入（文件名 / 扩展名 / 命令都不再触发）')
+  const bad = m.rows.filter(({ s, r }) => !s.expect.length && r.got.length)
+  // 已知基线缺陷（2026-10-12 记录，**不是**放行而是钉住）：自然语言对照 N「把这个列表按日期
+  // 倒序排一下」会经提示通道注入 `l_curated`（"调研下结论前先按日期扫最近半年"），
+  // 判据 `relative:1.00 cov:1.00/2` 全关通过——纯粹因为共享"日期"二字，是典型的词法巧合假阳性。
+  // 上界钉在 1：它不许变多；等向量层把这条压掉之后要改成 0（tools/vector-eval 的救援扫描在看）。
+  // 路径型对照 F 仍是 0（下面单独断言，那是原有硬门）。
+  const nlCtrls = m.rows.filter(({ s }) => !s.expect.length && s.name.startsWith('F ') === false)
+  const nlBad = nlCtrls.filter(({ r }) => r.got.length)
+  assert.ok(
+    nlBad.length <= 1,
+    `自然语言对照的假阳性变多了（上界 1）：${nlBad.map(({ s, r }) => `${s.name}→${r.got.join(',')}`).join('; ')}`,
+  )
+  if (nlBad.length) {
+    console.log(`  ⚠ 已知基线缺陷（上界 1）：${nlBad.map(({ s, r }) => `${s.name} → ${r.got.join(',')}`).join('; ')}`)
+  }
+  ok(`闸门：${nlCtrls.length} 个自然语言对照假阳性 ≤ 1（已验证 0 或已知那 1 条）`)
   assert.ok(m.precision >= GATE_PRECISION, `精确率未达闸门 ${GATE_PRECISION}：实得 ${m.precision.toFixed(2)}`)
   ok(`闸门：precision ≥ ${GATE_PRECISION}（实得 ${m.precision.toFixed(2)}）`)
 }
@@ -383,5 +502,149 @@ printReport(m)
 }
 
 if (gate) ok('--gate：显式跑闸门（与默认行为一致）')
+
+// --- 6. hint-only 组：唯一能度量统计提示通道（进而度量向量重排）的标注面 ---
+// 硬门只设**精度**（提示通道不许出现假阳性——那正是用户抱怨的"召回了无关的东西"）；
+// 召回只报告不设门，因为标注是 agent 起草、尚未复核，设门等于把起草者的猜测钉成规格。
+{
+  const hm = measure(POOL, HINT_SCENARIOS)
+  console.log('\n  === hint-only 组（expect 只含无 trigger 的条目，只能由提示通道交付）===')
+  for (const { s, r } of hm.rows) {
+    const got = r.hintGot.length ? r.hintGot.join(',') : '（提示通道零注入）'
+    const missed = s.expect.filter((id) => !r.hintGot.includes(id))
+    console.log(`  ${s.name.padEnd(30)} 交付 ${got}${missed.length ? `   漏召 ${missed.join(',')}` : ''}`)
+    for (const d of r.dropped || []) console.log(`        · dropped ${d.id} (${d.reason})`)
+    for (const c of r.candidates || []) {
+      if (!s.expect.includes(c.id)) continue
+      console.log(`        · 目标条目判据 rel=${c.rel} coverage=${c.coverage} matched=${c.matched} decision=${c.decision} outcome=${c.outcome}`)
+    }
+  }
+  console.log(`  hint 通道：精度 ${hm.hintPrecision.toFixed(2)} (${hm.hintTp}/${hm.hintTp + hm.hintFp})   只可能由 hint 交付的条目召回 ${hm.hintOnlyGot}/${hm.hintOnlyExp}`)
+  const fpIds = hm.rows.flatMap(({ s, r }) => r.hintGot.filter((id) => !s.expect.includes(id)).map((id) => `${s.name}/${id}`))
+  assert.equal(hm.hintFp, 0, `提示通道出现了 ${hm.hintFp} 条假阳性：${fpIds.join(', ')}`)
+  ok('hint-only 组：提示通道零假阳性（召回只报告，见上）')
+}
+
+// --- 7. 向量重排臂（`--vector <leanvec 目录>`）：默认不跑，CI 不需要 leanvec ---
+// 这是可选依赖的**运行时降级**口径：装了就启用、没装就走纯词法，行为不变。
+{
+  const vectorDir = argOf('--vector') || process.env.LEANVEC_DIR || null
+  if (!vectorDir) {
+    console.log('\n  （未给 --vector <leanvec 目录>：向量重排臂跳过；注入行为与旧版逐字节一致）')
+  } else {
+    const { loadLeanvec } = await import(path.join(vectorDir, 'src/embed.mjs'))
+    const lv = loadLeanvec({
+      table: path.join(vectorDir, 'dist/leanvec.f32'),
+      tokenizer: path.join(vectorDir, 'dist/leanvec.tokenizer.json'),
+    })
+    const memo = new Map()
+    const vecOf = (it) => {
+      let v = memo.get(it.id)
+      if (v === undefined) { v = lv.embed(insightScoringText(it)); memo.set(it.id, v) }
+      return v
+    }
+    const rerank = {
+      score(q, cands) {
+        const out = new Map()
+        const qv = lv.embed(q)
+        if (!qv) return out // 查询无法编码 → 空 Map → 排序退化回纯词法，不被压平
+        for (const it of cands) { const v = vecOf(it); if (v) out.set(it.id, lv.cosine(qv, v)) }
+        return out
+      },
+    }
+    console.log(`\n  === 向量重排臂（${lv.size.toLocaleString()} 行 × ${lv.dim} 维）===`)
+    console.log('  α     全场景 P/R        hint-only：提示通道 P (tp/fp)   hint-only 召回')
+    const sweep = []
+    for (const alpha of [0, 0.25, 0.5, 0.75, 1]) {
+      const rr = alpha === 0 ? null : { ...rerank, alpha }
+      const a = measure(POOL, SCENARIOS, rr)
+      const b = measure(POOL, HINT_SCENARIOS, rr)
+      sweep.push({ alpha, a, b })
+      console.log(`  ${String(alpha).padEnd(5)} ${a.precision.toFixed(2)} / ${a.recall.toFixed(2)}          ${b.hintPrecision.toFixed(2)} (${b.hintTp}/${b.hintTp + b.hintFp})              ${b.hintOnlyGot}/${b.hintOnlyExp}`)
+    }
+    const base = sweep[0]
+    const best = sweep.slice(1).reduce((x, y) => (y.b.hintOnlyGot > x.b.hintOnlyGot ? y : x), sweep[1])
+    console.log(`  基线（α=0）hint-only 召回 ${base.b.hintOnlyGot}/${base.b.hintOnlyExp} → best α=${best.alpha} 为 ${best.b.hintOnlyGot}/${best.b.hintOnlyExp}`)
+
+    // 决定性的一对数：目标条目自己的余弦 vs **对照场景**（expect 为空）的最高余弦。
+    // 若两者重叠，则余弦不能当"该不该出声"的绝对判据（这正是它不能替 hintMinSupport 的原因）。
+    const cosOfTarget = (s) => {
+      const m2 = rerank.score(s.human, POOL)
+      const ranked = [...m2.entries()].sort((a, b) => b[1] - a[1])
+      return { target: m2.get(s.expect[0]) ?? null, rank: ranked.findIndex(([id]) => id === s.expect[0]) + 1, top: ranked[0] }
+    }
+    console.log('  hint-only 目标条目的余弦：')
+    for (const s of HINT_SCENARIOS) {
+      const t = cosOfTarget(s)
+      console.log(`     ${s.name.padEnd(30)} cos=${t.target == null ? '-' : t.target.toFixed(3)}  池内第 ${t.rank} 名  （池内最高 ${t.top[1].toFixed(3)}/${t.top[0]}）`)
+    }
+    const ctrlF = SCENARIOS.find((s) => !s.expect.length)
+    const cf = rerank.score(ctrlF.human, POOL)
+    const cTop = [...cf.entries()].sort((a, b) => b[1] - a[1])[0]
+    console.log(`     对照「${ctrlF.name}」最高 cos=${cTop[1].toFixed(3)}/${cTop[0]}  ← 绝对阈值的可行性下限`)
+
+    // 自然语言对照的最高余弦 = 出声阈值的**上界**（必须比它高才不误出声）
+    console.log('  自然语言对照的最高余弦（阈值必须高于这些值）：')
+    for (const s of SCENARIOS.filter((x) => !x.expect.length && x.actions.length === 0)) {
+      const m2 = rerank.score(s.human, POOL)
+      const t = [...m2.entries()].sort((a, b) => b[1] - a[1])[0]
+      console.log(`     ${s.name.padEnd(30)} max cos=${t[1].toFixed(3)}/${t[0]}`)
+    }
+
+    // item 级余弦地板要用的数：**提示通道实际交付的每一条**的余弦。
+    // 若"词法巧合的假阳性"余弦明显低于"真命中"，则地板能把它压掉；若重叠，则不能。
+    console.log('\n  === 提示通道交付条目的余弦（定 item 级地板用）===')
+    for (const s of [...SCENARIOS, ...HINT_SCENARIOS]) {
+      const m2 = rerank.score(s.human, POOL)
+      const gotHint = measure(POOL, [s], { ...rerank, alpha: 0.5 }).rows[0].r.hintGot
+      for (const id of gotHint) {
+        const mark = s.expect.includes(id) ? '✔真命中' : '✘假阳性'
+        console.log(`     ${mark}  ${s.name.padEnd(30)} cos=${(m2.get(id) ?? -1).toFixed(3)}  ${id}  ← ${String(POOL.find((p) => p.id === id)?.title || '').slice(0, 30)}`)
+      }
+    }
+    // 全部 expect 条目的余弦（对照用）：看真命中的下界在哪
+    const expCos = []
+    for (const s of [...SCENARIOS, ...HINT_SCENARIOS]) {
+      const m2 = rerank.score(s.human, POOL)
+      for (const id of s.expect) if (m2.has(id)) expCos.push({ id, s: s.name, cos: m2.get(id) })
+    }
+    expCos.sort((a, b) => a.cos - b.cos)
+    console.log(`     expect 条目余弦：最低 5 个 ${expCos.slice(0, 5).map((x) => `${x.cos.toFixed(2)}/${x.id}`).join('  ')}`)
+
+    console.log('\n  === 语义救援扫描（speakMin 替代通道级 support 沉默；α=0 只开救援不改排序）===')
+    console.log('  speakMin  α     全场景 P/R    hint-only 召回   自然语言对照注入   被救援的步')
+    for (const speakMin of [0.4, 0.45, 0.5, 0.55]) {
+      for (const alpha of [0, 0.5]) {
+        const rr = { ...rerank, alpha, speakMin }
+        const a = measure(POOL, SCENARIOS, rr)
+        const b = measure(POOL, HINT_SCENARIOS, rr)
+        const ctrls = a.rows.filter(({ s }) => !s.expect.length)
+        const ctrlInject = ctrls.reduce((n, { r }) => n + r.got.length, 0)
+        const rescued = [...a.rows, ...b.rows].filter(({ r }) => (r.candidates || []).some((c) => c.rescue === 1)).length
+        console.log(`  ${String(speakMin).padEnd(8)} ${String(alpha).padEnd(5)} ${a.precision.toFixed(2)} / ${a.recall.toFixed(2)}        ${b.hintOnlyGot}/${b.hintOnlyExp}              ${ctrlInject}                ${rescued}`)
+        if (alpha === 0 && b.hintOnlyGot > 0) {
+          for (const { s, r } of b.rows) console.log(`        · ${s.name.padEnd(28)} hint 交付 ${r.hintGot.join(',') || '（无）'}`)
+        }
+        if (ctrlInject > 0) {
+          for (const { s, r } of ctrls) if (r.got.length) console.log(`        ✘ ${s.name} 误出声 → ${r.got.join(',')}`)
+        }
+      }
+    }
+
+    console.log('\n  === item 级余弦地板扫描（只作用于提示通道；α=0.5）===')
+    console.log('  itemMin  全场景 P/R    hint-only 召回   自然语言对照注入   提示通道实际交付')
+    for (const itemMin of [0, 0.35, 0.4, 0.45, 0.5, 0.55]) {
+      const rr = { ...rerank, alpha: 0.5, itemMin }
+      const a = measure(POOL, SCENARIOS, rr)
+      const b = measure(POOL, HINT_SCENARIOS, rr)
+      const ctrls = a.rows.filter(({ s }) => !s.expect.length)
+      const ctrlInject = ctrls.reduce((n, { r }) => n + r.got.length, 0)
+      const delivered = [...a.rows, ...b.rows].flatMap(({ s, r }) => r.hintGot.map((id) => `${s.name.split(' ')[0]}:${id}`))
+      console.log(`  ${String(itemMin).padEnd(8)} ${a.precision.toFixed(2)} / ${a.recall.toFixed(2)}        ${b.hintOnlyGot}/${b.hintOnlyExp}              ${ctrlInject}                ${delivered.join(' ') || '（无）'}`)
+    }
+    assert.ok(base.a.precision >= GATE_PRECISION, `向量臂基线精度塌了：${base.a.precision.toFixed(2)}`)
+    ok(`向量重排臂：α ∈ {0,.25,.5,.75,1} 共 ${sweep.length} 档已量（best α=${best.alpha}）`)
+  }
+}
 
 console.log(`\ninjection-scenarios tests: ${passed} passed`)
