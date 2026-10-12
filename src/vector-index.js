@@ -227,6 +227,11 @@ async function resolveLeanvecDir(explicit) {
  * @returns {Promise<{score: Function, alpha: number, stats: object}|null>}
  */
 export async function createVectorRerank({ storeDir = null, items = [], vectorDir = null, alpha = 0.5 } = {}) {
+  // 强制关闭：`vectorDir: 'off'`（或 alpha=0）一律返回 null，连模型都不加载。
+  // 为什么需要：装了可选依赖之后，没有这个开关就无法退回纯词法——测试固定基线、
+  // 线上排查"是不是向量层导致的"都会用得上。
+  if (typeof vectorDir === 'string' && vectorDir.trim().toLowerCase() === 'off') return null
+  if (alpha === 0) return null
   const rk = `${typeof vectorDir === 'string' ? vectorDir : ''}\u0000${process.env.DSH_LEANVEC_DIR ?? ''}`
   let resolved = resolveCache.get(rk)
   if (resolved === undefined) {

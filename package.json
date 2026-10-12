@@ -105,5 +105,8 @@
     ".": "./src/index.js",
     "./client": "./client/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "optionalDependencies": {
+    "leanvec": "^0.1.0"
   }
 }

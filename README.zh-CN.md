@@ -142,6 +142,8 @@ TaskPanel (Container)
 | `autoContext.maxItemsPerSession` / `autoContext.maxItemCharsPerSession` | 60 / 24000 | **runaway 保险丝，不是节流阀** —— 按条数与字符计的每会话硬上限：一旦触顶，本会话余下部分条目通道持续沉默 |
 | `autoContext.hintMinCoverage` | 0.45 | 提示通道的**绝对**下限：条目覆盖了查询多少 IDF 加权信息量。只用相对阈值分不出"有信号"和"矮子里拔将军" |
 | `autoContext.hintMinMatched` / `autoContext.hintMinSupport` | 2 / 0.15 | 提示还必须至少共享这么多个词；且查询里能在语料中找到对应的词占比不低于该值时，通道才出声——否则本轮整体沉默 |
+| `autoContext.vectorDir` | 未设（关） | **可选**语义层，只作用于经验/洞察两层。不设 = 纯词法；也会从 `DSH_LEANVEC_DIR` 与可选依赖 `leanvec` 解析（**装上即自动启用**）。填 `off` 可强制关闭。它只改排序——闸门、返回条数与 doc/symbol 层都不受影响 |
+| `autoContext.vectorAlpha` | 0.5 | 这两层内 `(1-α)·归一化词法分 + α·余弦` 的权重。`0` 关闭该层；`1`（纯向量）实测明显更差——只有小 k 上融合才占优 |
 | `autoContext.legacyScope` | `ignore` | 旧 `trigger.scope` 的处理：默认 `ignore`，不拿它当过滤条件；`filter` 保留旧语义。`npm run selfcheck:triggers` 会列出仍带 scope 的条目 |
 | `autoContext.auditLog` | true | 每次**真实**注入往 `injection-audit.jsonl` 追加一行（注入了什么、为什么命中、丢了什么、会话额度）；超过 `auditMaxBytes`（`262144`）轮转 `.1`。任何 IO 失败都静默 |
 | `autoContext.shadowLog` / `autoContext.shadowMaxBytes` | true / 524288 | **每步**（含什么都没注入的步）往 `admission-shadow.jsonl` 追加一行：被评分候选及其特征，以及每条候选卡在哪一关 —— 它让"换个阈值会怎样"可以离线回答。只写盘、不进 prompt；超过上限轮转，只保留一代 `.1` |
