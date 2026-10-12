@@ -12,6 +12,7 @@ import { hasProjectMarker, isUnsafeRoot, memoryRootFor, resolveProjectMemoryRoot
 import { textOf } from './util/text.js'
 import { stepContent } from './util/task-view.js'
 import { insightMatchText, normalizedTokenOverlap } from './similarity.js'
+import { createVectorRerank, vectorItemsFrom } from './vector-index.js'
 import { BoundedMap, SessionCache } from './util/session-cache.js'
 import { cfgInsight, GlobalStore, defaultGlobalFile, recordHit } from './insight-store.js'
 import { projectTags } from './project-profile.js'
@@ -128,6 +129,10 @@ export function cfgEngine(config) {
     // 通道级沉默：查询里能在语料中找到对应的词占比低于这个值时，整条提示通道本轮不出声。
     // 长句子里只有一两个词碰巧命中，coverage 会虚高到 1.00——这条门就是为它设的。
     hintMinSupport: typeof c.hintMinSupport === 'number' && c.hintMinSupport >= 0 ? c.hintMinSupport : 0.15,
+    // 可选向量层（leanvec）。`vectorDir` 无默认值 = 默认不用向量（纯词法）；
+    // 只有配置了目录（或环境变量、或装上可选依赖）才构造 rerank，见 src/vector-index.js。
+    vectorDir: typeof c.vectorDir === 'string' && c.vectorDir ? c.vectorDir : null,
+    vectorAlpha: typeof c.vectorAlpha === 'number' && c.vectorAlpha >= 0 && c.vectorAlpha <= 1 ? c.vectorAlpha : 0.5,
   }
 }
 
@@ -730,6 +735,14 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     silenceReason: silence.reason || 'cooldown',
     maxItems: silence.itemsLeft,
     maxChars: silence.charsLeft,
+    // 可选向量层：没装/没配就是 null → 提示通道与纯词法逐字段一致（闸门、注入条数都不变，
+    // 只有层内排序会用到余弦）。构造失败也在 createVectorRerank 内部吞掉并返回 null。
+    rerank: await createVectorRerank({
+      storeDir: memoryRoot,
+      items: vectorItemsFrom(store, globalStore),
+      vectorDir: cfg.vectorDir,
+      alpha: cfg.vectorAlpha,
+    }),
   })
 
   // 未注入 ≠ 无事发生：因预算被挤掉的条目按 cfg.budgetLog 留痕（默认 off，见 cfgEngine）。
