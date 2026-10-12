@@ -17,7 +17,27 @@
  *
  * @module dsh-project-memory/recall
  */
-import { rankEntriesMergedScored, rankEntriesStreaming, rankExperienceScored } from './util/search.js'
+import { rankEntriesMergedScored, rankEntriesStreaming, rankExperienceScored, tokenizeRaw } from './util/search.js'
+
+/**
+ * 最小相关性闸门：命中的**不同查询词数**至少 min(2, 查询词数)。
+ *
+ * 为什么需要：`score > 0` 不是"相关"的证据。实测把 `zzz-no-such-topic-xyz` 丢进 query_memory，
+ * 它命中了 1 条无关经验——因为查询被 `-` 切出的 2 字符片段 `no` 恰好是那条经验里的一个真实 token
+ * （来自 `git commit --amend --no-edit`），于是单个片段就拿走了 3.13 分。提示通道早就有这条规则
+ * （`hintMinMatched`，默认 min(2, 词数)），**工具路径与这两层一直漏着**。
+ *
+ * 只作用于 experience / insight 两层：它们是短标题语料，单片段命中几乎没有证据力；
+ * doc/symbol 层是代码与路径（`js` / `id` 这类单词查询本来就该命中），不动它。
+ * 单词查询不受影响：need = min(2, 1) = 1，与"score>0 即命中"等价。
+ */
+function matchedFloor(scored, queries) {
+  const qTokens = new Set()
+  for (const q of queries) for (const t of tokenizeRaw(String(q ?? ''))) qTokens.add(t)
+  const need = Math.min(2, qTokens.size)
+  if (need <= 1) return scored
+  return scored.filter((r) => (r.matched ?? 0) >= need)
+}
 
 /** 各层先验：insight 是"踩过的坑"，略高于普通文档；经验层已由 experience 文件服务，略低。 */
 export const LAYER_PRIORS = Object.freeze({
@@ -260,7 +280,7 @@ export function recallItems(opts = {}) {
     const expPool = (store && store.experience) || []
     // 有向量时在**全量** BM25 序上融合（见 fuseVectorHits 注释），截断到 limit 放到融合之后；
     // 没有向量时沿用原来的 limit 语义，输出与纯词法路径逐字段一致。
-    const scored0 = rankExperienceScored(expPool, qs, rerank ? expPool.length : limit)
+    const scored0 = matchedFloor(rankExperienceScored(expPool, qs, rerank ? expPool.length : limit), qs)
     if (scored0.length) {
       const scored = fuseVectorHits(scored0, qs, rerank).slice(0, limit)
       const top = scored[0].score || 1
@@ -276,7 +296,7 @@ export function recallItems(opts = {}) {
     const pool = entries !== null
       ? entries.filter((e) => e && e.type === 'insight')
       : visibleInsights({ store, globalStore, boundTaskId }).map(insightToEntry)
-    const scored0 = rankEntriesMergedScored(pool, qs, rerank ? pool.length : limit)
+    const scored0 = matchedFloor(rankEntriesMergedScored(pool, qs, rerank ? pool.length : limit), qs)
     if (scored0.length) {
       const scored = fuseVectorHits(scored0.map((r) => ({ item: r.entry, score: r.score })), qs, rerank).slice(0, limit)
       const top = scored[0].score || 1

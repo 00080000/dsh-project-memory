@@ -107,9 +107,11 @@ export function buildBm25(docs, getFieldText, getPhraseFields) {
         .map((d) => {
           const len = d.length || 1
           let score = 0
+          let matched = 0
           for (const t of q) {
             const tf = d.tf[t] || 0
             if (!tf) continue
+            matched++
             score += idf(t) * ((tf * (K1 + 1)) / (tf + K1 * (1 - B + (B * len) / avgLen)))
           }
           for (const phrase of cjkPhrases) {
@@ -118,7 +120,10 @@ export function buildBm25(docs, getFieldText, getPhraseFields) {
               score *= 1.5
             }
           }
-          return { doc: d.doc, score }
+          // `matched` = **命中的不同查询词数**。调用方用它做最小相关性闸门：
+          // 单个片段（`no` 这种从 `--no-edit` 切出来的 2 字符词）也能让 score>0，
+          // 而 score>0 本身不构成"相关"的证据。
+          return { doc: d.doc, score, matched }
         })
         .filter((r) => r.score > 0)
         .sort((a, b) => b.score - a.score)
@@ -147,16 +152,18 @@ export function makeSearchText(entry) {
 // 它们在生产路径上没有调用方，留着只会被误用。
 
 export function rankEntriesMergedScored(entries, queries, limit = 8) {
-  if (!queries.length) return entries.slice(0, limit).map((entry) => ({ entry, score: 0 }))
+  if (!queries.length) return entries.slice(0, limit).map((entry) => ({ entry, score: 0, matched: 0 }))
   const bm25 = buildBm25(entries, weightedFieldText)
   const merged = new Map()
   for (const query of queries) {
     for (const r of bm25.score(query)) {
       const id = r.doc.id || r.doc.sourcePath
-      if (merged.has(id)) {
-        if (r.score > merged.get(id).score) merged.get(id).score = r.score
+      const prev = merged.get(id)
+      if (prev) {
+        if (r.score > prev.score) prev.score = r.score
+        if (r.matched > prev.matched) prev.matched = r.matched
       } else {
-        merged.set(id, { entry: r.doc, score: r.score })
+        merged.set(id, { entry: r.doc, score: r.score, matched: r.matched })
       }
     }
   }
@@ -179,10 +186,12 @@ export function rankExperienceScored(items, queryOrQueries, limit = 5) {
   const merged = new Map()
   for (const query of queries) {
     for (const r of bm25.score(query)) {
-      if (merged.has(r.doc.id)) {
-        if (r.score > merged.get(r.doc.id).score) merged.get(r.doc.id).score = r.score
+      const prev = merged.get(r.doc.id)
+      if (prev) {
+        if (r.score > prev.score) prev.score = r.score
+        if (r.matched > prev.matched) prev.matched = r.matched
       } else {
-        merged.set(r.doc.id, { item: r.doc, score: r.score })
+        merged.set(r.doc.id, { item: r.doc, score: r.score, matched: r.matched })
       }
     }
   }
