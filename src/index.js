@@ -119,9 +119,10 @@ export const Config = Schema.object({
     hintMinSupport: Schema.number().default(0.15),
     // 可选向量层（leanvec）：**不装就是纯词法**，装了也只改经验/洞察层的**排序**——
     // 闸门（覆盖率/共同词数）与返回条数都不变，doc/symbol 层完全不受影响。
-    // `vectorDir` 刻意**不给默认值**：没有值就等于"不用向量"（与 relevanceMin 同一套约定，
-    // 有默认值会让"是否启用"永远为真）。目录里需有 dist/leanvec.f32 与 dist/leanvec.tokenizer.json。
-    // 也可用环境变量 DSH_LEANVEC_DIR；将来 leanvec 作为可选依赖装上后会自动命中。
+    // `vectorDir` 刻意**不给默认值**（与 relevanceMin 同一套约定：有默认值会让"是否启用"永远为真）。
+    // 解析顺序：本项显式路径 > 环境变量 DSH_LEANVEC_DIR > **可选依赖 `leanvec`**（装上即自动命中）。
+    // 目录里需有 dist/leanvec.f32 与 dist/leanvec.tokenizer.json。
+    // **填 `off` 可强制关闭**（连模型都不加载）：装了可选依赖之后仍有退回纯词法的开关。
     vectorDir: Schema.string(),
     // 融合权重 (1-α)·BM25归一 + α·余弦。实测**小 k** 上 α=0.5 最优（k=3 64% vs 58%、k=5 69% vs 67%，
     // α=0.75 时 k=5 到 72%），而 α=1（纯向量）明显更差（hit@10 53% vs 81%）——所以默认 0.5 不是 1。
