@@ -94,8 +94,6 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
   admission-shadow.jsonl  每步一行，全部被评分的候选 + 特征（离线重放）
 ```
 
-v0.2.0 之前创建的库在首次加载时自动幂等迁移。同一个 dsh 进程内，所有工具调用共享每个项目的单一内存实例，热路径索引只写发生变化的那一个分片。
-
 - **增量** — 按文件内容哈希，仅重新抽取变更文件。
 - **交叉链接** — `query_memory` 返回文档 chunk 时，按**当前**符号表解算它提到的符号，以 `references` 带出。文档先索引、符号后到也能链上。
 - **查询扩展** — `llmQueryExpansion` 开启时，把查询改写为多个变体（同义词、中英、符号名猜测）再合并分数；关闭时查询完全不碰 LLM。索引本身不调用模型。
@@ -112,10 +110,6 @@ TaskPanel (Container)
 ```
 
 工作流卡片可收起，自动适应 dsh 及主题插件风格，提供四种卡片风格切换。
-
-客户端半边**不声明顶层 `inject`**：cordis 用它做装配期门控，缺一项服务就整个插件静默不加载（没面板、没 `/` 组、也没有报错）。它需要的五个服务 —— `slots`、`sessions`、`remote`、`remote.commands`、`locale` —— 改成运行时探测：插件一定挂载，面板顶部点名缺了什么，宽限 3 秒后仍缺则再打一条 `console.warn`。
-
-探测本身也有个坑：`remote.commands` 这类**子命名空间在 cordis 里是独立注册的扁平服务**，读它只有 `ctx.get('remote.commands')`（整名）这条路不受 inject 门控；顺着 `remote` 取 `.commands` 会报 `cannot get property "remote.commands" without inject` —— 顶层 inject 为空的插件因此会把"宿主明明有"判成"缺失"。读法只此一条，属性路径仅作老宿主回退，细节见 `src/client/services.ts`。
 
 ![四种卡片风格](docs/images/image-4.png)
 
@@ -148,10 +142,6 @@ TaskPanel (Container)
 | `autoContext.legacyScope` | `ignore` | 旧 `trigger.scope` 的处理：默认 `ignore`，不拿它当过滤条件；`filter` 保留旧语义。`npm run selfcheck:triggers` 会列出仍带 scope 的条目 |
 | `autoContext.auditLog` | true | 每次**真实**注入往 `injection-audit.jsonl` 追加一行（注入了什么、为什么命中、丢了什么、会话额度）；超过 `auditMaxBytes`（`262144`）轮转 `.1`。任何 IO 失败都静默 |
 | `autoContext.shadowLog` / `autoContext.shadowMaxBytes` | true / 524288 | **每步**（含什么都没注入的步）往 `admission-shadow.jsonl` 追加一行：被评分候选及其特征，以及每条候选卡在哪一关 —— 它让"换个阈值会怎样"可以离线回答。只写盘、不进 prompt；超过上限轮转，只保留一代 `.1` |
-
-### 注入的准入化（为什么它保持安静）
-
-自动注入过去是个**检索**问题（"哪条记忆和这段文本最相关"）——而检索是全函数，排序永远有答案，所以噪声是结构性的。现在它是个**准入**问题（"这一步是否即将跨过我踩过坑的边界"），默认沉默。只有 `when` 能触发，且是低维的类型化信号：归一操作、这一步**要写**的文件、**剥离引用之后**的人类意图词——工具参数、文件正文、文件名永远不能触发任何东西；`guard` 只收窄（扩展名/泛名 glob 如 `*.pptx`、`README*` 被硬性忽略：它们只能撒谎）。提示通道要同时满足相对分、绝对覆盖率下限与至少两个共同词，条目注入每 `gateCooldownSteps` 步最多一次、每会话还有条数与字符上限——常驻任务卡不受限，预算是上限不是目标。注入以 user 消息追加在历史尾部，缓存前缀永不被改写：它带来的是常驻的 cache-read token，不是缓存失效。每次真实注入都会落一行（原因、被丢弃的候选、会话额度），shadow 日志再**每步**落一行（包括"正确地什么都没注入"的步）。`npm run eval:injection` 在**合成**池上跑 **13** 个标注场景（当前精确率 0.94 / 召回率 1.00，那 1 条假阳性来自自然语言对照，是**被钉住**的已知缺陷），另有 3 个 hint-only 场景单独计量；池子是 CI 基线，不是你数据的证据——指向你自己的 store（`--store`）时对照组就是**硬闸门**。
 
 ### 功能开关
 
