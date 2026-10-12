@@ -79,6 +79,10 @@ const config = {
   watchInterval: 15,
   // 召回期可选 LLM（查询扩展/反思）需要显式路由；索引期零 LLM，与这里无关
   llm: { provider: 'test', model: 'test-model' },
+  // 全局 insight store 必须**密闭**：不指定时它读的是开发机真实的 ~/.config/dsh-project-memory/global.json，
+  // 而用户的经验条目一旦命中测试用的乱码查询（实测被 `zzz-no-such-topic-xyz` 切出的 2 字符片段
+  // `no` 打中一条），下面 "no-hit introspection" 的断言就会红——测试结果取决于开发机有多少条个人经验。
+  insight: { globalFile: path.join(mkdtempSync(path.join(tmpdir(), 'pm-global-')), 'global.json') },
 }
 
 const root = mkdtempSync(path.join(tmpdir(), 'pm-test-'))
