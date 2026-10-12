@@ -11,13 +11,13 @@ import { recallItems } from '../src/recall.js'
 let passed = 0
 const ok = (name) => { passed++; console.log('  ok', name) }
 
-// 池子必须让**每条**都与查询有词重叠——`rankEntriesMergedScored` 只返回 BM25 分 >0 的条目，
-// 零重叠的条目根本不在列表里，融合够不着（这是本实现的边界：能重排，不能拉进新条目）。
+// 池子必须让**每条**都命中 ≥2 个查询词——`recallItems` 现在有最小相关性闸门
+// （min(2, 查询词数)），只命中 1 个片段的条目会被挡掉（见 ⑦）。
 const POOL = [
-  { id: 'e1', problem: 'alpha beta gamma delta', solution: 's1' },
-  { id: 'e2', problem: 'alpha beta epsilon zeta', solution: 's2' },
-  { id: 'e3', problem: 'alpha eta theta iota', solution: 's3' },
-  { id: 'e4', problem: 'alpha kappa lambda mu', solution: 's4' },
+  { id: 'e1', problem: 'alpha beta gamma delta', solution: 's1' }, // 命中 4 个
+  { id: 'e2', problem: 'alpha beta gamma zeta', solution: 's2' }, // 3 个
+  { id: 'e3', problem: 'alpha beta theta iota', solution: 's3' }, // 2 个
+  { id: 'e4', problem: 'alpha beta kappa mu', solution: 's4' }, // 2 个
 ]
 const Q = 'alpha beta gamma delta'
 const base = (extra = {}) => recallItems({
@@ -27,7 +27,9 @@ const idsOf = (r) => r.layers[0].hits.map((h) => h.item.id)
 
 // ---- ① 基线 ----
 const b = base()
-assert.deepEqual(idsOf(b), ['e1', 'e2', 'e3', 'e4'], `基线顺序应是 BM25 序，实得 ${idsOf(b)}`)
+assert.deepEqual([...idsOf(b)].sort(), ['e1', 'e2', 'e3', 'e4'], `基线应召回全部 4 条，实得 ${idsOf(b)}`)
+assert.equal(idsOf(b)[0], 'e1', '命中 4 个查询词的应排第 1')
+assert.equal(idsOf(b)[idsOf(b).length - 1], 'e4', '命中最少的应排最后')
 ok(`纯词法基线：${idsOf(b).join(' > ')}`)
 
 // ---- ② 不传 rerank / 空 Map / 抛异常 → 必须与基线**逐字段一致**（原对象原样返回）----
@@ -72,7 +74,7 @@ same(base({ rerank: { alpha: 0.9, score: () => null } }), '向量层返回 null'
 {
   const insightEntries = [
     { id: 'insight:i1', insightId: 'i1', type: 'insight', title: 'alpha beta gamma', summary: 'gamma', keywords: [], terms: '' },
-    { id: 'insight:i2', insightId: 'i2', type: 'insight', title: 'alpha 另一个主题', summary: 'zzz', keywords: [], terms: '' },
+    { id: 'insight:i2', insightId: 'i2', type: 'insight', title: 'alpha beta 另一个主题', summary: 'zzz', keywords: [], terms: '' },
   ]
   const r0 = recallItems({ entries: insightEntries, queries: [Q], layers: ['insight'], limit: 2 })
   assert.deepEqual(r0.layers[0].hits.map((h) => h.item.insightId), ['i1', 'i2'], '纯词法：i1 在前')
@@ -93,6 +95,20 @@ same(base({ rerank: { alpha: 0.9, score: () => null } }), '向量层返回 null'
   })
   assert.ok(!idsOf(r).includes('e9'), `零词重叠的 e9 不该出现（融合只能重排），实得 ${idsOf(r)}`)
   ok('边界：零词重叠条目不会被拉进结果（融合 ≠ 并集）')
+}
+
+// ---- ⑦ 最小相关性闸门：只命中 1 个查询片段（≥2 个查询词时）的条目不许出现 ----
+// 真实事故：`zzz-no-such-topic-xyz` 被 `-` 切成 5 个片段，其中 `no` 是某条经验里的真实 token
+// （来自 `git commit --amend --no-edit`），于是单片段就命中了一条无关经验（3.13 分）。
+{
+  const withWeak = [...POOL, { id: 'e_weak', problem: 'alpha only-one-hit', solution: 'x' }]
+  const r = recallItems({ store: { experience: withWeak }, queries: [Q], layers: ['experience'], limit: 9 })
+  assert.ok(!idsOf(r).includes('e_weak'), `只命中 1/4 个查询词的条目应被闸门挡掉，实得 ${idsOf(r)}`)
+  ok('最小相关性闸门：单片段命中（1/4 词）被挡掉')
+  // 单词查询不受影响：need = min(2, 1) = 1
+  const r1 = recallItems({ store: { experience: withWeak }, queries: ['alpha'], layers: ['experience'], limit: 9 })
+  assert.ok(idsOf(r1).includes('e_weak'), `单词查询不该被闸门影响，实得 ${idsOf(r1)}`)
+  ok('最小相关性闸门：单词查询不受影响（need = min(2,1) = 1）')
 }
 
 console.log(`\nrecall-vector-fusion tests: ${passed} passed`)
