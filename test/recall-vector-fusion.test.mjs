@@ -109,6 +109,14 @@ same(base({ rerank: { alpha: 0.9, score: () => null } }), '向量层返回 null'
   const r1 = recallItems({ store: { experience: withWeak }, queries: ['alpha'], layers: ['experience'], limit: 9 })
   assert.ok(idsOf(r1).includes('e_weak'), `单词查询不该被闸门影响，实得 ${idsOf(r1)}`)
   ok('最小相关性闸门：单词查询不受影响（need = min(2,1) = 1）')
+  // ⚠ 有向量时闸门**不生效**：向量救回来的正是"词法弱到不足 2 个命中"的那批，
+  //   用词法的尺子筛等于砍掉向量的全部价值（同查询集 A/B 实测：融合 hit@10 72% → 64%）。
+  const r2 = recallItems({
+    store: { experience: withWeak }, queries: [Q], layers: ['experience'], limit: 9,
+    rerank: { alpha: 0.5, score: () => new Map([['e_weak', 1]]) },
+  })
+  assert.ok(idsOf(r2).includes('e_weak'), `有向量时不该用词法闸门挡住语义强的条目，实得 ${idsOf(r2)}`)
+  ok('闸门只在无向量时生效：有向量时词法弱的条目仍可被语义分带出')
 }
 
 console.log(`\nrecall-vector-fusion tests: ${passed} passed`)
