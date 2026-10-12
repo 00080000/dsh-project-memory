@@ -268,8 +268,30 @@ function collectTriggered(cands, ctx) {
  * 通道 2：统计信号（提示态、优先级 2）。**双门槛**：层内相对阈值 + IDF 加权覆盖率（绝对下限）。
  * 查询只用「人类消息的意图文字 + 本次写目标」：原始工具参数不是查询文本，它们正是
  * `dcterms→rm`、`*.pptx→论文笔记` 那类假阳性的来源。被门槛拦下的记进 dropped，不静默。
+ *
+ * 可选的第三层：`rerank`（向量重排，默认关闭）。**职责严格分离**——闸门（支持度/覆盖率/共同词数）
+ * 仍由词法决定，`rerank` 只改层内排序与 `relative` 那一关。理由见下方融合处注释。
+ * @param {{ score: (q: string, cands: object[]) => Map<string, number>, alpha?: number, itemMin?: number, speakMin?: number }} [rerank]
+ *   `itemMin` 给定且条目的余弦低于它时，该条目**不进提示通道**（只作用于提示通道，不碰 trigger）。
+ *   `speakMin` 给定时，若层内最高余弦 ≥ 它，则本轮免于被通道级 `hintMinSupport` 静音（见下方救援处）。
+ *
+ *   ⚠ 两个旋钮的实测边界（**都还没有可发布的默认值，别拍一个数字上去**）：
+ *   · `itemMin`：**真实交付上分辨力为零 → 不要开**。合成池上它看着很灵（假阳性 cos 0.351 vs
+ *     真命中 0.530），但真实 store 双重否定：① **绝对常量不可移植**——交付的 45 条余弦
+ *     p50=0.206，同一个 0.42 会剪掉 45/45 = 100%（根因是文本变体：真实条目走 insightScoringText
+ *     的长文本，均值池化被稀释向语料均值）；② **换成尺度无关量也不行**——在人工标注的 30 条真实
+ *     交付上（对 10 / 错 20，基线精度 0.33），cos 与 cos/步内最高的高半/低半精度**完全相同**
+ *     （0.33 vs 0.33），"对"与"错"的 cosRel 分布重叠（p50 0.793 vs 0.782）。唯一有信号的是
+ *     **步内名次 ≤4**（精度 0.46 vs 0.24），但拿它当门要误杀 4/10 个真命中 → 不划算。
+ *     ③ **标签本身不稳**：同一个 30 条样本，agent 判 10 条有用、本地 4B 模型判 7 条，
+ *     逐条一致率只有 57%、Cohen kappa = **-0.05（等于随机）**。两次独立估计的水平接近
+ *     （33% vs 23.8%，126 条上是 23.8%），所以"真实交付精度约 1/4~1/3"这个**水平**可信，
+ *     但**逐条标签不可信** → 任何在它上面标定的阈值都不可用。
+ *   · `speakMin`：**证据仍不足 → 别开**。5 个自然语言对照的最高余弦
+ *     0.356 / 0.341 / **0.467** / 0.343 / 0.398，最低目标 0.483 → 间隔只有 0.016，且全靠一个
+ *     边界样本撑着；再补一个对照就可能翻转。
  */
-function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped }) {
+function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped, rerank = null }) {
   const hints = []
   // 影子记录用：本步**全部**被评过分的候选 + 特征 + 判据结果。与 hints/dropped 分开算——
   // 现有两类记录都只覆盖"过得了相对阈值的那部分"，恰恰缺了"因为没到阈值而从未被考虑"的候选，
@@ -296,6 +318,35 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped }) {
   // 查询与被测覆盖率的文本用**同一个**过滤后的查询：否则缩写（wsl/npm）会在 BM25 里被剔除、
   // 却仍在覆盖率里计分，"至少两个共同词"就被它们凑够了。
   const scored = rankEntriesMergedScored(cands.map(insightToEntry), [q], cands.length)
+  // ---- 向量重排（可选、默认关闭）：只改**排序**与 `relative` 那一关，绝不碰 support/coverage/thin ----
+  // 为什么不做成"向量分当绝对闸门"：实测在带标注的 8 场景/24 条池上，expect 为空的对照场景
+  // 纯向量 top-1 = 0.38，而多条**真命中**只有 0.20~0.38（余弦与真值区间重叠）→ 任何绝对余弦
+  // 阈值要么放过对照、要么杀掉真命中。所以闸门继续由词法/支持度决定（它们不随嵌入模型变），
+  // 向量只在 BM25 的 top-k 内决定"先说哪条"。换模型/改词表只影响这一层，不必重标绝对阈值。
+  //
+  // `rerank.score(q, cands)` 由调用方提供（插件运行时装了 leanvec 才给；没装就不传，行为不变）：
+  //   返回 Map<insightId, cos∈[0,1]>；**查询无法编码时应返回空 Map**——那样所有条目都没有
+  //   向量分，排序退化回纯词法，不会被压平成一个平台。
+  if (rerank && typeof rerank.score === 'function') {
+    const alpha = Math.max(0, Math.min(1, typeof rerank.alpha === 'number' ? rerank.alpha : 0.5))
+    let cos = null
+    try { cos = rerank.score(q, cands) } catch { cos = null } // 向量层任何异常都不得影响注入
+    const top0 = scored[0]?.score || 1
+    for (const r of scored) {
+      const v = cos instanceof Map ? cos.get(r.entry.insightId) : undefined
+      const has = typeof v === 'number' && Number.isFinite(v)
+      // 先留一份**未融合**的 BM25 原分：影子记录的 `rel` 必须继续是词法相对分，
+      // 否则离线重放（tools/vector-eval.mjs）拿到的"BM25 臂"会被融合分污染。
+      r.bm25 = r.score
+      r.vector = has ? v : null
+      // 有向量分的：归一后的词法分与余弦按 α 混合；没有的：只保留归一后的词法分
+      // （不拿 0 分去罚它——缺向量不等于不相关）。
+      r.score = has ? (1 - alpha) * (r.score / top0) + alpha * v : r.score / top0
+    }
+    scored.sort((a, b) => b.score - a.score)
+  } else {
+    for (const r of scored) r.vector = null
+  }
   // 语料词集合建**一次**再逐条算覆盖率。逐条调用 `idfCoverage` 会让它每次重建整个语料，
   // 即 O(C²) 次 tokenize（实测真实 store 单步 147ms → 1.3ms，109×，结果逐字段一致）。
   const corpusSets = corpusTermSets(corpus)
@@ -303,7 +354,19 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped }) {
   const qStats = coverage.get(cands[0].id) || { supported: 0, terms: 0 }
   const supportRatio = qStats.terms > 0 ? qStats.supported / qStats.terms : 0
   // 通道级沉默：查询里绝大多数词在语料里根本没有对应 → "覆盖率 1.00"只是假象。
-  const channelThin = typeof cfg.hintMinSupport === 'number' && supportRatio < cfg.hintMinSupport
+  //
+  // ⚠ 它是**比率**（supported / 查询去重词数），所以长句在**小语料**上必然低：自然语言消息实测
+  // 只有 0.11~0.13——目标条目本身 rel=1.00 / coverage=1.00 / matched=2 也会被整条静音。
+  // 因此加一条**可选**的语义救援：仅当调用方提供了向量层、且层内最高余弦达到 `speakMin` 时，
+  // 才允许本轮不沉默（含义是"词法视角太稀，但语义视角很有把握"）。它**不放松任何逐条闸门**
+  // （coverage / matched / relative 照旧），没有向量时的行为也一字不改。
+  let vectorRescue = false
+  if (rerank && typeof rerank.speakMin === 'number') {
+    let topCos = 0
+    for (const r of scored) if (typeof r.vector === 'number' && r.vector > topCos) topCos = r.vector
+    vectorRescue = topCos >= rerank.speakMin
+  }
+  const channelThin = typeof cfg.hintMinSupport === 'number' && supportRatio < cfg.hintMinSupport && !vectorRescue
   for (const r of relativeHits(scored, { ratioMin: cfg.signalMinRatio })) {
     const it = byId.get(r.entry.insightId)
     if (!it) continue
@@ -324,6 +387,14 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped }) {
       dropped.push({ id: it.id, channel: 'hint', reason: `thin:${ev.matched}` })
       continue
     }
+    // item 级余弦地板（可选）：语义上根本不相关的条目，无论词法多像都不进提示通道。
+    // 这是**只作用于提示通道**的额外一关：authored trigger 是确定性全文注入契约，绝不能被向量拦。
+    // 实测（24 条池）分辨力真实：词法巧合的假阳性 `l_curated`（查询"把列表按日期倒序排"）余弦
+    // 0.351，而真命中 `l_changelog` 0.530，间隔 0.179。取不到向量时不设限——缺向量不等于不相关。
+    if (rerank && typeof rerank.itemMin === 'number' && typeof r.vector === 'number' && r.vector < rerank.itemMin) {
+      dropped.push({ id: it.id, channel: 'hint', reason: `vector:${r.vector.toFixed(2)}` })
+      continue
+    }
     hints.push({ it, score: r.score, why: `relative:${(r.score / (scored[0].score || 1)).toFixed(2)} cov:${ev.coverage.toFixed(2)}/${ev.matched}` })
   }
 
@@ -342,17 +413,28 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped }) {
       if (channelThin) decision = 'support'
       else if (typeof cfg.hintMinCoverage === 'number' && ev.coverage < cfg.hintMinCoverage) decision = 'coverage'
       else if (ev.matched < needMatched) decision = 'thin'
+      else if (rerank && typeof rerank.itemMin === 'number' && typeof r.vector === 'number' && r.vector < rerank.itemMin) decision = 'vector'
       else if (r.score < top * Math.max(0, Math.min(1, ratio))) decision = 'relative'
-      candidates.push({
+      const cand = {
         id: it.id,
         channel: 'hint',
-        rel: Number((r.score / (top || 1)).toFixed(3)),
+        // `rel` 恒为**词法**相对分（未融合），供离线重放对照；融合后的分另记 fused。
+        rel: Number(((r.bm25 ?? r.score) / (top || 1)).toFixed(3)),
         coverage: Number(ev.coverage.toFixed(3)),
         matched: ev.matched,
         support: ev.supported,
         terms: ev.terms,
         decision,
-      })
+      }
+      // 只在启用重排时加字段：默认路径的记录与旧版逐字节一致（不引入 undefined 键）。
+      if (rerank) {
+        cand.fused = Number(r.score.toFixed(3))
+        cand.vector = r.vector == null ? null : Number(r.vector.toFixed(3))
+        // 本轮是否靠语义救援才免于被 `support` 整条静音（0=没救、1=救了）。离线重放要靠它
+        // 区分"support 门拦的"与"coverage 门拦的"。
+        cand.rescue = vectorRescue ? 1 : 0
+      }
+      candidates.push(cand)
     }
   }
   return { hints, candidates, scoreQuery: q }
@@ -410,6 +492,7 @@ export function buildInjection(opts) {
     hintQuery: [ctx.intent || ctx.humanText || '', ...(ctx.targets || [])].filter(Boolean).join(' '),
     cfg,
     dropped,
+    rerank: opts.rerank || null,
   })
 
   // 常驻块文本。去重指纹只看稳定内容（任务标题/步骤/insights + 相关 insights）：
