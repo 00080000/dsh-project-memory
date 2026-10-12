@@ -72,7 +72,7 @@ The design follows four principles:
 
 - **Volatility** — context is ephemeral; it is lost when a session is compacted.
 - **Persistence** — the **memory** is stored on disk and survives compaction and new sessions.
-- **Compactness** — one bounded declaration line per symbol, and a ≤300-char summary plus a bounded term set per document chunk. Derived data is never stored: doc→symbol links are computed at read time. Index size depends on symbol density and chunk length, so treat these as measurements of specific corpora (2026-09-25), not guarantees: a code-only Vue app (289 files) lands at **325 bytes/entry ≈ 21% of source**, a symbol-dense TypeScript monorepo (12,408 files / 106 MB of code + 14 MB of docs) at **22% of source for the code layer (553 bytes/entry overall)** and **130% for the document layer**, and a 274-document workspace (PDFs and Markdown) at **1,506 bytes/entry**.
+- **Compactness** — one bounded declaration line per symbol, and a ≤300-char summary plus a bounded term set per document chunk. Derived data is never stored: doc→symbol links are computed at read time. Index size depends on symbol density and chunk length, so treat these as measurements of specific corpora (2026-10-13), not guarantees: a code-only Vue app (289 files) lands at **325 bytes/entry ≈ 21% of source**, a symbol-dense TypeScript monorepo (12,634 files / 107 MB of code + 14 MB of docs) at **22% of source for the code layer (549 bytes/entry overall)** and **127% for the document layer**, and a 241-document workspace (Markdown, 3 PDFs) at **1,401 bytes/entry**.
 - **Verifiability** — **recalls** carry a `path:line` citation where applicable, so the agent can confirm details against the source.
 
 Building the **memory** does not require an upfront scan: files are memorized as the model reads them, so the **memory** grows to cover exactly what has been worked with. Re-reading an unchanged file is a no-op, so the **memory** stays fresh with minimal ongoing overhead.
@@ -90,6 +90,7 @@ The store is per-project and follows the codebase: changed files are re-extracte
   tasks.json       TaskBridge task entities (cross-session)
   binding.json     current session ↔ task binding
   insights.json    project-scope insights (lessons / decisions / procedures)
+  vectors.json     optional semantic index (only when the vector layer runs)
   injection-audit.jsonl   one line per real injection (what / why / dropped / budget)
   admission-shadow.jsonl  one line per step, all scored candidates + features (offline replay)
 ```
@@ -165,7 +166,7 @@ When the root comes from the working directory, the model gets one notice per se
 
 **Scan limits.** One pass covers at most `maxScanFiles` files (20000) and `maxScanDepth` directory levels (12). A truncated pass is reported in the `index_repo` result and logged once per root by the watcher, and it does not remove entries it did not reach. A directory that cannot be read (e.g. `EACCES`) counts as a truncated pass too and is named in the result: a read failure is not a deletion.
 
-**Per-file memory budget.** `maxFileSizeMb` is a memory gate, not a disk-space preference. Indexing a file first materializes it — the whole buffer plus decoded text for code, or every PDF page's text plus the joined markdown for documents — and the peak scales with the file's size. Measured on this machine with `npm run bench:peak` (peak RSS fitted against disk size over a 1–50 MB ladder, one fresh process per point): **≈10×** for typical source code (1 declaration per ~1.2 KB), **≈21×** for symbol-dense code (1 per 240 B), **≈19×** for a text-heavy PDF, plus a one-off ≈150 MB floor the first time a PDF is parsed. The 10 MB default therefore keeps a single file at roughly **+300 MB RSS**; raising the cap raises that ceiling proportionally. The old default of 50 MB let one ordinary-sized file drive the host process to ~1.2 GB.
+**Per-file memory budget.** `maxFileSizeMb` is a memory gate, not a disk-space preference. Indexing a file first materializes it — the whole buffer plus decoded text for code, or every PDF page's text plus the joined markdown for documents — and the peak scales with the file's size. Measured on this machine with `npm run bench:peak` (peak RSS fitted against disk size over a 1–50 MB ladder, one fresh process per point): **≈10×** for typical source code (1 declaration per ~1.4 KB), **≈22×** for symbol-dense code (1 per 220 B) and **≈20×** for a text-heavy PDF, on top of a ~52 MB process baseline plus a one-off ≈175 MB the first time a PDF is parsed. The 10 MB default therefore keeps a single file at roughly **+300 MB RSS** for code and **+370 MB** for a PDF; raising the cap raises that ceiling proportionally. The old default of 50 MB let one ordinary-sized file drive the host process to ~1.2 GB.
 
 The store lives in the tree it indexes and **ignores itself**: a `*` rule inside the store keeps it out of `git status` and `git add -A`, and means `git clean -fd` leaves it alone. To commit project memory deliberately, `git add -f .dsh-project-memory` — tracked files are not affected by ignore rules.
 
@@ -200,35 +201,35 @@ where `config.yml` contains the same override block.
 
 ## Performance
 
-### Measured on real projects (2026-09-25)
+### Measured on real projects (2026-10-13)
 
 Four corpora, one machine (Node 24.19, 20 vCPU, Linux file system), each run twice with the **second, warm-cache run** quoted. "Cold index" is a full index pass (walk + hash + extract + commit); "query" runs the shipped scorer over 100 sampled queries; "re-index 1 file" is the watch/lazy hot path.
 
 | Corpus | Files / entries | Cold index | Cold load | Query p50 / p95 | Re-index 1 file | Store content / on disk | Heap after load |
 |--------|-----------------|-----------|-----------|-----------------|-----------------|------------------------|-----------------|
-| Vue 3 + Vite app (code only) | 289 / 2,142 | 283 ms | 5.2 ms | 0.86 / 1.8 ms | 0.4 ms | 0.66 MB / 1.52 MB | 6.1 MB |
-| Docs + PDFs workspace (274 docs) | 286 / 2,120 | 6.5 s | 12.4 ms | 4.6 / 13.9 ms | 0.4 ms | 3.05 MB / 3.63 MB | 9.0 MB |
-| TypeScript monorepo, 3,000-file slice | 3,000 / 17,733 | 2.1 s | 59 ms | 10.2 / 21.4 ms | 1.8 ms | 11.0 MB / 19.0 MB | 22.6 MB |
-| TypeScript monorepo, whole tree | 12,408 / 79,168 | 8.6 s | 239 ms | 45.8 / 89.3 ms | 7.4 ms | 41.7 MB / 74.7 MB | 73.9 MB |
+| Vue 3 + Vite app (code only) | 289 / 2,142 | 236 ms | 7.4 ms | 0.74 / 1.4 ms | 0.3 ms | 0.66 MB / 1.52 MB | 6.3 MB |
+| Docs workspace (241 docs, 3 PDFs) | 249 / 977 | 711 ms | 10.7 ms | 1.8 / 5.4 ms | 0.5 ms | 1.31 MB / 1.84 MB | 6.8 MB |
+| TypeScript monorepo, 3,000-file slice | 3,000 / 17,576 | 1.9 s | 82 ms | 9.5 / 20.5 ms | 1.7 ms | 10.9 MB / 18.9 MB | 22.6 MB |
+| TypeScript monorepo, whole tree | 12,634 / 80,231 | 7.7 s | 322 ms | 39.2 / 77.1 ms | 7.2 ms | 42.0 MB / 75.7 MB | 74.8 MB |
 
-**How it scales.** Re-indexing a changed file costs O(file), not O(corpus) — 0.4–7.4 ms across every corpus above. Cold load (≈19 µs/file), query (≈0.6 µs/entry) and resident heap (≈1.4 KB/entry) grow linearly with the index, which keeps small and mid-size projects in the single-digit-millisecond range.
+**How it scales.** Re-indexing a changed file costs O(file), not O(corpus) — 0.3–7.2 ms across every corpus above. Cold load (≈26 µs/file), query (≈0.5 µs/entry on the largest corpus) and resident heap (≈1.5 KB/entry once queried) grow linearly with the index, which keeps small and mid-size projects in the single-digit-millisecond range.
 
-> Two notes on method: `read+hash` depends on the OS page cache (2.5 s cold vs 0.3 s warm on the 12.4k-file tree), so the warm run is quoted; and these numbers drift by up to ~20% across days on the same machine, so compare runs measured in one session.
+> Two notes on method: `read+hash` depends on the OS page cache (2.3 s cold vs 0.27 s warm on the 12.6k-file tree), so the warm run is quoted; and these numbers drift 20–40% across days on the same machine — the byte-identical Vue corpus moved 283→236 ms (index) and 5.2→7.4 ms (load) 18 days apart, while the docs workspace shrank (274→241 documents) and the monorepo grew (12,408→12,634 files). Only compare runs measured in one session on the same corpora.
 
 ### Synthetic Benchmark (Node 24.19, 20 vCPU, Linux file system)
 
 | Scenario | Scale | Measured |
 |----------|-------|----------|
-| Full cold index | 5,000 files / 20k entries | 373 ms avg (p50 374) |
-| Cold load | 5,000 files | 56 ms |
-| Hot lazy re-index (single file) | 5k files | p50 2.8 ms / max 3.5 ms |
-| query_memory (cached) | 5k files / 20k entries | p50 3.3 ms / p95 6.9 ms |
-| query_memory (cached) | 1k files / 4k entries | p50 0.7 ms / p95 1.5 ms |
-| Full cold index | 10,000 files / 40k entries | 696 ms avg (p50 668) |
-| Cold load | 10,000 files | 123 ms |
-| Hot lazy re-index (single file) | 10k files | p50 5.9 ms / max 13.5 ms |
+| Full cold index | 5,000 files / 20k entries | 279 ms avg (p50 287) |
+| Cold load | 5,000 files | 62 ms |
+| Hot lazy re-index (single file) | 5k files | p50 2.5 ms / max 5.0 ms |
+| query_memory (cached) | 5k files / 20k entries | p50 2.7 ms / p95 6.4 ms |
+| query_memory (cached) | 1k files / 4k entries | p50 0.5 ms / p95 1.1 ms |
+| Full cold index | 10,000 files / 40k entries | 568 ms avg (p50 562) |
+| Cold load | 10,000 files | 126 ms |
+| Hot lazy re-index (single file) | 10k files | p50 5.2 ms / max 8.2 ms |
 
-> Generated code (~4–5 symbols/file), measured 2026-09-25. Reproduce with `npm run bench:synthetic -- 5000` (`scripts/bench-synthetic.mjs`). Pure indexing overhead, no LLM calls. The first query after a write rebuilds the IDF cache (**142 ms at 40k entries**, 67 ms at 20k, 14 ms at 4k); later queries hit it.
+> Generated code (~4–5 symbols/file), measured 2026-10-13. Reproduce with `npm run bench:synthetic -- 5000` (`scripts/bench-synthetic.mjs`). Pure indexing overhead, no LLM calls. The first query after a write rebuilds the IDF cache (**130 ms at 40k entries**, 64 ms at 20k, 16 ms at 4k); later queries hit it.
 
 ### Reproduce it on your own project
 
@@ -243,11 +244,11 @@ node scripts/bench.mjs /path/to/your/project [--json] [--samples 100] [--no-pdf]
 It reports the cold index split into read+hash / extract / commit, cold load, IDF rebuild, cold and hot query latency (p50/p95/max over 100 sampled queries through the shipped scorer), single-file hot re-index, store size, resident heap and bytes per entry. Example — the Vue app row above:
 
 ```
-cold index   283 ms   (read+hash 11 ms · extract 256 ms · commit 14 ms)   ← 2nd, warm-cache run
-store        0.66 MB content · 1.52 MB on disk · 325 bytes/entry · cold load 5.2 ms
-memory       heap 6.1 MB after load → 6.7 MB after the first query (RSS 62 MB)
-hot query    p50 0.86 ms · p95 1.8 ms          (2,142 entries)
-re-index 1 file  p50 0.4 ms
+cold index   236 ms   (read+hash 9 ms · extract 214 ms · commit 13 ms)   ← 2nd, warm-cache run
+store        0.66 MB content · 1.52 MB on disk · 325 bytes/entry · cold load 7.4 ms
+memory       heap 6.3 MB after load → 6.9 MB after the first query (RSS 62 MB)
+hot query    p50 0.74 ms · p95 1.4 ms          (2,142 entries)
+re-index 1 file  p50 0.3 ms
 ```
 
 Pass `--queries your-queries.json` to run the labeled-set method (hit@5 / hit@10 / MRR) against your own project.
@@ -257,7 +258,7 @@ Pass `--queries your-queries.json` to run the labeled-set method (hit@5 / hit@10
 - **Synchronous lock-free transactions over async locks** — DSH runs single-process by architecture, so locking for a rare multi-process case would only slow the hot path (every `remember` / `forget` / `index_doc`).
 - **Watch: compute outside, commit inside** — no lock is held during parsing, and polling with mtime + content hash is used instead of `fs.watch`: it behaves identically on network drives, Docker volumes and WSL, without duplicate-trigger or missed-event failure modes.
 - **Corrupt shards are quarantined, not repaired** — a shard that fails to parse is renamed and only that file is re-indexed, so there is no WAL or embedded database adding native dependencies, lock contention and failure modes of their own.
-- **Vectors re-rank, they do not rank** — on a paraphrased-query set, pure vector replacement is worse than BM25 (hit@10 **53% vs 69%**) while weighted fusion helps at small k (hit@3 **53% vs 50%**), so the optional layer only re-orders the experience/insight layers and never gates. Lexical retrieval still answers the queries this plugin targets: on a real Vue project with 29 labelled queries, file-level hit@5 is **96.6%**, and whole-chunk terms raise document term coverage from **27.3% to 100%** with MRR unchanged (**0.958** vs **0.955**).
+- **Vectors re-rank, they do not rank** — on a paraphrased-query set, pure vector replacement is worse than BM25 (hit@10 **53% vs 69%**) while weighted fusion helps at small k (hit@3 **53% vs 50%**), so the optional layer only re-orders the experience/insight layers and never gates. Lexical retrieval still answers the queries this plugin targets: on a real Vue project with 29 labelled queries (2026-09), file-level hit@5 is **96.6%**, and whole-chunk terms raise document term coverage from **27.3% to 100%** with MRR unchanged (**0.958** vs **0.955**).
 - **Indexing is deterministic and model-free** — a model at index time would make two indexings of one document differ, and a wrong translation at query time means zero recall; rules plus symbol links cover the common cases and work offline.
 - **Model-facing memory: the agent writes, no human in the loop** — the consumer is the agent, usually headless, so memory that only promotes when someone clicks a card would never promote at all. `draft` is a provenance marker plus an evidence threshold, not an approval queue.
 - **Full entries returned directly** — entries are already compact, so returning them whole is more verifiable and one round-trip cheaper.
