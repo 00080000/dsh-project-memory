@@ -152,6 +152,57 @@ export function visibleInsights({ store = null, globalStore = null, boundTaskId 
 }
 
 /**
+ * 向量融合（可选、默认关闭）：只作用于**经验/洞察层**。
+ *
+ * 为什么只给这两层：它们的池子小（实测真实 store ≤103 条），融合代价 = 每查询一次编码（~2ms）
+ * + 池内点积（可忽略），且向量由调用方按条目缓存一次即可；而 doc/symbol 池是 10⁴ 量级
+ * （某真实 TS 仓库 15.6k 条目），同一做法要 60s/查询——所以那一层继续纯词法。
+ *
+ * 为什么是**融合**而不是"有向量就只用向量"：实测（36 条刻意无词重叠的查询 / 103 条池）
+ *   · 纯向量替换 BM25：hit@10 53% vs **81%**，明显更差；
+ *   · 权重融合在小 k 上更优：k=3 64% vs 58%、k=5 72% vs 67%（α=0.75；α=0.5 时 64%/69%）；
+ *   · 并集召回最高（92%）但要返回 ~2k 条，模型可见的内容会翻倍。
+ * 所以取 α=0.5：拿到小 k 的收益，又不至于把 BM25 的正确项挤出 top-10。
+ *
+ * 融合必须在**全量** BM25 序上做（不是先截断再重排），否则"词法排 20 名但语义很近"的条目
+ * 永远进不来——那正是向量唯一能补的那类。截断到 limit 发生在融合之后。
+ *
+ * **边界**：`rankEntriesMergedScored` / `rankExperienceScored` 只返回 **BM25 分 > 0** 的条目，
+ * 所以本函数只能**重排**，**拉不进**零词重叠的条目——那需要"并集"形态（向量 top-k 追加到短名单）。
+ * 并集的召回更高（实测 hit@10 92% vs 81%）但返回条数约翻倍，对"只给模型少数几条"不友好，
+ * 故这里明确不做；要放宽时另开一个模式并重新量一遍。
+ *
+ * @param {{item: object, score: number}[]} scored - 已按 BM25 降序
+ * @param {string[]} queries
+ * @param {{score: (q: string, items: object[]) => Map<string, number>, alpha?: number}} [rerank]
+ * @returns {{item: object, score: number, vector?: number}[]}
+ */
+function fuseVectorHits(scored, queries, rerank) {
+  if (!rerank || typeof rerank.score !== 'function' || !scored.length) return scored
+  const cosOf = new Map()
+  for (const q of queries) {
+    let m = null
+    try { m = rerank.score(q, scored.map((s) => s.item)) } catch { m = null } // 向量层异常不得影响召回
+    if (!(m instanceof Map)) continue
+    for (const [id, v] of m) {
+      if (typeof v !== 'number' || !Number.isFinite(v)) continue
+      if (!cosOf.has(id) || v > cosOf.get(id)) cosOf.set(id, v) // 与多查询的 BM25 合并同语义：取最高
+    }
+  }
+  if (!cosOf.size) return scored // 查询无法编码 / 没有向量 → 原样返回（降级到纯词法）
+  const alpha = Math.max(0, Math.min(1, typeof rerank.alpha === 'number' ? rerank.alpha : 0.5))
+  const top0 = scored[0].score || 1
+  const fused = scored.map((s) => {
+    const v = cosOf.get(s.item?.insightId) ?? cosOf.get(s.item?.id)
+    const has = typeof v === 'number'
+    // 没有向量分的条目只保留归一后的词法分（缺向量不等于不相关）
+    return { item: s.item, vector: has ? v : undefined, score: has ? (1 - alpha) * (s.score / top0) + alpha * v : s.score / top0 }
+  })
+  fused.sort((a, b) => b.score - a.score)
+  return fused
+}
+
+/**
  * 按层召回：每层各自 top-k，桶内保留原始分与层内相对分。
  * @param {object} opts
  * @param {object} [opts.store] - ProjectMemoryStore；提供 doc/symbol/experience 池与 IDF 缓存。
@@ -161,6 +212,8 @@ export function visibleInsights({ store = null, globalStore = null, boundTaskId 
  * @param {string[]} [opts.layers] - 要召回的层；默认四层。
  * @param {number} [opts.limit] - 每层上限。
  * @param {string|null} [opts.boundTaskId] - 当前会话绑定的任务（决定 task 级可见性）。
+ * @param {object} [opts.rerank] - 可选向量融合器（**只作用于 experience / insight 层**）。
+ *   装了 leanvec 就传，没装就不传 → 行为与纯词法完全一致。见 {@link fuseVectorHits}。
  * @returns {{ layers: object[], flat: object[] }} layers 为分桶结果，flat 为归一化+先验后的跨层提示序。
  */
 export function recallItems(opts = {}) {
@@ -172,6 +225,7 @@ export function recallItems(opts = {}) {
     layers = ['doc', 'symbol', 'experience', 'insight'],
     limit = 8,
     boundTaskId = null,
+    rerank = null,
   } = opts
   const qs = (Array.isArray(queries) ? queries : [queries]).map((q) => String(q ?? '')).filter(Boolean)
   const want = new Set(layers)
@@ -203,13 +257,17 @@ export function recallItems(opts = {}) {
   }
 
   if (want.has('experience')) {
-    const scored = rankExperienceScored((store && store.experience) || [], qs, limit)
-    if (scored.length) {
+    const expPool = (store && store.experience) || []
+    // 有向量时在**全量** BM25 序上融合（见 fuseVectorHits 注释），截断到 limit 放到融合之后；
+    // 没有向量时沿用原来的 limit 语义，输出与纯词法路径逐字段一致。
+    const scored0 = rankExperienceScored(expPool, qs, rerank ? expPool.length : limit)
+    if (scored0.length) {
+      const scored = fuseVectorHits(scored0, qs, rerank).slice(0, limit)
       const top = scored[0].score || 1
       buckets.push({
         layer: 'experience',
         prior: LAYER_PRIORS.experience,
-        hits: scored.map(({ item, score }) => ({ item, score, prior: LAYER_PRIORS.experience, weightedScore: score, rel: score / top })),
+        hits: scored.map(({ item, score, vector }) => ({ item, score, vector, prior: LAYER_PRIORS.experience, weightedScore: score, rel: score / top })),
       })
     }
   }
@@ -218,13 +276,14 @@ export function recallItems(opts = {}) {
     const pool = entries !== null
       ? entries.filter((e) => e && e.type === 'insight')
       : visibleInsights({ store, globalStore, boundTaskId }).map(insightToEntry)
-    const scored = rankEntriesMergedScored(pool, qs, limit)
-    if (scored.length) {
+    const scored0 = rankEntriesMergedScored(pool, qs, rerank ? pool.length : limit)
+    if (scored0.length) {
+      const scored = fuseVectorHits(scored0.map((r) => ({ item: r.entry, score: r.score })), qs, rerank).slice(0, limit)
       const top = scored[0].score || 1
       buckets.push({
         layer: 'insight',
         prior: LAYER_PRIORS.insight,
-        hits: scored.map(({ entry, score }) => ({ item: entry, score, prior: LAYER_PRIORS.insight, weightedScore: score, rel: score / top })),
+        hits: scored.map(({ item, score, vector }) => ({ item, score, vector, prior: LAYER_PRIORS.insight, weightedScore: score, rel: score / top })),
       })
     }
   }
