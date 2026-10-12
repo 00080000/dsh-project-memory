@@ -214,7 +214,7 @@ Four corpora, one machine (Node 24.19, 20 vCPU, Linux file system), each run twi
 
 **How it scales.** Re-indexing a changed file costs O(file), not O(corpus) — 0.3–7.2 ms across every corpus above. Cold load (≈26 µs/file), query (≈0.5 µs/entry on the largest corpus) and resident heap (≈1.5 KB/entry once queried) grow linearly with the index, which keeps small and mid-size projects in the single-digit-millisecond range.
 
-> Two notes on method: `read+hash` depends on the OS page cache (2.3 s cold vs 0.27 s warm on the 12.6k-file tree), so the warm run is quoted; and these numbers drift 20–40% across days on the same machine — the byte-identical Vue corpus moved 283→236 ms (index) and 5.2→7.4 ms (load) 18 days apart, while the docs workspace shrank (274→241 documents) and the monorepo grew (12,408→12,634 files). Only compare runs measured in one session on the same corpora.
+> `read+hash` depends on the OS page cache — 2.3 s cold vs 0.27 s warm on the 12,634-file tree — so the table quotes the warm figure.
 
 ### Synthetic Benchmark (Node 24.19, 20 vCPU, Linux file system)
 
