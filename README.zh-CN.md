@@ -6,7 +6,7 @@
 
 [![ci](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![npm](https://img.shields.io/npm/v/@yolk_vat-y/dsh-project-memory)](https://www.npmjs.com/package/@yolk_vat-y/dsh-project-memory) [![npm downloads](https://img.shields.io/npm/dm/%40yolk_vat-y%2Fdsh-project-memory?style=flat-square&color=orange)](https://www.npmjs.com/package/@yolk_vat-y/dsh-project-memory) [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/00080000/dsh-project-memory) [![Awesome](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
-为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）agent 提供持久化的 **项目开发记忆**。专门针对项目开发，原生融合 dsh 任务系统，会话内任务清单与读过的文件自动沉淀为跨会话任务记录，任务↔文件自动关联——开发工作流可切换、可续接，无需重复梳理整个项目，解决上下文失效；文档（PDF/Markdown/txt）与代码符号写入工作区独立存储，文档自动交叉链接至所提及的代码符号；经验笔记（问题 → 方案）自动去重，避免重复踩坑。所有数据按项目落盘，跨会话压缩与交接保留，召回附带 `路径:行号` 可回源核实。单个运行时依赖、无原生构建、无向量数据库——与向量相关的只有一层**可选**语义层，没装时自动退回纯词法（见 `autoContext.vectorDir`）。
+为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）agent 提供持久化的 **项目开发记忆**。专门针对项目开发，原生融合 dsh 任务系统，会话内任务清单与读过的文件自动沉淀为跨会话任务记录，任务↔文件自动关联——开发工作流可切换、可续接，无需重复梳理整个项目，解决上下文失效；文档（PDF/Markdown/txt）与代码符号写入工作区独立存储，文档自动交叉链接至所提及的代码符号；经验笔记（问题 → 方案）自动去重，避免重复踩坑。所有数据按项目落盘，跨会话压缩与交接保留，召回附带 `路径:行号` 可回源核实。单个运行时依赖、无原生构建、无向量数据库。
 
 
 > 插件在磁盘上维护一份精简的项目**记忆**，每条记录指向具体的文件与行号；agent 需要快速了解项目时先查**记忆**，无需重读整个项目。
@@ -20,8 +20,7 @@
 - **代码符号记忆** — 零依赖扫描器提取函数、类、方法、接口与类型别名及其完整签名，覆盖 8 种语言。项目装了 `typescript` 时，可选第二层补推导返回类型、泛型与接口，后台执行、不阻塞索引。
 - **读到即记忆、变更即刷新** — 文件在模型实际读取的瞬间被记忆，记忆是正常工作的副产品，而不是额外的一次全量扫描；从未读过的文件不会被记忆。后台轮询只重记变更过的文件。
 - **文档 ↔ 代码交叉链接** — 文档提及的符号，在查询该符号时一并带出。链接按**当前**符号表解算，不会过期。
-- **BM25 记忆召回** — 对文档、符号、经验笔记与 insight 排序召回，可选 LLM 查询扩展。针对 CJK 增强：短语加分、同义词表，以及文档↔符号链接的词边界处理。
-- **可选语义重排** — 装了可选依赖 `leanvec` 时，经验笔记与 insight 的排序改为 `(1-α)·归一化词法分 + α·余弦`（α 默认 `0.5`）。它不改闸门、不改返回条数、不影响文档/符号层；没装时自动退回纯词法。
+- **混合召回** — 对文档、符号、经验笔记与 insight 排序召回，可选 LLM 查询扩展。装了可选依赖 `leanvec` 时经验/洞察两层按余弦重排，没装则退回纯词法。针对 CJK 增强：短语加分、同义词表，以及文档↔符号链接的词边界处理。
 - **经验笔记** — 记录问题 → 方案；相似问题覆盖而不重复，数量随项目规模有界，仅在检索命中时返回。
 - **分层 insight 记忆（教训 / 决策 / 流程）** — 同一实体贯穿任务、项目、全局三级。近重复合并或强化；提升是更换归属而非复制。被使用会记账，因此衰减与容量按活跃度排序，而不是只按时间。面板提供分级的记忆视图用于审核与编辑。
 - **触发式注入** — insight 可携带 authored trigger：只有 `when` 能触发，`guard` 只能收窄，`prevents` 记下没有它会坏在哪。语料正文永远不能触发注入；统计通道另有独立门槛，默认沉默。
@@ -143,15 +142,15 @@ TaskPanel (Container)
 | `autoContext.maxItemsPerSession` / `autoContext.maxItemCharsPerSession` | 60 / 24000 | **runaway 保险丝，不是节流阀** —— 按条数与字符计的每会话硬上限：一旦触顶，本会话余下部分条目通道持续沉默 |
 | `autoContext.hintMinCoverage` | 0.45 | 提示通道的**绝对**下限：条目覆盖了查询多少 IDF 加权信息量。只用相对阈值分不出"有信号"和"矮子里拔将军" |
 | `autoContext.hintMinMatched` / `autoContext.hintMinSupport` | 2 / 0.15 | 提示还必须至少共享这么多个词；且查询里能在语料中找到对应的词占比不低于该值时，通道才出声——否则本轮整体沉默 |
-| `autoContext.vectorDir` | 未设（关） | **可选**语义层，只作用于经验/洞察两层。不设 = 纯词法；也会从 `DSH_LEANVEC_DIR` 与可选依赖 `leanvec` 解析（**装上即自动启用**）。填 `off` 可强制关闭。它只改排序——闸门、返回条数与 doc/symbol 层都不受影响 |
-| `autoContext.vectorAlpha` | 0.5 | 这两层内 `(1-α)·归一化词法分 + α·余弦` 的权重。`0` 关闭该层；`1`（纯向量）实测明显更差——只有小 k 上融合才占优 |
+| `autoContext.vectorDir` | 未设（关） | **可选**语义层，只作用于经验/洞察两层。不设 = 关；也会从 `DSH_LEANVEC_DIR` 与可选依赖 `leanvec` 解析（**装上即启用**），填 `off` 强制关闭。只改排序——闸门与返回条数不受影响 |
+| `autoContext.vectorAlpha` | 0.5 | 这两层内 `(1-α)·词法分 + α·余弦` 的权重；`0` 关闭该层，`1`（纯向量）实测更差 |
 | `autoContext.legacyScope` | `ignore` | 旧 `trigger.scope` 的处理：默认 `ignore`，不拿它当过滤条件；`filter` 保留旧语义。`npm run selfcheck:triggers` 会列出仍带 scope 的条目 |
 | `autoContext.auditLog` | true | 每次**真实**注入往 `injection-audit.jsonl` 追加一行（注入了什么、为什么命中、丢了什么、会话额度）；超过 `auditMaxBytes`（`262144`）轮转 `.1`。任何 IO 失败都静默 |
 | `autoContext.shadowLog` / `autoContext.shadowMaxBytes` | true / 524288 | **每步**（含什么都没注入的步）往 `admission-shadow.jsonl` 追加一行：被评分候选及其特征，以及每条候选卡在哪一关 —— 它让"换个阈值会怎样"可以离线回答。只写盘、不进 prompt；超过上限轮转，只保留一代 `.1` |
 
 ### 注入的准入化（为什么它保持安静）
 
-自动注入过去是个**检索**问题（"哪条记忆和这段文本最相关"）——而检索是全函数，排序永远有答案，所以噪声是结构性的。现在它是个**准入**问题（"这一步是否即将跨过我踩过坑的边界"），默认沉默。只有 `when` 能触发，且是低维的类型化信号：归一操作、这一步**要写**的文件、**剥离引用之后**的人类意图词——工具参数、文件正文、文件名永远不能触发任何东西；`guard` 只收窄（扩展名/泛名 glob 如 `*.pptx`、`README*` 被硬性忽略：它们只能撒谎）。提示通道要同时满足相对分、绝对覆盖率下限与至少两个共同词，条目注入每 `gateCooldownSteps` 步最多一次、每会话还有条数与字符上限——常驻任务卡不受限，预算是上限不是目标。注入以 user 消息追加在历史尾部，缓存前缀永不被改写：它带来的是常驻的 cache-read token，不是缓存失效。每次真实注入都会落一行（原因、被丢弃的候选、会话额度），shadow 日志再**每步**落一行（包括"正确地什么都没注入"的步）。`npm run eval:injection` 在**合成**池上跑 **13** 个标注场景——当前命中 15、假阳性 1、漏召 0（精确率 0.94 / 召回率 1.00；那 1 条假阳性来自一个自然语言对照，是**被钉住**的已知缺陷而非被掩盖），另有 3 个 hint-only 场景单独计量；那个池子是 CI 基线，不是你数据的证据。把同一套 harness 指向你自己的 store（`--store`），对照组就变成**硬闸门**。
+自动注入过去是个**检索**问题（"哪条记忆和这段文本最相关"）——而检索是全函数，排序永远有答案，所以噪声是结构性的。现在它是个**准入**问题（"这一步是否即将跨过我踩过坑的边界"），默认沉默。只有 `when` 能触发，且是低维的类型化信号：归一操作、这一步**要写**的文件、**剥离引用之后**的人类意图词——工具参数、文件正文、文件名永远不能触发任何东西；`guard` 只收窄（扩展名/泛名 glob 如 `*.pptx`、`README*` 被硬性忽略：它们只能撒谎）。提示通道要同时满足相对分、绝对覆盖率下限与至少两个共同词，条目注入每 `gateCooldownSteps` 步最多一次、每会话还有条数与字符上限——常驻任务卡不受限，预算是上限不是目标。注入以 user 消息追加在历史尾部，缓存前缀永不被改写：它带来的是常驻的 cache-read token，不是缓存失效。每次真实注入都会落一行（原因、被丢弃的候选、会话额度），shadow 日志再**每步**落一行（包括"正确地什么都没注入"的步）。`npm run eval:injection` 在**合成**池上跑 **13** 个标注场景（当前精确率 0.94 / 召回率 1.00，那 1 条假阳性来自自然语言对照，是**被钉住**的已知缺陷），另有 3 个 hint-only 场景单独计量；池子是 CI 基线，不是你数据的证据——指向你自己的 store（`--store`）时对照组就是**硬闸门**。
 
 ### 功能开关
 
@@ -257,7 +256,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 - **同步无锁事务，而非异步锁** — DSH 单进程是架构基石，为极少见的多进程场景加锁只会让热路径（每次 `remember`/`forget`/`index_doc`）增重。
 - **Watch：事务外计算，事务内提交** — 不持锁解析，也不用 `fs.watch`：轮询 + mtime/内容哈希在网络盘、Docker 卷、WSL 上行为一致，没有 `fs.watch` 的重复触发/漏事件问题。
 - **损坏分片隔离，不自动修复** — 解析失败的分片改名、只重索引该文件；不引入 WAL 或嵌入式数据库，那会带来原生依赖、锁竞争与它们自己的新故障模式。
-- **向量是召回的补充，不是排序主力** — 早先"完全不用向量"的立场是被实测推翻的，不是口味变了：在一份**改写成不含原词**的查询集上，纯向量替换明显差于 BM25（hit@10 **53% vs 69%**），而加权融合在**小 k** 上更好（hit@3 **53% vs 50%**）。所以向量层只作用于经验/洞察两层、只改它们的排序，绝不参与闸门。词法检索在本插件针对的查询上依然够用：真实 Vue 项目 29 条标注查询的文件级 hit@5 为 **96.6%**，整 chunk 词项把文档词项覆盖从 **27.3% 提到 100%** 且 MRR 不变（**0.958** vs **0.955**）。两个方法都随代码发布，`scripts/bench.mjs --queries 你的查询集.json` 可在你自己的项目上复现。
+- **向量只重排，不做排序主力** — 在**改写成不含原词**的查询集上，纯向量替换差于 BM25（hit@10 **53% vs 69%**），加权融合只在**小 k** 上更好（hit@3 **53% vs 50%**），所以可选层只重排经验/洞察两层、绝不参与闸门。词法检索在本插件针对的查询上依然够用：真实 Vue 项目 29 条标注查询的文件级 hit@5 为 **96.6%**，整 chunk 词项把文档词项覆盖从 **27.3% 提到 100%** 且 MRR 不变（**0.958** vs **0.955**）。
 - **索引确定且不调用模型** — 索引期不调模型、查询期也不翻译：前者会让同一份文档两次索引结果不同，后者有一个硬失败模式（译错 = 零召回）；规则 + 符号链接已经覆盖常见情况，且离线可用。
 - **面向模型的记忆：agent 自己写，不把人放进回路** — 记忆的消费方是 agent，而 agent 通常是无头的，只在有人点卡片时才升级的记忆等于永远不会升级。`draft` 是「来源标记 + 佐证门槛」而不是审批队列。
 - **直接返回完整条目** — 条目本就紧凑，完整返回更可核验，也少一轮往返。
@@ -272,7 +271,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 ```bash
 npm install
 npm test                    # 641 项测试
-npm run eval:injection      # 合成池上的场景 P/R：命中 15、假阳性 1、漏召 0（精确率 0.94），另有 3 个 hint-only 场景单独计量
+npm run eval:injection      # 合成池 P/R：精确率 0.94 / 召回率 1.00，另有 3 个 hint-only 场景
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）
 npm run bench -- /你的/项目路径   # 对任意项目量索引/查询性能，不需要 dsh
