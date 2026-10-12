@@ -95,8 +95,6 @@ The store is per-project and follows the codebase: changed files are re-extracte
   admission-shadow.jsonl  one line per step, all scored candidates + features (offline replay)
 ```
 
-Stores created before v0.2.0 migrate automatically and idempotently on first load. Within one dsh process, all tool calls share a single in-memory store per project, so hot-path indexing writes only the shard that changed.
-
 - **Incremental** — a content hash per file; only changed files are re-extracted.
 - **Cross-linking** — a returned document chunk resolves the symbols it mentions against the **current** symbol table and appends them as `references`, so a doc indexed before its symbols still links correctly.
 - **Query expansion** — when enabled, `query_memory` asks the LLM to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and merges the scores; when off, queries never touch the LLM. Indexing itself is model-free.
@@ -113,10 +111,6 @@ TaskPanel (Container)
 ```
 
 The workflow panel is collapsible, adapts to dsh and theme plugin styles, and offers four card styles.
-
-The client half declares **no top-level `inject`**: cordis gates `apply()` on that declaration, so one unavailable service silently removes the whole plugin (no panel, no `/` group, no error). The five services it needs — `slots`, `sessions`, `remote`, `remote.commands`, `locale` — are therefore probed at runtime: the plugin always mounts, the panel header names whatever is missing, and one `console.warn` names it after a 3 s grace period.
-
-The probe has a trap of its own: sub-namespaces such as `remote.commands` are **separately registered flat services in cordis**, and only the full-name read `ctx.get('remote.commands')` escapes the `inject` gate. Reading `.commands` off the `remote` service raises `cannot get property "remote.commands" without inject`, which made a plugin with an empty top-level `inject` report a service the host does provide as missing. Full name first, property path only as a legacy-host fallback — see `src/client/services.ts`.
 
 ![Four card styles](docs/images/image-4.png)
 
@@ -149,10 +143,6 @@ The probe has a trap of its own: sub-namespaces such as `remote.commands` are **
 | `autoContext.legacyScope` | `ignore` | how a legacy `trigger.scope` is treated: `ignore` (default) does not use it as a filter; `filter` keeps the old behaviour. `npm run selfcheck:triggers` lists entries that still carry a scope |
 | `autoContext.auditLog` | true | append one JSONL line per **actual** injection to `injection-audit.jsonl` (what / why / dropped / budget); rotates to `.1` past `auditMaxBytes` (`262144`). Silent on I/O errors |
 | `autoContext.shadowLog` / `autoContext.shadowMaxBytes` | true / 524288 | append one JSONL line **per step** (including steps that injected nothing) to `admission-shadow.jsonl`: scored candidates with their features and the gate that rejected each one — what makes a threshold change answerable offline. Disk only, never in the prompt; rotates keeping one `.1` generation |
-
-### Injection admission (why it stays quiet)
-
-Automatic injection used to be a *retrieval* problem ("which entry is most related to this text?"), which is total — a ranking always returns something, so noise was structural. It is now an **admission** problem ("is this step about to cross a boundary I have been burned by?"), with silence as the default. Only `when` triggers, from a low-dimensional typed signal: normalized operations, the files this step is about to **write**, and intent words from the human message *after* stripping quoted/path references — tool arguments, file contents and filenames can never trigger anything. `guard` only narrows (extension/name globs such as `*.pptx` or `README*` are ignored outright: they can only lie). The statistical channel needs the relative score, an absolute coverage floor and at least two shared terms, and item injections are limited to one every `gateCooldownSteps` and capped per session — the resident task card is exempt, and the budget is a ceiling, not a target. Injections are appended at the tail of the history, so the cached prefix is never rewritten: they cost cache-read tokens, not cache misses. Every real injection is logged with its reason and dropped candidates, and a shadow log adds one line per step — including the steps that correctly injected nothing. `npm run eval:injection` scores **13** labelled scenarios on a **synthetic** pool (currently precision 0.94 / recall 1.00 — the single false positive comes from a natural-language control and is **pinned**), plus a 3-scenario hint-only group; that pool is the CI baseline, not evidence about your data — point it at your own store (`--store`) and the control group becomes a **hard gate**.
 
 ### Toggling features
 
