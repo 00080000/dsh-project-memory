@@ -27,11 +27,18 @@ import { rankEntriesMergedScored, rankEntriesStreaming, rankExperienceScored, to
  * （来自 `git commit --amend --no-edit`），于是单个片段就拿走了 3.13 分。提示通道早就有这条规则
  * （`hintMinMatched`，默认 min(2, 词数)），**工具路径与这两层一直漏着**。
  *
+ * ⚠ **只在没有向量层时生效**（`rerank` 为空）。这是同查询集 A/B 实测出来的（36 条、同一个 store）：
+ *   · 纯词法下加闸门：BM25 的 hit@1/3/5/10 = 39/50/58/69% **完全不变**，只是不再对乱码查询出声；
+ *   · 有向量时加闸门：融合 hit@5/10 从 64/72% 掉到 58/64%，"完全没召回"从 10 涨到 13。
+ * 原因是结构性的：**向量救回来的那批，恰恰就是词法弱到不足 2 个命中的**——用词法的尺子去筛，
+ * 等于把向量的全部价值砍掉。有语义分时就该让语义分判质量，词法闸门不要越权。
+ *
  * 只作用于 experience / insight 两层：它们是短标题语料，单片段命中几乎没有证据力；
  * doc/symbol 层是代码与路径（`js` / `id` 这类单词查询本来就该命中），不动它。
  * 单词查询不受影响：need = min(2, 1) = 1，与"score>0 即命中"等价。
  */
-function matchedFloor(scored, queries) {
+function matchedFloor(scored, queries, hasVector) {
+  if (hasVector) return scored // 有语义分 → 不用词法的"命中词数"判质量
   const qTokens = new Set()
   for (const q of queries) for (const t of tokenizeRaw(String(q ?? ''))) qTokens.add(t)
   const need = Math.min(2, qTokens.size)
@@ -280,7 +287,7 @@ export function recallItems(opts = {}) {
     const expPool = (store && store.experience) || []
     // 有向量时在**全量** BM25 序上融合（见 fuseVectorHits 注释），截断到 limit 放到融合之后；
     // 没有向量时沿用原来的 limit 语义，输出与纯词法路径逐字段一致。
-    const scored0 = matchedFloor(rankExperienceScored(expPool, qs, rerank ? expPool.length : limit), qs)
+    const scored0 = matchedFloor(rankExperienceScored(expPool, qs, rerank ? expPool.length : limit), qs, Boolean(rerank))
     if (scored0.length) {
       const scored = fuseVectorHits(scored0, qs, rerank).slice(0, limit)
       const top = scored[0].score || 1
@@ -296,7 +303,7 @@ export function recallItems(opts = {}) {
     const pool = entries !== null
       ? entries.filter((e) => e && e.type === 'insight')
       : visibleInsights({ store, globalStore, boundTaskId }).map(insightToEntry)
-    const scored0 = matchedFloor(rankEntriesMergedScored(pool, qs, rerank ? pool.length : limit), qs)
+    const scored0 = matchedFloor(rankEntriesMergedScored(pool, qs, rerank ? pool.length : limit), qs, Boolean(rerank))
     if (scored0.length) {
       const scored = fuseVectorHits(scored0.map((r) => ({ item: r.entry, score: r.score })), qs, rerank).slice(0, limit)
       const top = scored[0].score || 1
