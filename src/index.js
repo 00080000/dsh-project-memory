@@ -117,6 +117,15 @@ export const Config = Schema.object({
     hintMinCoverage: Schema.number().default(0.45),
     hintMinMatched: Schema.number().default(2),
     hintMinSupport: Schema.number().default(0.15),
+    // 可选向量层（leanvec）：**不装就是纯词法**，装了也只改经验/洞察层的**排序**——
+    // 闸门（覆盖率/共同词数）与返回条数都不变，doc/symbol 层完全不受影响。
+    // `vectorDir` 刻意**不给默认值**：没有值就等于"不用向量"（与 relevanceMin 同一套约定，
+    // 有默认值会让"是否启用"永远为真）。目录里需有 dist/leanvec.f32 与 dist/leanvec.tokenizer.json。
+    // 也可用环境变量 DSH_LEANVEC_DIR；将来 leanvec 作为可选依赖装上后会自动命中。
+    vectorDir: Schema.string(),
+    // 融合权重 (1-α)·BM25归一 + α·余弦。实测**小 k** 上 α=0.5 最优（k=3 64% vs 58%、k=5 69% vs 67%，
+    // α=0.75 时 k=5 到 72%），而 α=1（纯向量）明显更差（hit@10 53% vs 81%）——所以默认 0.5 不是 1。
+    vectorAlpha: Schema.number().default(0.5),
     // legacy `trigger.scope` 的处置。默认 **ignore**：它的值由作者手写，几乎不可能落在
     // 自动派生的项目画像 tag 空间里（实测唯一一条带 scope 的条目因此永远无法命中），
     // 拿它当收窄条件只会判死条目。`readiness.js` 的注释一直写的是"默认忽略"，这里此前

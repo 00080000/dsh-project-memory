@@ -6,6 +6,8 @@ import { expandQuery } from '../llm.js'
 import { resolveRoute } from '../llm-route.js'
 import { GlobalStore, cfgInsight, defaultGlobalFile, recordHit } from '../insight-store.js'
 import { recallItems } from '../recall.js'
+import { cfgEngine } from '../auto-inject.js'
+import { createVectorRerank, vectorItemsFrom } from '../vector-index.js'
 import { resolveLinkedSymbols } from '../link.js'
 import { truncate } from '../util/text.js'
 import { stepContent, stepStatus } from '../util/task-view.js'
@@ -85,6 +87,15 @@ export function queryMemoryTool(ctx, config) {
       /** 本根记忆层（doc/symbol）的命中数：0 且存在子索引时，末尾要指路。 */
       let memHitCount = 0
       const wantInsight = type === 'all' || type === 'insight'
+      // 可选向量层：**没装/没配就是 null**，此时 recallItems 拿到 rerank:null 与纯词法路径逐字段一致。
+      // 只影响 experience/insight 两层的排序（doc/symbol 与返回条数都不变）。
+      const cfg = cfgEngine(config)
+      const rerank = await createVectorRerank({
+        storeDir: memoryRootFor(root, config.memoryDir),
+        items: vectorItemsFrom(store, globalStore),
+        vectorDir: cfg.vectorDir,
+        alpha: cfg.vectorAlpha,
+      })
       // 一次 recall 覆盖全部层：doc/symbol/experience/insight 共用同一个检索核心（src/recall.js）。
       const recalled = recallItems({
         store,
@@ -92,6 +103,7 @@ export function queryMemoryTool(ctx, config) {
         queries,
         boundTaskId,
         limit,
+        rerank,
         layers: [
           ...(wantMemory ? (type === 'symbol' ? ['symbol'] : type === 'doc' ? ['doc'] : ['doc', 'symbol']) : []),
           ...(wantInsight ? ['insight'] : []),
