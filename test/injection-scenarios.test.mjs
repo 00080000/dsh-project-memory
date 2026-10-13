@@ -115,7 +115,7 @@ const SCENARIOS = [
     name: 'E 面试问 PaperX',
     tags: [],
     human: '明天面试，老师要是顺着邮件问 PaperX 的核心机制我该怎么说',
-    actions: [read('9-15面试速答卡.md')],
+    actions: [read('速答卡.md')],
     // l_perfnum 不进 expect：它的触发面是"对外报数字"，本场景是"被问论文机制"。
     expect: ['l_papertok'],
   },
