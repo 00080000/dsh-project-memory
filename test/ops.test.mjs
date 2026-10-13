@@ -88,7 +88,7 @@ const ok = (name) => {
   const sessionCalls = [
     { name: 'bash', arguments: '{"command":"date; ls -la --time-style=full-iso \\"/mnt/c/Users/me/OneDrive/桌面/示例调研.pptx\\""}' },
     { name: 'bash', arguments: '{"command":"which powershell.exe pwsh.exe"}' },
-    { name: 'bash', arguments: '{"command":"powershell.exe -NoProfile -Command \\"$f.CreationTime = ...\\" -Filter \\"*LLM*.pptx\\""}' },
+    { name: 'bash', arguments: '{"command":"powershell.exe -NoProfile -Command \\"$f.CreationTime = ...\\" -Filter \\"*.pptx\\""}' },
     { name: 'bash', arguments: '{"command":"python3 - <<\'PY\'\\nimport zipfile, re\\napp = zin.read(\'docProps/app.xml\')\\ndcterms = None\\nPY"}' },
     { name: 'bash', arguments: '{"command":"ls -la /tmp/pptx-backup.pptx"}' },
     { name: 'bash', arguments: '{"command":"node --test test/insight-store.test.mjs"}' },
