@@ -49,6 +49,54 @@ const RESIDENT_KEY_BYTES = 40
 const RESIDENT_STR_BYTES = 16
 const RESIDENT_MAX_DEPTH = 8
 
+/** 精确计量的版本戳：entries 的构成 + `searchText` 的物化状态各算一维。 */
+function residentStampOf(store) {
+  return `${store._entriesVersion}:${store._materializeVersion}`
+}
+
+/**
+ * 精确计量的**触发上界**（不是估算本身）：内存里文本字符数 × 4 + 骨架常数。
+ *
+ * 为什么必须有它：精确计量要遍历全库字符串（`Buffer.byteLength` 逐串编码），12.6k 文件 /
+ * 80k 条目实测 ~40ms。放在每次冷加载的热路径上，就是白花这笔钱去判断"要不要逐出"——
+ * 而绝大多数加载离 256MB 预算差得远，逐出根本不可能发生。
+ *
+ * 系数取偏保守：宁可多走一次精确计量，也不能把预算算松。ASCII 下 1 字符 ≈ 1 字节驻留
+ * 外加键与对象形状开销（符号条目实测 ~4×）；CJK 字符驻留 2 字节，而 UTF-8 文本里 3 字节，
+ * 字符数只会更少。精确数一旦算过且版本未变，直接用它，不必再估。
+ *
+ * `_textChars` 由三条路径维护（读盘分片 / 写条目 / 非分片 JSON），按文件**替换式**累计，
+ * 所以重写同一个文件不会把它算两遍。在真实语料上标定的上界 / 精确值比是 1.16~1.74 倍。
+ */
+const RESIDENT_BOUND_PER_CHAR = 4
+const RESIDENT_SKELETON_BYTES = 1024
+
+function residentBoundBytes(store) {
+  const stamp = residentStampOf(store)
+  if (store._residentStamp === stamp) return store._residentBytes
+  return RESIDENT_SKELETON_BYTES + store._textChars * RESIDENT_BOUND_PER_CHAR
+}
+
+/**
+ * 写路径的文本量估计（只用于上界）：`searchText` + 不在它里面的字段 + 每条的键/JSON 开销。
+ * 不重复计 title / keywords / summary / terms / sourcePath —— 它们都已经在 `searchText` 里。
+ */
+function entryTextChars(entries) {
+  let sum = 0
+  for (const entry of entries) {
+    sum += 160
+    sum += (entry.searchText || '').length
+    sum += (entry.text || '').length
+    sum += (entry.id || '').length + (entry.relPath || '').length
+  }
+  return sum
+}
+
+/** 仅供测试与标定：上界口径（必须 ≥ `_estimateResidentBytes`，否则字节预算会被算松）。 */
+export function _residentBoundBytesForTest(store) {
+  return residentBoundBytes(store)
+}
+
 function residentBytesOf(value, depth = 0) {
   if (depth > RESIDENT_MAX_DEPTH) return 0
   const type = typeof value
@@ -76,7 +124,7 @@ function residentBytesOf(value, depth = 0) {
  *     `allEntries()` 才物化，同一份数据在物化前后估出两个数（实测 76MB → 107MB）。
  *  2. 账不对物——旧分片里还带着 `searchText` / `linkedSymbols`，`load()` 会
  *     `stripPersistedDerived` 把它们删掉，可文本量已经把被删的字节算进去了。
- *     `/home/me/project` 的 store 实测：读盘 212.6MB，真实驻留 101.7MB。
+ *     实测一个 12.6k 文件的父目录 store：读盘 212.6MB，真实驻留 101.7MB。
  *
  * 两个版本键都参与失效：`_entriesVersion`（`setEntries` / `removeFile` / `_loadSharded`）
  * 与 `_materializeVersion`（`allEntries()` 物化 `searchText`）。漏掉后者就是旧实现的错。
@@ -85,7 +133,7 @@ function residentBytesOf(value, depth = 0) {
  * 是对**整个缓存**逐 store 求和的，不记忆化等于每次冷加载都把缓存里所有 store 重数一遍。
  */
 export function _estimateResidentBytes(store) {
-  const stamp = `${store._entriesVersion}:${store._materializeVersion}`
+  const stamp = residentStampOf(store)
   if (store._residentStamp !== stamp) {
     store._residentBytes =
       residentBytesOf(store.entries) +
@@ -102,14 +150,25 @@ export function _estimateResidentBytes(store) {
 
 /** 按 LRU 逐出，直到同时满足条数与字节预算；刚加入的 keepKey 即使超预算也保留。 */
 function evictStoreCache(keepKey) {
+  // 只在**真有可能逐出**时才付精确计量的钱：条数超上限，或保守上界就已超字节预算。
+  // 宽裕时（单项目常态）一次对象图遍历都不做——冷加载因此不背那次全库扫描。
+  let exact = storeCache.size > STORE_CACHE_MAX
+  if (!exact) {
+    let bound = 0
+    for (const store of storeCache.values()) bound += residentBoundBytes(store)
+    exact = bound > STORE_CACHE_MAX_BYTES
+  }
   let total = 0
-  for (const store of storeCache.values()) total += _estimateResidentBytes(store)
-  while (storeCache.size > STORE_CACHE_MAX || total > STORE_CACHE_MAX_BYTES) {
+  if (exact) for (const store of storeCache.values()) total += _estimateResidentBytes(store)
+  while (storeCache.size > STORE_CACHE_MAX || (exact && total > STORE_CACHE_MAX_BYTES)) {
     const oldest = storeCache.keys().next().value
     if (oldest === undefined || oldest === keepKey) break
-    total -= _estimateResidentBytes(storeCache.get(oldest))
+    if (exact) total -= _estimateResidentBytes(storeCache.get(oldest))
     storeCache.delete(oldest)
   }
+  // 没做过精确计量就不报"单实例超预算"：算都没算，报出来的数是估的。真超预算时
+  // （多一个 store 就会触发上界）下一次加载会走到这里并如实告警。
+  if (!exact) return
   // keepKey 豁免是**有意**的：刚加载的 store 必须立刻可用。但它的代价是"单实例超预算时
   // 预算不再是上界"——这个代价不能是隐式的，所以每个这样的 store 告警一次（每 root 一次）。
   const kept = _estimateResidentBytes(storeCache.get(keepKey))
@@ -209,13 +268,16 @@ export function _stripPersistedDerivedForTest(entry) {
   return stripPersistedDerived(entry)
 }
 
-function loadJson(filePath, fallback) {
+function loadJson(filePath, fallback, counter) {
   let raw
   try {
     raw = readFileSync(filePath, 'utf8')
   } catch {
     return fallback
   }
+  // 可选：累计读盘文本的字符数。只用于 `residentBoundBytes`（要不要做精确计量的上界），
+  // 不参与精确估算本身——后者数的是内存里的对象图。
+  if (counter) counter.chars += raw.length
   try {
     return JSON.parse(raw)
   } catch {
@@ -260,6 +322,13 @@ export class ProjectMemoryStore {
     /** 驻留字节估算的记忆化结果与版本戳（见 `_estimateResidentBytes`）。 */
     this._residentBytes = 0
     this._residentStamp = ''
+    /**
+     * 内存里文本字符数的累计（读盘分片 + 写条目 + 非分片 JSON）。**只**用于
+     * `residentBoundBytes` 判断"要不要做精确计量"；精确估算数的是对象图，不碰这个数。
+     */
+    this._textChars = 0
+    /** 每个文件当前的文本字符数，写入时按文件替换，避免重写同一文件被算两遍。 */
+    this._fileTextChars = new Map()
     /**
      * `searchText` 的物化计数。它和 `_entriesVersion` 一起构成驻留估算的失效键：
      * 物化只改 entry 对象本身，不改 entries 的构成，所以不会 bump `_entriesVersion`。
@@ -357,6 +426,22 @@ export class ProjectMemoryStore {
     console.error(`[dsh-project-memory] migrated legacy store at ${this.dir} to sharded layout (${Object.keys(files).length} files)`)
   }
 
+  /** 读一个 JSON 文件，并把读入文本的字符数记到 `_textChars`（供驻留上界用）。 */
+  _loadJson(filePath, fallback) {
+    const counter = { chars: 0 }
+    const data = loadJson(filePath, fallback, counter)
+    this._textChars += counter.chars
+    return data
+  }
+
+  /** 按文件记文本量：替换而不是累加，重写同一个文件不会算两遍。 */
+  _setFileTextChars(relPath, chars) {
+    const prev = this._fileTextChars.get(relPath) || 0
+    if (chars > 0) this._fileTextChars.set(relPath, chars)
+    else this._fileTextChars.delete(relPath)
+    this._textChars += chars - prev
+  }
+
   _loadSharded() {
     let shardNames = []
     try {
@@ -365,8 +450,10 @@ export class ProjectMemoryStore {
       shardNames = []
     }
     for (const name of shardNames) {
-      const shard = loadJson(path.join(this.dir, SHARDS_DIR, name), null)
+      const counter = { chars: 0 }
+      const shard = loadJson(path.join(this.dir, SHARDS_DIR, name), null, counter)
       if (!shard || typeof shard.relPath !== 'string' || !isRecord(shard.record)) continue
+      this._setFileTextChars(shard.relPath, counter.chars)
       this.files[shard.relPath] = shard.record
       // 畸形 shard（entries 被写成对象/null）不能让 allEntries() 在 `for…of` 上抛错，
       // 否则一个坏文件会拖垮整个进程的每一次读取。
@@ -376,10 +463,10 @@ export class ProjectMemoryStore {
       this.entries[shard.relPath] = list.map(stripPersistedDerived)
     }
     this._entriesVersion++
-    this.experience = loadJson(path.join(this.dir, EXPERIENCE_FILE), [])
-    this.tasks = loadJson(path.join(this.dir, TASKS_FILE), [])
-    this.binding = loadJson(path.join(this.dir, BINDING_FILE), {})
-    this.watchlist = loadJson(path.join(this.dir, WATCH_FILE), [])
+    this.experience = this._loadJson(path.join(this.dir, EXPERIENCE_FILE), [])
+    this.tasks = this._loadJson(path.join(this.dir, TASKS_FILE), [])
+    this.binding = this._loadJson(path.join(this.dir, BINDING_FILE), {})
+    this.watchlist = this._loadJson(path.join(this.dir, WATCH_FILE), [])
     this._formatWritten = existsSafe(path.join(this.dir, FORMAT_FILE))
   }
 
@@ -407,7 +494,7 @@ export class ProjectMemoryStore {
   // 首次加载把旧笔记**复制导入** insights.json（kind: experience, source: migrate），
   // migratedAt 落盘保证跨进程/崩溃幂等。销毁式收敛放到 recall 统一 PR。
   _loadInsights() {
-    const doc = loadJson(path.join(this.dir, INSIGHTS_FILE), null)
+    const doc = this._loadJson(path.join(this.dir, INSIGHTS_FILE), null)
     this.insights = isRecord(doc) && Array.isArray(doc.items)
       // items 里混进 null/非对象（手改或旧版写入）会让迁移与召回逐个 `.title` 抛错——过滤掉。
       ? { ...doc, items: doc.items.filter(isRecord) }
@@ -659,8 +746,10 @@ export class ProjectMemoryStore {
         return out
       })
       this.entries[relPath] = enriched
+      this._setFileTextChars(relPath, entryTextChars(enriched))
     } else {
       delete this.entries[relPath]
+      this._setFileTextChars(relPath, 0)
     }
     this._entriesVersion++
     this._dirtyShards.add(relPath)
@@ -671,6 +760,7 @@ export class ProjectMemoryStore {
     if (relPath in this.files) {
       delete this.files[relPath]
       delete this.entries[relPath]
+      this._setFileTextChars(relPath, 0)
       this._entriesVersion++
       this._dirtyShards.add(relPath)
       this._removedShards.add(relPath)

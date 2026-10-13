@@ -211,11 +211,15 @@ const fileCount = Object.keys(store.files).length
 
 // ---------- 3. 存储体积 + 冷加载 ----------
 const onDisk = dirSize(tmpStore)
-// 真冷加载：store 有进程内缓存（同目录第二次 load() 直接命中），复制到新目录才是一次真正的冷启动
+// 复制到新目录才是一次真正的冷加载（同目录第二次 load() 直接命中进程内缓存）
 const coldDir = `${tmpStore}-cold`
 cpSync(tmpStore, coldDir, { recursive: true })
-const coldLoad = timeSync(() => new ProjectMemoryStore(coldDir).load())
-// 常驻内存必须在独立进程里量：本进程已经拿着索引那个 store，再 load 一个副本得到的是两份
+// 同进程里再 load 一份是**诊断**口径，不是"冷启动"：本进程还拿着索引那个 store，
+// storeCache 里于是有两个——缓存预算的结算因此会跑（大库上几十毫秒），而真实冷启动
+// 是空进程里的第一次 load，不会背这笔账。
+const siblingLoad = timeSync(() => new ProjectMemoryStore(coldDir).load())
+// 常驻内存必须在独立进程里量：本进程已经拿着索引那个 store，再 load 一个副本得到的是两份。
+// 同一个子进程顺手量了 loadMs —— 那才是要发布的口径。
 const memory = (() => {
   try {
     const loadScript = path.join(path.dirname(fileURLToPath(import.meta.url)), 'bench-load.mjs')
@@ -225,6 +229,7 @@ const memory = (() => {
     return { error: err.message }
   }
 })()
+const coldLoad = memory && !memory.error ? { ms: memory.loadMs } : siblingLoad
 
 // ---------- 4. 热查询 / 冷查询 ----------
 const queryPool = entries.filter((e) => typeof e.title === 'string' && e.title.trim().length >= 4)
@@ -352,6 +357,8 @@ const result = {
     bytesPerEntry: entries.length ? Math.round(onDisk.bytes / entries.length) : 0,
   },
   coldLoadMs: round(coldLoad.ms),
+  // 诊断：同进程里 load 第二个 store（缓存预算结算会跑），真实冷启动不背这笔账
+  secondStoreLoadMs: round(siblingLoad.ms),
   memory,
   query: {
     samples: queries.length,
@@ -385,7 +392,7 @@ if (opts.json) {
   console.log(`  per file  p50 ${result.index.perFileMs.p50} ms · p95 ${result.index.perFileMs.p95} ms`)
   console.log(`  note: read+hash depends on the OS page cache — run it twice and say which run you quote`)
   console.log(
-    `store     ${mb(result.store.bytes)} content · ${mb(result.store.allocatedBytes)} on disk · ${result.store.bytesPerEntry} bytes/entry · cold load ${result.coldLoadMs} ms`,
+    `store     ${mb(result.store.bytes)} content · ${mb(result.store.allocatedBytes)} on disk · ${result.store.bytesPerEntry} bytes/entry · cold load ${result.coldLoadMs} ms (fresh process; ${result.secondStoreLoadMs} ms with another store in-process)`,
   )
   if (memory && !memory.error) {
     console.log(

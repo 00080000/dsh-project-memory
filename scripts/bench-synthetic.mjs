@@ -13,9 +13,11 @@
  *   files 可选，默认 5000（生成的代码文件数；每个文件约 4~5 条符号）。
  * 数据全部在 OS 临时目录生成，不会写入项目本身。
  */
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { performance } from 'node:perf_hooks'
 
 import { ProjectMemoryStore } from '../src/store.js'
@@ -166,6 +168,9 @@ async function main() {
     generateCorpus(root, FILES)
     await coldIndex(root, config)
     const times = []
+    // 每轮都在**独立进程**里冷加载：同进程里连着 load 5 份副本，storeCache 会攒下 5 个
+    // store —— 既绕不开预算结算，也不是"冷启动"（真实冷启动是空进程第一次 load）。
+    const loadScript = path.join(path.dirname(fileURLToPath(import.meta.url)), 'bench-load.mjs')
     for (let r = 0; r < 5; r++) {
       // 拷贝到新路径，绕开进程内 storeCache，测真实读盘
       const copy = tmpd('pm-cldcp-')
@@ -182,10 +187,8 @@ async function main() {
           writeFileSync(path.join(dstDir, f), readFileSync(path.join(srcDir, f)))
         }
       }
-      const t0 = performance.now()
-      const s = new ProjectMemoryStore(dstDir).load()
-      times.push(performance.now() - t0)
-      s.stats()
+      const out = execFileSync(process.execPath, ['--expose-gc', loadScript, dstDir], { encoding: 'utf8' })
+      times.push(JSON.parse(out.trim().split('\n').pop()).loadMs)
     }
     show('cold load store (first read)', stats('coldload', times))
   }

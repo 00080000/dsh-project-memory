@@ -220,7 +220,7 @@ export function walkDir(root, opts = {}) {
   const maxDepth = Number.isFinite(opts.maxDepth) && opts.maxDepth > 0 ? opts.maxDepth : Infinity
   // 传 memoryDir 名即开启「嵌套根不重复索引」：子目录自带 store 时不再往下走。
   // 理由是跟解析规则保持一致——`findProjectRoot()` 对子树里的文件返回的正是那个子根，
-  // 扫描也该同意这一点；否则父根会把子项目的全部内容再存一份（实测 `/home/me/project`
+  // 扫描也该同意这一点；否则父根会把子项目的全部内容再存一份（实测一个父目录
   // 的 store 里 9075/9081 个文件是子根 store 的重复副本）。
   const nestedStoreName = opts.nestedStoreName || null
   const out = []

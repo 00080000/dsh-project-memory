@@ -18,6 +18,7 @@ import path from 'node:path'
 import {
   ProjectMemoryStore,
   _estimateResidentBytes as estimate,
+  _residentBoundBytesForTest as bound,
   _setStoreCacheBudgetForTest as setCacheBudget,
   _storeCacheKeysForTest as cacheKeys,
   _stripPersistedDerivedForTest as stripDerived,
@@ -122,6 +123,81 @@ console.log('\n== 记忆化：版本没变就不重算 ==')
   check('重复调用不改变版本戳（说明没有重算）', store._residentStamp === stamp)
   store.setEntries('b.md', [{ id: '5', relPath: 'b.md', title: 'b', summary: 'r'.repeat(1000) }])
   check('版本变化后才重算', estimate(store) > first && store._residentStamp !== stamp)
+}
+
+console.log('\n== 预算宽裕时冷加载不做精确计量（0.6.0）==')
+{
+  // 精确计量要逐串 `Buffer.byteLength` 扫全库（12.6k 文件 / 80k 条目实测 ~90ms）。
+  // 它只在"真有可能逐出"时才值得做：条数超上限，或**保守上界**就超字节预算。
+  const entries = [{ id: 'big.md#1', relPath: 'big.md', title: 'big', summary: 'x'.repeat(20000) }]
+  const makeStoreDir = (tag) => {
+    const dir = path.join(mkdtempSync(path.join(tmpdir(), `pm-bound-${tag}-`)), '.dsh-project-memory')
+    mkdirSync(path.join(dir, 'shards'), { recursive: true })
+    writeFileSync(path.join(dir, 'format.json'), JSON.stringify({ version: 2, layout: 'sharded' }))
+    writeFileSync(
+      path.join(dir, 'shards', createHash('sha256').update('big.md').digest('hex') + '.json'),
+      JSON.stringify({ relPath: 'big.md', record: { hash: 'h', size: 1 }, entries }),
+    )
+    return dir
+  }
+
+  const wideDir = makeStoreDir('wide')
+  const restoreWide = setCacheBudget(64 * 1024 * 1024)
+  let wide
+  try {
+    wide = new ProjectMemoryStore(wideDir).load()
+  } finally {
+    restoreWide()
+  }
+  check('宽裕时冷加载不数对象图（没有版本戳 = 没精确计量过）', wide._residentStamp === '')
+  check('读盘文本字符数被记账（上界不是常数腿）', wide._textChars > 20000)
+  const boundBefore = bound(wide) // 必须在 estimate() 之前取
+  wide.allEntries()
+  const exactMaterialized = estimate(wide)
+  check('上界口径保守：≥ 精确值', boundBefore >= exactMaterialized)
+  check('上界没有离谱到不可用（≤ 精确值的 8 倍）', boundBefore <= exactMaterialized * 8)
+
+  // 写进来的条目也必须计入上界（否则"另一个 root 被写过"时预算会被算松），
+  // 且按文件替换而不是累加（重写同一个文件不该把它算两遍）。
+  const withinLoad = (dir, fn) => {
+    const restore = setCacheBudget(64 * 1024 * 1024)
+    try {
+      return fn(new ProjectMemoryStore(dir).load())
+    } finally {
+      restore()
+    }
+  }
+  const written = withinLoad(makeStoreDir('mut'), (store) => {
+    const before = bound(store)
+    store.setEntries('extra.md', [{ id: 'extra.md#1', relPath: 'extra.md', title: 'x', summary: 'y'.repeat(20000) }])
+    return { before, after: bound(store), exact: estimate(store) }
+  })
+  check('写进来的条目计入上界', written.after - written.before >= 20000)
+  check('写过之后上界仍 ≥ 精确值', written.after >= written.exact)
+
+  const rewritten = withinLoad(makeStoreDir('rep'), (store) => {
+    const entry = [{ id: 'a.md#1', relPath: 'a.md', title: 't', summary: 'y'.repeat(10000) }]
+    store.setEntries('a.md', entry)
+    const once = bound(store)
+    store.setEntries('a.md', entry)
+    return { once, twice: bound(store) }
+  })
+  check('同一文件重写是替换而不是累加（上界不翻倍）', rewritten.twice === rewritten.once)
+
+  // 同一份内容、预算吃紧：这次上界就超了 → 必须精确计量并如实告警
+  const tightDir = makeStoreDir('tight')
+  const restoreTight = setCacheBudget(1)
+  const errors = []
+  const originalError = console.error
+  console.error = (...args) => errors.push(args.join(' '))
+  try {
+    new ProjectMemoryStore(tightDir).load()
+  } finally {
+    console.error = originalError
+    restoreTight()
+  }
+  check('预算吃紧时把 store 放进了缓存', cacheKeys().length > 0)
+  check('单实例超预算照旧告警（不静默）', errors.some((line) => line.includes('超过 storeCache 预算')))
 }
 
 console.log('\n== watch 根不再钉住 store（0.5.12，附七结论七）==')
