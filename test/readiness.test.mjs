@@ -101,7 +101,7 @@ const PUBLIC_FACE = {
   assert.equal(readiness.matchTrigger({ paths: ['README.md'] }, ctx), null)
   // 意图词看的是**剥离引用后**的人类消息，且拉丁词要过词边界
   assert.equal(readiness.matchTrigger({ when: { intents: ['ppt'] } }, readiness.buildReadinessContext({ humanText: '看看这个 pptx' })), null)
-  assert.equal(readiness.matchTrigger({ when: { intents: ['调研'] } }, readiness.buildReadinessContext({ humanText: '把这个 "示例-记忆方向调研.pptx" 的时间改一下' })), null)
+  assert.equal(readiness.matchTrigger({ when: { intents: ['调研'] } }, readiness.buildReadinessContext({ humanText: '把这个 "示例调研.pptx" 的时间改一下' })), null)
   assert.match(readiness.matchTrigger({ when: { intents: ['调研'] } }, readiness.buildReadinessContext({ humanText: '帮我做一份记忆方向调研' })) || '', /^intent:/)
   assert.equal(readiness.matchTrigger(null, ctx), null)
   ok('matchTrigger：op / write / intent 三类判据；guard 只收窄；旧 trigger 与坏 glob 不再触发')

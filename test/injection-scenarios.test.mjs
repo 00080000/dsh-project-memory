@@ -56,7 +56,7 @@ const POOL = [
   P('p_testing', '被问「你怎么测试的」时的答法', { trigger: { keywords: ['测试', '怎么测', '性能数据', 'benchmark', '验证', '复现'] } }), // ins_f8d6fcd1
   L('l_harness', '检索基准 harness 会静默骗人'), // ins_32fae71d（无 authored trigger）
   L('l_wslio', 'WSL2 小文件 I/O 慢约 3×'), // ins_b1de23b9（无 authored trigger）
-  L('l_vaportok', '邮件里点名引用的论文就是面试第一题', { trigger: { keywords: ['论文', 'PaperX', 'Vist', '面试', '引用'] } }), // ins_e602b1e2
+  L('l_papertok', '邮件里点名引用的论文往往是重点', { trigger: { keywords: ['论文', 'PaperX', 'CoreX', '面试', '引用'] } }), // ins_e602b1e2
   L('l_perfnum', '对外引用性能数字必须带规模+硬件口径', { trigger: { keywords: ['性能', '基准', 'benchmark', 'ms', '延迟', '下载量', 'star', '测试数'], actions: ['interview-prep', 'report-metrics'] } }), // ins_547cb96c
   L('l_honesty', '申请材料只写亲手做过的', { trigger: { keywords: ['简历', '夸大', '诚信', '口径', '材料', '群发'] } }), // ins_114ea4cd
 ]
@@ -115,24 +115,24 @@ const SCENARIOS = [
     name: 'E 面试问 PaperX',
     tags: [],
     human: '明天面试，老师要是顺着邮件问 PaperX 的核心机制我该怎么说',
-    actions: [read('速答卡.md')],
+    actions: [read('9-15面试速答卡.md')],
     // l_perfnum 不进 expect：它的触发面是"对外报数字"，本场景是"被问论文机制"。
-    expect: ['l_vaportok'],
+    expect: ['l_papertok'],
   },
   {
     name: 'H 面试官问怎么测试的',
     tags: [],
     human: '面试官问我这个插件是怎么测试的',
     actions: [read('README.md')],
-    // l_vaportok 进 expect：'面试' 是真实意图词，命中即注入是意图通道的设计行为。
-    expect: ['p_testing', 'l_vaportok'],
+    // l_papertok 进 expect：'面试' 是真实意图词，命中即注入是意图通道的设计行为。
+    expect: ['p_testing', 'l_papertok'],
   },
   {
     name: 'F 对照：改 pptx 时间戳（真实原文）',
     tags: [],
-    human: '你在wsl，怎么把"C:\\Users\\33880\\OneDrive\\桌面\\示例-LLM记忆方向调研.pptx"这个文件的创建时间从”2026年9月16日，21:00:14“改到昨天17：23：14。',
+    human: '你在wsl，怎么把"C:\\Users\\me\\OneDrive\\桌面\\示例调研.pptx"这个文件的创建时间从”2026年9月16日，21:00:14“改到昨天17：23：14。',
     actions: [
-      bash('ls -la /mnt/c/Users/me/OneDrive/桌面/示例-LLM记忆方向调研.pptx'),
+      bash('ls -la /mnt/c/Users/me/OneDrive/桌面/示例调研.pptx'),
       bash('powershell.exe -NoProfile -Command SetFileTime'),
     ],
     // 整份 PLAN 的验收底线：文件名里的"调研"、扩展名 .pptx、powershell 命令，都不许触发任何东西。
@@ -493,8 +493,8 @@ printReport(m)
   const r = runScenario({
     name: 'x',
     tags: [],
-    human: '把 "示例-记忆方向调研.pptx" 的创建时间改到昨天',
-    actions: [bash('ls -la /mnt/c/x/示例-记忆方向调研.pptx')],
+    human: '把 "示例调研.pptx" 的创建时间改到昨天',
+    actions: [bash('ls -la /mnt/c/x/示例调研.pptx')],
     expect: [],
   }, [ext, quoted])
   assert.equal(r.got.length, 0, `坏 glob 与引用内容都不得触发：${r.got.join(',')}`)

@@ -53,7 +53,7 @@ const CASES = [
   {
     name: 'S2 · 引用内容不得当意图（文件名里的词）',
     insights: [L('q_quote', { title: '做调研要先扫 curated 列表', fix: '按日期倒序扫最近半年', trigger: { keywords: ['调研'] } })],
-    ctx: { humanText: '把 "示例-LLM记忆方向调研.pptx" 的创建时间改到昨天', actions: [], paths: [] },
+    ctx: { humanText: '把 "示例调研.pptx" 的创建时间改到昨天', actions: [], paths: [] },
     expect: [],
   },
   {

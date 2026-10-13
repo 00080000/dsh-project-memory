@@ -86,13 +86,13 @@ const ok = (name) => {
 // --- 4. 本会话那 7 次真实调用的回归：不产出标识符类噪音 ---
 {
   const sessionCalls = [
-    { name: 'bash', arguments: '{"command":"date; ls -la --time-style=full-iso \\"/mnt/c/Users/me/OneDrive/桌面/示例-LLM记忆方向调研.pptx\\""}' },
+    { name: 'bash', arguments: '{"command":"date; ls -la --time-style=full-iso \\"/mnt/c/Users/me/OneDrive/桌面/示例调研.pptx\\""}' },
     { name: 'bash', arguments: '{"command":"which powershell.exe pwsh.exe"}' },
     { name: 'bash', arguments: '{"command":"powershell.exe -NoProfile -Command \\"$f.CreationTime = ...\\" -Filter \\"*LLM*.pptx\\""}' },
     { name: 'bash', arguments: '{"command":"python3 - <<\'PY\'\\nimport zipfile, re\\napp = zin.read(\'docProps/app.xml\')\\ndcterms = None\\nPY"}' },
     { name: 'bash', arguments: '{"command":"ls -la /tmp/pptx-backup.pptx"}' },
     { name: 'bash', arguments: '{"command":"node --test test/insight-store.test.mjs"}' },
-    { name: 'read', arguments: '{"file_path":"/home/me/project/dsh-project-memory/de-TODO.md"}' },
+    { name: 'read', arguments: '{"file_path":"/repo/de-TODO.md"}' },
   ]
   const a = activityFromCalls(sessionCalls)
   const dump = JSON.stringify(a)

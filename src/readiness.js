@@ -199,7 +199,7 @@ function globToRegExp(pattern) {
 /**
  * 剥离**引用内容**：代码块、行内代码、引号内的路径/文件名、裸路径。
  *
- * 为什么必须剥：人类消息里的文件名是**数据**，不是意图。实测中"示例-LLM记忆方向调研.pptx"
+ * 为什么必须剥：人类消息里的文件名是**数据**，不是意图。实测中"示例调研.pptx"
  * 这个文件名让一条"做调研要先扫 curated 列表"的经验在改文件时间戳的任务里被注入。
  * @param {string} text - 人类消息原文
  * @returns {string} 只保留意图文字的版本
@@ -212,7 +212,7 @@ export function intentText(text) {
     .replace(/“[^”\n]*”/g, ' ')
     .replace(/[A-Za-z]:\\[^\s"']*/g, ' ')
     .replace(/(?:[A-Za-z0-9_.@-]+\/)+[A-Za-z0-9_.@-]+/g, ' ')
-    // 带扩展名的**非 ASCII 文件名**（`示例-记忆方向调研.pptx` / `docs/示例.md`）：
+    // 带扩展名的**非 ASCII 文件名**（`示例调研.pptx` / `docs/示例演示.md`）：
     // 只挡 ASCII 路径不够——中文文件名整块留下，"调研""面试"这类子串照样触发 when.intents，
     // 正是引号剥离要防的那类假阳性。ASCII 裸名（如 de-TODO.md）保持原语义，不在这里动。
     .replace(/\S*[^\x00-\x7F]\S*\.[A-Za-z][A-Za-z0-9]{0,7}\b/g, ' ')

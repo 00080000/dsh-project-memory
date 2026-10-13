@@ -197,12 +197,12 @@ Four corpora, one machine (Node 24.19, 20 vCPU, Linux file system), each run twi
 
 | Corpus | Files / entries | Cold index | Cold load | Query p50 / p95 | Re-index 1 file | Store content / on disk | Heap after load |
 |--------|-----------------|-----------|-----------|-----------------|-----------------|------------------------|-----------------|
-| Vue 3 + Vite app (code only) | 289 / 2,142 | 236 ms | 7.4 ms | 0.74 / 1.4 ms | 0.3 ms | 0.66 MB / 1.52 MB | 6.3 MB |
-| Docs workspace (241 docs, 3 PDFs) | 249 / 977 | 711 ms | 10.7 ms | 1.8 / 5.4 ms | 0.5 ms | 1.31 MB / 1.84 MB | 6.8 MB |
-| TypeScript monorepo, 3,000-file slice | 3,000 / 17,576 | 1.9 s | 82 ms | 9.5 / 20.5 ms | 1.7 ms | 10.9 MB / 18.9 MB | 22.6 MB |
-| TypeScript monorepo, whole tree | 12,634 / 80,231 | 7.7 s | 322 ms | 39.2 / 77.1 ms | 7.2 ms | 42.0 MB / 75.7 MB | 74.8 MB |
+| Vue 3 + Vite app (code only) | 289 / 2,142 | 246 ms | 8 ms | 0.76 / 1.4 ms | 0.3 ms | 0.66 MB / 1.52 MB | 6.3 MB |
+| Docs workspace (241 docs, 3 PDFs) | 249 / 977 | 705 ms | 10 ms | 1.8 / 5.5 ms | 0.4 ms | 1.31 MB / 1.84 MB | 6.8 MB |
+| TypeScript monorepo, 3,000-file slice | 3,000 / 17,576 | 1.9 s | 70 ms | 9.2 / 18.9 ms | 1.9 ms | 10.9 MB / 18.9 MB | 22.7 MB |
+| TypeScript monorepo, whole tree | 12,634 / 80,231 | 7.8 s | 278 ms | 40.6 / 74.8 ms | 7.2 ms | 42.0 MB / 75.7 MB | 75.2 MB |
 
-**How it scales.** Re-indexing a changed file costs O(file), not O(corpus) — 0.3–7.2 ms across every corpus above. Cold load (≈26 µs/file), query (≈0.5 µs/entry on the largest corpus) and resident heap (≈1.5 KB/entry once queried) grow linearly with the index, which keeps small and mid-size projects in the single-digit-millisecond range.
+**How it scales.** Re-indexing a changed file costs O(file), not O(corpus) — 0.3–7.2 ms across every corpus above. Cold load (≈22 µs/file), query (≈0.5 µs/entry on the largest corpus) and resident heap (≈1.5 KB/entry once queried) grow linearly with the index, which keeps small and mid-size projects in the single-digit-millisecond range.
 
 > `read+hash` depends on the OS page cache — 2.3 s cold vs 0.27 s warm on the 12,634-file tree — so the table quotes the warm figure.
 
@@ -210,16 +210,16 @@ Four corpora, one machine (Node 24.19, 20 vCPU, Linux file system), each run twi
 
 | Scenario | Scale | Measured |
 |----------|-------|----------|
-| Full cold index | 5,000 files / 20k entries | 279 ms avg (p50 287) |
-| Cold load | 5,000 files | 62 ms |
-| Hot lazy re-index (single file) | 5k files | p50 2.5 ms / max 5.0 ms |
-| query_memory (cached) | 5k files / 20k entries | p50 2.7 ms / p95 6.4 ms |
+| Full cold index | 5,000 files / 20k entries | 284 ms avg (p50 286) |
+| Cold load | 5,000 files | 58 ms |
+| Hot lazy re-index (single file) | 5k files | p50 2.5 ms / max 6.7 ms |
+| query_memory (cached) | 5k files / 20k entries | p50 2.9 ms / p95 6.0 ms |
 | query_memory (cached) | 1k files / 4k entries | p50 0.5 ms / p95 1.1 ms |
-| Full cold index | 10,000 files / 40k entries | 568 ms avg (p50 562) |
-| Cold load | 10,000 files | 126 ms |
-| Hot lazy re-index (single file) | 10k files | p50 5.2 ms / max 8.2 ms |
+| Full cold index | 10,000 files / 40k entries | 558 ms avg (p50 540) |
+| Cold load | 10,000 files | 117 ms |
+| Hot lazy re-index (single file) | 10k files | p50 5.5 ms / max 8.4 ms |
 
-> Generated code (~4–5 symbols/file), measured 2026-10-13. Reproduce with `npm run bench:synthetic -- 5000` (`scripts/bench-synthetic.mjs`). Pure indexing overhead, no LLM calls. The first query after a write rebuilds the IDF cache (**130 ms at 40k entries**, 64 ms at 20k, 16 ms at 4k); later queries hit it.
+> Generated code (~4–5 symbols/file), measured 2026-10-13. Reproduce with `npm run bench:synthetic -- 5000` (`scripts/bench-synthetic.mjs`). Pure indexing overhead, no LLM calls. The first query after a write rebuilds the IDF cache (**141 ms at 40k entries**, 68 ms at 20k, 17 ms at 4k); later queries hit it.
 
 ### Reproduce it on your own project
 
@@ -234,10 +234,10 @@ node scripts/bench.mjs /path/to/your/project [--json] [--samples 100] [--no-pdf]
 It reports the cold index split into read+hash / extract / commit, cold load, IDF rebuild, cold and hot query latency (p50/p95/max over 100 sampled queries through the shipped scorer), single-file hot re-index, store size, resident heap and bytes per entry. Example — the Vue app row above:
 
 ```
-cold index   236 ms   (read+hash 9 ms · extract 214 ms · commit 13 ms)   ← 2nd, warm-cache run
-store        0.66 MB content · 1.52 MB on disk · 325 bytes/entry · cold load 7.4 ms
+cold index   246 ms   (read+hash 8 ms · extract 222 ms · commit 14 ms)   ← 2nd, warm-cache run
+store        0.66 MB content · 1.52 MB on disk · 325 bytes/entry · cold load 8 ms
 memory       heap 6.3 MB after load → 6.9 MB after the first query (RSS 62 MB)
-hot query    p50 0.74 ms · p95 1.4 ms          (2,142 entries)
+hot query    p50 0.76 ms · p95 1.4 ms          (2,142 entries)
 re-index 1 file  p50 0.3 ms
 ```
 
@@ -262,7 +262,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 641 tests
+npm test                    # 650 tests
 npm run eval:injection      # synthetic pool P/R: precision 0.94 / recall 1.00, + a 3-scenario hint-only group
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)
