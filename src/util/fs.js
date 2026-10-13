@@ -142,8 +142,7 @@ export const DEFAULT_SCAN_FILES = 20000
 export const DEFAULT_SCAN_DEPTH = 12
 
 /**
- * 从 config 解析扫描上限。非法值（NaN/0/负数）回落到出厂值——一个配置笔误不该
- * 把保护整个关掉。显式传 `maxScanFiles: 0` 才会真的关掉（见 README）。
+ * 从 config 解析扫描上限。0 / 负数 / 非数值一律回落到出厂值：上限只能放宽，不能取消。见 README 配置表。
  */
 export function scanLimits(config) {
   const files = Number(config?.maxScanFiles)

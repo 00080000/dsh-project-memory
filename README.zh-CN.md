@@ -6,7 +6,7 @@
 
 [![ci](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![npm](https://img.shields.io/npm/v/@yolk_vat-y/dsh-project-memory)](https://www.npmjs.com/package/@yolk_vat-y/dsh-project-memory) [![npm downloads](https://img.shields.io/npm/dm/%40yolk_vat-y%2Fdsh-project-memory?style=flat-square&color=orange)](https://www.npmjs.com/package/@yolk_vat-y/dsh-project-memory) [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/00080000/dsh-project-memory) [![Awesome](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
-为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）agent 提供持久化的 **项目开发记忆**。专门针对项目开发，原生融合 dsh 任务系统，会话内任务清单与读过的文件自动沉淀为跨会话任务记录，任务↔文件自动关联——开发工作流可切换、可续接，无需重复梳理整个项目，解决上下文失效；文档（PDF/Markdown/txt）与代码符号写入工作区独立存储，文档自动交叉链接至所提及的代码符号；经验笔记（问题 → 方案）自动去重，避免重复踩坑。所有数据按项目落盘，跨会话压缩与交接保留，召回附带 `路径:行号` 可回源核实。单个运行时依赖、无原生构建、无向量数据库。
+为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）agent 提供持久化的 **项目开发记忆**。专门针对项目开发，原生融合 dsh 任务系统，会话内任务清单与读过的文件自动沉淀为跨会话任务记录，任务↔文件自动关联——开发工作流可切换、可续接，无需重复梳理整个项目，解决上下文失效；文档（PDF/Markdown/txt）与代码符号写入工作区独立存储，文档自动交叉链接至所提及的代码符号；经验笔记（问题 → 方案）自动去重，避免重复踩坑。所有数据按项目落盘，跨会话压缩与交接保留，召回附带 `路径:行号` 可回源核实。无原生构建、无向量数据库。79 MB 的本地嵌入表 `leanvec` 随安装默认启用；它不在时自动退回纯词法。
 
 
 > 插件在磁盘上维护一份精简的项目**记忆**，每条记录指向具体的文件与行号；agent 需要快速了解项目时先查**记忆**，无需重读整个项目。
@@ -20,7 +20,7 @@
 - **代码符号记忆** — 零依赖扫描器提取函数、类、方法、接口与类型别名及其完整签名，覆盖 8 种语言。项目装了 `typescript` 时，可选第二层补推导返回类型、泛型与接口，后台执行、不阻塞索引。
 - **读到即记忆、变更即刷新** — 文件在模型实际读取的瞬间被记忆，记忆是正常工作的副产品，而不是额外的一次全量扫描；从未读过的文件不会被记忆。后台轮询只重记变更过的文件。
 - **文档 ↔ 代码交叉链接** — 文档提及的符号，在查询该符号时一并带出。链接按**当前**符号表解算，不会过期。
-- **混合召回** — 对文档、符号、经验笔记与 insight 排序召回，可选 LLM 查询扩展。装了可选依赖 `leanvec` 时经验/洞察两层按余弦重排，没装则退回纯词法。针对 CJK 增强：短语加分、同义词表，以及文档↔符号链接的词边界处理。
+- **混合召回** — 对文档、符号、经验笔记与 insight 排序召回，可选 LLM 查询扩展。`leanvec` 是 optionalDependency：默认装上并按余弦重排经验/洞察两层，没装或 `vectorDir: 'off'` 则退回纯词法。针对 CJK 增强：短语加分、同义词表，以及文档↔符号链接的词边界处理。
 - **经验笔记** — 记录问题 → 方案；相似问题覆盖而不重复，数量随项目规模有界，仅在检索命中时返回。
 - **分层 insight 记忆（教训 / 决策 / 流程）** — 同一实体贯穿任务、项目、全局三级。近重复合并或强化；提升是更换归属而非复制。被使用会记账，因此衰减与容量按活跃度排序，而不是只按时间。面板提供分级的记忆视图用于审核与编辑。
 - **触发式注入** — insight 可携带 authored trigger：只有 `when` 能触发，`guard` 只能收窄，`prevents` 记下没有它会坏在哪。语料正文永远不能触发注入；统计通道另有独立门槛，默认沉默。
@@ -125,8 +125,8 @@ TaskPanel (Container)
 | `lazyIndexing` | true | 模型读取文件的瞬间即索引 |
 | `autoIndexOnFirstUse` | false | 插件加载时对当前工作目录做全量扫描（可选） |
 | `watch` / `watchInterval` | true / 30 | 后台刷新；基础轮询间隔（秒）；回合进行中静默（5 分钟兜底，外部改动仍会自愈），回合结束立刻合并扫一次；空闲时逐步退避到最长 2 分钟，一有变化立即回到该值 |
-| `maxScanFiles` / `maxScanDepth` | 20000 / 12 | 单次扫描的文件数与目录深度硬上限；被截断时会在报告里说明，且不会删除没扫到的条目。设 `0` 取消 |
-| `allowUnsafeRoots` | false | 允许**显式**工具调用指向排除名单上的目录。自动路径（懒索引、会话审计、TaskBridge、`autoIndexOnFirstUse`）无论此项如何都不会越权 |
+| `maxScanFiles` / `maxScanDepth` | 20000 / 12 | 单次扫描的文件数与目录深度硬上限；被截断时会在报告里说明，且不会删除没扫到的条目。**无法取消**：`0` 或任何非法值都回落到默认值 |
+| `allowUnsafeRoots` | false | 允许**显式**工具调用指向排除名单上的目录。懒索引、会话审计与 TaskBridge 始终不越权；`autoIndexOnFirstUse` 不在此列——它同样被这个开关放行 |
 | `llmQueryExpansion` / `expansionCount` | false / 6 | 检索前用 LLM 扩展查询（默认关闭，节省 token）；扩展变体上限 |
 | `tsPath` / `enableTypeScript` | (自动) / true | 可选：强制指定 `typescript` 安装路径；`enableTypeScript: false` 彻底禁用类型感知层 |
 | `tasklist.enabled` / `tasklist.syncHostOnAdopt` | true / true | TaskBridge 自动同步（由会话 todo 清单与文件读取沉淀任务实体）；绑定任务时把其步骤推给宿主任务清单，使 dsh 镜像该任务 |
@@ -137,7 +137,7 @@ TaskPanel (Container)
 | `autoContext.maxItemsPerSession` / `autoContext.maxItemCharsPerSession` | 60 / 24000 | **runaway 保险丝，不是节流阀** —— 按条数与字符计的每会话硬上限：一旦触顶，本会话余下部分条目通道持续沉默 |
 | `autoContext.hintMinCoverage` | 0.45 | 提示通道的**绝对**下限：条目覆盖了查询多少 IDF 加权信息量。只用相对阈值分不出"有信号"和"矮子里拔将军" |
 | `autoContext.hintMinMatched` / `autoContext.hintMinSupport` | 2 / 0.15 | 提示还必须至少共享这么多个词；且查询里能在语料中找到对应的词占比不低于该值时，通道才出声——否则本轮整体沉默 |
-| `autoContext.vectorDir` | 未设（关） | **可选**语义层，只作用于经验/洞察两层。不设 = 关；也会从 `DSH_LEANVEC_DIR` 与可选依赖 `leanvec` 解析（**装上即启用**），填 `off` 强制关闭。只改排序——闸门与返回条数不受影响 |
+| `autoContext.vectorDir` | 未设 | **可选**语义层，只作用于经验/洞察两层；随 `leanvec`（optionalDependency）默认装上并启用（79 MB、约 +130 MB RSS）。填 `off` 强制纯词法；填路径或用 `DSH_LEANVEC_DIR` 可覆盖。只改排序、返回条数不变；启用时这两层不按词法命中数筛条目 |
 | `autoContext.vectorAlpha` | 0.5 | 这两层内 `(1-α)·词法分 + α·余弦` 的权重；`0` 关闭该层，`1`（纯向量）实测更差 |
 | `autoContext.legacyScope` | `ignore` | 旧 `trigger.scope` 的处理：默认 `ignore`，不拿它当过滤条件；`filter` 保留旧语义。`npm run selfcheck:triggers` 会列出仍带 scope 的条目 |
 | `autoContext.auditLog` | true | 每次**真实**注入往 `injection-audit.jsonl` 追加一行（注入了什么、为什么命中、丢了什么、会话额度）；超过 `auditMaxBytes`（`262144`）轮转 `.1`。任何 IO 失败都静默 |
@@ -173,9 +173,10 @@ store 建在被索引的目录树里，并且**自我忽略**：自己目录内�
     maxScanDepth: 12            # 单次扫描目录深度上限
     enableTypeScript: true      # 开启：装了 TS 时启用类型感知增强（默认）
     # allowUnsafeRoots: false   # 保持 false，除非你确实要显式索引家目录/系统目录
-    # budgetLog: once           # 调试用：注入被预算挤掉时在 stderr 留痕（默认 off 静默）
-    # reinjectItemsAfter: 20    # 调试用：同一条 insight 隔 N 步才允许重发（默认 0 = 本会话只发一次）
     # tsPath: /custom/path/to/typescript  # 可选：强制指定 TS 安装路径
+    # autoContext:              # 注意：下面两个键在 autoContext 下，不是顶层
+    #   budgetLog: once         # 调试用：注入被预算挤掉时在 stderr 留痕（默认 off 静默）
+    #   reinjectItemsAfter: 20  # 调试用：同一条 insight 隔 N 步才允许重发（默认 0 = 本会话只发一次）
 ```
 
 只需列出要改的键，其余键回落到插件默认值。用 `dsh --profile web --dump-config` 验证生效。
