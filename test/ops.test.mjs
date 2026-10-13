@@ -92,7 +92,7 @@ const ok = (name) => {
     { name: 'bash', arguments: '{"command":"python3 - <<\'PY\'\\nimport zipfile, re\\napp = zin.read(\'docProps/app.xml\')\\ndcterms = None\\nPY"}' },
     { name: 'bash', arguments: '{"command":"ls -la /tmp/pptx-backup.pptx"}' },
     { name: 'bash', arguments: '{"command":"node --test test/insight-store.test.mjs"}' },
-    { name: 'read', arguments: '{"file_path":"/home/me/project/dsh-project-memory/de-TODO.md"}' },
+    { name: 'read', arguments: '{"file_path":"/repo/de-TODO.md"}' },
   ]
   const a = activityFromCalls(sessionCalls)
   const dump = JSON.stringify(a)
