@@ -23,7 +23,7 @@ const Q = 'alpha beta gamma delta'
 const base = (extra = {}) => recallItems({
   store: { experience: POOL }, queries: [Q], layers: ['experience'], limit: 4, ...extra,
 })
-const idsOf = (r) => r.layers[0].hits.map((h) => h.item.id)
+const idsOf = (r) => (r.layers[0]?.hits || []).map((h) => h.item.id)
 
 // ---- ① 基线 ----
 const b = base()
@@ -120,3 +120,38 @@ same(base({ rerank: { alpha: 0.9, score: () => null } }), '向量层返回 null'
 }
 
 console.log(`\nrecall-vector-fusion tests: ${passed} passed`)
+
+// ---- ⑧ 短拉丁片段不算证据（经验/洞察两层，两种模式一致）----
+// tokenizer 按 `[a-z0-9_]+` 切词，`no-op` / `--no-edit` 会留下 `no`、`op` 这类两字母片段。
+// 它们在散文语料里没有独立语义，却因为稀缺拿到不低的 BM25。修前：查询 `zzz-no-such-topic-xyz`
+// 靠 `no` 命中这条笔记（有向量时尤其明显，因为那时不按命中词数筛）。
+{
+  const fragPool = [{ id: 'e_noedit', problem: 'git commit --amend --no-edit 会改写历史', solution: '改用新提交' }]
+  const garbage = 'zzz-no-such-topic-xyz'
+  const lex = recallItems({ store: { experience: fragPool }, queries: [garbage], layers: ['experience'], limit: 5 })
+  assert.deepEqual(idsOf(lex), [], `片段命中不该算证据（纯词法），实得 ${idsOf(lex)}`)
+  const vec = recallItems({
+    store: { experience: fragPool }, queries: [garbage], layers: ['experience'], limit: 5,
+    rerank: { alpha: 0.5, score: () => new Map([['e_noedit', 1]]) },
+  })
+  assert.deepEqual(idsOf(vec), [], `片段命中不该算证据（有向量），实得 ${idsOf(vec)}`)
+  ok('短拉丁片段不算证据：乱码查询两种模式都零结果')
+  // 真词查询不受影响
+  const real = recallItems({ store: { experience: fragPool }, queries: ['改写历史'], layers: ['experience'], limit: 5 })
+  assert.ok(idsOf(real).includes('e_noedit'), `中文真词查询应正常命中，实得 ${idsOf(real)}`)
+  ok('短拉丁片段不算证据：中文真词查询照常命中')
+  // doc/symbol 层的短标识符不受影响（`js` / `id` 本来就该命中）
+  const codeEntries = [{ id: 'd1', type: 'doc', relPath: 'a.md', title: 'js runtime notes', summary: 'js 运行时', keywords: [], terms: '' }]
+  const code = recallItems({ entries: codeEntries, queries: ['js'], layers: ['doc'], limit: 5 })
+  assert.ok(idsOf(code).includes('d1'), `doc 层的短标识符查询不该被这次改动影响，实得 ${idsOf(code)}`)
+  ok('短拉丁片段规则只作用于经验/洞察两层：doc/symbol 的 js/id 查询照旧')
+  // 已知残留（钉住，不放行）：查询词本身是 ≥3 字符的真词时不靠词法闸门——
+  // 有向量时仍可能带出一条弱相关笔记（词法上无法与真查询区分，实测 support 分布重叠）。
+  const realWordPool = [{ id: 'e_notdeclared', problem: 'if the property is not declared it never reaches config', solution: 'declare it' }]
+  const rw = recallItems({
+    store: { experience: realWordPool }, queries: ['not-a-real-topic-qqq'], layers: ['experience'], limit: 5,
+    rerank: { alpha: 0.5, score: () => new Map([['e_notdeclared', 1]]) },
+  })
+  assert.ok(idsOf(rw).length <= 1, `残留上界是 1 条，实得 ${idsOf(rw)}`)
+  ok(`已知残留（上界 1 条）：真词构成的乱码查询在有向量时仍可能出声 —— ${idsOf(rw).length} 条`)
+}
