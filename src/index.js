@@ -45,12 +45,11 @@ export const Config = Schema.object({
   watch: Schema.boolean().default(true),
   watchInterval: Schema.number().default(30),
   // 危险根护栏（issue #5）：家目录 / 文件系统根 / 系统目录 / 包管理器前缀（/opt/homebrew …）
-  // 整体扫描会吃满内存，默认一律拒绝。**自动路径永不越权**——懒索引、会话审计、任务桥在
-  // 这类目录里始终零副作用；这个开关只放开**显式**工具调用（index_repo / watch_repo /
-  // remember 等带 root 的调用）。
+  // 整体扫描会吃满内存，默认一律拒绝。懒索引、会话审计、任务桥在这类目录里始终零副作用；
+  // `autoIndexOnFirstUse` 不在此列——本开关同样放行它。其余只放开**显式**带 root 的工具调用。
   allowUnsafeRoots: Schema.boolean().default(false),
   // 单次扫描上限。超过即截断（并跳过"删除本轮未见到条目"的清理，避免把没扫到的文件误删）。
-  // 显式设 0 表示不限制——自担风险。
+  // **不可取消**：0 / 负数 / 非数值一律回落默认值（见 util/fs.js 的 scanLimits）。
   maxScanFiles: Schema.number().default(DEFAULT_SCAN_FILES),
   maxScanDepth: Schema.number().default(DEFAULT_SCAN_DEPTH),
   tsPath: Schema.string(),
