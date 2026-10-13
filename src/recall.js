@@ -17,7 +17,24 @@
  *
  * @module dsh-project-memory/recall
  */
-import { rankEntriesMergedScored, rankEntriesStreaming, rankExperienceScored, tokenizeRaw } from './util/search.js'
+import { rankEntriesMergedScored, rankEntriesStreaming, rankExperienceScored, tokenizeRaw, CJK_RANGE } from './util/search.js'
+
+/**
+ * 短拉丁片段不算检索证据（只用于经验/洞察两层）。
+ *
+ * tokenizer 按 `[a-z0-9_]+` 切词，`no-op` / `--no-edit` 会留下 `no`、`op` 这类两字母片段。
+ * 它们在散文语料里没有独立语义，却因为稀缺而拿到不低的 BM25：查询 `zzz-no-such-topic-xyz`
+ * 就靠 `no` 命中一条无关笔记。所以这两层的查询词里，拉丁项短于 3 个字符的直接丢弃。
+ *
+ * 为什么只在这两层：doc/symbol 层是代码与路径，`js` / `id` 这类短标识符本来就该命中
+ * （见上方 `matchedFloor` 的注释）。两种模式（有/无向量）一律适用——闸门不能随向量层开关变形。
+ */
+const MIN_LATIN_QUERY_TERM = 3
+function gatedQueryText(q) {
+  return tokenizeRaw(String(q ?? ''))
+    .filter((t) => CJK_RANGE.test(t) || t.length >= MIN_LATIN_QUERY_TERM)
+    .join(' ')
+}
 
 /**
  * 最小相关性闸门：命中的**不同查询词数**至少 min(2, 查询词数)。
@@ -255,6 +272,8 @@ export function recallItems(opts = {}) {
     rerank = null,
   } = opts
   const qs = (Array.isArray(queries) ? queries : [queries]).map((q) => String(q ?? '')).filter(Boolean)
+  // 经验/洞察两层用去掉短拉丁片段的查询（见 `gatedQueryText`）；doc/symbol 层与向量编码仍用原查询。
+  const qsLayers = qs.map(gatedQueryText)
   const want = new Set(layers)
   const idf = store && typeof store.getIdfCache === 'function' ? store.getIdfCache() : {}
   const buckets = []
@@ -287,7 +306,7 @@ export function recallItems(opts = {}) {
     const expPool = (store && store.experience) || []
     // 有向量时在**全量** BM25 序上融合（见 fuseVectorHits 注释），截断到 limit 放到融合之后；
     // 没有向量时沿用原来的 limit 语义，输出与纯词法路径逐字段一致。
-    const scored0 = matchedFloor(rankExperienceScored(expPool, qs, rerank ? expPool.length : limit), qs, Boolean(rerank))
+    const scored0 = matchedFloor(rankExperienceScored(expPool, qsLayers, rerank ? expPool.length : limit), qsLayers, Boolean(rerank))
     if (scored0.length) {
       const scored = fuseVectorHits(scored0, qs, rerank).slice(0, limit)
       const top = scored[0].score || 1
@@ -303,7 +322,7 @@ export function recallItems(opts = {}) {
     const pool = entries !== null
       ? entries.filter((e) => e && e.type === 'insight')
       : visibleInsights({ store, globalStore, boundTaskId }).map(insightToEntry)
-    const scored0 = matchedFloor(rankEntriesMergedScored(pool, qs, rerank ? pool.length : limit), qs, Boolean(rerank))
+    const scored0 = matchedFloor(rankEntriesMergedScored(pool, qsLayers, rerank ? pool.length : limit), qsLayers, Boolean(rerank))
     if (scored0.length) {
       const scored = fuseVectorHits(scored0.map((r) => ({ item: r.entry, score: r.score })), qs, rerank).slice(0, limit)
       const top = scored[0].score || 1
