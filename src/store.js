@@ -49,9 +49,12 @@ const RESIDENT_KEY_BYTES = 40
 const RESIDENT_STR_BYTES = 16
 const RESIDENT_MAX_DEPTH = 8
 
-/** 精确计量的版本戳：entries 的构成 + `searchText` 的物化状态各算一维。 */
+/**
+ * 精确计量的版本戳：entries 的构成 + `searchText` 的物化状态 + 辅助集合的内容各算一维。
+ * 三维缺一不可——漏掉哪一维，估算就停在那一维变更前的水位。
+ */
 function residentStampOf(store) {
-  return `${store._entriesVersion}:${store._materializeVersion}`
+  return `${store._entriesVersion}:${store._materializeVersion}:${store._auxVersion}`
 }
 
 /**
@@ -65,8 +68,12 @@ function residentStampOf(store) {
  * 外加键与对象形状开销（符号条目实测 ~4×）；CJK 字符驻留 2 字节，而 UTF-8 文本里 3 字节，
  * 字符数只会更少。精确数一旦算过且版本未变，直接用它，不必再估。
  *
- * `_textChars` 由三条路径维护（读盘分片 / 写条目 / 非分片 JSON），按文件**替换式**累计，
- * 所以重写同一个文件不会把它算两遍。在真实语料上标定的上界 / 精确值比是 1.16~1.74 倍。
+ * 两条腿合成一个数：
+ *  - `_textChars`：entries 的文本量，由三条路径维护（读盘分片 / 写条目 / 物化 `searchText`），
+ *    按文件**替换式**累计，所以重写同一个文件不会把它算两遍；
+ *  - `auxCharsOf()`：辅助集合（experience / insights / tasks / binding / watch）的文本量。
+ *    它们不在分片文本里，`load()` 之后还会被写大，单列一条腿才不会漏。
+ * 在真实语料上标定的上界 / 精确值比是 1.16~1.74 倍。
  */
 const RESIDENT_BOUND_PER_CHAR = 4
 const RESIDENT_SKELETON_BYTES = 1024
@@ -74,7 +81,7 @@ const RESIDENT_SKELETON_BYTES = 1024
 function residentBoundBytes(store) {
   const stamp = residentStampOf(store)
   if (store._residentStamp === stamp) return store._residentBytes
-  return RESIDENT_SKELETON_BYTES + store._textChars * RESIDENT_BOUND_PER_CHAR
+  return RESIDENT_SKELETON_BYTES + (store._textChars + auxCharsOf(store)) * RESIDENT_BOUND_PER_CHAR
 }
 
 /**
@@ -97,23 +104,62 @@ export function _residentBoundBytesForTest(store) {
   return residentBoundBytes(store)
 }
 
-function residentBytesOf(value, depth = 0) {
+/**
+ * 驻留量的对象图遍历。精确口径与上界口径**共用这一份**——抄成两份迟早会漂。
+ *
+ * `charsOnly` 决定字符串怎么记：精确口径走 `Buffer.byteLength`（真字节数）；上界口径只取
+ * `length` 字符数，省掉编码这一步。它是安全的上界：`RESIDENT_BOUND_PER_CHAR = 4` 保证 ×4 后
+ * 仍 ≥ 真字节数（UTF-8 里一个 UTF-16 码元最多 3 字节，代理对 2 码元 / 4 字节）。
+ */
+function residentSizeOf(value, charsOnly, depth = 0) {
   if (depth > RESIDENT_MAX_DEPTH) return 0
   const type = typeof value
-  if (type === 'string') return RESIDENT_STR_BYTES + Buffer.byteLength(value)
+  if (type === 'string') return RESIDENT_STR_BYTES + (charsOnly ? value.length : Buffer.byteLength(value))
   if (type === 'number' || type === 'bigint') return 16
   if (type === 'boolean' || value === null) return 8
   if (Array.isArray(value)) {
     let sum = RESIDENT_ARR_BYTES
-    for (const item of value) sum += 8 + residentBytesOf(item, depth + 1)
+    for (const item of value) sum += 8 + residentSizeOf(item, charsOnly, depth + 1)
     return sum
   }
   if (type === 'object') {
     let sum = RESIDENT_OBJ_BYTES
-    for (const key in value) sum += RESIDENT_KEY_BYTES + residentBytesOf(value[key], depth + 1)
+    for (const key in value) sum += RESIDENT_KEY_BYTES + residentSizeOf(value[key], charsOnly, depth + 1)
     return sum
   }
   return 0
+}
+
+/** 精确口径：内存里留下的对象图，按真字节数（`_estimateResidentBytes` 用）。 */
+function residentBytesOf(value) {
+  return residentSizeOf(value, false, 0)
+}
+
+/**
+ * 上界口径：只数字符（`auxCharsOf` 用）。给辅助集合单开这条路是因为它们条目数小（经验 / 任务
+ * 都有上限），逐节点求和的代价可以忽略；entries 有几万条，那条路继续走增量记账的 `_textChars`。
+ */
+function residentCharsOf(value) {
+  return residentSizeOf(value, true, 0)
+}
+
+/**
+ * 辅助集合的文本量（上界口径），按 `_auxVersion` 记忆化。
+ *
+ * 为什么单列：`_textChars` 只跟 entries；这几个集合在 `load()` 之后还会被写大，不进上界就会在
+ * 缓存其实已超预算时跳过精确计量与逐出（实测单 store 上界 1024 B、实际 19.08 MB）。
+ * 记忆化是必须的——`evictStoreCache` 对整个缓存逐 store 求和，不记忆化就是每次冷加载重算一遍。
+ */
+function auxCharsOf(store) {
+  if (store._auxStamp === store._auxVersion) return store._auxChars
+  store._auxChars =
+    residentCharsOf(store.experience) +
+    residentCharsOf(store.insights) +
+    residentCharsOf(store.tasks) +
+    residentCharsOf(store.binding) +
+    residentCharsOf(store.watchlist)
+  store._auxStamp = store._auxVersion
+  return store._auxChars
 }
 
 /**
@@ -323,8 +369,8 @@ export class ProjectMemoryStore {
     this._residentBytes = 0
     this._residentStamp = ''
     /**
-     * 内存里文本字符数的累计（读盘分片 + 写条目 + 非分片 JSON）。**只**用于
-     * `residentBoundBytes` 判断"要不要做精确计量"；精确估算数的是对象图，不碰这个数。
+     * entries 的文本字符数累计（读盘分片 + 写条目 + 物化 `searchText`），按文件**替换式**记。
+     * **只**用于 `residentBoundBytes` 判断"要不要做精确计量"；精确估算数的是对象图，不碰它。
      */
     this._textChars = 0
     /** 每个文件当前的文本字符数，写入时按文件替换，避免重写同一文件被算两遍。 */
@@ -334,6 +380,13 @@ export class ProjectMemoryStore {
      * 物化只改 entry 对象本身，不改 entries 的构成，所以不会 bump `_entriesVersion`。
      */
     this._materializeVersion = 0
+    /**
+     * 辅助集合（experience / insights / tasks / binding / watch）的内容版本：它们不在 entries
+     * 的记账面里，靠它让精确估算失效、并让 `auxCharsOf` 重算。每个改到它们的写口都要 bump。
+     */
+    this._auxVersion = 0
+    this._auxChars = 0
+    this._auxStamp = ''
   }
 
   load() {
@@ -426,12 +479,14 @@ export class ProjectMemoryStore {
     console.error(`[dsh-project-memory] migrated legacy store at ${this.dir} to sharded layout (${Object.keys(files).length} files)`)
   }
 
-  /** 读一个 JSON 文件，并把读入文本的字符数记到 `_textChars`（供驻留上界用）。 */
+  /**
+   * 读一个辅助集合文件（experience / tasks / insights / binding / watch）。
+   *
+   * 它们的文本量**不进** `_textChars`：那份账只跟 entries（按文件替换），辅助集合交给
+   * `auxCharsOf` 按对象图直接算——同一个集合由两个口径各记一半，迟早会漂。
+   */
   _loadJson(filePath, fallback) {
-    const counter = { chars: 0 }
-    const data = loadJson(filePath, fallback, counter)
-    this._textChars += counter.chars
-    return data
+    return loadJson(filePath, fallback)
   }
 
   /** 按文件记文本量：替换而不是累加，重写同一个文件不会算两遍。 */
@@ -467,6 +522,8 @@ export class ProjectMemoryStore {
     this.tasks = this._loadJson(path.join(this.dir, TASKS_FILE), [])
     this.binding = this._loadJson(path.join(this.dir, BINDING_FILE), {})
     this.watchlist = this._loadJson(path.join(this.dir, WATCH_FILE), [])
+    // 这四个集合的内容刚刚被换掉，让 auxCharsOf/精确估算重算（而不是沿用上一份实例的账）。
+    this._auxVersion++
     this._formatWritten = existsSafe(path.join(this.dir, FORMAT_FILE))
   }
 
@@ -502,6 +559,8 @@ export class ProjectMemoryStore {
     this._migrateExperienceToInsights()
     // PR3：v1 → v2 懒回填派生 trigger（纯确定性、幂等；不调用模型，不改写已有字段）
     if (backfillDerivedTriggers(this.insights)) this._dirtyInsights = true
+    // 迁移与回填都会改 items；换掉整个文档后让 auxCharsOf/精确估算重算。
+    this._auxVersion++
   }
 
   _migrateExperienceToInsights() {
@@ -552,10 +611,16 @@ export class ProjectMemoryStore {
   replaceInsightItems(items) {
     this.insights.items = items
     this._dirtyInsights = true
+    this._auxVersion++
   }
 
+  /**
+   * 调用方**直接改过** task 内容（包括 task 内的条目）后的标脏入口。任务树不在 `addTask` /
+   * `updateTask` 那几条写口里，所以这里也要 bump 内容版本，否则精确估算停在前一水位。
+   */
   markTasksDirty() {
     this._dirtyTasks = true
+    this._auxVersion++
   }
 
   cleanStaleTmp() {
@@ -715,6 +780,7 @@ export class ProjectMemoryStore {
     if (!this.watchlist.includes(root)) {
       this.watchlist.push(root)
       this._dirtyWatch = true
+      this._auxVersion++
       return true
     }
     return false
@@ -723,7 +789,10 @@ export class ProjectMemoryStore {
   removeWatch(root) {
     const before = this.watchlist.length
     this.watchlist = this.watchlist.filter((r) => r !== root)
-    if (this.watchlist.length !== before) this._dirtyWatch = true
+    if (this.watchlist.length !== before) {
+      this._dirtyWatch = true
+      this._auxVersion++
+    }
     return before !== this.watchlist.length
   }
 
@@ -798,18 +867,23 @@ export class ProjectMemoryStore {
   allEntries() {
     const out = []
     let materialized = 0
-    for (const list of Object.values(this.entries)) {
+    for (const [relPath, list] of Object.entries(this.entries)) {
+      let addedChars = 0
       for (const entry of list) {
         // searchText 不落盘，首次用到时按需物化并挂在对象上（同一 entry 只算一次）。
         if (entry.searchText === undefined) {
           entry.searchText = makeSearchText(entry)
+          addedChars += entry.searchText.length
           materialized++
         }
         out.push(entry)
       }
+      // 物化是实打实的内存增量（70119 条目实测 +34MB），必须进上界——按文件替换，
+      // 与写路径同一套语义：之后重写 / 删掉这个文件时会连这笔一起替换掉。
+      if (addedChars) this._setFileTextChars(relPath, (this._fileTextChars.get(relPath) || 0) + addedChars)
     }
     // 物化只改 entry 对象、不改 entries 的构成，所以 `_entriesVersion` 不会动；但驻留会实打实
-    // 增加（70119 条目实测 +34MB）。这里是它的第二个失效键——漏了它，估算就停在物化前的水位。
+    // 增加。这里是它的第二个失效键——漏了它，估算就停在物化前的水位。
     if (materialized) this._materializeVersion++
     return out
   }
@@ -823,12 +897,14 @@ export class ProjectMemoryStore {
       if (sourceFile) existing.sourceFile = sourceFile
       existing.updatedAt = now
       this._dirtyExperience = true
+      this._auxVersion++
       return { id: existing.id, superseded: true }
     }
     const id = randomUUID()
     this.experience.push({ id, problem, solution, sourceFile, createdAt: now, updatedAt: now })
     this.pruneExperience()
     this._dirtyExperience = true
+    this._auxVersion++
     return { id, superseded: false }
   }
 
@@ -839,6 +915,7 @@ export class ProjectMemoryStore {
     const sorted = [...this.experience].sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : 1))
     const victims = new Set(sorted.slice(0, this.experience.length - max).map((e) => e.id))
     this.experience = this.experience.filter((e) => !victims.has(e.id))
+    this._auxVersion++
     return victims.size
   }
 
@@ -875,7 +952,10 @@ export class ProjectMemoryStore {
         return overlap / Math.min(tokens.length, itemTokens.length) < 0.5
       })
     }
-    if (this.experience.length !== before) this._dirtyExperience = true
+    if (this.experience.length !== before) {
+      this._dirtyExperience = true
+      this._auxVersion++
+    }
     return before - this.experience.length
   }
 
@@ -903,6 +983,7 @@ export class ProjectMemoryStore {
   addTask(task) {
     this.tasks.push(task)
     this._dirtyTasks = true
+    this._auxVersion++
   }
 
   updateTask(id, updates) {
@@ -910,6 +991,7 @@ export class ProjectMemoryStore {
     if (!task) return false
     Object.assign(task, updates, { updatedAt: new Date().toISOString() })
     this._dirtyTasks = true
+    this._auxVersion++
     return true
   }
 
@@ -922,6 +1004,7 @@ export class ProjectMemoryStore {
     }
     this._dirtyTasks = true
     this._dirtyBinding = true
+    this._auxVersion++
     return true
   }
 
@@ -929,6 +1012,7 @@ export class ProjectMemoryStore {
     if (!sessionId) return
     this.binding[sessionId] = taskId
     this._dirtyBinding = true
+    this._auxVersion++
   }
 
   getBoundTaskId(sessionId) {
@@ -939,6 +1023,7 @@ export class ProjectMemoryStore {
     if (sessionId && sessionId in this.binding) {
       delete this.binding[sessionId]
       this._dirtyBinding = true
+      this._auxVersion++
     }
   }
 
@@ -955,6 +1040,7 @@ export class ProjectMemoryStore {
       task.archived = true
       this._dirtyTasks = true
     }
+    if (toArchive.length) this._auxVersion++
     return toArchive.length
   }
 

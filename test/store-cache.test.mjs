@@ -10,6 +10,7 @@
 //   2. 增量口径：`load()` 之后 `setEntries` 写进来的条目必须计入（旧实现只让常数那条腿动）；
 //   3. 驱逐行为：超预算时最旧的真的被丢掉，刚加载的 keepKey 被**有意**豁免且不静默；
 //   4. 记忆化：版本没变不重算（`evictStoreCache` 是对整个缓存求和，不记忆化就是每次冷加载重数全缓存）。
+// 0.6.1 再加两条：物化后的上界、以及 load 之后写进来的辅助集合，都必须留在上界里。
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
@@ -198,6 +199,61 @@ console.log('\n== 预算宽裕时冷加载不做精确计量（0.6.0）==')
   }
   check('预算吃紧时把 store 放进了缓存', cacheKeys().length > 0)
   check('单实例超预算照旧告警（不静默）', errors.some((line) => line.includes('超过 storeCache 预算')))
+}
+
+console.log('\n== 物化 searchText 必须留在上界里（0.6.1）==')
+{
+  // 旧实现里 `allEntries()` 只 bump 物化版本、不往上界里补这笔文本量：上界停在物化前的水位，
+  // 门禁据此跳过精确计量与逐出。memoryStore 不走 `_setFileTextChars`，把这条腿单独隔离出来。
+  const payload = 'q'.repeat(30000)
+  const entry = { id: 'm1', relPath: 'a.md', title: 't', summary: payload }
+  const store = memoryStore({ 'a.md': [{ ...entry }] })
+  const before = bound(store)
+  store.allEntries()
+  const after = bound(store)
+  check('物化 searchText 会抬高上界', after > before)
+  check('物化后上界 ≥ 精确值', after >= estimate(store))
+
+  // 物化过的那份文件被重写时，物化那笔要被替换掉，而不是和写路径的记账叠一起。
+  const materialized = memoryStore({ 'a.md': [{ ...entry }] })
+  materialized.allEntries()
+  materialized.setEntries('a.md', [{ ...entry }])
+  const written = memoryStore({})
+  written.setEntries('a.md', [{ ...entry }])
+  check('物化过的文件重写后，上界与没物化过的一致（替换而非叠加）', bound(materialized) === bound(written))
+}
+
+console.log('\n== 辅助集合必须进上界与失效键（0.6.1）==')
+{
+  // 这几个集合不在分片文本里，`load()` 之后还会被写大。旧实现既不 bump 版本戳、也不算进上界：
+  // 精确估算停在旧水位，上界还是骨架常数（实测单 store 上界 1024 B、实际 19.08 MB）。
+  const store = memoryStore({})
+  const invalidate = (name, mutate) => {
+    const before = estimate(store)
+    const stamp = store._residentStamp
+    mutate()
+    const after = estimate(store)
+    check(`${name}：让估算失效`, store._residentStamp !== stamp)
+    check(`${name}：估算随内容增长`, after > before)
+    check(`${name}：上界 ≥ 精确值`, bound(store) >= after)
+  }
+  invalidate('insight 写入', () =>
+    store.replaceInsightItems([{ id: 'i1', kind: 'lesson', scope: 'project', title: 't', problem: 'z'.repeat(4000) }]),
+  )
+  invalidate('经验写入', () => store.addExperience({ problem: 'p'.repeat(4000), solution: 's'.repeat(4000) }))
+  invalidate('任务写入', () => store.addTask({ id: 't1', title: 'x'.repeat(4000) }))
+  // task 内的条目由调用方直接改，只经 `markTasksDirty()` 通报——那条路也必须失效。
+  invalidate('任务内容直改', () => {
+    store.getTask('t1').insights = [{ id: 'ti1', title: 'y'.repeat(4000) }]
+    store.markTasksDirty()
+  })
+  invalidate('绑定写入', () => store.setBinding('session-placeholder', 't1'))
+  invalidate('watch 写入', () => store.addWatch('/tmp/' + 'w'.repeat(2000)))
+
+  // 上界那条腿单独钉一次：旧实现里它还停在骨架常数（1024 B），与集合内容无关。
+  const huge = memoryStore({})
+  huge.replaceInsightItems([{ id: 'i2', kind: 'lesson', scope: 'project', title: 't', problem: 'h'.repeat(50000) }])
+  check('辅助集合的上界按内容量增长（不是常数腿）', bound(huge) >= 50000)
 }
 
 console.log('\n== watch 根不再钉住 store（0.5.12，附七结论七）==')
