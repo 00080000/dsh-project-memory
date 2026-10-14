@@ -1,3 +1,15 @@
+## 0.6.1 (未发布)
+
+`npm test` **654 → 676 项 / 36 个文件**；`npm run typecheck` 通过。
+
+### 修复：物化后的 `searchText` 不在 storeCache 的上界里
+
+`residentBoundBytes` 只数 `_textChars`，而 `allEntries()` 物化 `searchText` 时只 bump 物化版本、不补这笔文本量。于是上界停在物化前的水位，门禁据此跳过精确计量与逐出——实测最多到预算的 **2.06 倍**（真实语料 1.07~1.15 倍）。现在物化按文件记进 `_textChars`，与写路径同一套替换语义。
+
+### 修复：`load()` 之后写进来的辅助集合不在上界，也不在失效键里
+
+`experience` / `insights` / `tasks` / `binding` / `watch` 的增长既不进 `_textChars`，也不进版本戳（原先只有 `_entriesVersion` 与 `_materializeVersion` 两维），所以精确估算停在旧水位、上界还是骨架常数——单 store 实测上界 **1024 B**、实际 **19.08 MB**。现在版本戳加一维内容版本（每个写口 bump，含 `markTasksDirty`），上界补一条辅助集合的腿（按内容版本记忆化；这几个集合条目数小，逐节点求和不进冷加载热路径）。
+
 ## 0.6.0 (2026-10-13)
 
 `npm test` **616 → 650 项 / 34 → 36 个文件**；`npm run typecheck` 通过。注入场景集 8 → **13** 个，另加 3 个 hint-only 场景。
