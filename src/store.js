@@ -1,7 +1,7 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { rankExperience, tokenize, tokenizeRaw, extractCjkPhrases, makeSearchText } from './util/search.js'
+import { tokenizeRaw, makeSearchText } from './util/search.js'
 import { writeJsonAtomic } from './util/fs.js'
 import { backfillDerivedTriggers } from './readiness.js'
 
@@ -153,7 +153,6 @@ function residentCharsOf(value) {
 function auxCharsOf(store) {
   if (store._auxStamp === store._auxVersion) return store._auxChars
   store._auxChars =
-    residentCharsOf(store.experience) +
     residentCharsOf(store.insights) +
     residentCharsOf(store.tasks) +
     residentCharsOf(store.binding) +
@@ -184,7 +183,6 @@ export function _estimateResidentBytes(store) {
     store._residentBytes =
       residentBytesOf(store.entries) +
       residentBytesOf(store.files) +
-      residentBytesOf(store.experience) +
       residentBytesOf(store.tasks) +
       residentBytesOf(store.insights) +
       residentBytesOf(store.watchlist) +
@@ -354,7 +352,6 @@ export class ProjectMemoryStore {
     this.watchlist = []
     this._dirtyShards = new Set()
     this._removedShards = new Set()
-    this._dirtyExperience = false
     this._dirtyInsights = false
     this._dirtyTasks = false
     this._dirtyBinding = false
@@ -546,10 +543,13 @@ export class ProjectMemoryStore {
   }
 
   // ---- v0.5 insights：project 级 insight 文档（任务级在 task.insights[]） ----
-  // 迁移语义（旧版 store 的兼容策略）：
-  // v0.4 experience.json 仍由 remember/forget/query_memory 服务，不删除；
-  // 首次加载把旧笔记**复制导入** insights.json（kind: experience, source: migrate），
-  // migratedAt 落盘保证跨进程/崩溃幂等。销毁式收敛放到 recall 统一 PR。
+  // 统一语义（本版起）：insight 是**唯一**的记忆实体，`kind:'experience'` 就是 v0.4 的经验笔记。
+  // 旧版 store 的兼容策略：把 experience.json 的内容**导入** insights.json 一次，随后把旧文件改名成
+  // `experience.json.migrated` 只读归档——不删（升级后想人工比对还有原文），但不再读写它。
+  //
+  // 归档那一步必须与"导入"分开判：0.5.x/0.6.x 用户的 store 里 `migratedAt` 早就写上了（那时导入的是
+  // 影子副本），可旧文件还留在磁盘上。只看 migratedAt 的话，老用户永远收不走它，
+  // `store.experience` 也永远留着第二份内容——正是"散"的来源。
   _loadInsights() {
     const doc = this._loadJson(path.join(this.dir, INSIGHTS_FILE), null)
     this.insights = isRecord(doc) && Array.isArray(doc.items)
@@ -564,40 +564,56 @@ export class ProjectMemoryStore {
   }
 
   _migrateExperienceToInsights() {
-    if (this.insights.migratedAt) return
-    const legacy = this.experience
-    if (!Array.isArray(legacy) || legacy.length === 0) return
-    const now = new Date().toISOString()
-    const known = new Set(this.insights.items.map((it) => it.id))
+    const legacyFile = path.join(this.dir, EXPERIENCE_FILE)
+    const legacyOnDisk = existsSafe(legacyFile)
+    const legacy = Array.isArray(this.experience) ? this.experience : []
+    if (legacyOnDisk && !Array.isArray(this.experience)) {
+      console.error(`[dsh-project-memory] ${EXPERIENCE_FILE} is not an array; importing nothing (file kept as-is)`)
+      return
+    }
     let imported = 0
-    for (const item of legacy) {
-      if (!item || !item.problem || known.has(item.id)) continue
-      known.add(item.id)
-      this.insights.items.push({
-        id: item.id,
-        kind: 'experience',
-        scope: 'project',
-        title: String(item.problem).slice(0, 120),
-        problem: item.problem,
-        solution: item.solution,
-        files: item.sourceFile ? [item.sourceFile] : [],
-        symbols: [],
-        sourceTaskIds: [],
-        source: 'migrate',
-        confidence: 1,
-        hitCount: 0,
-        createdAt: item.createdAt || now,
-        updatedAt: item.updatedAt || now,
-      })
-      imported++
+    if (!this.insights.migratedAt) {
+      const now = new Date().toISOString()
+      const known = new Set(this.insights.items.map((it) => it.id))
+      for (const item of legacy) {
+        if (!item || !item.problem || known.has(item.id)) continue
+        known.add(item.id)
+        this.insights.items.push({
+          id: item.id,
+          kind: 'experience',
+          scope: 'project',
+          title: String(item.problem).slice(0, 120),
+          problem: item.problem,
+          solution: item.solution,
+          files: item.sourceFile ? [item.sourceFile] : [],
+          symbols: [],
+          sourceTaskIds: [],
+          source: 'migrate',
+          confidence: 1,
+          hitCount: 0,
+          createdAt: item.createdAt || now,
+          updatedAt: item.updatedAt || now,
+        })
+        imported++
+      }
+      this.insights.migratedAt = now
+      try {
+        mkdirSync(this.dir, { recursive: true })
+        writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights)
+      } catch (err) {
+        // 没写进 insights.json 就**不能**把旧文件收走：那会真的丢数据。
+        console.error(`[dsh-project-memory] insights migration write failed, keeping ${EXPERIENCE_FILE}: ${err.message}`)
+        return
+      }
     }
-    this.insights.migratedAt = now
-    try {
-      mkdirSync(this.dir, { recursive: true })
-      writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights)
-    } catch (err) {
-      console.error(`[dsh-project-memory] insights migration write failed: ${err.message}`)
+    if (legacyOnDisk) {
+      try {
+        renameSync(legacyFile, `${legacyFile}.migrated`)
+      } catch (err) {
+        console.error(`[dsh-project-memory] could not archive ${EXPERIENCE_FILE} (imported ${imported} note(s)): ${err.message}`)
+      }
     }
+    this.experience = []
   }
 
   insightsDoc() {
@@ -675,7 +691,6 @@ export class ProjectMemoryStore {
       compacting ||
       this._dirtyShards.size > 0 ||
       this._removedShards.size > 0 ||
-      this._dirtyExperience ||
       this._dirtyInsights ||
       this._dirtyTasks ||
       this._dirtyBinding ||
@@ -718,13 +733,10 @@ export class ProjectMemoryStore {
       }
     }
     this._removedShards.clear()
-    if (this._dirtyExperience) {
-      writeJsonAtomic(path.join(this.dir, EXPERIENCE_FILE), this.experience)
-      this._dirtyExperience = false
-    }
     if (this._dirtyInsights) {
-      // PR3：落盘即把格式标记推到 v2（v1 → v2 是纯增量：只多一个可选的 triggerDerived）
-      if (this.insights && this.insights.version !== 2) this.insights.version = 2
+      // v2 → v3 是纯语义升级（`kind:'experience'` 从"影子副本"变成一等实体），形状不变；
+      // 落盘即把版本推上去，老版本读到 v3 也照样按 v2 的字段解析（它只是排除 experience 影子）。
+      if (this.insights && this.insights.version !== 3) this.insights.version = 3
       writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights)
       this._dirtyInsights = false
     }
@@ -888,82 +900,17 @@ export class ProjectMemoryStore {
     return out
   }
 
-  addExperience({ problem, solution, sourceFile }) {
-    const existing = this.findSupersede(problem)
-    const now = new Date().toISOString()
-    if (existing) {
-      existing.problem = problem
-      existing.solution = solution
-      if (sourceFile) existing.sourceFile = sourceFile
-      existing.updatedAt = now
-      this._dirtyExperience = true
-      this._auxVersion++
-      return { id: existing.id, superseded: true }
-    }
-    const id = randomUUID()
-    this.experience.push({ id, problem, solution, sourceFile, createdAt: now, updatedAt: now })
-    this.pruneExperience()
-    this._dirtyExperience = true
-    this._auxVersion++
-    return { id, superseded: false }
-  }
-
-  pruneExperience() {
-    const indexedFileCount = Object.keys(this.files).length
-    const max = Math.max(100, Math.min(2000, indexedFileCount * 2))
-    if (this.experience.length <= max) return 0
-    const sorted = [...this.experience].sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : 1))
-    const victims = new Set(sorted.slice(0, this.experience.length - max).map((e) => e.id))
-    this.experience = this.experience.filter((e) => !victims.has(e.id))
-    this._auxVersion++
-    return victims.size
-  }
-
-  findSupersede(problem) {
-    const tokens = tokenize(problem)
-    if (!tokens.length) return null
-    let best = null
-    let bestOverlap = 0
-    for (const item of this.experience) {
-      const itemTokens = tokenize(item.problem)
-      const overlap = itemTokens.filter((t) => tokens.includes(t)).length
-      if (overlap === 0) continue
-      const ratioQuery = overlap / tokens.length
-      const ratioItem = overlap / itemTokens.length
-      if (ratioQuery >= 0.7 && ratioItem >= 0.7 && overlap > bestOverlap) {
-        best = item
-        bestOverlap = overlap
-      }
-    }
-    return best
-  }
-
-  removeExperience(idOrQuery) {
-    const before = this.experience.length
-    if (idOrQuery && this.experience.some((item) => item.id === idOrQuery)) {
-      this.experience = this.experience.filter((item) => item.id !== idOrQuery)
-    } else {
-      const tokens = tokenize(idOrQuery)
-      if (!tokens.length) return 0
-      this.experience = this.experience.filter((item) => {
-        const itemTokens = tokenize(`${item.problem} ${item.solution}`)
-        if (!itemTokens.length) return true
-        const overlap = itemTokens.filter((t) => tokens.includes(t)).length
-        return overlap / Math.min(tokens.length, itemTokens.length) < 0.5
-      })
-    }
-    if (this.experience.length !== before) {
-      this._dirtyExperience = true
-      this._auxVersion++
-    }
-    return before - this.experience.length
-  }
+  // v0.4 的 experience 读写入口（addExperience / pruneExperience / findSupersede / removeExperience）
+  // 已随统一存储删除：经验笔记现在是 `kind:'experience'` 的 insight，写入走 `src/tools/remember.js`
+  // → `saveInsight`，删除走 `removeMemory`，容量归 insight 层的 maxProject。
+  // `experience.json` 只剩一个角色：`_migrateExperienceToInsights` 的导入源。
 
   stats() {
     return {
       files: Object.keys(this.files).length,
       entries: this.allEntries().length,
-      experience: this.experience.length,
+      // 经验笔记 = insight 里 kind:'experience' 的那些（含从 v0.4 导入的）。project 级为准。
+      experience: this.insights.items.filter((it) => it && it.kind === 'experience').length,
       tasks: this.tasks.length,
       tasksActive: this.tasks.filter((t) => !t.archived).length,
       tasksArchived: this.tasks.filter((t) => t.archived).length,
@@ -1087,7 +1034,8 @@ export function storeOverview(store) {
   return {
     files: Object.keys(store.files).length,
     entries: store.allEntries().length,
-    experience: store.experience.length,
+    // 不调 store.stats()：overview 也会被喂裸桩（测试/子索引汇总），少一个必需方法就少一处崩点。
+    experience: Array.isArray(store.insights?.items) ? store.insights.items.filter((it) => it && it.kind === 'experience').length : 0,
     latest,
   }
 }

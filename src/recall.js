@@ -63,7 +63,7 @@ function matchedFloor(scored, queries, hasVector) {
   return scored.filter((r) => (r.matched ?? 0) >= need)
 }
 
-/** 各层先验：insight 是"踩过的坑"，略高于普通文档；经验层已由 experience 文件服务，略低。 */
+/** 各层先验：insight 是"踩过的坑"，略高于普通文档；经验笔记（同库、kind 区分）留痕价值略低。 */
 export const LAYER_PRIORS = Object.freeze({
   insight: 1.15,
   doc: 1,
@@ -164,8 +164,8 @@ export function insightScoringText(ins) {
  * 召回可见的 insight 集合：作用域可见性跟随会话绑定。
  *   - project / global：始终可见（归档除外）；
  *   - task：只在该会话绑定了对应任务时可见（任务私有，不泄露给别的会话）；
- *   - 迁移影子（kind=experience 且 source=migrate）不在此列：它们由 experience 层服务，
- *     否则同一内容会在 `## Insights` 与 `## Experience` 里各出现一次。
+ *   - `kind:'experience'`（v0.4 经验笔记，加载时导入）**也在这里**——统一存储后没有第二个真相源，
+ *     它由 experience 那一桶按 kind 取走；本函数不做排除（排除会让同一内容在别的视图里消失）。
  * @param {{ store?: object, globalStore?: object, boundTaskId?: string|null }} opts
  * @returns {object[]} 可检索的 insight 条目。
  */
@@ -175,7 +175,6 @@ export function visibleInsights({ store = null, globalStore = null, boundTaskId 
     if (!it || it.archived) continue
     if (it.scope === 'task') continue
     if (it.draft === true) continue
-    if (it.kind === 'experience' && it.source === 'migrate') continue // v0.4 影子，交给 experience 层
     out.push(it)
   }
   for (const it of (globalStore && typeof globalStore.items === 'function' ? globalStore.items() : []) || []) {
@@ -249,7 +248,7 @@ function fuseVectorHits(scored, queries, rerank) {
 /**
  * 按层召回：每层各自 top-k，桶内保留原始分与层内相对分。
  * @param {object} opts
- * @param {object} [opts.store] - ProjectMemoryStore；提供 doc/symbol/experience 池与 IDF 缓存。
+ * @param {object} [opts.store] - ProjectMemoryStore；提供 doc/symbol 池与 IDF 缓存。
  * @param {object} [opts.globalStore] - GlobalStore；提供 global 级 insight。
  * @param {object[]} [opts.entries] - 直接给定检索池（测试/自定义场景），优先于 store。
  * @param {string[]|string} [opts.queries] - 一条或多条查询（LLM 扩展变体也走这里）。
@@ -303,7 +302,13 @@ export function recallItems(opts = {}) {
   }
 
   if (want.has('experience')) {
-    const expPool = (store && store.experience) || []
+    // 经验层不再是第二个 store：它就是 `kind:'experience'` 的 insight（v0.4 的旧笔记在加载时导入、
+    // 旧文件归档为 experience.json.migrated）。池子与 insight 层同源，所以两边必须**互斥**：
+    // insight 桶排除 experience，否则同一内容会同时出现在 `## Insights` 与 `## Experience` 里。
+    // `entries` 给了就用给的：那是一份"调用方指定了这个层"的池子，不再按 kind 二次筛。
+    const expPool = entries !== null
+      ? entries
+      : visibleInsights({ store, globalStore, boundTaskId }).filter((it) => it.kind === 'experience')
     // 有向量时在**全量** BM25 序上融合（见 fuseVectorHits 注释），截断到 limit 放到融合之后；
     // 没有向量时沿用原来的 limit 语义，输出与纯词法路径逐字段一致。
     const scored0 = matchedFloor(rankExperienceScored(expPool, qsLayers, rerank ? expPool.length : limit), qsLayers, Boolean(rerank))
@@ -320,8 +325,8 @@ export function recallItems(opts = {}) {
 
   if (want.has('insight')) {
     const pool = entries !== null
-      ? entries.filter((e) => e && e.type === 'insight')
-      : visibleInsights({ store, globalStore, boundTaskId }).map(insightToEntry)
+      ? entries.filter((e) => e && e.type === 'insight' && e.kind !== 'experience')
+      : visibleInsights({ store, globalStore, boundTaskId }).filter((it) => it.kind !== 'experience').map(insightToEntry)
     const scored0 = matchedFloor(rankEntriesMergedScored(pool, qsLayers, rerank ? pool.length : limit), qsLayers, Boolean(rerank))
     if (scored0.length) {
       const scored = fuseVectorHits(scored0.map((r) => ({ item: r.entry, score: r.score })), qs, rerank).slice(0, limit)
