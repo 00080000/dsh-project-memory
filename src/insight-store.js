@@ -12,6 +12,8 @@ import os from 'node:os'
 import { normalizedTokenOverlap, findBestOverlapMatch, insightMatchText } from './similarity.js'
 import { writeJsonAtomic } from './util/fs.js'
 import { backfillDerivedTriggers } from './readiness.js'
+import { vectorText } from './vector-index.js'
+import { tokenize } from './util/search.js'
 
 export const INSIGHT_KINDS = ['lesson', 'decision', 'procedure', 'experience']
 export const INSIGHT_SCOPES = ['task', 'project', 'global']
@@ -48,6 +50,19 @@ export function cfgInsight(config) {
   const cfg = {
     dedupOverlap: num(c.dedupOverlap, 0.7),
     reinforceBand: num(c.reinforceBand, 0.65),
+    // 向量带（需要 leanvec；没装就自动退化成上面的纯词法带）。阈值由真实 store 标定：
+    // 47 条 live 条目、1081 对的余弦 max=0.655 / p99=0.531；本机 4B 把同一条知识改写后与
+    // 原文的余弦 min=0.688 / p50=0.809。所以：
+    //   · 0.90 自动覆盖 —— 落在负样本之上 0.245，只会命中逐字级再记录（"非常非常相似"）；
+    //   · 0.70 提示 —— 在全部 1081 对真实条目上零噪声，而改写后的再记录有 78% 落进来。
+    // 0.65 会开始误伤真实条目（1/1081），别往下调：提示是往上下文里加字的。
+    autoMergeCos: num(c.autoMergeCos, 0.9),
+    // 自动覆盖还要求"第一名明显领先第二名"，否则同一话题撞两条时不知道该覆盖谁。
+    autoMergeMargin: num(c.autoMergeMargin, 0.05),
+    hintCos: num(c.hintCos, 0.7),
+    // `forget` 用关键词删除时的上限：超了不删、只列出来，逼调用方给更具体的词或逐个 id。
+    // 关键词删除是**真删**且没有撤销——一次 `forget 'pnpm'` 扫掉十几条精选记忆是不可接受的。
+    maxForgetMatches: num(c.maxForgetMatches, 10),
     maxProject: num(c.maxProject, 100),
     maxGlobalProcedures: num(c.maxGlobalProcedures, 200),
     promoteConfidence: num(c.promoteConfidence, 0.7),
@@ -150,35 +165,150 @@ export function carryUsageFields(copy, src) {
   if (src.lastHitAt) copy.lastHitAt = src.lastHitAt
   if (src.createdAt) copy.createdAt = src.createdAt
   if (src.triggerDerived) copy.triggerDerived = src.triggerDerived
+  // `prev` 是被自动覆盖/就地更新挤掉的那一版。它必须跟着条目走：promote/demote 走的是
+  // normalizeInsight 白名单，不带这一步的话，一次提升就把"还能还原"这件事丢掉了。
+  if (src.prev && typeof src.prev === 'object') copy.prev = src.prev
   return copy
 }
 
-/** 把 base 合并进既有条目（content 加固、成员/文件/符号并集、置信取高、记命中）。 */
+/**
+ * 写一个字段，并把被挤掉的旧值留在 `prev` 单槽。
+ *
+ * 为什么是"单槽"而不是历史：历史要折叠、要压实、要每个读者都懂两个真相源（已经判过不做）。
+ * 这里只保留**上一个**值——刚好够"误覆盖后写回去"，O(1)、无需压实、不构成第二个真相源。
+ * 空值不算旧值（`''`/undefined 不写 prev），所以首次填充不会产生噪声。
+ * @param {object} item - 条目（原地修改）
+ * @param {string} key - 字段名
+ * @param {unknown} next - 新值
+ * @param {string[]} replaced - 被真正改动过的字段名，调用方据此回报
+ */
+function putField(item, key, next, replaced) {
+  const old = item[key]
+  if (JSON.stringify(old) === JSON.stringify(next)) return
+  if (old !== undefined && old !== null && old !== '' && !(Array.isArray(old) && !old.length)) {
+    if (!item.prev || typeof item.prev !== 'object' || Array.isArray(item.prev)) item.prev = {}
+    item.prev[key] = old
+  }
+  item[key] = next
+  replaced.push(key)
+}
+
+/** 自动合并会改写的正文字段（title 也在内：0.90 以上的两条标题本就近乎同一句）。 */
+const MERGE_FIELDS = ['title', 'pattern', 'fix', 'choice', 'reason', 'problem', 'solution', 'body']
+
+/**
+ * 把 base 合并进既有条目：**正文取新值**（旧值进 `prev`），成员/文件/符号并集，置信取高，记命中。
+ *
+ * 与旧实现的区别就是那一个 `if (b && !existing[f])`：以前字段已有值就**静默丢掉新文本**，
+ * 于是"我记错了，改成正确的"永远落不进去（只加 hitCount）。现在反过来——新值落地、旧值可还原。
+ * 提升路径只传成员/文件/符号/置信，不传正文字段，所以它们的语义一字未变。
+ * @returns {{item: object, replaced: string[]}} 被改动的字段名（供调用方回报）
+ */
 export function mergeInto(existing, base, cfg, nowIso) {
   const now = nowIso || new Date().toISOString()
   existing.sourceTaskIds = unionStrings(existing.sourceTaskIds, base.sourceTaskIds)
   existing.files = unionStrings(existing.files, base.files)
   existing.symbols = unionStrings(existing.symbols, base.symbols)
   existing.tags = unionStrings(existing.tags, base.tags)
-  for (const [f, b] of [
-    ['pattern', base.pattern],
-    ['fix', base.fix],
-    ['choice', base.choice],
-    ['reason', base.reason],
-    ['problem', base.problem],
-    ['solution', base.solution],
-    ['body', base.body],
-  ]) {
-    if (b && !existing[f]) existing[f] = String(b)
+  const replaced = []
+  for (const f of MERGE_FIELDS) {
+    const b = base[f]
+    if (b === undefined || b === null || b === '') continue
+    putField(existing, f, String(b), replaced)
   }
-  if (!existing.steps && Array.isArray(base.steps) && base.steps.length) existing.steps = base.steps.map(String)
-  if (!existing.trigger && base.trigger) existing.trigger = base.trigger
+  if (Array.isArray(base.steps) && base.steps.length) putField(existing, 'steps', base.steps.map(String), replaced)
+  if (base.trigger && typeof base.trigger === 'object') putField(existing, 'trigger', base.trigger, replaced)
   existing.confidence = Math.max(num(existing.confidence, 0.5), num(base.confidence, 0.5))
   existing.hitCount = (existing.hitCount || 0) + 1
   existing.lastHitAt = now
   existing.updatedAt = now
   if (existing.archived) existing.archived = false // 重新被使用 → 复活
-  return existing
+  return { item: existing, replaced }
+}
+
+/** 就地更新的可写字段（比自动合并宽：kind/confidence/files 等显式改动也允许）。 */
+const UPDATE_FIELDS = ['title', 'kind', 'body', 'pattern', 'fix', 'problem', 'solution', 'choice', 'reason', 'steps', 'trigger', 'files', 'symbols', 'tags', 'confidence']
+const UPDATE_ARRAYS = ['steps', 'files', 'symbols', 'tags']
+
+/** 显式就地更新（`save_lesson` 带 id）：只动调用方给的字段，其余原样，旧值进 `prev`。 */
+export function applyUpdate(item, raw, nowIso) {
+  const now = nowIso || new Date().toISOString()
+  const replaced = []
+  for (const f of UPDATE_FIELDS) {
+    const v = raw[f]
+    if (v === undefined || v === null || v === '') continue
+    if (f === 'kind') {
+      if (INSIGHT_KINDS.includes(v)) putField(item, 'kind', v, replaced)
+      continue
+    }
+    if (f === 'confidence') {
+      const n = num(v, NaN)
+      if (Number.isFinite(n)) putField(item, 'confidence', Math.max(0, Math.min(1, n)), replaced)
+      continue
+    }
+    if (UPDATE_ARRAYS.includes(f)) {
+      if (!Array.isArray(v) || !v.length) continue
+      putField(item, f, [...new Set(v.map((x) => String(x)))], replaced)
+      continue
+    }
+    if (f === 'trigger') {
+      if (typeof v === 'object') putField(item, 'trigger', v, replaced)
+      continue
+    }
+    putField(item, f, String(v), replaced)
+  }
+  item.updatedAt = now
+  if (item.archived) item.archived = false
+  return replaced
+}
+
+/**
+ * 向量近邻：拿 base 的标题去问可选向量层，返回池内最像的一条与第二名。
+ *
+ * 判据用**余弦**而不是词法重叠，是因为词法在这份 store 上根本够不到阈值：实测 1081 对里
+ * `insightMatchText` 的最大值只有 0.256，而 `cfgInsight` 的合并带是 0.70——那条自动通道
+ * 实际上只在"逐字重写"时才可能触发。余弦（标题编码）同一份池子上 max=0.655 / p99=0.531，
+ * 配 0.90 自动覆盖 / 0.70 提示两条带才有分辨力（标定见 cfgInsight 注释）。
+ *
+ * 没有向量（leanvec 未装/未配）→ 返回 null，调用方逐字段退回原来的纯词法行为。
+ * @param {string} text - 本次要写入的文本（用 {@link vectorText} 的口径）
+ * @param {object[]} items - 候选池
+ * @param {(text: string, items: object[]) => Map<string, number>} [cosine] - 向量打分（同步）
+ * @returns {{item: object, top1: number, top2: number}|null}
+ */
+export function vectorNear(text, items, cosine) {
+  if (typeof cosine !== 'function' || !text || !Array.isArray(items) || !items.length) return null
+  let m = null
+  try { m = cosine(text, items) } catch { return null }
+  if (!(m instanceof Map)) return null
+  let top1 = -1
+  let top2 = -1
+  let item = null
+  for (const it of items) {
+    if (!it || it.archived) continue
+    const v = m.get(it.id)
+    if (typeof v !== 'number' || !Number.isFinite(v)) continue
+    if (v > top1) {
+      top2 = top1
+      top1 = v
+      item = it
+    } else if (v > top2) top2 = v
+  }
+  if (!item) return null
+  return { item, top1, top2: top2 < 0 ? 0 : top2 }
+}
+
+/** 近邻是否够"较高"（提示带）；够就返回给调用方回报的形状。 */
+function hintOf(near, cfg) {
+  if (!near || near.top1 < cfg.hintCos) return null
+  return { id: near.item.id, cos: Number(near.top1.toFixed(3)), title: String(near.item.title || '').slice(0, 40) }
+}
+
+/** 自动覆盖判定：够高**且**第一名明显领先第二名（否则不知道该覆盖谁）。 */
+function autoMergeTarget(near, cfg) {
+  if (!near || near.top1 < cfg.autoMergeCos) return null
+  if (near.top1 - near.top2 < cfg.autoMergeMargin) return null
+  return near
 }
 
 /**
@@ -379,43 +509,208 @@ export class GlobalStore {
 // ---- 单条保存：scope 路由 ----
 
 /**
+ * 按 id 在三个 home 里找一条（global → project → 各任务的 task.insights[]）。
+ *
+ * 为什么要有它：`id` 是全局键，模型不该为了改一条记忆先搞清它在哪一层——那正是"散"。
+ * 找到后 scope 用条目自己声明的，调用方据此决定往哪个文件落盘。
+ * @returns {{scope: string, item: object, taskId?: string}|null}
+ */
+export function findInsightAnywhere({ store, globalStore } = {}, id) {
+  if (!id) return null
+  if (globalStore && typeof globalStore.items === 'function') {
+    const it = globalStore.items().find((i) => i && i.id === id)
+    if (it) return { scope: it.scope || 'global', item: it }
+  }
+  if (store && typeof store.insightItems === 'function') {
+    const it = store.insightItems().find((i) => i && i.id === id)
+    if (it) return { scope: it.scope || 'project', item: it }
+  }
+  const tasks = store && typeof store.getTasks === 'function' ? store.getTasks() || [] : []
+  for (const t of tasks) {
+    const it = (t.insights || []).find((i) => i && i.id === id)
+    if (it) return { scope: it.scope || 'task', item: it, taskId: t.id }
+  }
+  return null
+}
+
+/** 一条记忆用于关键词匹配的全文（insight 与旧经验笔记共用一套口径）。 */
+function memoryText(it) {
+  if (!it) return ''
+  return [it.title, it.problem, it.pattern, it.fix, it.solution, it.choice, it.reason, it.body, ...(Array.isArray(it.steps) ? it.steps : [])]
+    .filter(Boolean)
+    .join(' ')
+}
+
+/**
+ * 关键词匹配度：**查询侧覆盖率**（命中词 / 查询词数），沿用旧经验层 `removeExperience` 的口径。
+ *
+ * 为什么不是 `normalizedTokenOverlap`（两侧取大）：删除查询通常很短（一个词），
+ * 用两侧取大算出来的分会被长正文稀释到接近 0，"删掉 pnpm 那条"就永远删不掉。
+ * 这也与旧行为一致——旧层的删除一直是这个公式，换层不该顺带改判据。
+ */
+function queryCoverage(query, text) {
+  const q = tokenize(query)
+  if (!q.length) return 0
+  const t = new Set(tokenize(text))
+  if (!t.size) return 0
+  let hit = 0
+  for (const x of q) if (t.has(x)) hit++
+  return hit / q.length
+}
+
+/**
+ * 全层删除：task 内嵌 / project / global / 旧经验层，一套判据、一次调用。
+ *
+ * 为什么是"全层一套"而不是给 insight 再开一条通道：对模型来说这本来就是一件事——
+ * "把那条记错的删掉"，它不该先搞清自己在哪个层。条目以后真要统一存储，这里删掉一个分支即可。
+ * @param {object} o
+ * @param {string} o.idOrQuery - 精确 id，或用于匹配的关键词
+ * @param {number} [o.maxMatches] - 关键词命中上限；超过则**一条都不删**，只回报候选
+ * @returns {{ok: boolean, removed?: object[], matches?: object[], tooMany?: boolean}}
+ */
+export function removeMemory({ store, globalStore, idOrQuery, maxMatches = 10 } = {}) {
+  const query = String(idOrQuery ?? '').trim()
+  if (!query) return { ok: false, removed: [], matches: [] }
+  const at = (home, item, taskId) => ({
+    id: item.id,
+    home,
+    taskId,
+    title: String(item.title || item.problem || '(untitled)').slice(0, 60),
+  })
+  const pools = { experience: [], project: [], global: [], task: [] }
+  for (const it of (store && store.experience) || []) pools.experience.push(at('experience', it))
+  for (const it of (store && typeof store.insightItems === 'function' ? store.insightItems() : []) || []) pools.project.push(at('project', it))
+  for (const it of (globalStore && typeof globalStore.items === 'function' ? globalStore.items() : []) || []) pools.global.push(at('global', it))
+  for (const t of (store && typeof store.getTasks === 'function' ? store.getTasks() : []) || []) {
+    for (const it of t.insights || []) pools.task.push(at('task', it, t.id))
+  }
+
+  // 1) 精确 id：直接删那一条，不做关键词匹配（id 是模型手里唯一无歧义的键）
+  const byId = []
+  for (const [home, list] of Object.entries(pools)) {
+    const hit = list.find((x) => x.id === query)
+    if (hit) byId.push({ ...hit, home })
+  }
+  if (byId.length) {
+    removeEntries({ store, globalStore }, byId)
+    return { ok: true, removed: byId }
+  }
+
+  // 2) 关键词：查询侧覆盖率 ≥ 0.5（与旧经验层同判据）
+  const matches = []
+  const textOf = (home, id) => {
+    if (home === 'experience') {
+      const it = (store.experience || []).find((x) => x.id === id)
+      return memoryText(it)
+    }
+    if (home === 'project') return memoryText((store.insightItems() || []).find((x) => x.id === id))
+    if (home === 'global') return memoryText((globalStore.items() || []).find((x) => x.id === id))
+    for (const t of store.getTasks() || []) {
+      const it = (t.insights || []).find((x) => x.id === id)
+      if (it) return memoryText(it)
+    }
+    return ''
+  }
+  for (const list of Object.values(pools)) {
+    for (const x of list) if (queryCoverage(query, textOf(x.home, x.id)) >= 0.5) matches.push(x)
+  }
+  if (matches.length > maxMatches) return { ok: false, tooMany: true, matches, removed: [] }
+  removeEntries({ store, globalStore }, matches)
+  return { ok: true, removed: matches }
+}
+
+/** 按 home 把条目从各自真相源里移除（experience 走 store 自己的移除入口）。 */
+function removeEntries({ store, globalStore }, entries) {
+  const projectIds = new Set()
+  const globalIds = new Set()
+  const taskIds = new Map()
+  for (const e of entries) {
+    if (e.home === 'experience') store.removeExperience(e.id)
+    else if (e.home === 'project') projectIds.add(e.id)
+    else if (e.home === 'global') globalIds.add(e.id)
+    else if (e.home === 'task') taskIds.set(e.taskId, [...(taskIds.get(e.taskId) || []), e.id])
+  }
+  if (projectIds.size) store.replaceInsightItems(store.insightItems().filter((i) => !projectIds.has(i.id)))
+  if (globalIds.size) {
+    const items = globalStore.items()
+    for (let i = items.length - 1; i >= 0; i--) if (globalIds.has(items[i].id)) items.splice(i, 1)
+    globalStore.markDirty()
+  }
+  for (const [taskId, ids] of taskIds) {
+    const task = store.getTask(taskId)
+    if (!task) continue
+    task.insights = (task.insights || []).filter((i) => !ids.includes(i.id))
+    store.markTasksDirty()
+  }
+}
+
+/**
  * 统一入口。scope: task 需要 taskId（store 内须存在该任务）；project 走 store 的 insights 文档；
  * global 走 globalStore。
- * 返回 { ok, action: 'created'|'merged'|'reinforced'|'linked-project'|'linked-global'|'promoted'|…, id, hint }
+ *
+ * `raw.id` 给定时走**就地更新**（忽略 scope 路由：条目留在它原来的 home，只覆盖显式给的字段，
+ * 旧值进 `prev`）。`cosine` 给定时启用向量带：≥ autoMergeCos 且领先第二名 ≥ autoMergeMargin
+ * → 自动覆盖；≥ hintCos → 新建但回报近邻 id。两者都不给就是原来的纯词法行为。
+ * 返回 { ok, action: 'created'|'merged'|'auto-merged'|'reinforced'|'updated'|'linked-project'|…, id, replaced, near, hint }
  */
-export function saveInsight({ store, globalStore, raw, scope, taskId, cfg, source = 'agent', nowIso }) {
+export function saveInsight({ store, globalStore, raw, scope, taskId, cfg, source = 'agent', nowIso, cosine = null }) {
   const cfg2 = cfg || cfgInsight({})
   const now = nowIso || new Date().toISOString()
   const secretField = containsSecretFields(raw)
   if (secretField) {
     return { ok: false, error: `内容疑似包含密钥/token/私钥形态数据（字段: ${secretField}），已拒绝写入` }
   }
+  if (raw && raw.id) {
+    const found = findInsightAnywhere({ store, globalStore }, raw.id)
+    if (!found) return { ok: false, error: `找不到要更新的条目: ${raw.id}（可能已被删除/提升；用 query_memory 重新确认 id）` }
+    const replaced = applyUpdate(found.item, raw, now)
+    if (found.scope === 'global') globalStore.markDirty()
+    else if (found.scope === 'task') store.markTasksDirty()
+    else store.replaceInsightItems(store.insightItems())
+    return {
+      ok: true,
+      action: 'updated',
+      id: raw.id,
+      scope: found.scope,
+      replaced,
+      hint: replaced.length ? `已就地更新（覆盖字段：${replaced.join('/')}，旧值在 prev）` : '没有字段变化',
+    }
+  }
   const s = scope || 'project'
   if (!INSIGHT_SCOPES.includes(s)) return { ok: false, error: `非法 scope: ${s}` }
   if (s === 'global') {
     if (!globalStore) return { ok: false, error: 'global 存储未初始化' }
-    const res = upsertIntoPool(globalStore.items(), raw, cfg2, now, { source, scope: 'global' })
+    const res = upsertIntoPool(globalStore.items(), raw, cfg2, now, { source, scope: 'global', cosine })
     if (res.action === 'created') pruneItems(globalStore.items(), cfg2.maxGlobalProcedures, now)
     globalStore.markDirty()
-    return { ok: true, ...res, scope: 'global' }
+    return { ok: true, ...res, scope: 'global', hint: res.hint || buildHint(res) }
   }
   if (s === 'task') {
     if (!store || !taskId) return { ok: false, error: 'task 级写入需要 taskId' }
     const task = store.getTask(taskId)
     if (!task) return { ok: false, error: `任务不存在: ${taskId}` }
-    return saveTaskInsight(store, globalStore, task, raw, cfg2, now, source)
+    return saveTaskInsight(store, globalStore, task, raw, cfg2, now, source, cosine)
   }
-  return saveProjectInsight(store, globalStore, raw, cfg2, now, source)
+  return saveProjectInsight(store, globalStore, raw, cfg2, now, source, cosine)
 }
 
-/** 在 items 池内 upsert：≥ dedup 合并；≥ reinforceBand 强化；否则新建。raw 需已过密文检查。 */
+/**
+ * 在 items 池内 upsert：向量带（自动覆盖/提示）优先，其次原来的词法带（合并/强化/新建）。
+ * raw 需已过密文检查。
+ */
 function upsertIntoPool(items, raw, cfg, nowIso, extra = {}) {
   const base = { ...raw, source: extra.source, sourceTaskIds: extra.sourceTaskIds || raw.sourceTaskIds }
   const text = insightMatchText(base)
+  const near = vectorNear(vectorText(base), items, extra.cosine)
+  const target = autoMergeTarget(near, cfg)
+  if (target) {
+    const { replaced } = mergeInto(target.item, base, cfg, nowIso)
+    return { action: 'auto-merged', id: target.item.id, replaced, cos: Number(target.top1.toFixed(3)) }
+  }
   const hit = findBestOverlapMatch(text, items)
   if (hit && hit.score >= cfg.dedupOverlap) {
-    mergeInto(hit.item, base, cfg, nowIso)
-    return { action: 'merged', id: hit.item.id }
+    const { replaced } = mergeInto(hit.item, base, cfg, nowIso)
+    return { action: 'merged', id: hit.item.id, replaced }
   }
   if (hit && hit.score >= cfg.reinforceBand) {
     reinforceOnly(hit.item, base, nowIso)
@@ -423,15 +718,16 @@ function upsertIntoPool(items, raw, cfg, nowIso, extra = {}) {
   }
   const ins = normalizeInsight(base, { scope: extra.scope || 'project', source: extra.source, nowIso })
   items.push(ins)
-  return { action: 'created', id: ins.id }
+  const hint = hintOf(near, cfg)
+  return hint ? { action: 'created', id: ins.id, near: hint } : { action: 'created', id: ins.id }
 }
 
 // ---- scope = project ----
 
-function saveProjectInsight(store, globalStore, raw, cfg, now, source) {
+function saveProjectInsight(store, globalStore, raw, cfg, now, source, cosine) {
   const items = store.insightItems()
-  const res = upsertIntoPool(items, raw, cfg, now, { source, scope: 'project' })
-  store.replaceInsightItems(items) // 一律标脏（created/merged/reinforced 都改了数组）
+  const res = upsertIntoPool(items, raw, cfg, now, { source, scope: 'project', cosine })
+  store.replaceInsightItems(items) // 一律标脏（created/merged/auto-merged/reinforced 都改了数组）
   applyDecay(items, cfg, now)
   const pruned = pruneItems(items, cfg.maxProject, now)
   const promoted = promoteProjectToGlobal(store, globalStore, cfg, now)
@@ -443,6 +739,13 @@ function buildHint(res, pruned, promoted) {
   if (res.action === 'created') bits.push('已新建')
   else if (res.action === 'merged') bits.push('已与既有条目合并')
   else if (res.action === 'reinforced') bits.push('近重复，已强化命中')
+  else if (res.action === 'auto-merged') bits.push(`相似度 ${res.cos}，已自动覆盖既有条目`)
+  if (Array.isArray(res.replaced) && res.replaced.length) {
+    bits.push(`覆盖字段 ${res.replaced.join('/')}（旧值留在 prev：用同一个 id 再写一次即可写回）`)
+  }
+  if (res.near && res.near.id !== res.id) {
+    bits.push(`近邻 ${res.near.id}（相似度 ${res.near.cos}：《${res.near.title}》）——若这是同一条知识，带 id=${res.near.id} 再写一次即可就地覆盖；确认过时的用 forget 删掉它`)
+  }
   if (pruned && pruned.removed) bits.push(`容量清理 ${pruned.removed} 条`)
   if (promoted) bits.push(`自动提升 global ${promoted} 条`)
   return bits.length ? bits.join('；') : ''
@@ -450,34 +753,62 @@ function buildHint(res, pruned, promoted) {
 
 // ---- scope = task ----
 
-function saveTaskInsight(store, globalStore, task, raw, cfg, now, source) {
+function saveTaskInsight(store, globalStore, task, raw, cfg, now, source, cosine) {
   // 1) 已有 project 级知识 → 挂成员/命中，不再在 task 层重复存
   const pjItems = store.insightItems()
   const base = { ...raw, source, sourceTaskIds: [task.id] }
   const text = insightMatchText(base)
-  const pjHit = findBestOverlapMatch(text, pjItems)
-  if (pjHit && pjHit.score >= cfg.dedupOverlap) {
-    mergeInto(pjHit.item, base, cfg, now)
+  const pjNear = vectorNear(vectorText(base), pjItems, cosine)
+  const pjTarget = autoMergeTarget(pjNear, cfg)
+  if (pjTarget) {
+    const { replaced } = mergeInto(pjTarget.item, base, cfg, now)
     store.replaceInsightItems(pjItems)
     applyDecay(pjItems, cfg, now)
     pruneItems(pjItems, cfg.maxProject, now)
     const promoted = promoteProjectToGlobal(store, globalStore, cfg, now)
-    return { ok: true, action: 'linked-project', id: pjHit.item.id, scope: 'project', hint: `该知识已在 project 级，累计第 ${(pjHit.item.sourceTaskIds || []).length} 个任务命中${promoted ? '；已自动提升 global' : ''}` }
+    return { ok: true, action: 'auto-merged', id: pjTarget.item.id, scope: 'project', replaced, cos: Number(pjTarget.top1.toFixed(3)), hint: `相似度 ${pjTarget.top1.toFixed(3)}，已自动覆盖 project 级既有条目${replaced.length ? `（覆盖字段 ${replaced.join('/')}）` : ''}${promoted ? '；已自动提升 global' : ''}` }
+  }
+  const pjHit = findBestOverlapMatch(text, pjItems)
+  if (pjHit && pjHit.score >= cfg.dedupOverlap) {
+    const { replaced } = mergeInto(pjHit.item, base, cfg, now)
+    store.replaceInsightItems(pjItems)
+    applyDecay(pjItems, cfg, now)
+    pruneItems(pjItems, cfg.maxProject, now)
+    const promoted = promoteProjectToGlobal(store, globalStore, cfg, now)
+    return { ok: true, action: 'linked-project', id: pjHit.item.id, scope: 'project', replaced, hint: `该知识已在 project 级，累计第 ${(pjHit.item.sourceTaskIds || []).length} 个任务命中${promoted ? '；已自动提升 global' : ''}` }
   }
   // 2) 已有 global 级知识 → 同样只挂命中
   if (globalStore) {
+    const glNear = vectorNear(vectorText(base), globalStore.items(), cosine)
+    const glTarget = autoMergeTarget(glNear, cfg)
+    if (glTarget) {
+      const { replaced } = mergeInto(glTarget.item, base, cfg, now)
+      globalStore.markDirty()
+      return { ok: true, action: 'auto-merged', id: glTarget.item.id, scope: 'global', replaced, cos: Number(glTarget.top1.toFixed(3)), hint: `相似度 ${glTarget.top1.toFixed(3)}，已自动覆盖 global 级既有条目${replaced.length ? `（覆盖字段 ${replaced.join('/')}）` : ''}` }
+    }
     const glHit = findBestOverlapMatch(text, globalStore.items())
     if (glHit && glHit.score >= cfg.dedupOverlap) {
-      mergeInto(glHit.item, base, cfg, now)
+      const { replaced } = mergeInto(glHit.item, base, cfg, now)
       globalStore.markDirty()
-      return { ok: true, action: 'linked-global', id: glHit.item.id, scope: 'global', hint: `该知识已在 global 级，累计第 ${(glHit.item.sourceTaskIds || []).length} 个任务命中` }
+      return { ok: true, action: 'linked-global', id: glHit.item.id, scope: 'global', replaced, hint: `该知识已在 global 级，累计第 ${(glHit.item.sourceTaskIds || []).length} 个任务命中` }
     }
   }
   // 3) 跨任务池去重合并（同一坑只留一份，sourceTaskIds 累积）
   const pool = allTaskInsights(store)
+  const poolNear = vectorNear(vectorText(base), pool, cosine)
+  const poolTarget = autoMergeTarget(poolNear, cfg)
+  if (poolTarget) {
+    const { replaced } = mergeInto(poolTarget.item, base, cfg, now)
+    store.markTasksDirty()
+    const holder = taskContaining(store, poolTarget.item.id)
+    if (holder) {
+      const promoted = promoteAllTasksToProject(store, globalStore, cfg, now)
+      return { ok: true, action: 'auto-merged', id: poolTarget.item.id, taskId: holder.id, scope: 'task', replaced, cos: Number(poolTarget.top1.toFixed(3)), hint: `相似度 ${poolTarget.top1.toFixed(3)}，已自动覆盖任务 ${holder.id} 的既有条目${replaced.length ? `（覆盖字段 ${replaced.join('/')}）` : ''}${promoted ? `；自动提升 project ${promoted} 条` : ''}` }
+    }
+  }
   const hit = findBestOverlapMatch(text, pool)
   if (hit && hit.score >= cfg.dedupOverlap) {
-    mergeInto(hit.item, base, cfg, now)
+    const { replaced } = mergeInto(hit.item, base, cfg, now)
     const holder = taskContaining(store, hit.item.id)
     if (holder) {
       store.markTasksDirty()
@@ -489,7 +820,8 @@ function saveTaskInsight(store, globalStore, task, raw, cfg, now, source) {
         action: 'merged',
         id: hit.item.id,
         taskId: holderId,
-        hint: `跨任务去重：并入任务 ${holderId} 既有条目（现 ${size} 个任务命中）${promoted ? `；自动提升 project ${promoted} 条` : ''}`,
+        replaced,
+        hint: `跨任务去重：并入任务 ${holderId} 既有条目（现 ${size} 个任务命中）${replaced.length ? `，覆盖字段 ${replaced.join('/')}` : ''}${promoted ? `；自动提升 project ${promoted} 条` : ''}`,
       }
     }
   }
