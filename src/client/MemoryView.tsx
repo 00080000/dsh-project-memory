@@ -2,10 +2,14 @@
  * Memory View — 记忆三作用域列表（Task 草稿 / Project / Global）
  * 数据通道与任务面板一致：remote.commands.execute 执行 /insight 命令，取 JSON 载荷。
  * 动作：confirm(草稿审核) / promote(向上提升) / demote(向下降级，需绑定任务) / archive / restore / delete
+ *
+ * 列表是**增量加载**的：首屏只取 PAGE_SIZE 条，滚到底前 600px 预取下一页追加。
+ * 分页的决策逻辑在 ./paging.js（纯函数，可单测），本组件只把它接到渲染上。
  */
 import { useEffect, useCallback, useRef, useState } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { service } from './services.ts'
+import { PAGE_SIZE, PREFETCH_MARGIN, SPINNER_DELAY_MS, appendUnique, createRequestGate, insightListLine, normalizeWindow, progressCounts, reloadWindowRequest } from './paging.js'
 import css from './TaskPanel.module.css'
 
 export type InsightScope = 'task' | 'project' | 'global'
@@ -39,6 +43,9 @@ export interface InsightRow {
 interface ListPayload {
   scope: InsightScope
   count: number
+  total: number
+  offset: number
+  nextOffset: number | null
   items: InsightRow[]
 }
 
@@ -55,7 +62,10 @@ export function parseInsightPayloadText(text?: string | null): ListPayload | nul
   try {
     const data = JSON.parse(jsonBlock)
     if (!Array.isArray(data.items)) return null
-    return { scope: data.scope ?? 'project', count: data.count ?? data.items.length, items: data.items }
+    // 分页字段走 paging.js 归一：老宿主没有 total/nextOffset 时按"一次给全"降级，
+    // 新宿主则给出真实的下一页游标。
+    const w = normalizeWindow(data, 0)
+    return { scope: data.scope ?? 'project', count: w.total, total: w.total, offset: w.offset, nextOffset: w.nextOffset, items: w.items }
   } catch {
     return null
   }
@@ -86,14 +96,23 @@ export function MemoryView({
   showHints: boolean
   t: any
 }) {
-  const [payload, setPayload] = useState<ListPayload | null>(null)
+  const [rows, setRows] = useState<InsightRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [nextOffset, setNextOffset] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  // 加载指示延迟显示：本地数据几十毫秒就回来，立刻显示只会"闪一下"（见 paging.js）。
+  const [showSpinner, setShowSpinner] = useState(false)
   const [busy, setBusy] = useState(false)
   const [showNew, setShowNew] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState({ title: '', kind: 'lesson', body: '', steps: '', trigger: '' })
   const [savedTip, setSavedTip] = useState<string | null>(null)
+  // 滚动容器（IntersectionObserver 的 root）：哨兵是否"可见"必须相对这个容器判定，
+  // 用视口当 root 会让面板自身的 480px 上限失效。
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
 
   const runLine = useCallback(
     async (line: string): Promise<{ ok: boolean; text: string }> => {
@@ -116,46 +135,113 @@ export function MemoryView({
     [ctx, sessionId],
   )
 
-  // 用 ref 做并发/频控守卫：loading 状态不能进 refresh 的依赖数组，
-  // 否则 loading 每次翻转都会重建 refresh → effect 重跑 → 无限循环刷 /insight 命令。
-  const inflightRef = useRef(false)
-  const lastRunRef = useRef(0)
+  // 并发控制走 paging.js 的 createRequestGate()：过期响应丢弃、新请求照发。
+  // （早期用"有在途请求就 return"的布尔守卫时，切 scope 的新请求会被直接丢掉，
+  //  新列表于是一直空着——见 createRequestGate 的注释。）
+  const gateRef = useRef<ReturnType<typeof createRequestGate> | null>(null)
+  if (gateRef.current === null) gateRef.current = createRequestGate()
+  // 作用域变了之后到达的过期响应必须丢弃，否则会把上一个 scope 的条目追加进来。
+  const scopeRef = useRef(scope)
+  useEffect(() => {
+    scopeRef.current = scope
+  }, [scope])
 
-  const refresh = useCallback(async (force = false): Promise<void> => {
-    // 没有活跃会话时不发命令、也不报错：面板顶部已经显示「还没有会话」，
-    // 再报一次"同步失败"会让人以为记忆库坏了（0.1.7 上会话快照结构变化时就是这个表象）。
-    if (!sessionId) {
-      setPayload(null)
-      setError(null)
-      setLoading(false)
-      return
-    }
-    if (inflightRef.current) return
-    const now = Date.now()
-    if (!force && now - lastRunRef.current < 800) return
-    inflightRef.current = true
-    lastRunRef.current = now
-    setLoading(true)
-    setError(null)
-    try {
-      const res = await runLine(`/tasks insight list ${scope}`)
-      if (!res.ok) {
-        setError(res.text)
-        setPayload(null)
+  /**
+   * 取一页并落到状态里。
+   * @param offset 起始下标。
+   * @param limit 本页条数。
+   * @param append true=追加到已渲染列表；false=替换成这一页（首屏或前缀重放）。
+   */
+  const load = useCallback(
+    async (offset: number, limit: number, append: boolean): Promise<void> => {
+      // 没有活跃会话时不发命令、也不报错：面板顶部已经显示「还没有会话」，
+      // 再报一次"同步失败"会让人以为记忆库坏了（0.1.7 上会话快照结构变化时就是这个表象）。
+      if (!sessionId) {
+        setRows([])
+        setTotal(0)
+        setNextOffset(null)
+        setError(null)
+        setLoading(false)
         return
       }
-      const parsed = parseInsightPayloadText(res.text)
-      setPayload(parsed)
-      if (!parsed) setError('unparsable payload')
-    } finally {
-      inflightRef.current = false
-      setLoading(false)
-    }
-  }, [runLine, scope])
+      const requestedScope = scopeRef.current
+      const key = `${requestedScope}|${offset}|${limit}|${append}`
+      const ticket = gateRef.current!.begin(key)
+      if (ticket === false) return
+      if (!append) setLoading(true)
+      setLoadingMore(append)
+      setError(null)
+      const spinner = window.setTimeout(() => setShowSpinner(true), SPINNER_DELAY_MS)
+      try {
+        const res = await runLine(insightListLine(requestedScope, offset, limit))
+        // 已被更新的请求取代，或切了作用域：这份响应属于上一个列表，整份丢弃。
+        if (gateRef.current!.isStale(ticket, requestedScope, scopeRef.current)) return
+        if (!res.ok) {
+          setError(res.text)
+          return
+        }
+        const parsed = parseInsightPayloadText(res.text)
+        if (!parsed) {
+          setError('unparsable payload')
+          return
+        }
+        setRows((prev) => (append ? appendUnique(prev, parsed.items) : parsed.items))
+        setTotal(parsed.total)
+        setNextOffset(parsed.nextOffset)
+      } finally {
+        window.clearTimeout(spinner)
+        // 加载标志只由最后一次请求回落：过期请求提前清掉会让界面"看起来加载完了"。
+        if (gateRef.current!.end(key, ticket)) {
+          setShowSpinner(false)
+          setLoading(false)
+          setLoadingMore(false)
+        }
+      }
+    },
+    [runLine, sessionId],
+  )
+
+  // load 的身份随 runLine 变（ctx/sessionId 变化）；用 ref 持有它，让下面的 effect
+  // 只依赖 scope/sessionId 这两个**原始值**——把函数身份拉进依赖会重跑 effect 并
+  // 无限刷 /insight 命令（旧实现用 800ms 频控绕开，这里从根上避免）。
+  const loadRef = useRef(load)
+  useEffect(() => {
+    loadRef.current = load
+  }, [load])
 
   useEffect(() => {
-    void refresh()
-  }, [refresh])
+    // 换 scope / 换会话 = 换了一个列表：清空并从头取第一页。
+    setRows([])
+    setTotal(0)
+    setNextOffset(null)
+    setError(null)
+    if (!sessionId) return
+    void loadRef.current(0, PAGE_SIZE, false)
+  }, [scope, sessionId])
+
+  // 滚到底之前就取下一页（rootMargin 600px）。哨兵消失（nextOffset=null）即停止。
+  useEffect(() => {
+    if (nextOffset === null || typeof IntersectionObserver === 'undefined') return
+    const sentinel = sentinelRef.current
+    if (!sentinel) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) void loadRef.current(nextOffset, PAGE_SIZE, true)
+      },
+      // root 用面板自己的滚动容器；取不到时退回视口（仍比"不加载"好）。
+      { root: scrollRef.current ?? null, rootMargin: PREFETCH_MARGIN },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [nextOffset, rows.length])
+
+  /**
+   * 重载**已加载的整个前缀**（不是重置成第一页）：动作之后用户的位置不该跳回顶部。
+   */
+  const reloadWindow = useCallback(async (): Promise<void> => {
+    const { offset, limit } = reloadWindowRequest(rows.length)
+    await loadRef.current(offset, limit, false)
+  }, [rows.length])
 
   const act = async (action: string, id: string): Promise<void> => {
     if (busy) return
@@ -165,7 +251,7 @@ export function MemoryView({
       const line = `/tasks insight ${action} ${scope} ${id}${action === 'demote' && scope === 'project' && boundTaskId ? ` ${boundTaskId}` : ''}`
       const res = await runLine(line)
       if (!res.ok) setError(res.text)
-      else void refresh(true)
+      else await reloadWindow()
     } finally {
       setBusy(false)
     }
@@ -249,28 +335,29 @@ export function MemoryView({
         setSavedTip(t('mem.saved'))
         closeForm()
         window.setTimeout(() => setSavedTip(null), 2500)
-        void refresh(true)
+        await reloadWindow()
       }
     } finally {
       setBusy(false)
     }
   }
 
-  const items = payload?.items ?? []
+  const items = rows
+  const progress = progressCounts(items.length, total)
 
   return (
-    <div className={css.memoryPane}>
+    <div className={css.memoryPane} ref={scrollRef}>
       <div className={css.memToolbar}>
         <span className={css.memCount}>
           {scope === 'task' ? t('mem.scope.task') : scope === 'global' ? t('mem.scope.global') : t('mem.scope.project')}
-          {payload ? ` · ${payload.count}` : ''}
+          {total > 0 ? ` · ${total}` : ''}
         </span>
         <span className={css.memToolbarActs}>
           {savedTip && <span className={css.badge}>{savedTip}</span>}
           {scope !== 'task' && !showNew && (
             <Button variant="outline" size="sm" disabled={busy} onClick={() => { setShowNew(true); setEditingId(null); setError(null) }}>{t('mem.new')}</Button>
           )}
-          <Button variant="outline" size="sm" onClick={() => void refresh(true)} disabled={loading} title={showHints ? t('panel.refresh') : undefined} aria-label={t('panel.refresh')}>
+          <Button variant="outline" size="sm" onClick={() => void reloadWindow()} disabled={loading} title={showHints ? t('panel.refresh') : undefined} aria-label={t('panel.refresh')}>
             ↻
           </Button>
         </span>
@@ -307,7 +394,14 @@ export function MemoryView({
           </div>
         </div>
       )}
-      {error && <div className={css.notice}>{t('mem.error')}: {error}</div>}
+      {error && (
+        <div className={css.notice}>
+          {t('mem.error')}: {error}
+          {/* 失败必须给出口：增量加载里"卡住不动"和"已经加载完"外观一样，没有重试按钮
+              用户只能靠开关面板碰运气。 */}
+          <Button variant="outline" size="sm" disabled={loading || loadingMore} onClick={() => void reloadWindow()}>{t('mem.retry')}</Button>
+        </div>
+      )}
       {loading && !items.length && <div className={css.muted}>{t('mem.loading')}</div>}
       {!loading && !error && items.length === 0 && <div className={css.muted}>{t('mem.empty')}</div>}
       <div className={css.memList}>
@@ -355,6 +449,25 @@ export function MemoryView({
             </div>
           )
         })}
+        {/* 增量加载哨兵 + 页脚。预取由上面的 IntersectionObserver 驱动（滚到底前 600px），
+            这里只负责：① 放哨兵；② 把"已显示 N / 总数"讲清楚，让无限滚动可预期；
+            ③ 环境没有 IntersectionObserver 时退化成手动按钮，绝不静默停住。 */}
+        {items.length > 0 && (
+          <div className={css.memFooter}>
+            {nextOffset !== null && <div ref={sentinelRef} className={css.memSentinel} aria-hidden="true" />}
+            {nextOffset !== null && typeof IntersectionObserver === 'undefined' && (
+              <Button variant="outline" size="sm" disabled={loadingMore} onClick={() => void loadRef.current(nextOffset, PAGE_SIZE, true)}>
+                {t('mem.loadMore')}
+              </Button>
+            )}
+            <span className={css.muted}>
+              {progress.loaded < progress.total
+                ? t('mem.progress', { loaded: progress.loaded, total: progress.total })
+                : t('mem.allLoaded', { total: progress.total })}
+              {showSpinner && loadingMore ? ` · ${t('mem.loadingMore')}` : ''}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   )
