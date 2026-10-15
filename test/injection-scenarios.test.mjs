@@ -31,34 +31,34 @@ const L = (id, title, extra = {}) => ({ id, kind: 'lesson', scope: 'global', tit
 const P = (id, title, extra = {}) => ({ id, kind: 'procedure', scope: 'global', title, steps: [`${title} 第 1 步`, `${title} 第 2 步`], confidence: 1, archived: false, ...extra })
 
 /**
- * 候选池：右侧注释是它照抄的真实条目（真实 id 前缀）。
+ * 候选池：右侧注释标出它对应的实测条目（已去掉 id）。
  * 刻意保留致病的 trigger 写法——回归要盯的正是它们。
  */
 const POOL = [
-  P('p_arxiv', '本机查论文/仓库改用 curl', { trigger: { keywords: ['arxiv', '论文', 'paper', 'web_fetch', 'web_search', 'pptx', '爬取', '摘要'], actions: ['research', 'web-fetch'], paths: ['*.pptx'] } }), // ins_0746262e
-  P('p_render', '无 root 把 PPTX 渲染成可校验版面', { trigger: { keywords: ['pptx', 'ppt', 'libreoffice', 'soffice', '渲染', '幻灯'], actions: ['generate-pptx', 'render'], paths: ['*.pptx', '*.pdf'] } }), // ins_f5424b08
-  L('l_pptxgenjs', 'pptxgenjs 的 LAYOUT_16x9 是 10x5.625', { trigger: { keywords: ['pptxgenjs', 'LAYOUT_16x9', '16:9', '幻灯片', 'ppt'], actions: ['generate-pptx'], paths: ['*.pptx'] } }), // ins_08897b7a
-  P('p_purge', '误删文件后的恢复顺序', { trigger: { keywords: ['误删', '恢复', '找回', 'rm', '丢了', 'deleted', 'zstd', '快照'], actions: ['delete', 'recover', 'cleanup'] } }), // ins_490c5be0
-  L('l_readimage', 'read_image 被拒但模型有视觉', { trigger: { keywords: ['read_image', '视觉', 'inputModalities', '图片', '看图'], actions: ['read-image'], paths: ['**/settings.yaml', '*.png', '*.jpg'] } }), // ins_0bccb9b3
-  L('l_curated', '调研下结论前先按日期扫最近半年', { trigger: { keywords: ['调研', '空白', '综述', '方向', 'state of the art', '没人做'], actions: ['research', 'survey'] } }), // ins_bcacc541
-  L('l_wslpnpm', 'WSL 里 Windows 版 pnpm 抢先命中 PATH'), // ins_d6730deb（无 authored trigger，只可能走提示通道）
-  L('l_pkgfiles', '文档承诺的脚本在仓库里≠在 npm 包里', { trigger: { keywords: ['上传', '没上传', 'npm 包', '发布', '发版', '打包', 'files 白名单', 'tarball'], actions: ['npm-publish', 'npm-pack', 'git-push'], paths: ['package.json', 'README*', 'CHANGELOG*'] } }), // ins_2551bfb3
-  P('p_npmpub', 'npm 包发布流程', { trigger: { keywords: ['npm publish', '发版', '发布', 'release', 'version bump', 'tag', 'CHANGELOG'], scope: ['release', 'npm', 'dsh-project-memory'] } }), // ins_510aa6f6（scope 与画像 tag 错配 → 推不动）
-  L('l_changelog', 'CHANGELOG 已写新版本段、package.json 未 bump'), // ins_828da5cc（无 authored trigger）
-  L('l_readmedrift', 'README 跟代码漂移', { trigger: { keywords: ['README', '文档', '过时', '漂移', '版本号', '默认值'], actions: ['release', 'write-docs'], paths: ['README*', 'CHANGELOG*', 'package.json'] } }), // ins_e2dd8bef
-  L('l_deldoc', '按文件名推断价值删除内部文档 = 不可恢复', { trigger: { keywords: ['删除', '清理', 'de-TODO', 'PLAN', 'gitignore', '内部文档'], actions: ['delete', 'cleanup', 'git-add', 'git-commit'], paths: ['.gitignore', 'de-TODO.md', 'PLAN-*.md'] } }), // ins_4d139a28
-  L('l_reload', '插件源码改动在运行中的宿主里不生效', { trigger: { keywords: ['重载', '重启', 'not a declared property', 'schema'], actions: ['reload'], paths: ['src/tools/query-memory.js', 'src/index.js'] } }), // ins_7bbee740
-  L('l_budget', '预算丢弃诊断日志默认静默', { trigger: { keywords: ['budgetLog', 'auto-inject', 'degraded', '预算', '日志', '终端噪音'] } }), // ins_0083d0fe
-  L('l_dedupe', '增量注入不能用整块指纹去重', { trigger: { keywords: ['注入频率', '重复注入', '去重', 'fingerprint', 'auto-inject', '上下文噪音'] } }), // ins_8aaeb61a
-  L('l_retrieval', 'insight 层必须有检索通道', { trigger: { keywords: ['注入', '召回', '阈值', 'triggerDerived', 'signalMinRatio', 'auto-inject'] } }), // ins_af4e5ec6
-  L('l_procscope', 'procedure 不能走统计提示通道', { trigger: { keywords: ['procedure', 'scope', '画像过滤'], paths: ['src/auto-inject.js', 'src/readiness.js'] } }), // ins_b25f8978
-  P('p_bench', '独立基准脚本 scripts/bench.mjs', { trigger: { keywords: ['bench', '基准', '性能', '复现', 'p50'], actions: ['benchmark'], paths: ['scripts/bench.mjs', 'README.md'] } }), // ins_fcc22cb4
-  P('p_testing', '被问「你怎么测试的」时的答法', { trigger: { keywords: ['测试', '怎么测', '性能数据', 'benchmark', '验证', '复现'] } }), // ins_f8d6fcd1
-  L('l_harness', '检索基准 harness 会静默骗人'), // ins_32fae71d（无 authored trigger）
-  L('l_wslio', 'WSL2 小文件 I/O 慢约 3×'), // ins_b1de23b9（无 authored trigger）
-  L('l_papertok', '邮件里点名引用的论文往往是重点', { trigger: { keywords: ['论文', 'PaperX', 'CoreX', '引用'] } }), // ins_e602b1e2
-  L('l_perfnum', '对外引用性能数字必须带规模+硬件口径', { trigger: { keywords: ['性能', '基准', 'benchmark', 'ms', '延迟', '下载量', 'star', '测试数'], actions: ['interview-prep', 'report-metrics'] } }), // ins_547cb96c
-  L('l_honesty', '对外材料只写亲手验证过的事实', { trigger: { keywords: ['夸大', '口径', '材料', '群发', '对外'] } }), // ins_114ea4cd
+  P('p_arxiv', '本机查论文/仓库改用 curl', { trigger: { keywords: ['arxiv', '论文', 'paper', 'web_fetch', 'web_search', 'pptx', '爬取', '摘要'], actions: ['research', 'web-fetch'], paths: ['*.pptx'] } }), // 实测条目
+  P('p_render', '无 root 把 PPTX 渲染成可校验版面', { trigger: { keywords: ['pptx', 'ppt', 'libreoffice', 'soffice', '渲染', '幻灯'], actions: ['generate-pptx', 'render'], paths: ['*.pptx', '*.pdf'] } }), // 实测条目
+  L('l_pptxgenjs', 'pptxgenjs 的 LAYOUT_16x9 是 10x5.625', { trigger: { keywords: ['pptxgenjs', 'LAYOUT_16x9', '16:9', '幻灯片', 'ppt'], actions: ['generate-pptx'], paths: ['*.pptx'] } }), // 实测条目
+  P('p_purge', '误删文件后的恢复顺序', { trigger: { keywords: ['误删', '恢复', '找回', 'rm', '丢了', 'deleted', 'zstd', '快照'], actions: ['delete', 'recover', 'cleanup'] } }), // 实测条目
+  L('l_readimage', '工具被拒时先查能力声明', { trigger: { keywords: ['read_image', '视觉', 'inputModalities', '图片', '看图'], actions: ['read-image'], paths: ['**/settings.yaml', '*.png', '*.jpg'] } }), // 实测条目
+  L('l_curated', '调研下结论前先按日期扫最近半年', { trigger: { keywords: ['调研', '空白', '综述', '方向', 'state of the art', '没人做'], actions: ['research', 'survey'] } }), // 实测条目
+  L('l_wslpnpm', '两个同名可执行文件抢先命中 PATH'), // 实测条目（无 authored trigger，只可能走提示通道）
+  L('l_pkgfiles', '文档承诺的脚本在仓库里≠在 npm 包里', { trigger: { keywords: ['上传', '没上传', 'npm 包', '发布', '发版', '打包', 'files 白名单', 'tarball'], actions: ['npm-publish', 'npm-pack', 'git-push'], paths: ['package.json', 'README*', 'CHANGELOG*'] } }), // 实测条目
+  P('p_npmpub', '发版流程', { trigger: { keywords: ['npm publish', '发版', '发布', 'release', 'version bump', 'tag', 'CHANGELOG'], scope: ['release', 'npm', 'dsh-project-memory'] } }), // 实测条目（scope 与画像 tag 错配 → 推不动）
+  L('l_changelog', 'CHANGELOG 已写新版本段、package.json 未 bump'), // 实测条目（无 authored trigger）
+  L('l_readmedrift', 'README 跟代码漂移', { trigger: { keywords: ['README', '文档', '过时', '漂移', '版本号', '默认值'], actions: ['release', 'write-docs'], paths: ['README*', 'CHANGELOG*', 'package.json'] } }), // 实测条目
+  L('l_deldoc', '清理内部文档前别只看文件名', { trigger: { keywords: ['删除', '清理', 'notes.md', 'TODO', 'gitignore', '内部文档'], actions: ['delete', 'cleanup', 'git-add', 'git-commit'], paths: ['.gitignore', 'notes.md', 'TODO-*.md'] } }), // 实测条目
+  L('l_reload', '热更新在运行中的宿主里不生效', { trigger: { keywords: ['重载', '重启', 'not a declared property', 'schema'], actions: ['reload'], paths: ['src/tools/query-memory.js', 'src/index.js'] } }), // 实测条目
+  L('l_budget', '被预算挤掉时要不要出声', { trigger: { keywords: ['budgetLog', 'auto-inject', 'degraded', '预算', '日志', '终端噪音'] } }), // 实测条目
+  L('l_dedupe', '重复注入的判重粒度不能取整块', { trigger: { keywords: ['注入频率', '重复注入', '去重', 'fingerprint', 'auto-inject', '上下文噪音'] } }), // 实测条目
+  L('l_retrieval', 'insight 层必须有检索通道', { trigger: { keywords: ['注入', '召回', '阈值', 'triggerDerived', 'signalMinRatio', 'auto-inject'] } }), // 实测条目
+  L('l_procscope', 'procedure 不能走统计提示通道', { trigger: { keywords: ['procedure', 'scope', '画像过滤'], paths: ['src/auto-inject.js', 'src/readiness.js'] } }), // 实测条目
+  P('p_bench', '独立基准脚本 scripts/bench.mjs', { trigger: { keywords: ['bench', '基准', '性能', '复现', 'p50'], actions: ['benchmark'], paths: ['scripts/bench.mjs', 'README.md'] } }), // 实测条目
+  P('p_testing', '被问「你怎么测试的」时的答法', { trigger: { keywords: ['测试', '怎么测', '性能数据', 'benchmark', '验证', '复现'] } }), // 实测条目
+  L('l_harness', '检索基准 harness 会静默骗人'), // 实测条目（无 authored trigger）
+  L('l_wslio', 'WSL2 小文件 I/O 慢约 3×'), // 实测条目（无 authored trigger）
+  L('l_followup', '被追问时先给机制再给结论', { trigger: { keywords: ['追问', '提问', '机制', '原理', '讲解', '引用'] } }), // 实测条目
+  L('l_perfnum', '对外引用性能数字必须带规模+硬件口径', { trigger: { keywords: ['性能', '基准', 'benchmark', 'ms', '延迟', '下载量', 'star', '测试数'], actions: ['report-metrics'] } }), // 实测条目
+  L('l_honesty', '对外材料只写亲手验证过的事实', { trigger: { keywords: ['夸大', '口径', '材料', '群发', '对外'] } }), // 实测条目
 ]
 
 const bash = (cmd) => `bash {"command":${JSON.stringify(cmd)},"description":"x"}`
@@ -105,27 +105,27 @@ const SCENARIOS = [
     expect: ['p_bench'],
   },
   {
-    name: 'G 误删 de-TODO.md',
+    name: 'G 误删内部笔记',
     tags: ['dsh-plugin'],
-    human: '我好像把 de-TODO.md 删了，还能找回吗',
-    actions: [bash('ls -la de-TODO.md')],
+    human: '我好像把 notes.md 删了，还能找回吗',
+    actions: [bash('ls -la notes.md')],
     expect: ['p_purge', 'l_deldoc'],
   },
   {
-    name: 'E 评审问 PaperX',
+    name: 'E 同事追问机制',
     tags: [],
-    human: '明天的评审上，如果被问到 PaperX 的核心机制我该怎么说',
-    actions: [read('速查卡.md')],
-    // l_perfnum 不进 expect：它的触发面是"对外报数字"，本场景是"被问论文机制"。
-    expect: ['l_papertok'],
+    human: '同事追问 PaperX 的核心机制，我该怎么说',
+    actions: [read('docs/faq.md')],
+    // l_perfnum 不进 expect：它的触发面是"对外报数字"，本场景是"被追问机制"。
+    expect: ['l_followup'],
   },
   {
-    name: 'H 评审时问怎么测试的',
+    name: 'H 同事问怎么测试的',
     tags: [],
-    human: '评审时被问到我是怎么测试这个插件的',
+    human: '同事问我这个插件是怎么测试的',
     actions: [read('README.md')],
-    // l_papertok 进 expect：意图词命中即注入是意图通道的设计行为。
-    expect: ['p_testing', 'l_papertok'],
+    // p_testing 的意图词"测试 / 怎么测"命中即注入，是意图通道的设计行为。
+    expect: ['p_testing'],
   },
   {
     name: 'F 对照：改 pptx 时间戳（真实原文）',
