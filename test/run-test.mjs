@@ -306,19 +306,24 @@ console.log('\n== store ==')
 {
   const storeDir = memoryRootFor(root, config.memoryDir)
   const store = new ProjectMemoryStore(storeDir).load()
-  const add1 = store.addExperience({ problem: 'pdfjs import fails on Node 24', solution: 'use legacy build', sourceFile: 'a.js' })
-  const add2 = store.addExperience({ problem: 'different problem entirely', solution: 'x' })
-  const add3 = store.addExperience({ problem: 'pdfjs import fails on Node 24 again', solution: 'use legacy build + worker:false' })
-  check('adds experience', add1.superseded === false && add2.superseded === false)
-  check('supersedes similar problem', add3.superseded === true && store.experience.length === 2)
-  store.save()
-  check('persists to disk', existsSync(path.join(storeDir, 'experience.json')))
-  check('store files written compact', !readFileSync(path.join(storeDir, 'experience.json'), 'utf8').includes('\n  '))
-  check('searches experience', rankExperienceScored(store.experience, 'pdfjs import').length === 1)
-  const staleTmp = path.join(storeDir, 'experience.json.999999.tmp')
+  // 经验笔记现在是 insight（kind:'experience'）——统一存储后只有一个实体，落盘在 insights.json。
+  const rem = rememberTool(config)
+  const exec = { agent: { session: { header: { cwd: root } } } }
+  const w1 = await rem.execute({ root, problem: 'pdfjs import fails on Node 24', solution: 'use legacy build', source_file: 'a.js' }, exec)
+  const w2 = await rem.execute({ root, problem: 'different problem entirely', solution: 'x' }, exec)
+  check('writes experience notes', w1.includes('Saved experience note') && w2.includes('Saved experience note'))
+  // 同一条再写：不新增条目（去重/覆盖），旧文件不再出现
+  await rem.execute({ root, problem: 'pdfjs import fails on Node 24', solution: 'use legacy build + worker:false' }, exec)
+  const after = new ProjectMemoryStore(storeDir).load()
+  const expItems = after.insightItems().filter((it) => it.kind === 'experience')
+  check('same problem does not duplicate the entry', expItems.length === 2)
+  check('persists to insights.json, not experience.json', existsSync(path.join(storeDir, 'insights.json')) && !existsSync(path.join(storeDir, 'experience.json')))
+  check('store files written compact', !readFileSync(path.join(storeDir, 'insights.json'), 'utf8').includes('\n  '))
+  check('searches experience', rankExperienceScored(expItems, 'pdfjs import').length === 1)
+  const staleTmp = path.join(storeDir, 'insights.json.999999.tmp')
   writeFileSync(staleTmp, '{}')
   utimesSync(staleTmp, new Date(Date.now() - 120000), new Date(Date.now() - 120000))
-  store.save()
+  after.save()
   check('stale tmp files cleaned on save', !existsSync(staleTmp))
 }
 
@@ -359,9 +364,9 @@ console.log('\n== IDF caching & streaming TF ==')
   const idf4 = store.getIdfCache()
   check('条目变化后 IDF 重建', idf4 !== idf1)
   const beforeExp = idf4
-  store.addExperience({ problem: 'idf cache probe', solution: 'dirty the store' })
+  store.replaceInsightItems([...store.insightItems(), { id: 'ins_probe', kind: 'lesson', scope: 'project', title: 'idf cache probe' }])
   store.save()
-  check('只写经验不重建 IDF', store.getIdfCache() === beforeExp)
+  check('只写 insight 不重建 IDF', store.getIdfCache() === beforeExp)
 
   // IDF 语料必须与**检索**同源（title×5 + keywords + summary + terms + sourcePath）。
   // 此前这里手抄的副本缺了后两项，于是只出现在 `terms` 里的词 df=0 → 虚高 IDF。
@@ -400,47 +405,36 @@ console.log('\n== IDF caching & streaming TF ==')
 
 console.log('\n== experience phrase boost ==')
 {
-  const expStore = new ProjectMemoryStore(path.join(mkdtempSync(path.join(tmpdir(), 'pm-exp-phrase-')), 'mem')).load()
-  expStore.addExperience({ problem: '数据库连接池配置参数调优', solution: '调大 maxPoolSize', sourceFile: 'a.js' })
-  expStore.addExperience({ problem: '连接池耗尽报错', solution: '检查泄漏', sourceFile: 'b.js' })
-  expStore.addExperience({ problem: '其他问题', solution: 'x', sourceFile: 'c.js' })
+  // 经验层现在就是 kind:'experience' 的 insight，这里直接喂池子：钉住的是 rankExperienceScored
+  // 的短语加分与同义词展开，与它在哪个存储里无关。
+  const pool = [
+    { id: 'e0', kind: 'experience', problem: '数据库连接池配置参数调优', solution: '调大 maxPoolSize', sourceFile: 'a.js' },
+    { id: 'e1', kind: 'experience', problem: '连接池耗尽报错', solution: '检查泄漏', sourceFile: 'b.js' },
+    { id: 'e2', kind: 'experience', problem: '其他问题', solution: 'x', sourceFile: 'c.js' },
+  ]
   // 查询包含经验 problem 完整短语，应触发短语加分
-  const r1 = rankExperienceScored(expStore.experience, '数据库连接池配置参数调优')
-  check('经验层短语加分: 数据库连接池配置参数调优 -> 自身 排前', r1[0]?.item?.id === expStore.experience[0]?.id)
+  const r1 = rankExperienceScored(pool, '数据库连接池配置参数调优')
+  check('经验层短语加分: 数据库连接池配置参数调优 -> 自身 排前', r1[0]?.item?.id === 'e0')
   // 同义词展开也应生效
-  const r2 = rankExperienceScored(expStore.experience, '连接池')
+  const r2 = rankExperienceScored(pool, '连接池')
   check('经验层同义词展开: 连接池 召回 数据库连接池配置参数调优', r2.some((e) => e.item.problem === '数据库连接池配置参数调优'))
 }
 
-console.log('\n== experience capacity ==')
-{
-  const capStore = new ProjectMemoryStore(path.join(mkdtempSync(path.join(tmpdir(), 'dsh-cap-')), 'mem')).load()
-  capStore.files = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`f${i}.js`, 'h']))
-  for (let i = 0; i < 130; i++) {
-    capStore.experience.push({ id: `e${i}`, problem: `case${i} trouble`, solution: 'x', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString() })
-  }
-  const pruned = capStore.pruneExperience()
-  check('cap: prunes to dynamic max (120)', capStore.experience.length === 120 && pruned === 10)
-  check('cap: drops oldest batch', !capStore.experience.some((e) => Number(e.id.slice(1)) < 10) && capStore.experience.some((e) => e.id === 'e129'))
-  let added = 0
-  for (let i = 0; i < 150; i++) {
-    const r = capStore.addExperience({ problem: `topic${i} trouble`, solution: 'x' })
-    if (!r.superseded) added++
-  }
-  check('cap: addExperience keeps store at max', capStore.experience.length === 120 && added === 150)
-  check('cap: clamps at 2000 on huge projects', Math.max(100, Math.min(2000, 5000 * 2)) === 2000)
-  check('cap: floors at 100 on empty projects', Math.max(100, Math.min(2000, 0 * 2)) === 100)
-}
+// 「experience capacity」整块随 v0.4 经验层删除：动态上限（100~2000，按已索引文件数算）与
+// `addExperience`/`pruneExperience` 都不存在了；容量现在归 insight 层的 `maxProject`
+// （归档优先、超限才物理删，覆盖在 test/insight-store.test.mjs 的容量用例里）。
 
 console.log('\n== supersede boundary (regression) ==')
 {
-  const ngxStore = new ProjectMemoryStore(path.join(mkdtempSync(path.join(tmpdir(), 'pm-ngx-')), 'mem')).load()
-  ngxStore.addExperience({ problem: '如何配置 nginx 反向代理', solution: 'proxy_pass to upstream' })
-  const ngxSecond = ngxStore.addExperience({ problem: '如何配置 nginx 负载均衡', solution: 'upstream round-robin' })
-  check(
-    'distinct problems with shared prefix do not supersede',
-    ngxSecond.superseded === false && ngxStore.experience.length === 2,
-  )
+  // 回归面：共享前缀的两条不同问题**不许**互相顶掉。旧实现在经验层的 findSupersede 上踩过这个坑，
+  // 现在写路径统一到 saveInsight，这条仍然要有——它是"去重不能过火"的唯一守卫。
+  const ngxRoot = mkdtempSync(path.join(tmpdir(), 'pm-ngx-'))
+  const rem = rememberTool(config)
+  const exec = { agent: { session: { header: { cwd: ngxRoot } } } }
+  await rem.execute({ root: ngxRoot, problem: '如何配置 nginx 反向代理', solution: 'proxy_pass to upstream' }, exec)
+  await rem.execute({ root: ngxRoot, problem: '如何配置 nginx 负载均衡', solution: 'upstream round-robin' }, exec)
+  const ngxStore = new ProjectMemoryStore(memoryRootFor(ngxRoot, config.memoryDir)).load()
+  check('distinct problems with shared prefix do not merge', ngxStore.insightItems().length === 2)
 }
 
 console.log('\n== index_doc ==')
@@ -692,15 +686,15 @@ const mkStore = () => new ProjectMemoryStore(memoryRootFor(lockDir, config.memor
 await Promise.all([
   (async () => {
     const s = mkStore().load()
-    s.commit((s) => s.addExperience({ problem: 'p1', solution: 's1' }))
+    s.commit((s) => s.replaceInsightItems([...s.insightItems(), { id: 'p1', kind: 'lesson', scope: 'project', title: 'p1' }]))
   })(),
   (async () => {
     const s = mkStore().load()
-    s.commit((s) => s.addExperience({ problem: 'p2', solution: 's2' }))
+    s.commit((s) => s.replaceInsightItems([...s.insightItems(), { id: 'p2', kind: 'lesson', scope: 'project', title: 'p2' }]))
   })(),
 ])
 const lockStore = mkStore().load()
-check('no lost writes under contention (commit-based)', lockStore.experience.length === 2)
+check('no lost writes under contention (commit-based)', lockStore.insightItems().length === 2)
 
 console.log('\n== incremental cleanup ==')
 writeFileSync(pyPath, 'class PaymentService:\n    def charge(self, amount):\n        pass\n')

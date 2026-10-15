@@ -53,10 +53,10 @@ const CONFIG = { memoryDir: '.dsh-project-memory', maxOutputChars: 8000, chunkCh
 {
   const d = dir('load-')
   const s = new ProjectMemoryStore(d).load()
-  s.addExperience({ problem: 'p', solution: 'q' })
+  s.addTask({ id: 'tsk_unsaved', title: 'q' })
   s.replaceInsightItems([{ id: 'ins_x', title: 'x' }])
   s.load()
-  assert.equal(s.experience.length, 1, '未落盘 experience 必须还在')
+  assert.equal(s.getTask('tsk_unsaved')?.title, 'q', '未落盘 tasks 必须还在')
   assert.equal(s.insightItems().length, 1, '未落盘 insights 必须还在')
   ok('load() 幂等：重复调用不丢未保存变更')
 }

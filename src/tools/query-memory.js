@@ -115,10 +115,14 @@ export function queryMemoryTool(ctx, config) {
       // 使用记账：检索命中也是"被用到"（活跃度/衰减用得上它，见 recordHit）。查询是热路径
       // （p50 2.6ms），这里只改内存 + 标脏，**不**强制落盘——注入路径会立即落盘，这条路
       // 靠下一次自然 save 带上。记账失败绝不影响查询结果。
-      if (wantInsight) {
+      // 经验层同源（kind:'experience' 的 insight），所以两桶都要记：`insightId` 是 insight
+      // 适配器带的键，经验桶给的是原始条目，用 `id` 兜底。
+      for (const layer of ['insight', 'experience']) {
+        if (layer === 'insight' && !wantInsight) continue
+        if (layer === 'experience' && !(type === 'all' || type === 'experience')) continue
         try {
-          const bucket = recalled.layers.find((l) => l.layer === 'insight')
-          recordHit({ store, globalStore, ids: (bucket?.hits || []).map((h) => h.item?.insightId) })
+          const bucket = recalled.layers.find((l) => l.layer === layer)
+          recordHit({ store, globalStore, ids: (bucket?.hits || []).map((h) => h.item?.insightId || h.item?.id) })
         } catch {
           /* ignore：记账是旁路 */
         }
@@ -170,7 +174,9 @@ export function queryMemoryTool(ctx, config) {
         if (expBucket && expBucket.hits.length) {
           lines.push(`## Experience (past problems -> solutions)`)
           for (const { item: e, rel } of expBucket.hits) {
-            const source = e.sourceFile ? ` (source: ${toAbs(root, e.sourceFile)})` : ''
+            // 统一存储后经验条目就是 insight：导入时 source_file 落在 files[0]，新写的也走同一处。
+            const src = e.sourceFile || (Array.isArray(e.files) ? e.files[0] : '')
+            const source = src ? ` (source: ${toAbs(root, src)})` : ''
             lines.push(
               `### Problem: ${e.problem} (score: ${Math.round(rel * 100)}, id: ${e.id})\n- solution: ${e.solution}${source}\n- updated: ${e.updatedAt}`,
             )

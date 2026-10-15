@@ -240,7 +240,8 @@ console.log('\n== 辅助集合必须进上界与失效键（0.6.1）==')
   invalidate('insight 写入', () =>
     store.replaceInsightItems([{ id: 'i1', kind: 'lesson', scope: 'project', title: 't', problem: 'z'.repeat(4000) }]),
   )
-  invalidate('经验写入', () => store.addExperience({ problem: 'p'.repeat(4000), solution: 's'.repeat(4000) }))
+  // 「经验写入」这条用例随 v0.4 经验层一起删了：经验笔记现在是 insight 里 kind:'experience' 的条目，
+  // 写入走的就是上面那条 replaceInsightItems 路径，独立数组已不存在。
   invalidate('任务写入', () => store.addTask({ id: 't1', title: 'x'.repeat(4000) }))
   // task 内的条目由调用方直接改，只经 `markTasksDirty()` 通报——那条路也必须失效。
   invalidate('任务内容直改', () => {

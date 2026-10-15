@@ -1,6 +1,23 @@
 ## Unreleased
 
-`npm test` **675 → 707 项 / 36 → 39 个文件**；`npm run typecheck` 通过。
+`npm test` **675 → 701 项 / 36 → 39 个文件**；`npm run typecheck` 通过。
+
+### 修改：统一存储——`experience.json` 退休，经验笔记成为 `kind:'experience'` 的 insight
+
+**问题**：同一个概念有两个真相源——`experience.json` 服务 `remember`/`forget`/`query_memory`，`insights.json` 里又躺着一份 `source:'migrate'` 的**影子副本**，靠 `visibleInsights` 里一个特判（排除 `kind:'experience' && source:'migrate'`）才不至于在 `## Insights` 与 `## Experience` 里各出现一次。写入、删除、容量、向量索引各维护一套，正是"结构有点乱"的来源。上一版把 `forget` 做成了全层一套，但底下仍然是两套存储。
+
+**改法**（insight 是唯一实体，`kind` 只是语义）：
+
+- **`experience.json` 降为一次性导入源**：加载时导入 `insights.json`，导入成功即改名 `experience.json.migrated` 只读归档（不删，升级后想人工比对还有原文）。归档那一步与"导入"**分开判**：0.5.x/0.6.x 用户的 `migratedAt` 早就写上了、文件却还在，只看 `migratedAt` 的话旧文件永远收不走。写盘失败则不收文件（宁可留着，也不丢数据）。
+- **删掉旧层 API**：`addExperience` / `findSupersede` / `pruneExperience` / `removeExperience` 与 `store.experience` 的读写全部移除；容量归 insight 层的 `maxProject`（归档优先、超限才物理删），删除归 `forget` / `removeMemory`。
+- **`remember` 改走 `saveInsight`**（`kind:'experience'`、project 级），于是它与 `save_lesson` 共享同一套去重 / 自动覆盖 / 近邻提示 / 就地更新。工具描述里删掉 "never auto-injected"：那条承诺早已名不副实——`auto-inject` 的候选池（`insightCandidates`）一直是从 `insightItems()` 全量取的，影子条目本来就在池子里。
+- **召回按 kind 分工**：`experience` 桶改由 `kind:'experience'` 的条目供给，`insight` 桶排除它（同一份池子、两边互斥，否则同一内容会同时出现在两个分节）；`visibleInsights` 里的影子特判删除。`query_memory` 的经验桶现在也记 `hitCount`（同源了），`source` 显示兼容导入时落在 `files[0]` 的路径。
+- **`insights.json` version → 3**：形状与 v2 相同（纯语义升级，v1/v2/v3 都能直接读），只是标记 `kind:'experience'` 从影子变成一等实体。
+
+**升级路径**（至少覆盖 0.5.0，三种真实形态都有测试）：只有 `experience.json`、没有 `insights.json` 的 0.4/0.5.0 store；`migratedAt` 已存在但旧文件还在的 0.5.x/0.6.x store；v1/v2 `insights.json`。都能直接加载，导入幂等、不重复。
+**降级注意**：回到 ≤0.6.x 的老版本后，那些笔记在旧版里查不到——老版本从空的 `store.experience` 出发、又用特判排除 `source:'migrate'` 的影子。**数据没丢**（仍在 `insights.json`），只是旧版本不再展示。
+
+**测试**：新增迁移归档 / 已迁移老 store 也要归档 / 无 insights.json 的旧版形态 3 项；删掉随能力一起消失的用例（经验层容量与动态上限、`store-cache` 的"经验写入"失效探针、run-test 的 `addExperience` 系列），并把 `supersede boundary`（共享前缀不互相顶掉）改到新写路径上继续钉住。707 → 701 项。
 
 ### 修改：`forget` 通吃全层（教训 / 决策 / 流程 / 经验笔记，task / project / global）
 

@@ -559,10 +559,10 @@ function queryCoverage(query, text) {
 }
 
 /**
- * 全层删除：task 内嵌 / project / global / 旧经验层，一套判据、一次调用。
+ * 全层删除：task 内嵌 / project / global。一套判据、一次调用。
  *
  * 为什么是"全层一套"而不是给 insight 再开一条通道：对模型来说这本来就是一件事——
- * "把那条记错的删掉"，它不该先搞清自己在哪个层。条目以后真要统一存储，这里删掉一个分支即可。
+ * "把那条记错的删掉"，它不该先搞清自己在哪个层。
  * @param {object} o
  * @param {string} o.idOrQuery - 精确 id，或用于匹配的关键词
  * @param {number} [o.maxMatches] - 关键词命中上限；超过则**一条都不删**，只回报候选
@@ -577,8 +577,7 @@ export function removeMemory({ store, globalStore, idOrQuery, maxMatches = 10 } 
     taskId,
     title: String(item.title || item.problem || '(untitled)').slice(0, 60),
   })
-  const pools = { experience: [], project: [], global: [], task: [] }
-  for (const it of (store && store.experience) || []) pools.experience.push(at('experience', it))
+  const pools = { project: [], global: [], task: [] }
   for (const it of (store && typeof store.insightItems === 'function' ? store.insightItems() : []) || []) pools.project.push(at('project', it))
   for (const it of (globalStore && typeof globalStore.items === 'function' ? globalStore.items() : []) || []) pools.global.push(at('global', it))
   for (const t of (store && typeof store.getTasks === 'function' ? store.getTasks() : []) || []) {
@@ -599,10 +598,6 @@ export function removeMemory({ store, globalStore, idOrQuery, maxMatches = 10 } 
   // 2) 关键词：查询侧覆盖率 ≥ 0.5（与旧经验层同判据）
   const matches = []
   const textOf = (home, id) => {
-    if (home === 'experience') {
-      const it = (store.experience || []).find((x) => x.id === id)
-      return memoryText(it)
-    }
     if (home === 'project') return memoryText((store.insightItems() || []).find((x) => x.id === id))
     if (home === 'global') return memoryText((globalStore.items() || []).find((x) => x.id === id))
     for (const t of store.getTasks() || []) {
@@ -619,14 +614,13 @@ export function removeMemory({ store, globalStore, idOrQuery, maxMatches = 10 } 
   return { ok: true, removed: matches }
 }
 
-/** 按 home 把条目从各自真相源里移除（experience 走 store 自己的移除入口）。 */
+/** 按 home 把条目从各自真相源里移除。 */
 function removeEntries({ store, globalStore }, entries) {
   const projectIds = new Set()
   const globalIds = new Set()
   const taskIds = new Map()
   for (const e of entries) {
-    if (e.home === 'experience') store.removeExperience(e.id)
-    else if (e.home === 'project') projectIds.add(e.id)
+    if (e.home === 'project') projectIds.add(e.id)
     else if (e.home === 'global') globalIds.add(e.id)
     else if (e.home === 'task') taskIds.set(e.taskId, [...(taskIds.get(e.taskId) || []), e.id])
   }

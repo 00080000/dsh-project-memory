@@ -60,7 +60,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | `archive_task` | Archive a task (hide from default views, exclude from capacity, stop syncing). `select_task` restores it. |
 | `show_task_panel` | Show the task panel in the UI. Call when the user asks to see the task list or when you want to display the panel. |
 | `/tasks` (typed by the user, not the model) | The only user command: shows the task stack and drives the workflow card. Every other action is a **sub-verb** invoked by card buttons: `switch` / `archive` / `unbind` / `rename` / `todos …` for tasks, `insight list [offset] [limit]` / `confirm` / `promote` / `demote` / `archive` / `restore` / `delete` / `save` / `edit` for memory. |
-| `remember problem solution` | Save an experience note. Similar problems supersede instead of duplicating. |
+| `remember problem solution` | Save an experience note. It is a `kind: 'experience'` insight — same store, same dedup and same delete path as lessons / decisions / procedures. Similar problems merge or overwrite instead of duplicating. |
 | `forget id_or_query` | Delete memories — lessons / decisions / procedures and legacy experience notes alike, across task / project / global in one call, without knowing which layer the entry lives in. An exact id deletes that one entry; keywords match by **query-side coverage** (the same rule the legacy experience layer always used). Real deletion, no undo; when keywords match more than the cap (default 10) it deletes nothing and only lists the candidates. |
 | `save_lesson` | Save a lesson / decision / procedure at task, project or global scope; passing `id` **overwrites that entry in place** (only the fields you pass, the previous values stay in `prev` — write them back with the same id). Before writing it compares against existing memory: cosine ≥ 0.9 auto-overwrites that entry, ≥ 0.7 reports the nearest id in the result; without `leanvec` it falls back to lexical overlap ≥ 0.7 merge / 0.65–0.7 reinforce. Two tasks hitting the same insight promote it task → project, three or more → global. Key params: `id`, `title`, `kind`, `scope`, the content (`pattern`/`fix`, `choice`/`reason` or `steps`), and `trigger` (`when` is the only trigger surface, `guard` narrows it, `prevents` records what breaks without it). |
 
@@ -77,7 +77,7 @@ The design follows four principles:
 
 Building the **memory** does not require an upfront scan: files are memorized as the model reads them, so the **memory** grows to cover exactly what has been worked with. Re-reading an unchanged file is a no-op, so the **memory** stays fresh with minimal ongoing overhead.
 
-The store is per-project and follows the codebase: changed files are re-extracted by content hash, deleted files are removed. Experience notes are retrieval-only, so accumulation does not affect context.
+The store is per-project and follows the codebase: changed files are re-extracted by content hash, deleted files are removed. Experience notes are now `kind: 'experience'` entries in `insights.json` — retrieval-only, so accumulation does not affect context.
 
 ## Design
 
@@ -85,11 +85,11 @@ The store is per-project and follows the codebase: changed files are re-extracte
 .dsh-project-memory/
   format.json      layout marker (v2, sharded)
   shards/          one self-describing JSON per indexed source file — writes touch only dirty shards
-  experience.json  problem → solution notes (retrieval-only)
+  experience.json.migrated  read-only archive of v0.4 notes (imported into insights.json on first load)
   watch.json       watched roots
   tasks.json       TaskBridge task entities (cross-session)
   binding.json     current session ↔ task binding
-  insights.json    project-scope insights (lessons / decisions / procedures)
+  insights.json    project-scope memory (lessons / decisions / procedures / experience notes) — one entity
   vectors.json     optional semantic index (only when the vector layer runs)
   injection-audit.jsonl   one line per real injection (what / why / dropped / budget)
   admission-shadow.jsonl  one line per step, all scored candidates + features (offline replay)

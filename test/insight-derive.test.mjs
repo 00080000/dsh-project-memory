@@ -82,7 +82,7 @@ const CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
   ok('派生词项参与召回：正文没有的意图词也能命中')
 }
 
-// ---- 4. insights.json v1 → v2：懒回填派生 trigger，幂等 ----
+// ---- 4. insights.json v1 → 当前版本：懒回填派生 trigger，幂等 ----
 {
   const root = mkdtempSync(path.join(tmpdir(), 'derive-mig-'))
   const dir = memoryRootFor(root, '.dsh-project-memory')
@@ -93,10 +93,11 @@ const CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
   assert.ok(store.insightItems()[0].triggerDerived, 'v1 条目加载后应被懒回填')
   store.commit(() => 0)
   const saved = JSON.parse(readFileSync(path.join(dir, 'insights.json'), 'utf8'))
-  assert.equal(saved.version, 2, '下一次落盘把格式标记推到 v2')
+  // v3 = 统一存储（kind:'experience' 从影子变成一等实体），形状与 v2 相同：v1 → v3 只多两个可选字段
+  assert.equal(saved.version, 3, '下一次落盘把格式标记推到当前版本')
   assert.ok(saved.items[0].triggerDerived)
   assert.equal(readiness.backfillDerivedTriggers(saved), false, '幂等：已回填的文档不再变更')
-  ok('迁移：v1 懒回填 + 落盘 v2 + 幂等')
+  ok('迁移：v1 懒回填 + 落盘到当前版本 + 幂等')
 }
 
 // ---- 5. save_lesson / normalizeInsight 接受 actions / paths ----

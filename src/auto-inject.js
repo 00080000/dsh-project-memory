@@ -137,6 +137,27 @@ export function cfgEngine(config) {
   }
 }
 
+/**
+ * 给写入路径（`save_lesson` / `remember`）用的向量打分器：**没装/没配就是 null**。
+ *
+ * 与注入路径共用一个解析入口（`cfgEngine` + `createVectorRerank`），所以"装了 leanvec 就用、
+ * 没装就纯词法"这条规则只有一处实现、一处配置。返回的函数是同步的，供 `saveInsight` 在
+ * 写事务里直接调用；任何异常都降级成 null，绝不因为可选的向量层挡住写入。
+ * @param {object} config - 插件配置
+ * @param {{storeDir: string|null, items: object[]}} o - 持久化位置与候选池（见 vectorItemsFrom）
+ * @returns {Promise<((text: string, items: object[]) => Map<string, number>)|null>}
+ */
+export async function createWriteCosine(config, { storeDir = null, items = [] } = {}) {
+  const engine = cfgEngine(config)
+  try {
+    const rerank = await createVectorRerank({ storeDir, items, vectorDir: engine.vectorDir, alpha: engine.vectorAlpha })
+    if (!rerank || typeof rerank.score !== 'function') return null
+    return (text, cands) => rerank.score(text, cands)
+  } catch {
+    return null
+  }
+}
+
 export function lastUserText(messages) {
   if (!Array.isArray(messages)) return ''
   let fallback = ''

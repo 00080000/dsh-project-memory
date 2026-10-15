@@ -21,7 +21,7 @@ const POOL = [
 ]
 const Q = 'alpha beta gamma delta'
 const base = (extra = {}) => recallItems({
-  store: { experience: POOL }, queries: [Q], layers: ['experience'], limit: 4, ...extra,
+  entries: POOL, queries: [Q], layers: ['experience'], limit: 4, ...extra,
 })
 const idsOf = (r) => (r.layers[0]?.hits || []).map((h) => h.item.id)
 
@@ -62,7 +62,7 @@ same(base({ rerank: { alpha: 0.9, score: () => null } }), '向量层返回 null'
 // ---- ④ 全量融合：BM25 的 top-limit 之外的条目也能进来（先截断再重排就做不到）----
 {
   const r = recallItems({
-    store: { experience: POOL }, queries: [Q], layers: ['experience'], limit: 2,
+    entries: POOL, queries: [Q], layers: ['experience'], limit: 2,
     rerank: { alpha: 0.9, score: () => new Map(POOL.map((it) => [it.id, it.id === 'e4' ? 1 : 0])) },
   })
   assert.equal(r.layers[0].hits.length, 2, 'limit 仍必须生效（返回条数不膨胀）')
@@ -89,7 +89,7 @@ same(base({ rerank: { alpha: 0.9, score: () => null } }), '向量层返回 null'
 // ---- ⑥ 边界：零词重叠的条目**不会**被融合拉进来（那是并集的活，本实现明确不做）----
 {
   const r = recallItems({
-    store: { experience: [...POOL, { id: 'e9', problem: 'zzz unrelated words', solution: 'x' }] },
+    entries: [...POOL, { id: 'e9', problem: 'zzz unrelated words', solution: 'x' }],
     queries: [Q], layers: ['experience'], limit: 9,
     rerank: { alpha: 0.9, score: () => new Map([['e9', 1], ['e1', 0.1], ['e2', 0.1], ['e3', 0.1], ['e4', 0.1]]) },
   })
@@ -102,17 +102,17 @@ same(base({ rerank: { alpha: 0.9, score: () => null } }), '向量层返回 null'
 // （来自 `git commit --amend --no-edit`），于是单片段就命中了一条无关经验（3.13 分）。
 {
   const withWeak = [...POOL, { id: 'e_weak', problem: 'alpha only-one-hit', solution: 'x' }]
-  const r = recallItems({ store: { experience: withWeak }, queries: [Q], layers: ['experience'], limit: 9 })
+  const r = recallItems({ entries: withWeak, queries: [Q], layers: ['experience'], limit: 9 })
   assert.ok(!idsOf(r).includes('e_weak'), `只命中 1/4 个查询词的条目应被闸门挡掉，实得 ${idsOf(r)}`)
   ok('最小相关性闸门：单片段命中（1/4 词）被挡掉')
   // 单词查询不受影响：need = min(2, 1) = 1
-  const r1 = recallItems({ store: { experience: withWeak }, queries: ['alpha'], layers: ['experience'], limit: 9 })
+  const r1 = recallItems({ entries: withWeak, queries: ['alpha'], layers: ['experience'], limit: 9 })
   assert.ok(idsOf(r1).includes('e_weak'), `单词查询不该被闸门影响，实得 ${idsOf(r1)}`)
   ok('最小相关性闸门：单词查询不受影响（need = min(2,1) = 1）')
   // ⚠ 有向量时闸门**不生效**：向量救回来的正是"词法弱到不足 2 个命中"的那批，
   //   用词法的尺子筛等于砍掉向量的全部价值（同查询集 A/B 实测：融合 hit@10 72% → 64%）。
   const r2 = recallItems({
-    store: { experience: withWeak }, queries: [Q], layers: ['experience'], limit: 9,
+    entries: withWeak, queries: [Q], layers: ['experience'], limit: 9,
     rerank: { alpha: 0.5, score: () => new Map([['e_weak', 1]]) },
   })
   assert.ok(idsOf(r2).includes('e_weak'), `有向量时不该用词法闸门挡住语义强的条目，实得 ${idsOf(r2)}`)
@@ -128,16 +128,16 @@ console.log(`\nrecall-vector-fusion tests: ${passed} passed`)
 {
   const fragPool = [{ id: 'e_noedit', problem: 'git commit --amend --no-edit 会改写历史', solution: '改用新提交' }]
   const garbage = 'zzz-no-such-topic-xyz'
-  const lex = recallItems({ store: { experience: fragPool }, queries: [garbage], layers: ['experience'], limit: 5 })
+  const lex = recallItems({ entries: fragPool, queries: [garbage], layers: ['experience'], limit: 5 })
   assert.deepEqual(idsOf(lex), [], `片段命中不该算证据（纯词法），实得 ${idsOf(lex)}`)
   const vec = recallItems({
-    store: { experience: fragPool }, queries: [garbage], layers: ['experience'], limit: 5,
+    entries: fragPool, queries: [garbage], layers: ['experience'], limit: 5,
     rerank: { alpha: 0.5, score: () => new Map([['e_noedit', 1]]) },
   })
   assert.deepEqual(idsOf(vec), [], `片段命中不该算证据（有向量），实得 ${idsOf(vec)}`)
   ok('短拉丁片段不算证据：乱码查询两种模式都零结果')
   // 真词查询不受影响
-  const real = recallItems({ store: { experience: fragPool }, queries: ['改写历史'], layers: ['experience'], limit: 5 })
+  const real = recallItems({ entries: fragPool, queries: ['改写历史'], layers: ['experience'], limit: 5 })
   assert.ok(idsOf(real).includes('e_noedit'), `中文真词查询应正常命中，实得 ${idsOf(real)}`)
   ok('短拉丁片段不算证据：中文真词查询照常命中')
   // doc/symbol 层的短标识符不受影响（`js` / `id` 本来就该命中）
@@ -149,7 +149,7 @@ console.log(`\nrecall-vector-fusion tests: ${passed} passed`)
   // 有向量时仍可能带出一条弱相关笔记（词法上无法与真查询区分，实测 support 分布重叠）。
   const realWordPool = [{ id: 'e_notdeclared', problem: 'if the property is not declared it never reaches config', solution: 'declare it' }]
   const rw = recallItems({
-    store: { experience: realWordPool }, queries: ['not-a-real-topic-qqq'], layers: ['experience'], limit: 5,
+    entries: realWordPool, queries: ['not-a-real-topic-qqq'], layers: ['experience'], limit: 5,
     rerank: { alpha: 0.5, score: () => new Map([['e_notdeclared', 1]]) },
   })
   assert.ok(idsOf(rw).length <= 1, `残留上界是 1 条，实得 ${idsOf(rw)}`)

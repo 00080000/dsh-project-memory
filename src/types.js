@@ -4,7 +4,8 @@
 /**
  * @typedef {'lesson' | 'decision' | 'procedure' | 'experience'} InsightKind
  *  lesson: 曾踩坑/纠偏（pattern→fix）；decision: 曾权衡的选型（topic→choice+reason）；
- *  procedure: 多步操作指南（steps）；experience: v0.4 旧笔记迁移而来（problem→solution）。
+ *  procedure: 多步操作指南（steps）；experience: 问题→解法笔记（`remember` 写的就是它，
+ *  v0.4 experience.json 在加载时导入成同一实体，不再有第二个存储）。
  *
  * @typedef {'task' | 'project' | 'global'} InsightScope
  *  task: tasks.json 内嵌于任务实体 task.insights[]（私有草稿）；

@@ -172,14 +172,15 @@ export function openVectorIndex({ dir = null, items = [], embed, model, dim = DI
 }
 
 /**
- * 从两个 store 收集**要建索引的条目**：洞察层（项目 + 全局）+ 经验层。
+ * 从两个 store 收集**要建索引的条目**：洞察层（项目 + 全局）。
  * 与提示通道/召回看到的池子同源；归档条目不进（它们不会被召回）。
+ * v0.4 的经验笔记也在里面——统一存储后它们是 `kind:'experience'` 的 insight，
+ * 加载时已从 experience.json 导入，不再有第二个池子。
  */
 export function vectorItemsFrom(store, globalStore) {
   const out = []
   try { if (typeof store?.insightItems === 'function') out.push(...store.insightItems()) } catch { /* store 形状不保证 */ }
   try { if (typeof globalStore?.items === 'function') out.push(...globalStore.items()) } catch { /* 同上 */ }
-  try { if (Array.isArray(store?.experience)) out.push(...store.experience) } catch { /* 同上 */ }
   return out.filter((it) => it && !it.archived)
 }
 
