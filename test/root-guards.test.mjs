@@ -131,7 +131,7 @@ console.log('\n== the deny list is built per platform (simulated, runs everywher
   const darwin = collectUnsafeRootSets({
     platform: 'darwin',
     pathApi: path.posix,
-    home: '/Users/charlee',
+    home: '/Users/me',
     tmp: '/var/folders/zz/abc/T',
     env: {},
   })
@@ -142,7 +142,7 @@ console.log('\n== the deny list is built per platform (simulated, runs everywher
   )
   check(
     'darwin: home / Homebrew / /usr/local are denied, a project under the temp dir is not',
-    ['/Users/charlee', '/opt/homebrew', '/usr/local'].every(hasMac) && !hasMac('/var/folders/zz/abc/T/myproject'),
+    ['/Users/me', '/opt/homebrew', '/usr/local'].every(hasMac) && !hasMac('/var/folders/zz/abc/T/myproject'),
   )
   check(
     'darwin: /tmp itself is classified as the shared temp directory',
