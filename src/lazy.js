@@ -4,6 +4,7 @@ import { findProjectRoot, isUnsafeRoot, memoryRootFor, relativePath, storeKey } 
 import { DROP, OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from './index-pipeline.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileObserved } from './enhancer.js'
+import { sessionWorkingDir } from './util/session-dir.js'
 
 // 根推导策略已收敛到 util/fs.js（唯一实现）。这里重新导出，保持既有 import 路径可用。
 export { findProjectRoot }
@@ -80,12 +81,13 @@ export function setupLazyIndexing(ctx, config, watchManager = null) {
   }
 
   // 第三个参数是宿主工具执行上下文（tool-fs / str-replace-editor 都以 `exec` 发射），
-  // 取它的 `agent.session.header.cwd` 作为**本次读取所在会话**的工作目录——比
-  // process.cwd() 精确（web profile 下同一进程可能有多个会话/项目）。
+  // 取它的会话工作目录作为**本次读取所在会话**的工作目录——比 process.cwd() 精确
+  // （web profile 下同一进程可能有多个会话/项目）。0.2.1+ 该目录由 workingDirectory
+  // 投影决定（cd 后会变），见 util/session-dir.js。
   ctx.on('fs/observed', (target, observation, actor) => {
     if (!target || !observation || observation.kind !== 'present') return
     if (typeof target.displayPath !== 'string' || !target.displayPath) return
-    queue(target.displayPath, actor?.agent?.session?.header?.cwd)
+    queue(target.displayPath, sessionWorkingDir(actor?.agent?.session, { agent: actor?.agent }))
   })
 
   ctx.effect(() => () => {

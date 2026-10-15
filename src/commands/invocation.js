@@ -3,6 +3,7 @@
  * 「解析 CommandInvocation → 会话与 cwd」和「拼 JSON 围栏载荷」两段代码。
  * 集中在这里，语义只在一处维护。
  */
+import { sessionWorkingDir } from '../util/session-dir.js'
 
 /**
  * 从命令调用里解出会话上下文。
@@ -20,7 +21,9 @@ export function invocationContext(invocation) {
   // 旧写法只在 agent.ctx 不存在时退回：服务在、但 get 返回 undefined 时 session 直接是 undefined，
   // /task switch|todos|unbind 于是静默跳过 session.append（宿主 todo 同步失效）。
   const session = fromService || agent?.session || null
-  const cwd = session?.header?.cwd || agent?.session?.header?.cwd
+  // 当前工作目录走 util/session-dir.js：0.2.1+ 由 workingDirectory 投影决定（cd 后会变），
+  // 老宿主回退 header.cwd —— 面板/任务桥的"本项目"必须与工具侧同一口径。
+  const cwd = sessionWorkingDir(session, { agent })
   return { agent, sid, session, cwd }
 }
 

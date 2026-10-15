@@ -315,7 +315,7 @@ const client = loadClient()
 
 // ---- 7. 静态守卫：源码里不得再直接取 ctx.<必需服务>（一律走 services.ts 软探测） ----
 {
-  const FILES = ['client.ts', 'TaskPanel.tsx', 'TaskComponents.tsx', 'MemoryView.tsx', 'slash.ts', 'ShowTaskPanelNode.tsx', 'TaskCommandNode.tsx']
+  const FILES = ['client.ts', 'TaskPanel.tsx', 'TaskComponents.tsx', 'MemoryView.tsx', 'slash.ts', 'ShowTaskPanelNode.tsx', 'TaskCommandNode.tsx', 'paging.js']
   const DIRECT = /\bctx\??\.(slots|sessions|remote|locale)\b/
   // 子命名空间只有**整名**读法不需要 inject；顺着父服务取属性在真实装配里必被门控挡下。
   const SUBNAMESPACE = /service\(\s*ctx\s*,\s*'remote'\s*\)\s*\??\./
