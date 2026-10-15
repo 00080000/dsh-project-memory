@@ -12,7 +12,7 @@ export function forgetTool(config) {
   return defineTool({
     name: 'forget',
     description:
-      'Delete memories by id or by matching keywords — lessons / decisions / procedures and legacy experience notes, ' +
+      'Delete memories by id or by matching keywords — lessons / decisions / procedures and experience notes, ' +
       'at task / project / global scope alike (one call, no need to know which layer it lives in). Real deletion, no undo. ' +
       'An exact id deletes that one entry; keywords match on how much of the query the entry covers. ' +
       'A keyword that matches more than the configured cap deletes nothing and lists the candidates instead.',

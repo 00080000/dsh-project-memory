@@ -7,12 +7,12 @@ import { ensureGlobalInit } from '../global-seed.js'
 import { INSIGHT_KINDS, INSIGHT_SCOPES } from '../insight-store.js'
 import { sessionIdOf } from '../util/task-view.js'
 import { createVectorRerank, vectorItemsFrom } from '../vector-index.js'
-import { cfgEngine } from '../auto-inject.js'
+import { createWriteCosine } from '../auto-inject.js'
 
 export function lessonTool(config) {
   // 描述预算：这两段以前同时出现在「工具描述」和「参数描述」里，等于付两遍钱。
   // 现在只在参数上写一次 —— 语义一条没少，只是不再重复。
-  const kindDesc = 'lesson(踩坑/纠偏, 用 pattern+fix) | decision(选型, choice+reason) | procedure(步骤, steps) | experience(problem→solution, v0.4 兼容)；默认 lesson。'
+  const kindDesc = 'lesson(踩坑/纠偏, 用 pattern+fix) | decision(选型, choice+reason) | procedure(步骤, steps) | experience(问题→解法，remember 写的形态)；默认 lesson。'
   const scopeDesc =
     'task(任务私有，随任务归档) | project(项目资产) | global(个人能力库，跨项目)；默认 project。' +
     '解析顺序：显式 scope > task_id > 当前绑定任务 > project。给了 id 时忽略 scope：条目留在原层。'
@@ -125,18 +125,7 @@ export function lessonTool(config) {
       // 就地更新（给了 id）不需要比对，跳过它可以省掉一次模型加载（~118ms / ~120MB）。
       let cosine = null
       if (!args.id) {
-        try {
-          const engine = cfgEngine(config)
-          const rerank = await createVectorRerank({
-            storeDir: memoryDir,
-            items: vectorItemsFrom(store, globalStore),
-            vectorDir: engine.vectorDir,
-            alpha: engine.vectorAlpha,
-          })
-          if (rerank && typeof rerank.score === 'function') cosine = (text, items) => rerank.score(text, items)
-        } catch {
-          cosine = null // 可选层任何异常都不得挡住写入
-        }
+        cosine = await createWriteCosine(config, { storeDir: memoryDir, items: vectorItemsFrom(store, globalStore) })
       }
 
       let result
