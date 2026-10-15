@@ -41,7 +41,7 @@ try {
 
 const INSIGHT = {
   kind: 'lesson',
-  title: '公开作品仓库的「公开面」不止文件清单：src 注释、CHANGELOG 与提交历史都会一起暴露',
+  title: '发布前要扫的公开面不止文件清单：注释、CHANGELOG 与提交历史都会一起暴露',
   pattern: '把内部文档从 .gitignore 里排除，却忘了 src 注释、CHANGELOG 与提交历史同样公开',
   fix: '内部文档一律写进 .gitignore；公开前扫描 src/ test/ CHANGELOG 的内部引用与代号；注意 npm pack 的 files 白名单；旧提交快照里的措辞也算公开',
   confidence: 0.88,

@@ -162,7 +162,7 @@
 ### 修复：legacy `trigger.scope` 不再被当作过滤条件
 
 `readiness.js` 的注释写的是"`scope` → 默认忽略"，但 `src/index.js` 的 schema 默认值是 `filter`，
-两处不一致。结果是唯一带 `scope` 的条目（`ins_510aa6f6`「npm 包发布流程」）永远无法命中：它的
+两处不一致。结果是唯一带 `scope` 的条目（「发版流程」）永远无法命中：它的
 `scope=['release','npm','dsh-project-memory']` 与项目画像 tag 无交集，guard 直接判死。
 
 - 默认改为 `ignore`（`src/index.js` 的 schema 与 `cfgEngine` 两处同时改）。显式配
@@ -1193,7 +1193,7 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
 
 ### Added (unified recall: the insight layer becomes searchable — PR1)
 
-- **`query_memory` now searches insights.** `type: 'insight'` was added, and `type: 'all'` appends an `## Insights (lessons / decisions / procedures)` section. Before this, lessons/decisions/procedures had **no retrieval path at all**: `util/search.js` had no insight ranker and the tool's `type` enum had no insight value, so a lesson could only reach an agent through silent injection. Verified against this repository's own store: the "public face" lesson (`ins_3dcc7458`) now returns at score 100 for a natural-language query.
+- **`query_memory` now searches insights.** `type: 'insight'` was added, and `type: 'all'` appends an `## Insights (lessons / decisions / procedures)` section. Before this, lessons/decisions/procedures had **no retrieval path at all**: `util/search.js` had no insight ranker and the tool's `type` enum had no insight value, so a lesson could only reach an agent through silent injection. Verified against this repository's own store: the "public face" lesson now returns at score 100 for a natural-language query.
 - **New `src/recall.js` — one retrieval core, ranked per layer.** Every layer gets an adapter to the same entry contract (`title` / `keywords` / `summary` / `terms` / `sourcePath` — the shape `weightedFieldText` already scores), its own top-k, and a layer prior. Cross-layer order is only ever a *hint* (`flat`); it is never spliced into one score, because the doc/symbol streamer and the in-memory BM25 have different scales. `query_memory` routes doc / symbol / experience / insight through this single call, so the experience layer no longer carries its own scoring path inside the tool.
 - **Scope visibility follows the session binding.** `project` / `global` insights are visible to every session; `task`-level insights only to a session bound to that task (`select_task`). Drafts stay out of recall. The v0.4 `experience.json` → `insights.json` migration shadow (`kind: 'experience'`, `source: 'migrate'`) is excluded from the insight layer so a note is not listed once as an insight and again as an experience — convergence the store's own comment had deferred to this PR.
 - **Normative-heading prior.** A doc chunk whose heading matches the multilingual normative set (必须 / 禁止 / 铁律 / rules / must / must not / do not …) is boosted ×1.5 within the doc layer: deterministic, model-free, no new dependency. This is the "「必须遵守」never surfaced" case — `test/recall.test.mjs` first pins today's term-frequency ordering, then asserts the prior flips it.

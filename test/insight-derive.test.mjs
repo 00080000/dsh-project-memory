@@ -29,7 +29,7 @@ const PUBLIC_FACE = {
   id: 'ins_pub',
   kind: 'lesson',
   scope: 'project',
-  title: '公开作品仓库的「公开面」不止文件清单：src 注释、CHANGELOG 与提交历史都会一起暴露',
+  title: '发布前要扫的公开面不止文件清单：注释、CHANGELOG 与提交历史都会一起暴露',
   fix: '内部文档一律写进 .gitignore；公开前扫描 src/ test/ CHANGELOG 的内部引用；注意 npm pack 的 files 白名单',
   confidence: 0.88,
   createdAt: '2026-01-01T00:00:00.000Z',
