@@ -106,6 +106,8 @@ export function taskCommandDefinition(config, ctx) {
           task.title = title
           task.updatedAt = new Date().toISOString()
           task.lastActiveAt = task.updatedAt
+          // 直接改 task 内容 → 必须标脏：save() 没脏标记会早退（改动静默丢失），驻留账也停在旧水位。
+          store.markTasksDirty()
           store.save()
           const note = `已改名「${oldTitle}」→「${title}」`
           return withTaskSnapshot(config, cwd, sid, store, note)
@@ -136,6 +138,7 @@ export function taskCommandDefinition(config, ctx) {
           task.steps = norm
           task.updatedAt = new Date().toISOString()
           task.lastActiveAt = task.updatedAt
+          store.markTasksDirty()
           store.save()
           if (shouldAdoptToHost(config)) {
             adoptStepsToSession(session, task)
@@ -154,6 +157,7 @@ export function taskCommandDefinition(config, ctx) {
           }
           task.updatedAt = new Date().toISOString()
           task.lastActiveAt = task.updatedAt
+          store.markTasksDirty() // switch 会解归档：这条也要落进 tasks.json（不只是 binding）
           store.save()
           // 反思钩子：切走旧任务异步收割（默认关）
           if (prevBound && prevBound !== task.id) {
@@ -173,6 +177,7 @@ export function taskCommandDefinition(config, ctx) {
           if (task.archived) return { kind: 'error', text: `[task] 已归档: ${task.title}` }
           task.archived = true
           task.updatedAt = new Date().toISOString()
+          store.markTasksDirty()
           store.save()
           // 反思钩子：归档即收割（默认关）
           fireReflect(config, { llm: ctx?.llm }, root, taskId, 'archive', resolveRoute(session ? { agent: { session } } : undefined, config))

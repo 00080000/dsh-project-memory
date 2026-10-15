@@ -193,7 +193,8 @@ export function onSessionEvent(config, session, event, meta) {
           if (task && !task.archived) {
             task.lastHumanAt = now
             task.updatedAt = now
-            s._dirtyTasks = true
+            // 直接改了 task 内容就必须走标脏入口：只手置 _dirtyTasks 会漏掉驻留估算的新版本维。
+            s.markTasksDirty()
           }
         })
       } catch {
@@ -240,7 +241,7 @@ export function onSessionEvent(config, session, event, meta) {
       task.updatedAt = now
       task.lastActiveAt = now
       task.lastSessionId = sessionId
-      s._dirtyTasks = true
+      s.markTasksDirty()
     })
     return
   }
@@ -267,7 +268,7 @@ export function onSessionEvent(config, session, event, meta) {
       if (!task || task.archived) return
       touchTaskFile(task, rel, kind, now)
       task.lastActiveAt = now
-      s._dirtyTasks = true
+      s.markTasksDirty()
     })
   }
 }

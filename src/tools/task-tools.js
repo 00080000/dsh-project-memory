@@ -118,6 +118,8 @@ export function selectTaskTool(config, host) {
       task.updatedAt = now
       task.lastActiveAt = now
       if (sid) task.lastSessionId = sid
+      // 解归档 / 改名 / 戳活动时间都是直接改 task：不标脏则 save() 早退，tasks.json 不落盘。
+      store.markTasksDirty()
       store.save()
 
       // 反向接管：绑定成功后，把任务步骤推成宿主 todo/write（dsh 清单跟随我们的任务）
@@ -181,6 +183,7 @@ export function archiveTaskTool(config, host) {
       if (task.archived) return truncate(JSON.stringify({ success: false, error: 'Already archived' }), config.maxOutputChars)
       task.archived = true
       task.updatedAt = new Date().toISOString()
+      store.markTasksDirty()
       store.save()
       // 反思钩子：归档即收割最终教训（默认关）
       fireReflect(config, host, root, args.taskId, 'archive', resolveRoute(exec, config))
