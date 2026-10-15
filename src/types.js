@@ -35,6 +35,8 @@
  * @property {number} [confidence] 0..1
  * @property {number} [hitCount] 被注入/命中的次数（强化信号，无 LLM）
  * @property {string} [lastHitAt] 最近一次命中时间 ISO（衰减/归档依据）
+ * @property {object} [prev] 被自动覆盖/就地更新挤掉的**上一个**值（按字段名），只留一版：
+ *   误覆盖后用同一个 id 再写一次即可写回；不是历史（不做折叠、不压实）
  * @property {boolean} [archived] 归档 = 软删：不进召回/注入，可恢复
  * @property {string[]} [tags]
  * @property {string} createdAt
@@ -45,6 +47,10 @@
  * @typedef {object} InsightConfig
  * @property {number} [dedupOverlap] 双向 token overlap 阈值（≥ 合并/取代）
  * @property {number} [reinforceBand] 近重复强化带下界（0.65~dedupOverlap → 强化）
+ * @property {number} [autoMergeCos] 向量余弦自动覆盖带（默认 0.9，需 leanvec；无向量则不用）
+ * @property {number} [autoMergeMargin] 自动覆盖还要求第一名领先第二名这么多（默认 0.05）
+ * @property {number} [hintCos] 向量近邻提示带（默认 0.7，只在返回文本里提示 id，不改数据）
+ * @property {number} [maxForgetMatches] forget 关键词删除的命中上限（默认 10）；超了一条都不删，只回报候选
  * @property {number} [maxProject] project insights 容量（归档区另计）
  * @property {number} [maxGlobalProcedures] global insights 容量
  * @property {number} [promoteConfidence] 提升 project 所需最低 confidence
