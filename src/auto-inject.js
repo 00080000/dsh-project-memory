@@ -14,6 +14,7 @@ import { stepContent } from './util/task-view.js'
 import { insightMatchText, normalizedTokenOverlap } from './similarity.js'
 import { createVectorRerank, vectorItemsFrom } from './vector-index.js'
 import { BoundedMap, SessionCache } from './util/session-cache.js'
+import { sessionWorkingDir } from './util/session-dir.js'
 import { cfgInsight, GlobalStore, defaultGlobalFile, recordHit } from './insight-store.js'
 import { projectTags } from './project-profile.js'
 import { rankEntriesMergedScored } from './util/search.js'
@@ -681,7 +682,9 @@ function warnUnsafeSessionRoot(root) {
  */
 async function injectForStep({ payload, decision, config, cfg, audit, shadow, sessions }) {
   const session = payload && payload.agent && payload.agent.session
-  const cwd = session && session.header && session.header.cwd
+  // 与工具侧同一口径的「当前工作目录」：0.2.1+ 走 workingDirectory 投影（cd 后会变），
+  // 老宿主回退 header.cwd。少了这一步，cd 之后审计与懒索引会落在两个不同的 store 里。
+  const cwd = sessionWorkingDir(session, { agent: payload?.agent })
   const sessionId = session && session.id
   if (!cwd || !sessionId) return null
   // 会话 cwd 是家目录/系统目录时整条链路停在这里：不读 store（历史遗留的超大 store

@@ -8,6 +8,12 @@ import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsig
 import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
 
+/**
+ * 记忆列表单页上限。面板每页只请求 30 条（客户端 PAGE_SIZE），远小于它——
+ * 封顶只用于挡住畸形/滥用调用，避免单个响应被抓成超大载荷。
+ */
+export const INSIGHT_PAGE_MAX = 200
+
 function insSummary(ins, extra = {}) {
   const s = ins || {}
   return {
@@ -53,20 +59,72 @@ function findTaskInsight(store, id) {
   return null
 }
 
-/** 列出某 scope 的记忆（task 聚合所有任务草稿；project/global 各自池）。 */
-export function listInsights(store, gs, scope) {
+/**
+ * 时间戳解析：非法/缺失一律 0，让排序键永远是可比较的数字。
+ * @param {unknown} value - ISO 时间字符串。
+ * @returns {number} 毫秒时间戳；不可解析时 0。
+ */
+function tsOf(value) {
+  const t = Date.parse(value == null ? '' : String(value))
+  return Number.isFinite(t) ? t : 0
+}
+
+/**
+ * 记忆列表的**全序**比较器：新 → 旧。
+ *
+ * 分页要求这个比较器给出**确定性全序**，否则相邻两页会重叠或漏条目：
+ *  1. `updatedAt` 降序（编辑会把条目顶到最前，符合"刚学到的先看到"）；
+ *  2. `createdAt` 降序（同一批写入的条目按创建时间分先后）；
+ *  3. `id` 升序兜底 —— 前两级都相同的条目（同毫秒写入）也必须有个稳定次序。
+ * @param {{raw: object}} a - 左侧条目。
+ * @param {{raw: object}} b - 右侧条目。
+ * @returns {number} 排序结果。
+ */
+function compareInsightRecency(a, b) {
+  const ua = tsOf(a.raw?.updatedAt) || tsOf(a.raw?.createdAt)
+  const ub = tsOf(b.raw?.updatedAt) || tsOf(b.raw?.createdAt)
+  if (ua !== ub) return ub - ua
+  const ca = tsOf(a.raw?.createdAt)
+  const cb = tsOf(b.raw?.createdAt)
+  if (ca !== cb) return cb - ca
+  return String(a.raw?.id ?? '').localeCompare(String(b.raw?.id ?? ''))
+}
+
+/**
+ * 列出某 scope 的记忆（task 聚合所有任务草稿；project/global 各自池）。
+ *
+ * 顺序为**新 → 旧**（见 {@link compareInsightRecency}）。分页参数可选：
+ * 不给 `limit` 时返回全部（保持既有调用方与测试的行为），给了就只返回
+ * `[offset, offset+limit)` 这一段，并回报 `total` 与 `nextOffset`。
+ * 载荷是纯函数产物，持久化由命令 handler 负责。
+ * @param {object} store - 项目 store。
+ * @param {object|null} gs - global store。
+ * @param {'task'|'project'|'global'} [scope] - 作用域，默认 project。
+ * @param {{offset?: number, limit?: number|null}} [opts] - 分页窗口；`limit` 为 null/undefined 表示不分页。
+ * @returns {{scope: string, count: number, total: number, offset: number, items: object[], nextOffset: number|null}} 载荷。
+ */
+export function listInsights(store, gs, scope, opts = {}) {
   const s = scope || 'project'
-  const items = []
+  // 先收集「原始条目 + 附加字段」，**排序在摘要之前**：摘要会丢掉 createdAt，
+  // 而这个字段是稳定全序的第二级键。
+  const collected = []
   if (s === 'task') {
     for (const t of store.getTasks() || []) {
-      for (const i of t.insights || []) items.push(insSummary(i, { taskId: t.id, taskTitle: t.title }))
+      for (const i of t.insights || []) collected.push({ raw: i, extra: { taskId: t.id, taskTitle: t.title } })
     }
   } else if (s === 'global') {
-    for (const i of (gs ? gs.items() : [])) items.push(insSummary(i))
+    for (const i of (gs ? gs.items() : [])) collected.push({ raw: i, extra: {} })
   } else {
-    for (const i of store.insightItems()) items.push(insSummary(i))
+    for (const i of store.insightItems()) collected.push({ raw: i, extra: {} })
   }
-  return { scope: s, count: items.length, items }
+  collected.sort(compareInsightRecency)
+
+  const total = collected.length
+  const limit = typeof opts.limit === 'number' && opts.limit > 0 ? opts.limit : null
+  const offset = Number.isFinite(opts.offset) && opts.offset > 0 ? Math.floor(opts.offset) : 0
+  const window = limit === null ? collected.slice(offset) : collected.slice(offset, offset + limit)
+  const nextOffset = offset + window.length < total ? offset + window.length : null
+  return { scope: s, count: total, total, offset, items: window.map((r) => insSummary(r.raw, r.extra)), nextOffset }
 }
 
 /**
@@ -327,8 +385,8 @@ export function editMemoryItem({ store, gs, scope, id, fields, root }) {
 export function insightCommandDefinition(config, ctx) {
   return {
     name: 'insight',
-    description: '记忆视图动作（面板按钮调用）：/tasks insight list project|global|task；/tasks insight <confirm|promote|demote|archive|restore|delete> <scope> <id> [taskId]',
-    input: { hint: 'list [scope] | <动作> <scope> <id> [taskId]' },
+    description: '记忆视图动作（面板按钮调用）：/tasks insight list project|global|task [offset] [limit]；/tasks insight <confirm|promote|demote|archive|restore|delete> <scope> <id> [taskId]',
+    input: { hint: 'list [scope] [offset] [limit] | <动作> <scope> <id> [taskId]' },
     handler: (invocation) => {
       try {
         const { cwd } = invocationContext(invocation)
@@ -340,10 +398,26 @@ export function insightCommandDefinition(config, ctx) {
         const verb = raw[0]
         if (verb === 'list') {
           const scope = raw[1] === 'task' || raw[1] === 'global' || raw[1] === 'project' ? raw[1] : 'project'
+          // 分页参数可选：省略即维持"返回全部"的旧行为（老客户端 bundle 仍按此调用）。
+          // 显式给 limit 时封顶 INSIGHT_PAGE_MAX，避免一次请求把整个池子拉成超大载荷。
+          let offset = 0
+          let limit = null
+          if (raw[2] !== undefined) {
+            const n = Number.parseInt(raw[2], 10)
+            if (!Number.isFinite(n) || n < 0) return { kind: 'error', text: '[insight] offset 必须是不小于 0 的整数' }
+            offset = n
+          }
+          if (raw[3] !== undefined) {
+            const n = Number.parseInt(raw[3], 10)
+            if (!Number.isFinite(n) || n <= 0) return { kind: 'error', text: '[insight] limit 必须是正整数' }
+            limit = Math.min(n, INSIGHT_PAGE_MAX)
+          }
           const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
           const gs = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()
-          const payload = listInsights(store, gs, scope)
-          return { kind: 'success', text: fencedJson(`记忆 ${scope}：${payload.count} 条`, JSON.stringify(payload)) }
+          const payload = listInsights(store, gs, scope, { offset, limit })
+          const shown = offset + payload.items.length
+          const range = limit === null ? '' : `（显示 ${shown}/${payload.total}）`
+          return { kind: 'success', text: fencedJson(`记忆 ${scope}：${payload.count} 条${range}`, JSON.stringify(payload)) }
         }
         if (verb === 'save') {
           // /insight save <scope> <json>（新建/合并；project|global）

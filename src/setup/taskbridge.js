@@ -4,6 +4,7 @@
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { memoryRootFor, resolveProjectMemoryRoot } from '../util/fs.js'
+import { sessionWorkingDir } from '../util/session-dir.js'
 import { ProjectMemoryStore } from '../store.js'
 import { stepContent, stepStatus } from '../util/task-view.js'
 
@@ -170,11 +171,15 @@ export function touchTaskFile(task, rel, kind, now) {
  * todo/write → 已绑定则覆盖 steps，未绑定则自动新建任务并绑定（子代理会话除外，
  * 由 isSubagentSession 判定）；tool/call（fs 工具）→ 绑定任务 files 并集。
  */
-export function onSessionEvent(config, session, event, meta) {
+export function onSessionEvent(config, session, event, meta, ctx) {
   const sessionId = session?.id
   const type = event?.type
   if (!sessionId || !type) return
   const now = new Date().toISOString()
+  // 任务清单按「会话当前工作目录」归属：0.2.1+ 该目录由 workingDirectory 投影决定
+  // （cd 后会变），老宿主回退 header.cwd。`ctx` 只在宿主装配路径上给得到；测试与
+  // 老调用方不给也能跑（回退 header.cwd）。
+  const cwd = sessionWorkingDir(session, { ctx })
 
   // 人类消息：记首条真人文本 + 若已绑定任务则刷新 lastHumanAt（供“模型自维护不回声任务卡”判断）
   if (type === 'user/message') {
@@ -185,7 +190,7 @@ export function onSessionEvent(config, session, event, meta) {
       m.lastHumanAt = now
       meta.set(sessionId, m)
       try {
-        const { store } = taskStoreFor(session?.header?.cwd, config)
+        const { store } = taskStoreFor(cwd, config)
         if (!store) return
         store.commit((s) => {
           const tid = s.getBoundTaskId(sessionId)
@@ -204,7 +209,7 @@ export function onSessionEvent(config, session, event, meta) {
     return
   }
 
-  const { root, store } = taskStoreFor(session?.header?.cwd, config)
+  const { root, store } = taskStoreFor(cwd, config)
   // 没有项目根（家目录/系统目录会话）：不建档、不记文件、不落任何盘。
   if (!store) return
 
@@ -279,7 +284,7 @@ export function setupTaskbridge(ctx, config) {
   const meta = new Map()
   ctx.on('session/event', (session, event) => {
     try {
-      onSessionEvent(config, session, event, meta)
+      onSessionEvent(config, session, event, meta, ctx)
     } catch (err) {
       console.error('[dsh-project-memory] taskbridge:', err?.message)
     }

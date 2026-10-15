@@ -163,6 +163,10 @@
   background: var(--dsw-alias-bg-base, transparent);
   overflow: hidden;
   transition: border-color 0.15s ease;
+  /* 与 .memRow 同款的窗口化：任务多/卡片展开后离屏卡片不再参与 layout/paint。
+     用 `auto` 记住实测高度，折叠/展开切换不会算错。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 140px;
 }
 .cardBound {
   border-color: var(--dsw-alias-border-l3, rgba(127, 127, 127, 0.35));
@@ -686,6 +690,20 @@
   flex-direction: column;
   gap: 6px;
 }
+/* 增量加载哨兵：0 高、不可见，只作为 IntersectionObserver 的观察目标。 */
+.memSentinel {
+  height: 1px;
+  flex: none;
+}
+/* 页脚状态行："已显示 N / 总数" + 加载中/已全部加载。让无限滚动可预期，也便于排查。 */
+.memFooter {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 0 2px;
+  font-size: 12px;
+}
 .memRow {
   border: 1px solid var(--dsw-border-weak, rgba(128, 128, 128, 0.25));
   border-radius: 6px;
@@ -694,6 +712,11 @@
   flex-direction: column;
   gap: 4px;
   background: color-mix(in srgb, var(--dsw-bg-secondary, #f5f5f5) 45%, transparent);
+  /* 窗口化：离屏行跳过 layout/paint，但 DOM 仍在 —— 保留 find-in-page 与无障碍，
+     且不必手写虚拟列表（可变行高的 JS 虚拟化是坑）。`auto` 让浏览器记住每行实测高度，
+     所以可变行高也准。不支持的宿主自动退化为普通渲染，零风险。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 76px;
 }
 .memRowArchived {
   opacity: 0.55;

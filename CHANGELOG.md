@@ -1,3 +1,25 @@
+## Unreleased
+
+`npm test` **675 → 702 项 / 36 → 39 个文件**；`npm run typecheck` 通过。
+
+### 修复：dsh 0.2.1 起 `session.header.cwd` 不再是「当前工作目录」
+
+0.2.1 引入 `@deepseek-ai/dsh-working-directory`：`header.cwd` 变成**原始项目身份 / 权限根**，而 `working_directory({cd})` 改的是会话投影里的当前执行目录，**不写回 header**。本插件的根解析（索引 / 检索 / 懒索引 / 审计注入 / 任务桥）此前一律读 `header.cwd`，于是用户 cd 到另一个项目后，记忆仍然读写**原项目**的 store——不报错，只是静默错根。
+
+取值现在收敛到 `src/util/session-dir.js` 的 `sessionWorkingDir()`：`ctx.get('workingDirectory').get(session)` → `session.header.cwd` → `agent.session.header.cwd`。新服务用 `ctx.get()` **软探测**（不能进顶层 `inject`，那是装配期门控，老宿主上会让插件整个不挂载），服务缺失或抛错都回退 `header.cwd`。没 cd 过时该投影的 `init` 就是 `header.cwd`，两者恒等，因此对既有行为是 **no-op**。`test/session-dir.test.mjs` 9 项钉住每条取值路径。
+
+### 新增：记忆列表新→旧排序 + 增量加载
+
+**排序**：任务 / 项目 / 全局三个 scope 此前是插入序（旧→新），首屏看到的是**最旧**的条目。现在按 `updatedAt↓ → createdAt↓ → id↑` 排出**确定性全序**（面板先看到刚学到的），并列条目也有稳定次序；排序不就地修改 store 自己的数组。
+
+**分页**：`/tasks insight list <scope> [offset] [limit]`，省略参数 = 旧的"返回全部"，老客户端 bundle 不受影响。载荷新增 `total` / `offset` / `nextOffset`，`count` 保留为总数；单页封顶 200，畸形参数**显式报错**而不是静默降级成 0 或全部。
+
+**客户端**：首屏只取 30 条，滚到底前 600px 由 `IntersectionObserver` 预取下一页并追加（按 id 去重）。动作后重放 `0..已加载条数` 的**前缀**，而不是重置回第一页——否则正在看第 5 页的用户会被弹回顶部。页脚常驻「已显示 N / 总数」，加载指示延迟 150ms 才出现以免本地快请求闪一下，失败给可点重试；环境没有 `IntersectionObserver` 时退化成手动「加载更多」。离屏行用 `content-visibility: auto` 跳过 layout/paint（DOM 仍在，保留 find-in-page 与无障碍，避免手写可变行高虚拟列表）。
+
+分页决策抽到 `src/client/paging.js`（纯函数，客户端 React 测试替身验证不了滚动行为）：`test/client-paging.test.mjs` 8 项 + `test/insight-paging.test.mjs` 10 项覆盖边界——逐页拼接必须等于全量（不重叠不漏条）、越界不谎报"还有下一页"、老宿主形态降级。
+
+并发协调另抽成 `createRequestGate()` 并单独钉住一条**开发中真踩到的 bug**：早期用"有在途请求就 return"的布尔守卫，于是上一页还在飞的时候切 scope，新请求被直接丢掉、过期响应又被丢弃 → 新列表永远空白，只能手动刷新。现在语义拆成两件事：过期响应按"序号 + 作用域"丢弃，新请求照发（只有同一个 `scope|offset|limit|append` 在飞时才去重）。
+
 ## 0.6.1 (2026-10-15)
 
 `npm test` **650 → 675 项 / 36 个文件**；`npm run typecheck` 通过。

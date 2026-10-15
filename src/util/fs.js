@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
+import { sessionWorkingDir } from './session-dir.js'
 
 /**
  * 原子写 JSON：先写同目录的 `<file>.<pid>.tmp`，再 rename 覆盖目标。
@@ -542,7 +543,8 @@ export function assertSafeRoot(root, { requested = root, allowUnsafe = false } =
 
 export function resolveIndexRoot(exec, explicitRoot) {
   if (explicitRoot && explicitRoot.trim()) return path.resolve(explicitRoot)
-  const sessionCwd = exec?.agent?.session?.header?.cwd
+  // 会话当前工作目录：0.2.1+ 读 workingDirectory 投影（cd 后会变），老宿主回退 header.cwd。
+  const sessionCwd = sessionWorkingDir(exec?.agent?.session, { agent: exec?.agent })
   if (sessionCwd) return path.resolve(sessionCwd)
   return path.resolve(process.cwd())
 }
