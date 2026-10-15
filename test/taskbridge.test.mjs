@@ -1,11 +1,13 @@
 // TaskBridge 单元测试：node test/taskbridge.test.mjs
 // 覆盖：store 任务持久化/容量裁剪、路径归一化、todo/write 自动建任务+绑定+快照覆盖（子代理不建档、标题取清单首条）、tool/call 文件跟踪、工具契约不在此测（需宿主 exec）。
-import { mkdtempSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
-import { ProjectMemoryStore } from '../src/store.js'
+import { ProjectMemoryStore, _estimateResidentBytes as estimate } from '../src/store.js'
 import { normalizeRelFile, genTaskId, onSessionEvent, adoptStepsToSession, shouldAdoptToHost, isSubagentSession } from '../src/setup/taskbridge.js'
+import { taskCommandDefinition } from '../src/commands/task-actions.js'
+import { selectTaskTool, archiveTaskTool } from '../src/tools/task-tools.js'
 
 const config = { memoryDir: '.dsh-project-memory', tasklist: { enabled: true } }
 const configNoAdopt = { memoryDir: '.dsh-project-memory', tasklist: { enabled: true, syncHostOnAdopt: false } }
@@ -206,6 +208,55 @@ const ev = (type, data) => ({ type, data })
   assert.equal(store.getTasks().length, 1)
   assert.ok(store.getBoundTaskId('fork-1'))
   ok('parentSession 的顶层 fork 会话仍正常建档')
+}
+
+// --- 10. 直接改 task 内容必须经 markTasksDirty 标脏（0.6.1） ---
+// 钉住的是**接线**而非 store 自身：`_auxVersion` 只在 markTasksDirty() 里 bump，而 save() 在
+// 没有任何脏标记时会早退 —— 「直接改 task + save()」于是既不落盘、驻留账也停在旧水位。
+{
+  // a) taskbridge 的写口：覆盖已有任务的 todo/write
+  const { root, store } = newProject()
+  const meta = new Map()
+  const s = sess('sessWire', root)
+  onSessionEvent(config, s, ev('user/message', { source: { kind: 'user' }, content: '接线用例' }), meta)
+  onSessionEvent(config, s, ev('todo/write', { todos: [{ content: 'a', status: 'pending' }] }), meta)
+  const before = estimate(store)
+  const stamp0 = store._residentStamp
+  onSessionEvent(config, s, ev('todo/write', { todos: [{ content: 'b'.repeat(4000), status: 'pending' }] }), meta)
+  const after = estimate(store)
+  assert.notEqual(store._residentStamp, stamp0, 'todo/write 覆盖已有任务后版本戳必须变化（否则上界停在旧水位）')
+  assert.ok(after > before, '估算应随新增步骤内容增长')
+  const diskTodo = JSON.parse(readFileSync(path.join(root, '.dsh-project-memory', 'tasks.json'), 'utf8'))
+  assert.equal(diskTodo[0].steps[0].content.length, 4000, '覆盖后的步骤要落盘')
+  ok('todo/write 覆盖已有任务：落盘 + 驻留估算失效')
+
+  // b) 命令写口：/tasks rename|archive 只改内存再 save()，必须真的写进 tasks.json
+  const cmd = newProject()
+  cmd.store.addTask({ id: 'tsk_wire_cmd', title: '旧名', steps: [], files: [], archived: false, projectRoot: cmd.root, createdAt: 'x', updatedAt: 'x', lastActiveAt: 'x' })
+  cmd.store.save()
+  const def = taskCommandDefinition(config, {})
+  const invocation = (rawInput) => ({ agent: { id: 'sessCmd', session: { header: { cwd: cmd.root }, append() {} } }, rawInput })
+  def.handler(invocation('rename tsk_wire_cmd "新名"'))
+  const diskRename = JSON.parse(readFileSync(path.join(cmd.root, '.dsh-project-memory', 'tasks.json'), 'utf8'))
+  assert.equal(diskRename[0].title, '新名')
+  def.handler(invocation('archive tsk_wire_cmd'))
+  const diskArchive = JSON.parse(readFileSync(path.join(cmd.root, '.dsh-project-memory', 'tasks.json'), 'utf8'))
+  assert.equal(diskArchive[0].archived, true)
+  ok('/tasks rename|archive 落盘（内存改了，tasks.json 也要改）')
+
+  // c) 工具写口：select_task 改名/解归档、archive_task 归档
+  const tool = newProject()
+  tool.store.addTask({ id: 'tsk_wire_tool', title: '旧名', steps: [], files: [], archived: true, projectRoot: tool.root, createdAt: 'x', updatedAt: 'x', lastActiveAt: 'x' })
+  tool.store.save()
+  const exec = { agent: { session: { id: 'sessTool', header: { cwd: tool.root }, append() {} } } }
+  await selectTaskTool(config, {}).execute({ taskId: 'tsk_wire_tool', title: '新名' }, exec)
+  const diskSelect = JSON.parse(readFileSync(path.join(tool.root, '.dsh-project-memory', 'tasks.json'), 'utf8'))
+  assert.equal(diskSelect[0].title, '新名')
+  assert.equal(diskSelect[0].archived, false)
+  await archiveTaskTool(config, {}).execute({ taskId: 'tsk_wire_tool' }, exec)
+  const diskTool = JSON.parse(readFileSync(path.join(tool.root, '.dsh-project-memory', 'tasks.json'), 'utf8'))
+  assert.equal(diskTool[0].archived, true)
+  ok('select_task / archive_task 落盘')
 }
 
 console.log(`\nTaskBridge tests: ${passed} passed`)
