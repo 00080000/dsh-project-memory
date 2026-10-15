@@ -18,10 +18,12 @@ import {
   applyDecay,
   recordHit,
   containsSecretFields,
+  removeMemory,
 } from '../src/insight-store.js'
 import { ensureGlobalInit } from '../src/global-seed.js'
 import { normalizedTokenOverlap } from '../src/similarity.js'
 import { lessonTool } from '../src/tools/lesson-tools.js'
+import { forgetTool } from '../src/tools/forget.js'
 
 let passed = 0
 const ok = (name) => {
@@ -281,6 +283,169 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
   assert.ok(Array.isArray(g2.items()[0].trigger.keywords))
   assert.ok(!defaultGlobalFile().includes(process.cwd()), '默认 global 路径指向用户目录')
   ok('save_lesson 端到端：task/project/global + 密文拒绝 + 落盘')
+}
+
+// --- 12. 向量带：≥0.9 自动覆盖（旧值进 prev）/ ≥0.7 提示 / 领先不足不覆盖 / 就地更新 ---
+{
+  const { root, store, globalFile, cfg } = newProject()
+  const gs = new GlobalStore(globalFile).load()
+  store.commit((s) => saveInsight({ store: s, globalStore: gs, raw: lesson('JWT 未校验 exp', '用 jose 校验'), scope: 'project', cfg }))
+  const idA = store.insightItems()[0].id
+
+  // ① 0.95 且领先 → 自动覆盖：正文取新值、旧值进 prev、条目数不变
+  const r1 = store.commit((s) => saveInsight({ store: s, globalStore: gs, raw: lesson('JWT 未校验 exp', '改用 jose 并校验 aud'), scope: 'project', cfg, cosine: () => new Map([[idA, 0.95]]) }))
+  assert.equal(r1.action, 'auto-merged')
+  assert.equal(r1.id, idA)
+  assert.ok(r1.replaced.includes('fix'), '被覆盖的字段要回报')
+  const after1 = store.insightItems()
+  assert.equal(after1.length, 1, '自动覆盖不得新增条目')
+  assert.equal(after1[0].fix, '改用 jose 并校验 aud')
+  assert.equal(after1[0].prev.fix, '用 jose 校验', '旧值必须留在 prev 才能写回')
+  assert.equal(after1[0].hitCount, 1)
+  ok('向量带：≥0.9 自动覆盖正文，旧值进 prev，不新增条目')
+
+  // ② 0.80 → 不覆盖，只提示近邻 id
+  const r2 = store.commit((s) => saveInsight({ store: s, globalStore: gs, raw: lesson('端口约定 8080', '写进 .env'), scope: 'project', cfg, cosine: () => new Map([[idA, 0.8]]) }))
+  assert.equal(r2.action, 'created')
+  assert.equal(r2.near && r2.near.id, idA, '提示带要回报近邻 id')
+  const idB = r2.id
+
+  // ③ 0.50 → 连提示都不给
+  const r3 = store.commit((s) => saveInsight({ store: s, globalStore: gs, raw: lesson('日志轮转策略', '按天切分'), scope: 'project', cfg, cosine: () => new Map([[idA, 0.5]]) }))
+  assert.equal(r3.action, 'created')
+  assert.equal(r3.near, undefined)
+
+  // ④ 0.95 与 0.93 并列 → 领先不足，不覆盖（只是提示），否则不知道该覆盖谁
+  const r4 = store.commit((s) => saveInsight({ store: s, globalStore: gs, raw: lesson('并发写同一文件', '用锁文件'), scope: 'project', cfg, cosine: () => new Map([[idA, 0.95], [idB, 0.93]]) }))
+  assert.equal(r4.action, 'created')
+  assert.equal(r4.near.id, idA)
+
+  // ⑤ id 就地更新：跨层都能找，旧值进 prev，不新增条目
+  const rg = store.commit((s) => saveInsight({ store: s, globalStore: gs, raw: lesson('WSL 发包步骤'), scope: 'global', cfg }))
+  const gid = rg.id
+  const ru = store.commit((s) => saveInsight({ store: s, globalStore: gs, raw: { id: gid, fix: '改用 corepack enable' }, cfg }))
+  assert.equal(ru.action, 'updated')
+  assert.equal(ru.scope, 'global', '更新不能把条目搬离原来的层')
+  assert.ok(ru.replaced.includes('fix'))
+  assert.equal(gs.items().find((i) => i.id === gid).fix, '改用 corepack enable')
+  assert.equal(gs.items().find((i) => i.id === gid).prev.fix, '用正确做法')
+  assert.equal(gs.items().length, 1)
+
+  // ⑥ 未知 id → 明确失败，绝不静默新建
+  const rx = store.commit((s) => saveInsight({ store: s, globalStore: gs, raw: { id: 'ins_nope', fix: 'x' }, cfg }))
+  assert.equal(rx.ok, false)
+  assert.match(rx.error, /找不到要更新的条目/)
+
+  // ⑦ prev 要跟着条目跨层移动（promote/demote 走 normalizeInsight 白名单）
+  store.addTask({ id: 'tsk_prev', title: 'prev 迁移', projectRoot: root, steps: null, files: [], archived: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), lastActiveAt: new Date().toISOString() })
+  store.commit((s) => demoteToTask(s, 'tsk_prev', idA))
+  const moved = store.getTask('tsk_prev').insights[0]
+  assert.equal(moved.prev.fix, '用 jose 校验', '降级后 prev 不能丢')
+  ok('向量带：提示带 / 领先不足 / 跨层就地更新 / 未知 id 失败 / prev 跨层保留')
+}
+
+// --- 13. save_lesson 端到端带 id：就地更新 + 用返回的旧值写回 ---
+{
+  const { root, store } = newProject()
+  const config = { memoryDir: '.dsh-project-memory', maxOutputChars: 8000, insight: { globalFile: path.join(root, 'global.json') } }
+  store.commit(() => 0)
+  const tool = lessonTool(config)
+  const exec = { agent: { session: { header: { cwd: root } } } }
+  const out1 = await tool.execute({ root, title: '构建脚本 Windows 路径报错', pattern: '构建脚本 Windows 路径报错', fix: '统一 path.join', scope: 'project' }, exec)
+  assert.match(out1, /action=created/)
+  const s1 = new ProjectMemoryStore(path.join(root, '.dsh-project-memory')).load()
+  const id = s1.insightItems()[0].id
+  const out2 = await tool.execute({ root, id, fix: '统一 path.join 且用 fileURLToPath' }, exec)
+  assert.match(out2, /action=updated/)
+  assert.match(out2, /已就地更新/)
+  const s2 = new ProjectMemoryStore(path.join(root, '.dsh-project-memory')).load()
+  assert.equal(s2.insightItems().length, 1, '就地更新不得新增条目')
+  assert.equal(s2.insightItems()[0].fix, '统一 path.join 且用 fileURLToPath')
+  assert.equal(s2.insightItems()[0].prev.fix, '统一 path.join')
+  // 写回：拿 prev 再写一次
+  const out3 = await tool.execute({ root, id, fix: s2.insightItems()[0].prev.fix }, exec)
+  assert.match(out3, /action=updated/)
+  const s3 = new ProjectMemoryStore(path.join(root, '.dsh-project-memory')).load()
+  assert.equal(s3.insightItems()[0].fix, '统一 path.join')
+  assert.equal(s3.insightItems()[0].prev.fix, '统一 path.join 且用 fileURLToPath')
+  // 未知 id：只说失败，不偷偷新建
+  const out4 = await tool.execute({ root, id: 'ins_nope', fix: 'x' }, exec)
+  assert.match(out4, /找不到要更新的条目/)
+  assert.equal(new ProjectMemoryStore(path.join(root, '.dsh-project-memory')).load().insightItems().length, 1)
+  // 只给 id + 一个字段：不再要求 title/pattern/choice
+  const out5 = await tool.execute({ root, id, confidence: 0.95 }, exec)
+  assert.match(out5, /action=updated/)
+  ok('save_lesson 端到端：带 id 就地更新 / prev 写回 / 未知 id 明确失败')
+}
+
+// --- 14. forget 全层：精确 id / 关键词 / 上限保护 / 旧经验层 / 工具端到端 ---
+{
+  const { root, store, globalFile, cfg } = newProject()
+  const gs = new GlobalStore(globalFile).load()
+  const rp = store.commit((s) => saveInsight({ store: s, globalStore: gs, raw: lesson('依赖安装脚本改了 PATH 顺序', '显式指定包管理器路径'), scope: 'project', cfg }))
+  const rg = store.commit((s) => saveInsight({ store: s, globalStore: gs, raw: lesson('文本抽取正则漏了跨行标记', '补上跨行匹配标志'), scope: 'global', cfg }))
+  store.addTask({ id: 'tsk_f', title: 'forget 用', projectRoot: root, steps: null, files: [], archived: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), lastActiveAt: new Date().toISOString() })
+  const rt = store.commit((s) => saveInsight({ store: s, globalStore: gs, raw: lesson('任务内私有坑', '先看绑定'), scope: 'task', taskId: 'tsk_f', cfg }))
+  store.commit((s) => s.addExperience({ problem: 'OPS import breaks on Node 24', solution: 'import from legacy build' }))
+  store.commit(() => 0)
+  assert.equal(store.insightItems().length, 1)
+
+  // ① 精确 id：project 层，删掉且只删一条
+  const d1 = store.commit((s) => removeMemory({ store: s, globalStore: gs, idOrQuery: rp.id }))
+  assert.equal(d1.ok, true)
+  assert.equal(d1.removed.length, 1)
+  assert.equal(d1.removed[0].home, 'project')
+  assert.equal(store.insightItems().length, 0)
+
+  // ② 精确 id：global 层（要落到 global.json）
+  const d2 = store.commit((s) => removeMemory({ store: s, globalStore: gs, idOrQuery: rg.id }))
+  assert.equal(d2.removed[0].home, 'global')
+  assert.equal(gs.items().length, 0)
+  const gs2 = new GlobalStore(globalFile).load()
+  assert.equal(gs2.items().length, 0, 'global 删除要落盘')
+
+  // ③ 精确 id：task 层内嵌
+  const d3 = store.commit((s) => removeMemory({ store: s, globalStore: gs, idOrQuery: rt.id }))
+  assert.equal(d3.removed[0].home, 'task')
+  assert.equal(store.getTask('tsk_f').insights.length, 0)
+
+  // ④ 关键词：旧经验层（沿用旧口径——查询侧覆盖率，不是两侧取大）
+  const d4 = store.commit((s) => removeMemory({ store: s, globalStore: gs, idOrQuery: 'OPS import breaks' }))
+  assert.equal(d4.removed.length, 1)
+  assert.equal(d4.removed[0].home, 'experience')
+  assert.equal(store.experience.length, 0)
+
+  // ⑤ 关键词命中上限：超了一条都不删，只回报候选
+  for (const t of ['zzcap 一', 'zzcap 二', 'zzcap 三']) store.commit((s) => saveInsight({ store: s, globalStore: gs, raw: lesson(t, 'x'), scope: 'project', cfg }))
+  const d5 = store.commit((s) => removeMemory({ store: s, globalStore: gs, idOrQuery: 'zzcap', maxMatches: 2 }))
+  assert.equal(d5.ok, false)
+  assert.equal(d5.tooMany, true)
+  assert.equal(d5.matches.length, 3)
+  assert.equal(store.insightItems().length, 3, '超上限时一条都不许删')
+  const d6 = store.commit((s) => removeMemory({ store: s, globalStore: gs, idOrQuery: 'zzcap', maxMatches: 10 }))
+  assert.equal(d6.removed.length, 3)
+  assert.equal(store.insightItems().length, 0)
+
+  // ⑥ 无匹配：不炸、不删
+  const d7 = store.commit((s) => removeMemory({ store: s, globalStore: gs, idOrQuery: '完全不存在的主题 xyzzy' }))
+  assert.equal(d7.ok, true)
+  assert.equal(d7.removed.length, 0)
+  ok('forget 全层：精确 id（project/global/task）/ 关键词（旧经验层）/ 上限保护 / 无匹配')
+
+  // ⑦ 工具端到端：全层删除的回报要说出删了什么
+  const tool = lessonTool({ memoryDir: '.dsh-project-memory', insight: { globalFile: path.join(root, 'global.json') } })
+  const fTool = forgetTool({ memoryDir: '.dsh-project-memory', insight: { globalFile: path.join(root, 'global.json'), maxForgetMatches: 10 } })
+  const exec = { agent: { session: { header: { cwd: root } } } }
+  await tool.execute({ root, title: '工具层删不掉的条目', pattern: '工具层删不掉的条目', fix: '用 forget', scope: 'project' }, exec)
+  const s1 = new ProjectMemoryStore(path.join(root, '.dsh-project-memory')).load()
+  const id = s1.insightItems()[0].id
+  const outF = await fTool.execute({ root, id_or_query: id }, exec)
+  assert.match(outF, /Removed 1/)
+  assert.ok(outF.includes(id), `回报要带 id：${outF}`)
+  assert.equal(new ProjectMemoryStore(path.join(root, '.dsh-project-memory')).load().insightItems().length, 0)
+  const outNone = await fTool.execute({ root, id_or_query: 'zzz 不存在' }, exec)
+  assert.match(outNone, /No matching memory found/)
+  ok('forget 工具端到端：全层删除 + 回报带 id + 无匹配明确说')
 }
 
 console.log(`\ninsight-store tests: ${passed} passed`)

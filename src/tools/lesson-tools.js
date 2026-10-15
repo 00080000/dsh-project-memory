@@ -6,6 +6,8 @@ import { cfgInsight, saveInsight, defaultGlobalFile, GlobalStore } from '../insi
 import { ensureGlobalInit } from '../global-seed.js'
 import { INSIGHT_KINDS, INSIGHT_SCOPES } from '../insight-store.js'
 import { sessionIdOf } from '../util/task-view.js'
+import { createVectorRerank, vectorItemsFrom } from '../vector-index.js'
+import { cfgEngine } from '../auto-inject.js'
 
 export function lessonTool(config) {
   // 描述预算：这两段以前同时出现在「工具描述」和「参数描述」里，等于付两遍钱。
@@ -13,15 +15,17 @@ export function lessonTool(config) {
   const kindDesc = 'lesson(踩坑/纠偏, 用 pattern+fix) | decision(选型, choice+reason) | procedure(步骤, steps) | experience(problem→solution, v0.4 兼容)；默认 lesson。'
   const scopeDesc =
     'task(任务私有，随任务归档) | project(项目资产) | global(个人能力库，跨项目)；默认 project。' +
-    '解析顺序：显式 scope > task_id > 当前绑定任务 > project。'
+    '解析顺序：显式 scope > task_id > 当前绑定任务 > project。给了 id 时忽略 scope：条目留在原层。'
   return defineTool({
     name: 'save_lesson',
     description:
       '把一条教训 / 决策 / 流程写进分层记忆（单条 insight）。新的经验优先用它，而不是 remember。' +
-      '在踩到坑、被纠正、做了值得记住的取舍时调用；日常琐事不要写。' +
-      '近重复按词重叠 ≥0.7 合并、0.65~0.7 强化；同一 insight 被 2+ 任务命中自动 task→project、3+ →global。' +
+      '在踩到坑、被纠正、做了值得记的取舍时调用；日常琐事不要写。' +
+      '写入前会与既有记忆比对：相似度 ≥0.9 自动覆盖那一条（旧值留在 prev，可写回）；≥0.7 在返回里提示近邻 id。' +
+      '发现记错了/过时了：带 id 再调一次就是就地覆盖，不必新写一条；确定该删的用 forget。' +
       'kind / scope / trigger 的语义见对应参数。',
     parameters: {
+      id: { type: 'string', description: '要就地更新的既有条目 id（来自 query_memory 或上一次写入返回的近邻提示）。给了它只覆盖本次显式传的字段，忽略 scope。' },
       title: { type: 'string', description: 'One-line title (lesson: the failure pattern; decision: the topic; procedure: the name).' },
       kind: { type: 'string', enum: INSIGHT_KINDS, description: kindDesc },
       scope: { type: 'string', enum: INSIGHT_SCOPES, description: scopeDesc },
@@ -89,6 +93,7 @@ export function lessonTool(config) {
       const taskId = args.task_id || boundTaskId
 
       const raw = {
+        id: args.id,
         title: args.title,
         kind: args.kind,
         pattern: args.pattern,
@@ -101,23 +106,42 @@ export function lessonTool(config) {
         symbols: args.symbols,
         confidence: args.confidence,
       }
-      if (!raw.title && !raw.pattern && !raw.choice) {
-        return truncate(JSON.stringify({ success: false, error: '需要 title / pattern / choice 之一' }), config.maxOutputChars || 8000)
+      // 就地更新只要求 id（可以只改一个字段）；新建仍然要求有个能当标题的东西。
+      if (!args.id && !raw.title && !raw.pattern && !raw.choice) {
+        return truncate(JSON.stringify({ success: false, error: '需要 title / pattern / choice 之一（或给 id 做就地更新）' }), config.maxOutputChars || 8000)
       }
       if (!INSIGHT_KINDS.includes(raw.kind)) raw.kind = 'lesson'
 
       let scope = args.scope
       if (!scope) scope = taskId ? 'task' : 'project'
-      if (scope === 'task' && !taskId) {
+      if (!args.id && scope === 'task' && !taskId) {
         return truncate(JSON.stringify({ success: false, error: 'task 级写入需要 task_id（或先 select_task 绑定会话）' }), config.maxOutputChars || 8000)
       }
 
       ensureGlobalInit(config) // 幂等确保 global 文件结构就绪
       const globalStore = new GlobalStore(cfg.globalFile || defaultGlobalFile()).load()
 
+      // 可选向量层：**没装/没配就是 null**，此时 saveInsight 逐字段退回原来的纯词法行为。
+      // 就地更新（给了 id）不需要比对，跳过它可以省掉一次模型加载（~118ms / ~120MB）。
+      let cosine = null
+      if (!args.id) {
+        try {
+          const engine = cfgEngine(config)
+          const rerank = await createVectorRerank({
+            storeDir: memoryDir,
+            items: vectorItemsFrom(store, globalStore),
+            vectorDir: engine.vectorDir,
+            alpha: engine.vectorAlpha,
+          })
+          if (rerank && typeof rerank.score === 'function') cosine = (text, items) => rerank.score(text, items)
+        } catch {
+          cosine = null // 可选层任何异常都不得挡住写入
+        }
+      }
+
       let result
       store.commit((s) => {
-        result = saveInsight({ store: s, globalStore, raw, scope, taskId, cfg, source: 'agent' })
+        result = saveInsight({ store: s, globalStore, raw, scope, taskId, cfg, source: 'agent', cosine })
         return result
       })
       // global 变更（global scope 直写或 project 自动提升）单独落盘
