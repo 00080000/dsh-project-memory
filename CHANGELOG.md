@@ -1,6 +1,6 @@
-## 0.6.1 (未发布)
+## 0.6.1 (2026-10-15)
 
-`npm test` **654 → 676 项 / 36 个文件**；`npm run typecheck` 通过。
+`npm test` **650 → 675 项 / 36 个文件**；`npm run typecheck` 通过。
 
 ### 修复：物化后的 `searchText` 不在 storeCache 的上界里
 
@@ -9,6 +9,10 @@
 ### 修复：`load()` 之后写进来的辅助集合不在上界，也不在失效键里
 
 `experience` / `insights` / `tasks` / `binding` / `watch` 的增长既不进 `_textChars`，也不进版本戳（原先只有 `_entriesVersion` 与 `_materializeVersion` 两维），所以精确估算停在旧水位、上界还是骨架常数——单 store 实测上界 **1024 B**、实际 **19.08 MB**。现在版本戳加一维内容版本（每个写口 bump，含 `markTasksDirty`），上界补一条辅助集合的腿（按内容版本记忆化；这几个集合条目数小，逐节点求和不进冷加载热路径）。
+
+### 修复：直接改 task 内容后没标脏，改动不落盘、驻留账也不失效
+
+`/tasks rename|todos|switch|archive`、`select_task`、`archive_task` 与 TaskBridge 的三个事件写口都是直接改 task 对象：有的只置 `_dirtyTasks`（漏掉本次新增的内容版本，上界继续停在旧水位），有的连脏标记都不置——`save()` 于是早退，改名 / 归档只活在内存里。现在统一走 `markTasksDirty()`（标脏 + 内容版本），`test/taskbridge.test.mjs` 16 → **19** 项钉住这三条写路径的落盘与失效。
 
 ## 0.6.0 (2026-10-13)
 
