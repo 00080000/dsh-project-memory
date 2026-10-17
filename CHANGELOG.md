@@ -1,6 +1,15 @@
-## Unreleased
+## 0.6.2 (2026-10-17)
 
-`npm test` **675 → 705 项 / 36 → 40 个文件**；`npm run typecheck` 通过。
+`npm test` **705 项 / 40 个文件**；`npm run typecheck` 通过。
+
+### 兼容：dsh 0.2.1-rc.2
+
+- **开发依赖对齐新宿主**：`@deepseek-ai/dsh-tools` / `dsh-llm` / 四个 client 包从 `0.2.0-rc.2` 升到 `0.2.1-rc.2`，`package-lock.json` 重新生成；`client/client.js` 按 0.2.1 的 seed 模块重建。
+- **补 `dsh.engines.dsh` 声明**：0.2.1 起插件兼容性检查先读 `engines.dsh`，只有缺省时才回落到 `peerDependencies` 里的 `@deepseek-ai/dsh-*` 范围。这里写的是插件本来支持的区间（0.0.1-rc.1 起、0.3.0-0 之前），与 peer 范围保持一致。
+- **0.2.1 的破坏性变更逐项核对**：client primitives 删除 `projectUserText` / `UserTextReferences`（本插件未使用）；`tool-presentation` 的 `both` 模式被删除（本插件未声明）；slots 只新增 `inline` / `keyed` 可选字段（增量兼容）；`session.header.cwd` 不再是当前执行目录，取值已收口到 `workingDirectory` 服务（0.6.1 起）。
+- **验证**：在干净的 0.2.1 profile 里用 `dsh plugin add <tarball>` 安装打包产物，配置能组装、插件能激活，无 `ERR_MODULE_NOT_FOUND`；本仓库 `npm run typecheck`、`npm test` 全绿。
+
+> 注意：0.2.1 拒绝 `webserver.host` 通配地址（`0.0.0.0` / `::`），旧 profile 需改成具体地址（如 `127.0.0.1`），否则桌面端启动失败后会重置 profile 的 bundle 列表。
 
 ### 修复：0.6.1 新代码引入的三处回归（空根副作用 / 重放超上限 / Schema 漏声明）
 
