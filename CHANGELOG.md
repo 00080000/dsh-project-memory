@@ -1,6 +1,14 @@
 ## Unreleased
 
-`npm test` **675 → 701 项 / 36 → 39 个文件**；`npm run typecheck` 通过。
+`npm test` **675 → 705 项 / 36 → 40 个文件**；`npm run typecheck` 通过。
+
+### 修复：0.6.1 新代码引入的三处回归（空根副作用 / 重放超上限 / Schema 漏声明）
+
+- **`store.load()` 重新变成"空根零副作用"**：统一存储把 `experience.json` 导入的早退删掉了（`_migrateExperienceToInsights` 只判 `migratedAt`），于是**没有 `insights.json`、也没有旧经验**的全新根，只 `load()` 一次就会 `mkdirSync` 并写一份空 `insights.json`。`audit.js` 的 `auditDirReady` 靠"目录已存在"放行、`auto-inject` 靠 `store.hasContent` 决定要不要 `save()`——两处闸门同时失效后，容器目录会被 `resolveProjectMemoryRoot()` 当成项目根（issue #5 同类）。改法：导入落盘那支要求 `legacyOnDisk || legacy.length > 0`；旧文件归档是**另一支**、单独判 `legacyOnDisk`，三种真实升级形态都不受影响。
+- **动作后的重放不再超过宿主单页上限**：`reloadWindowRequest()` 返回 `limit = 已加载条数`（客户端注释还写着"正常永远走 PAGE_SIZE=30"），而宿主 `INSIGHT_PAGE_MAX=200` 是**静默**截断；重放又是替换式 `setRows`，于是滚到 500 条再点任意动作，列表被打回 200 条。改法：客户端用 `HOST_PAGE_MAX=200` 夹住 `limit`，载荷回报的 `nextOffset` 让哨兵继续把 200..N 追加回来。`client/client.js` 已同步重建。`test/insight-paging.test.mjs` 加一条交叉断言，把客户端常量与宿主 `INSIGHT_PAGE_MAX` 钉在一起（browser bundle 进不了服务端模块，只能靠测试防漂移）。
+- **`insight.*` 四个旋钮补进 Schema**：`autoMergeCos` / `autoMergeMargin` / `hintCos` / `maxForgetMatches` 在 `cfgInsight` 里读取、README 与 `types.js` 也写了，却没在 `src/index.js` 的 `Config` 里声明——与 0.5.8 给 `autoContext` 补声明是同一类问题：走 `cordis.patch.yml` 配它们，能不能活到代码取决于宿主是否按 `additionalProperties: false` 校验，但无论哪种，文档与 Schema 已经不一致。新增 `test/config-schema.test.mjs`：凡 `cfgInsight()` 会算出的数值键都必须在 `Config.insight` 声明，且 Schema 默认值等于运行时兜底值。
+
+**测试**：`npm test` 701 → 705 项 / 39 → 40 个文件（新增空根零副作用、客户端上限三条、契约交叉断言、Schema 一致性）；`npm run typecheck` 通过。
 
 ### 修改：统一存储——`experience.json` 退休，经验笔记成为 `kind:'experience'` 的 insight
 

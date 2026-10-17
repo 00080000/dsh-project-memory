@@ -63,6 +63,16 @@ export const Config = Schema.object({
   insight: Schema.object({
     dedupOverlap: Schema.number().default(0.7),
     reinforceBand: Schema.number().default(0.65),
+    // 向量带（需 leanvec；未装自动退化成上面的纯词法带）。下面四个键自 0.6.x 起就在
+    // cfgInsight（src/insight-store.js）里读取、README 与 types.js 也写了，却一直没进
+    // Schema。与 0.5.8 给 autoContext 补声明是同一类问题：未声明键在 schemastery 层会透传，
+    // 但走 cordis.patch.yml 时能不能活到代码取决于宿主是否按「not a declared property」校验
+    // ——无论哪种，文档里的旋钮与 Schema 已经不一致，等于半真半假。默认值以 cfgInsight 的
+    // 兜底值为权威，这里只负责把键暴露出来。
+    autoMergeCos: Schema.number().default(0.9),
+    autoMergeMargin: Schema.number().default(0.05),
+    hintCos: Schema.number().default(0.7),
+    maxForgetMatches: Schema.number().default(10),
     maxProject: Schema.number().default(100),
     maxGlobalProcedures: Schema.number().default(200),
     promoteConfidence: Schema.number().default(0.7),

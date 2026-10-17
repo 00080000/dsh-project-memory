@@ -16,6 +16,18 @@
 export const PAGE_SIZE = 30
 
 /**
+ * 单次请求的条数上限，必须与宿主 `INSIGHT_PAGE_MAX`（src/commands/insight-actions.js）一致。
+ *
+ * 客户端 bundle 跑在浏览器里，不能 import 服务端模块，所以这里是第二份常量；
+ * test/insight-paging.test.mjs 有一条交叉断言把两边钉在一起。
+ *
+ * 宿主对超限的 `limit` 是**静默**夹到 200、并照常回报 `nextOffset`。动作后的重放是"替换"
+ * （MemoryView 用 `parsed.items` 整份 setRows），于是加载了 500 条的用户点一次动作，
+ * 列表会被打回 200 条——请求值必须先在这里夹住，不能指望宿主替我们兜。
+ */
+export const HOST_PAGE_MAX = 200
+
+/**
  * 预取提前量：哨兵进入视口**下方 600px** 就开始取下一页，
  * 让用户在真正滚到底之前数据已经到位——这是"无感"的来源，不是滚到底再转圈。
  */
@@ -60,13 +72,17 @@ export function appendUnique(prev, page) {
  *
  * 用 offset 分页而不是 keyset 游标，正是为了让这条路可行：游标只能"往后翻"，
  * 表达不了"把 0..N 重取一遍"。删除/归档导致的窗口收缩下，前缀重取依然不重不漏。
+ *
+ * **上限**：宿主单页最多 {@link HOST_PAGE_MAX} 条，超过就静默截断。所以已加载数超过上限时
+ * 这一窗只重放前 200 条（`limit` 夹住），载荷回报的 `nextOffset` 会让哨兵继续把 200..N
+ * 追加回来——宁可多一轮分页，也不能发一个"请求 500、只回 200"的值把列表打回 200 条。
  * @param {number} loadedCount - 当前已渲染条数。
  * @param {number} [pageSize] - 每页条数下界，保证至少取一页。
- * @returns {{offset: number, limit: number}} 重放请求窗口。
+ * @returns {{offset: number, limit: number}} 重放请求窗口（limit ≤ HOST_PAGE_MAX）。
  */
 export function reloadWindowRequest(loadedCount, pageSize = PAGE_SIZE) {
   const count = Number.isFinite(loadedCount) && loadedCount > 0 ? Math.floor(loadedCount) : 0
-  return { offset: 0, limit: Math.max(pageSize, count) }
+  return { offset: 0, limit: Math.min(HOST_PAGE_MAX, Math.max(pageSize, count)) }
 }
 
 /**
