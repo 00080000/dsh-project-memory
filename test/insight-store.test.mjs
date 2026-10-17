@@ -125,6 +125,27 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
   ok('旧版 store（无 insights.json、有 tasks.json）直接升级')
 }
 
+// --- 2d. 空根只 load() 必须零副作用（不建目录、不凭空写 insights.json）---
+// 审计靠 `auditDirReady` 的"目录已存在"放行，auto-inject 靠 `store.hasContent` 决定要不要
+// save()。load() 若为一个从没被索引过的空根建目录，这两道闸门同时失效，容器目录会被
+// resolveProjectMemoryRoot 当成项目根（issue #5 同类）。回归：修前这一条必失败。
+{
+  const root = mkdtempSync(path.join(tmpdir(), 'ins-empty-'))
+  const dir = path.join(root, '.dsh-project-memory')
+  const s = new ProjectMemoryStore(dir).load()
+  assert.equal(s.insightItems().length, 0)
+  assert.ok(!existsSync(dir), '全新空根 load() 后目录必须**不存在**')
+
+  // 已有目录、但没有旧经验文件可导入：也不许凭空造一份 insights.json。
+  const root2 = mkdtempSync(path.join(tmpdir(), 'ins-noexp-'))
+  const dir2 = path.join(root2, '.dsh-project-memory')
+  mkdirSync(dir2, { recursive: true })
+  writeFileSync(path.join(dir2, 'watch.json'), JSON.stringify([]))
+  new ProjectMemoryStore(dir2).load()
+  assert.ok(!existsSync(path.join(dir2, 'insights.json')), '没有旧经验可导入时不写 insights.json')
+  ok('空根 load() 零副作用：不建目录、不凭空写 insights.json')
+}
+
 // --- 3. saveInsight 三级写入 + project 内去重合并 ---
 {
   const { store, globalFile, cfg } = newProject()

@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { ProjectMemoryStore } from '../src/store.js'
 import { GlobalStore } from '../src/insight-store.js'
 import { listInsights, INSIGHT_PAGE_MAX } from '../src/commands/insight-actions.js'
+import { HOST_PAGE_MAX } from '../src/client/paging.js'
 import { workflowCommandDefinition } from '../src/commands/workflow.js'
 
 let passed = 0
@@ -177,6 +178,14 @@ function payloadOf(text) {
   assert.ok(payload.items.length <= INSIGHT_PAGE_MAX, `单页不得超过 ${INSIGHT_PAGE_MAX} 条`)
   assert.equal(payload.items.length, 7, '本例总数小于上限，所以拿到全部')
   ok(`单页上限：limit 被夹到 ${INSIGHT_PAGE_MAX}`)
+}
+
+// ---- 9b. 客户端那份单页上限必须与宿主相等（浏览器 bundle 不能 import 服务端模块） ----
+// 两边漂移的后果不是报错，而是"客户端以为能要 300、宿主只回 200"——动作后的替换式重放
+// 会静默把列表打回窄窗口。这份常量只能手抄，所以用一条断言把它钉住。
+{
+  assert.equal(HOST_PAGE_MAX, INSIGHT_PAGE_MAX, 'src/client/paging.js 的 HOST_PAGE_MAX 与宿主 INSIGHT_PAGE_MAX 漂移了')
+  ok('契约：客户端 HOST_PAGE_MAX === 宿主 INSIGHT_PAGE_MAX')
 }
 
 // ---- 10. global scope 同样排序分页 ----

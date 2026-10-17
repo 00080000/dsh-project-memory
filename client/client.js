@@ -1421,14 +1421,18 @@ window.__ModuleLoader__.load({
 		*
 		* 用 offset 分页而不是 keyset 游标，正是为了让这条路可行：游标只能"往后翻"，
 		* 表达不了"把 0..N 重取一遍"。删除/归档导致的窗口收缩下，前缀重取依然不重不漏。
+		*
+		* **上限**：宿主单页最多 {@link HOST_PAGE_MAX} 条，超过就静默截断。所以已加载数超过上限时
+		* 这一窗只重放前 200 条（`limit` 夹住），载荷回报的 `nextOffset` 会让哨兵继续把 200..N
+		* 追加回来——宁可多一轮分页，也不能发一个"请求 500、只回 200"的值把列表打回 200 条。
 		* @param {number} loadedCount - 当前已渲染条数。
 		* @param {number} [pageSize] - 每页条数下界，保证至少取一页。
-		* @returns {{offset: number, limit: number}} 重放请求窗口。
+		* @returns {{offset: number, limit: number}} 重放请求窗口（limit ≤ HOST_PAGE_MAX）。
 		*/
 		function reloadWindowRequest(loadedCount, pageSize = 30) {
 			return {
 				offset: 0,
-				limit: Math.max(pageSize, Number.isFinite(loadedCount) && loadedCount > 0 ? Math.floor(loadedCount) : 0)
+				limit: Math.min(200, Math.max(pageSize, Number.isFinite(loadedCount) && loadedCount > 0 ? Math.floor(loadedCount) : 0))
 			};
 		}
 		/**
