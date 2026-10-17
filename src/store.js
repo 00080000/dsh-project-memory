@@ -572,7 +572,12 @@ export class ProjectMemoryStore {
       return
     }
     let imported = 0
-    if (!this.insights.migratedAt) {
+    // 导入 + 落盘这条支路必须有"值得写"的输入才走：`migratedAt` 为空 + 旧文件不在 + 内存里也没有
+    // 旧条目（全新根）时直接跳过。否则 `load()` 会在一个从没被索引过的空目录里 mkdir + 写
+    // insights.json —— 那会让 `audit.js` 的 auditDirReady（"目录已存在"）与 auto-inject 的
+    // `if (store.hasContent) store.save()` 双双失效，容器目录被当成项目根（issue #5 同类）。
+    // 归档旧文件是**另一支**（下面单独判 legacyOnDisk），所以跳过这里不影响真升级。
+    if (!this.insights.migratedAt && (legacyOnDisk || legacy.length > 0)) {
       const now = new Date().toISOString()
       const known = new Set(this.insights.items.map((it) => it.id))
       for (const item of legacy) {

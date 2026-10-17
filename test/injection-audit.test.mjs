@@ -265,6 +265,11 @@ const dir = () => {
 {
   const container = mkdtempSync(path.join(tmpdir(), 'audit-bare-'))
   const memDir = path.join(container, '.dsh-project-memory')
+  // auto-inject 每个 pre-step 都先 `new ProjectMemoryStore(memDir).load()`。load() 必须保持
+  // 零副作用，否则它建出的目录会让下面两条审计判据（"目录已存在"）全部失效——这正是
+  // 0.6.1 引入的回归：修前这条断言就会失败。
+  new ProjectMemoryStore(memDir).load()
+  assert.ok(!existsSync(memDir), 'load() 不得为空根建目录，否则审计闸门失效')
   assert.equal(appendShadowAudit(memDir, shadowRecordFrom({ sessionId: 's', step: 1 }), cfgShadow({})), false)
   assert.equal(appendInjectionAudit(memDir, auditRecordFrom({ sessionId: 's', step: 1, text: 'x' }), cfgAudit({})), false)
   assert.ok(!existsSync(memDir), '无标记、无内容的根：审计不创建 store 目录')
