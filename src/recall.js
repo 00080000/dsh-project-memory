@@ -44,23 +44,28 @@ function gatedQueryText(q) {
  * （来自 `git commit --amend --no-edit`），于是单个片段就拿走了 3.13 分。提示通道早就有这条规则
  * （`hintMinMatched`，默认 min(2, 词数)），**工具路径与这两层一直漏着**。
  *
- * ⚠ **只在没有向量层时生效**（`rerank` 为空）。这是同查询集 A/B 实测出来的（36 条、同一个 store）：
+ * ⚠ **只对没有语义分的条目生效**，而且是**逐条**判——不是"有 rerank 就整条关掉"。这是同查询集
+ * A/B 实测出来的（36 条、同一个 store）：
  *   · 纯词法下加闸门：BM25 的 hit@1/3/5/10 = 39/50/58/69% **完全不变**，只是不再对乱码查询出声；
- *   · 有向量时加闸门：融合 hit@5/10 从 64/72% 掉到 58/64%，"完全没召回"从 10 涨到 13。
+ *   · 有向量时对**所有**条目加闸门：融合 hit@5/10 从 64/72% 掉到 58/64%，"完全没召回"从 10 涨到 13。
  * 原因是结构性的：**向量救回来的那批，恰恰就是词法弱到不足 2 个命中的**——用词法的尺子去筛，
- * 等于把向量的全部价值砍掉。有语义分时就该让语义分判质量，词法闸门不要越权。
+ * 等于把向量的全部价值砍掉。所以：拿到语义分的条目豁免，没拿到的照旧过闸。
+ *
+ * 旧实现按 `Boolean(rerank)` 整条关闸，于是"装了 leanvec 但这一轮给不出余弦"（查询编码失败、
+ * embed 抛异常、或者根本没有候选可编码）时，弱命中会漏进来——那不是降级，是**换了行为**：
+ * 注释承诺的"逐字段退回纯词法"在那种情况下并不成立。
  *
  * 只作用于 experience / insight 两层：它们是短标题语料，单片段命中几乎没有证据力；
  * doc/symbol 层是代码与路径（`js` / `id` 这类单词查询本来就该命中），不动它。
  * 单词查询不受影响：need = min(2, 1) = 1，与"score>0 即命中"等价。
  */
-function matchedFloor(scored, queries, hasVector) {
-  if (hasVector) return scored // 有语义分 → 不用词法的"命中词数"判质量
+function matchedFloor(scored, queries) {
   const qTokens = new Set()
   for (const q of queries) for (const t of tokenizeRaw(String(q ?? ''))) qTokens.add(t)
   const need = Math.min(2, qTokens.size)
   if (need <= 1) return scored
-  return scored.filter((r) => (r.matched ?? 0) >= need)
+  // `typeof vector === 'number'` 只在融合真给出了有限余弦时为真（见 fuseVectorHits）。
+  return scored.filter((r) => typeof r.vector === 'number' || (r.matched ?? 0) >= need)
 }
 
 /** 各层先验：insight 是"踩过的坑"，略高于普通文档；经验笔记（同库、kind 区分）留痕价值略低。 */
@@ -232,14 +237,25 @@ function fuseVectorHits(scored, queries, rerank) {
       if (!cosOf.has(id) || v > cosOf.get(id)) cosOf.set(id, v) // 与多查询的 BM25 合并同语义：取最高
     }
   }
-  if (!cosOf.size) return scored // 查询无法编码 / 没有向量 → 原样返回（降级到纯词法）
   const alpha = Math.max(0, Math.min(1, typeof rerank.alpha === 'number' ? rerank.alpha : 0.5))
   const top0 = scored[0].score || 1
-  const fused = scored.map((s) => {
+  const rows = scored.map((s) => {
     const v = cosOf.get(s.item?.insightId) ?? cosOf.get(s.item?.id)
-    const has = typeof v === 'number'
-    // 没有向量分的条目只保留归一后的词法分（缺向量不等于不相关）
-    return { item: s.item, vector: has ? v : undefined, score: has ? (1 - alpha) * (s.score / top0) + alpha * v : s.score / top0 }
+    return { s, v: typeof v === 'number' && Number.isFinite(v) ? v : undefined }
+  })
+  // 一条都没拿到余弦（查询编码失败 / embed 抛异常 / 向量层返回空 Map）→ **原样返回**。
+  // 与"整条关掉闸门"不同：这条路径连归一化都不做，于是 matchedFloor 逐条生效，
+  // 输出与纯词法逐字段一致（这是勘误：旧行为会在这里漏过词法弱命中）。
+  const withVec = rows.filter((r) => r.v !== undefined)
+  if (!withVec.length) return scored
+  // 缺向量分的条目按**这一轮已有余弦的均值**补（不是拿 0 罚它，也不是留一个隐式 0.5）。
+  // 旧写法 `score = rel` 等价于补 α·0.5：真实 store 上 7381 对的余弦中位数只有 0.28、
+  // 查询→标题 top-1 也多在 0.51~0.63，于是"有低余弦"的条目会被"完全没有向量"的条目压住，
+  // 与注释承诺的"缺向量不等于不相关"正好相反。均值是这里假设最少的补法（缺分=平均水平）。
+  const neutral = withVec.reduce((sum, r) => sum + r.v, 0) / withVec.length
+  const fused = rows.map(({ s, v }) => {
+    const rel = s.score / top0
+    return { item: s.item, matched: s.matched, vector: v, score: (1 - alpha) * rel + alpha * (v === undefined ? neutral : v) }
   })
   fused.sort((a, b) => b.score - a.score)
   return fused
@@ -318,22 +334,26 @@ export function recallItems(opts = {}) {
     const expEntries = expPool.map((it) => (it && typeof it.type === 'string' ? it : insightToEntry(it)))
     // 有向量时在**全量** BM25 序上融合（见 fuseVectorHits 注释），截断到 limit 放到融合之后；
     // 没有向量时沿用原来的 limit 语义，输出与纯词法路径逐字段一致。
-    const scored0 = matchedFloor(rankEntriesMergedScored(expEntries, qsLayers, rerank ? expEntries.length : limit), qsLayers, Boolean(rerank))
-    if (scored0.length) {
-      const scored = fuseVectorHits(scored0.map((r) => ({ item: r.entry, score: r.score })), qs, rerank).slice(0, limit)
-      const top = scored[0].score || 1
-      buckets.push({
-        layer: 'experience',
-        prior: LAYER_PRIORS.experience,
-        hits: scored.map(({ item, score, vector }) => ({
-          item: byId.get(item?.insightId) || byId.get(item?.id) || item,
-          score,
-          vector,
+    const ranked = rankEntriesMergedScored(expEntries, qsLayers, rerank ? expEntries.length : limit)
+    if (ranked.length) {
+      const fused = fuseVectorHits(ranked.map((r) => ({ item: r.entry, score: r.score, matched: r.matched })), qs, rerank)
+      // 闸门在融合**之后**、逐条判：拿到语义分的豁免，没拿到的照旧按命中词数筛。
+      const scored = matchedFloor(fused, qsLayers).slice(0, limit)
+      const top = scored[0]?.score || 1
+      if (scored.length) {
+        buckets.push({
+          layer: 'experience',
           prior: LAYER_PRIORS.experience,
-          weightedScore: score,
-          rel: score / top,
-        })),
-      })
+          hits: scored.map(({ item, score, vector }) => ({
+            item: byId.get(item?.insightId) || byId.get(item?.id) || item,
+            score,
+            vector,
+            prior: LAYER_PRIORS.experience,
+            weightedScore: score,
+            rel: score / top,
+          })),
+        })
+      }
     }
   }
 
@@ -341,10 +361,12 @@ export function recallItems(opts = {}) {
     const pool = entries !== null
       ? entries.filter((e) => e && e.type === 'insight' && e.kind !== 'experience')
       : visibleInsights({ store, globalStore, boundTaskId }).filter((it) => it.kind !== 'experience').map(insightToEntry)
-    const scored0 = matchedFloor(rankEntriesMergedScored(pool, qsLayers, rerank ? pool.length : limit), qsLayers, Boolean(rerank))
-    if (scored0.length) {
-      const scored = fuseVectorHits(scored0.map((r) => ({ item: r.entry, score: r.score })), qs, rerank).slice(0, limit)
-      const top = scored[0].score || 1
+    const ranked = rankEntriesMergedScored(pool, qsLayers, rerank ? pool.length : limit)
+    // 与经验桶同一条顺序：融合 → 逐条闸门 → 截断。闸门在融合之后是刻意的——
+    // 融合会把"词法弱但语义近"的条目抬上台面，先闸后融等于先把它们删掉。
+    const scored = matchedFloor(fuseVectorHits(ranked.map((r) => ({ item: r.entry, score: r.score, matched: r.matched })), qs, rerank), qsLayers).slice(0, limit)
+    const top = scored[0]?.score || 1
+    if (scored.length) {
       buckets.push({
         layer: 'insight',
         prior: LAYER_PRIORS.insight,
