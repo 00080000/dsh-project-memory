@@ -7,7 +7,7 @@ import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
 import { stepContent, stepProgress, stepStatus, timeAgo } from '../util/task-view.js'
 
-export function buildTaskPayload(tasks, boundId, archived) {
+export function buildTaskPayload(tasks, boundId, archived, root = null) {
   return JSON.stringify({
     tasks: tasks.map((t) => ({
       id: t.id,
@@ -21,6 +21,9 @@ export function buildTaskPayload(tasks, boundId, archived) {
     })),
     boundId: boundId || null,
     archived,
+    // 项目根：客户端用它把跨标签页广播限定在同一个项目里（不同项目共用一个浏览器时，
+    // 没有这个键就会把 A 项目的任务贴到 B 项目的面板上）。
+    root: root || null,
   })
 }
 
@@ -56,7 +59,7 @@ export function renderTaskSnapshot(config, cwd, sid) {
   }
   lines.push('', '续接/改名/归档：直接告诉模型（list_tasks / select_task / archive_task）。')
   const humanText = lines.join('\n')
-  const payload = buildTaskPayload(active, boundId, archived)
+  const payload = buildTaskPayload(active, boundId, archived, root)
   return { kind: 'success', text: fencedJson(humanText, payload) }
 }
 

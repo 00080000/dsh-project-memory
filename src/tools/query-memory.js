@@ -1,6 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
-import { memoryDirName, memoryRootFor, nestedStoreRoots, resolveSafeIndexRoot } from '../util/fs.js'
+import { assertIndexRoot, memoryDirName, memoryRootFor, nestedStoreRoots, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
 import { expandQuery } from '../llm.js'
 import { resolveRoute } from '../llm-route.js'
@@ -66,6 +66,11 @@ export function queryMemoryTool(ctx, config) {
     },
     async execute(args, exec) {
       const root = resolveSafeIndexRoot(exec, args.root, config)
+      // 读路径也要验根存在。这条不是洁癖：可选的向量层（leanvec）在空 store 上会建
+      // `<root>/.dsh-project-memory/vectors.json`，于是传错一个 root（拼写错误/旧路径）就能
+      // 在任意可写位置造出目录和空 store，而回报是"No memory matches"——看起来像"这个项目
+      // 没有记忆"，用户不会意识到自己查错了地方。与 index_repo/watch_repo 同一道护栏。
+      assertIndexRoot(root, args.root || root)
       // 空查询不是"全部"：recallItems 会过滤空串，rankEntriesStreaming 随即返回
       // entries.slice(0, limit)（任意条目、分数 0），task 分支的 includes('') 更是命中所有任务。
       if (!String(args.query ?? '').trim()) {

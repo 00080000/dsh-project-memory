@@ -36,8 +36,9 @@ function withTaskSnapshot(config, cwd, sid, store, note) {
   const active = tasks.filter((t) => !t.archived)
   const archived = tasks.length - active.length
   const boundId = sid ? store.getBoundTaskId(sid) : null
-  const human = `项目 ${projectRootFor(cwd)}\n${note}\n任务: ${active.length} 套${archived ? `（归档 ${archived}）` : ''}`
-  const payload = buildTaskPayload(active, boundId, archived)
+  const root = projectRootFor(cwd)
+  const human = `项目 ${root}\n${note}\n任务: ${active.length} 套${archived ? `（归档 ${archived}）` : ''}`
+  const payload = buildTaskPayload(active, boundId, archived, root)
   return { kind: 'success', text: fencedJson(human, payload) }
 }
 

@@ -21,6 +21,8 @@ import {
 } from '../src/util/fs.js'
 import { indexRepository, indexRepoTool } from '../src/tools/index-repo.js'
 import { indexDocTool } from '../src/tools/index-doc.js'
+import { forgetTool } from '../src/tools/forget.js'
+import { listTasksTool } from '../src/tools/task-tools.js'
 import { watchRepoTool } from '../src/tools/watch-repo.js'
 import { WatchManager } from '../src/watch.js'
 import { findProjectRoot, indexFile } from '../src/lazy.js'
@@ -274,6 +276,29 @@ console.log('\n== index_doc refuses documents outside a project ==')
   writeFileSync(docPath, '# Spec\n\nbody text here.')
   const indexed = await indexDocTool({}, CONFIG).execute({ file_path: docPath })
   check('a document inside a project still indexes', indexed.startsWith('Indexed:'))
+}
+
+console.log('\n== read paths never create a store for a typo root ==')
+{
+  // 回归：可选的向量层（leanvec）在空 store 上会落 vectors 缓存，于是 `query_memory` 传一个
+  // 不存在的 root 就能在任意可写位置造出 `<root>/.dsh-project-memory`，而回报只是
+  // "No memory matches"——看起来像"这个项目没有记忆"。读路径必须与写路径同一道护栏。
+  const { statsTool } = await import('../src/tools/stats.js')
+  const { queryMemoryTool } = await import('../src/tools/query-memory.js')
+  const miss = () => path.join(mkdtempSync(path.join(TMP, 'pm-miss-')), 'typo-root')
+  const execFor = (cwd) => ({ agent: { session: { id: 's_guard', header: { cwd }, requestHeader: () => undefined }, options: {}, ctx: {} } })
+  for (const [label, run] of [
+    ['memory_stats', (root) => statsTool(CONFIG).execute({ root }, execFor(TMP))],
+    ['query_memory', (root) => queryMemoryTool({ get: () => undefined, llm: {} }, CONFIG).execute({ query: 'x', root }, execFor(TMP))],
+    ['forget', (root) => forgetTool(CONFIG).execute({ id_or_query: 'x', root }, execFor(TMP))],
+    ['list_tasks', (root) => listTasksTool(CONFIG).execute({ root }, execFor(TMP))],
+  ]) {
+    const root = miss()
+    let err = null
+    try { await run(root) } catch (e) { err = e }
+    check(`${label}: a nonexistent root is refused`, err !== null && /does not exist/.test(String(err?.message)))
+    check(`${label}: no directory is created for the typo root`, !existsSync(root))
+  }
 }
 
 console.log('\n== watch_repo guards ==')

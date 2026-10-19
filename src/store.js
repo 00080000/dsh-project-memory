@@ -979,11 +979,23 @@ export class ProjectMemoryStore {
     }
   }
 
-  /** 每项目任务数上限随项目体积自适应；超限按 lastActiveAt 归档最旧（只统计非归档）。 */
+  /**
+   * 每项目任务数上限随项目体积自适应；超限按 lastActiveAt 归档最旧（只统计非归档）。
+   *
+   * **仍被会话绑定的任务不参与裁剪**（这条是修 bug，不是放宽上限）：
+   * 绑定 = "这个任务还没结束，某个会话随时会回来接着干"。旧实现按 `lastActiveAt` 一刀切，
+   * 一个长期挂着的绑定任务会被更新的任务挤到最旧、被静默归档；会话回来写 todo 时，
+   * `taskbridge` 把"归档"按"停止同步"处理（那是归档的文档语义），于是**另建一条新任务**——
+   * 同一个会话的历史被静默拆成两条记录，原条目变成归档孤儿。
+   * 代价是活跃列表可能比上限多出"绑定任务数"条；这是刻意取舍：上限只是启发式，
+   * 而"别把用户正在做的任务从脚底下抽走"是正确性。想真正停掉一个任务，先解绑或显式归档。
+   * @returns {number} 本轮归档的条数
+   */
   pruneTasks() {
     const fileCount = Object.keys(this.files).length
     const maxTasks = Math.min(100, Math.max(5, Math.floor(fileCount / 20)))
-    const nonArchived = this.tasks.filter((t) => !t.archived)
+    const bound = new Set(Object.values(this.binding || {}))
+    const nonArchived = this.tasks.filter((t) => !t.archived && !bound.has(t.id))
     if (nonArchived.length <= maxTasks) return 0
     const ts = (t) => new Date(t.lastActiveAt || t.updatedAt || t.createdAt || 0).getTime()
     const sorted = [...nonArchived].sort((a, b) => ts(a) - ts(b))

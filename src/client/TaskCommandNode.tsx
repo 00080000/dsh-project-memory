@@ -33,6 +33,7 @@ export function TaskCommandNode({ node }: { node?: any }) {
       tasks: parsedTasks.tasks,
       boundTaskId: parsedTasks.boundId,
       archivedCount: parsedTasks.archived,
+      root: parsedTasks.root,
     })
     if (isList) taskUIStore.actions.open()
   }, [text])
