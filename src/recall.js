@@ -215,12 +215,20 @@ export function visibleInsights({ store = null, globalStore = null, boundTaskId 
  * 融合必须在**全量** BM25 序上做（不是先截断再重排），否则"词法排 20 名但语义很近"的条目
  * 永远进不来——那正是向量唯一能补的那类。截断到 limit 发生在融合之后。
  *
- * **边界**：`rankEntriesMergedScored` / `rankExperienceScored` 只返回 **BM25 分 > 0** 的条目，
- * 所以本函数只能**重排**，**拉不进**零词重叠的条目——那需要"并集"形态（向量 top-k 追加到短名单）。
- * 并集的召回更高（实测 hit@10 92% vs 81%）但返回条数约翻倍，对"只给模型少数几条"不友好，
- * 故这里明确不做；要放宽时另开一个模式并重新量一遍。
+ * **边界**：`rankEntriesMergedScored` 只返回 **BM25 分 > 0** 的条目，所以本函数只能**重排**，
+ * **拉不进**零词重叠的条目——那需要"并集"形态（向量 top-k 追加到短名单）。
  *
- * @param {{item: object, score: number}[]} scored - 已按 BM25 降序
+ * 并集为什么不在这里做（0.6.x 复核过一次，仍不做）：
+ *   · 收益是真的：并集 hit@10 92% vs 81%；
+ *   · 但它**单独存在时是空操作**：并集候选的词法分是 0，立刻被 `matchedFloor` 挡掉
+ *     （matched=0 < min(2,词数)）。要让它们活下来，必须让"高余弦名次"**替代**词法闸门——
+ *     那就是一个向量闸门，而 auto-inject 里那条路已经量过：绝对余弦在两个方向上都不成立
+ *     （合成池上像样、真实交付上 0.42 会剪掉 45/45；换成相对分/名次也只在名次 ≤4 时有
+ *     0.46 vs 0.24 的精度差，代价是误杀 4/10 个真命中）。所以并集不是"再加一段代码"，
+ *     而是"改准入策略"——需要先有人工金标准，不能顺手带上。
+ *   · 返回条数翻倍的代价反而是次要的（候选可以并集、交付照样截断到 limit）。
+ *
+ * @param {{item: object, score: number, matched?: number}[]} scored - 已按 BM25 降序
  * @param {string[]} queries
  * @param {{score: (q: string, items: object[]) => Map<string, number>, alpha?: number}} [rerank]
  * @returns {{item: object, score: number, vector?: number}[]}

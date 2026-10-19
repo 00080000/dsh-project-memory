@@ -290,10 +290,17 @@ export function vectorNear(text, items, cosine) {
   let top1 = -1
   let top2 = -1
   let item = null
+  // 池内分布：给"绝对阈值"做本语料的陈规定标（见 autoMergeTarget）。n ≤ 300，顺路算完。
+  let n = 0
+  let sum = 0
+  let sumSq = 0
   for (const it of items) {
     if (!it || it.archived) continue
     const v = m.get(it.id)
     if (typeof v !== 'number' || !Number.isFinite(v)) continue
+    n++
+    sum += v
+    sumSq += v * v
     if (v > top1) {
       top2 = top1
       top1 = v
@@ -301,7 +308,15 @@ export function vectorNear(text, items, cosine) {
     } else if (v > top2) top2 = v
   }
   if (!item) return null
-  return { item, top1, top2: top2 < 0 ? 0 : top2 }
+  // 分布必须**排除候选自己**：top1 本身就是待检验的那个值，把它算进 μ/σ 会把自己的极端值
+  // 摊进方差里（稀疏池里一条 0.92 + 三条 0.2 会把 σ 抬到 0.33，阈值冲上 1 以上，于是永远不合并）。
+  // 排除之后 μ/σ 描述的是"池子里随机一条与这段文本有多像"——那才是零假设。
+  const restN = n - 1
+  const restSum = sum - top1
+  const restSumSq = sumSq - top1 * top1
+  const mu = restN > 0 ? restSum / restN : 0
+  const sigma = restN > 1 ? Math.sqrt(Math.max(0, restSumSq / restN - mu * mu)) : 0
+  return { item, top1, top2: top2 < 0 ? 0 : top2, mu, sigma, n }
 }
 
 /** 近邻是否够"较高"（提示带）；`hintCos <= 0` = 关闭该带。够就返回给调用方回报的形状。 */
@@ -310,9 +325,30 @@ function hintOf(near, cfg) {
   return { id: near.item.id, cos: Number(near.top1.toFixed(3)), title: String(near.item.title || '').slice(0, 40) }
 }
 
-/** 自动覆盖判定：够高**且**第一名明显领先第二名（否则不知道该覆盖谁）；`autoMergeCos <= 0` = 关闭。 */
+/**
+ * 自动覆盖的"池内相对"系数：题面余弦要同时高于 `μ + k·σ`。
+ *
+ * 为什么需要：0.9 这个绝对阈值只在**当前语料 + 当前模型**下安全。两种漂移会把它推过界，
+ * 而这条带是**破坏性写入**（改写既有条目的正文）：
+ *   · 语料模板化——同一句式的大量条目（"修复 X 页脚"）会把"最近邻余弦"整体抬到 0.9 附近；
+ *   · 换模型/换表——同一对文本的余弦尺度整体平移。
+ * 取 `max(autoMergeCos, μ + k·σ)` 只可能**收紧**、绝不会放宽：当前真实 store（122 条、
+ * 7381 对）的余弦 mean=0.281 / sd=0.104 → μ+3σ ≈ 0.59 < 0.9，行为逐字段不变。
+ *
+ * k 不是调参项而是零假设的分位数：池子 ≤300 时，"随机撞上"的最大余弦 ≈ μ + 2.9σ
+ * （n 次抽样的极值分布），取 3 即"显著高于随机"的边界。k 再大就会在密集语料上退化成
+ * "永不自动覆盖"（μ+5σ 在 μ≥0.5 时就已越过 1），k 再小则会开始命中噪声。
+ */
+const AUTO_MERGE_SIGMA = 3
+
+/**
+ * 自动覆盖判定：够高**且**第一名明显领先第二名（否则不知道该覆盖谁）；`autoMergeCos <= 0` = 关闭。
+ * 高度门槛取"绝对下限"与"池内 μ+k·σ"的较大者（只收紧不放宽，见 {@link AUTO_MERGE_SIGMA}）。
+ */
 function autoMergeTarget(near, cfg) {
-  if (!near || !(cfg.autoMergeCos > 0) || near.top1 < cfg.autoMergeCos) return null
+  if (!near || !(cfg.autoMergeCos > 0)) return null
+  const floor = Math.max(cfg.autoMergeCos, near.mu + AUTO_MERGE_SIGMA * near.sigma)
+  if (near.top1 < floor) return null
   if (near.top1 - near.top2 < cfg.autoMergeMargin) return null
   return near
 }

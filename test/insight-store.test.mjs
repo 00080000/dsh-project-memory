@@ -637,6 +637,43 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
   ok('forget：向量行随条目一起删除（不加载模型）')
 }
 
+// --- 17. 自动覆盖的"池内相对带"：同质池里 0.92 不再覆盖，稀疏池里照旧覆盖 ---
+// 绝对阈值 0.9 是损的：语料一旦模板化（池内彼此都很像），0.9 会开始命中**不同**的知识，
+// 而这条带是破坏性写入。判据改成 max(autoMergeCos, 池内 μ+5σ)，只收紧不放宽。
+{
+  const seed = (n) => {
+    const p = newProject()
+    const gs = new GlobalStore(p.globalFile).load()
+    const ids = []
+    for (let i = 0; i < n; i++) {
+      ids.push(p.store.commit((s) => saveInsight({ store: s, globalStore: gs, raw: lesson(`w${i}`, 'x'), scope: 'project', cfg: p.cfg })).id)
+    }
+    return { ...p, gs, ids }
+  }
+  // ① 密集池：其余条目与新文本 0.50~0.85（μ≈0.70 / σ≈0.11 → μ+3σ≈1.03 > 0.92）→ 不许覆盖
+  {
+    const p = seed(20)
+    const spread = [0.5, 0.6, 0.7, 0.75, 0.8, 0.85]
+    const dense = new Map(p.ids.map((id, i) => [id, i === 0 ? 0.92 : spread[i % spread.length]]))
+    const r = p.store.commit((s) => saveInsight({ store: s, globalStore: p.gs, raw: lesson('zzz 另一条知识', 'y'), scope: 'project', cfg: p.cfg, cosine: () => dense }))
+    assert.notEqual(r.action, 'auto-merged', '密集池里 0.92 不得自动覆盖（旧实现在这里丢数据）')
+    assert.equal(p.store.insightItems().length, 21)
+
+    // ② 稀疏池：其余 0.10~0.14（μ≈0.12 → μ+3σ≈0.16 < 0.9）→ 照旧覆盖
+    const q = seed(20)
+    const sparse = new Map(q.ids.map((id, i) => [id, i === 0 ? 0.92 : 0.1 + (i % 5) * 0.01]))
+    const r2 = q.store.commit((s) => saveInsight({ store: s, globalStore: q.gs, raw: lesson('zzz 另一条知识', 'y'), scope: 'project', cfg: q.cfg, cosine: () => sparse }))
+    assert.equal(r2.action, 'auto-merged', '稀疏池里 0.92 仍应自动覆盖（只收紧不放宽）')
+
+    // ③ 中等池：其余 ≈0.40±0.05（μ+3σ≈0.55 < 0.9）→ 也不该被误收紧
+    const m = seed(20)
+    const mid = new Map(m.ids.map((id, i) => [id, i === 0 ? 0.92 : 0.35 + (i % 5) * 0.025]))
+    const r3 = m.store.commit((s) => saveInsight({ store: s, globalStore: m.gs, raw: lesson('zzz 另一条知识', 'y'), scope: 'project', cfg: m.cfg, cosine: () => mid }))
+    assert.equal(r3.action, 'auto-merged', '中等密度池不得被误收紧（μ+3σ 仍低于绝对下限）')
+    ok('自动覆盖：密集池按 μ+3σ 收紧（0.92 不覆盖）；稀疏/中等池行为不变')
+  }
+}
+
 console.log(`\ninsight-store tests: ${passed} passed`)
 if (!process.env.CI_RUNNING) {
   console.log('(run via: node test/insight-store.test.mjs)')
