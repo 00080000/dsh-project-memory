@@ -97,7 +97,11 @@ export function normalizeInsight(raw, extra = {}) {
     id: extra.id || makeInsightId(),
     kind,
     scope: extra.scope || 'project',
-    title: String(raw.title || raw.pattern || raw.problem || raw.topic || '(untitled)').slice(0, 200),
+    // 标题推导必须覆盖 `save_lesson` 允许的三种最小输入（title / pattern / choice）：少了
+    // `choice`，只给 choice 的 decision 会落成 `(untitled)` —— 面板、召回、向量索引三处看到的
+    // 都是这个占位符，而唯一能认出它的字段反而不在标题里。顺序与 `vectorText` 的兜底链一致：
+    // 写入侧的向量比对文本也走这里（raw → 落盘 title），两边不同源就会在写路径上静默失效。
+    title: String(raw.title || raw.pattern || raw.problem || raw.choice || raw.topic || '(untitled)').slice(0, 200),
     source: extra.source || raw.source || 'agent',
     draft: raw.draft === true || extra.draft === true,
     confidence: num(raw.confidence, num(extra.confidence, 0.8)),

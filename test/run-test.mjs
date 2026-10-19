@@ -15,7 +15,8 @@ import { watchRepoTool } from '../src/tools/watch-repo.js'
 import { statsTool } from '../src/tools/stats.js'
 import { WatchManager } from '../src/watch.js'
 import { resolveLinkedSymbols } from '../src/link.js'
-import { rankEntriesMergedScored, rankEntriesStreaming, rankExperienceScored, tokenizeRaw } from '../src/util/search.js'
+import { rankEntriesMergedScored, rankEntriesStreaming, tokenizeRaw } from '../src/util/search.js'
+import { recallItems } from '../src/recall.js'
 import { findProjectRoot, indexFile, setupLazyIndexing, codeFirst } from '../src/lazy.js'
 
 /**
@@ -319,7 +320,7 @@ console.log('\n== store ==')
   check('same problem does not duplicate the entry', expItems.length === 2)
   check('persists to insights.json, not experience.json', existsSync(path.join(storeDir, 'insights.json')) && !existsSync(path.join(storeDir, 'experience.json')))
   check('store files written compact', !readFileSync(path.join(storeDir, 'insights.json'), 'utf8').includes('\n  '))
-  check('searches experience', rankExperienceScored(expItems, 'pdfjs import').length === 1)
+  check('searches experience', recallItems({ entries: expItems, queries: ['pdfjs import'], layers: ['experience'], limit: 8 }).layers[0]?.hits.length === 1)
   const staleTmp = path.join(storeDir, 'insights.json.999999.tmp')
   writeFileSync(staleTmp, '{}')
   utimesSync(staleTmp, new Date(Date.now() - 120000), new Date(Date.now() - 120000))
@@ -405,18 +406,21 @@ console.log('\n== IDF caching & streaming TF ==')
 
 console.log('\n== experience phrase boost ==')
 {
-  // 经验层现在就是 kind:'experience' 的 insight，这里直接喂池子：钉住的是 rankExperienceScored
-  // 的短语加分与同义词展开，与它在哪个存储里无关。
+  // 经验层现在就是 kind:'experience' 的 insight，打分走与洞察层同一个 `insightToEntry`
+  // 适配器（`rankExperienceScored` 已删）。这里钉的是**这一层**的短语加分与同义词展开：
+  // 短语加成从 title/keywords 取，所以夹具必须带 title —— 落盘条目一定有标题
+  // （normalizeInsight 保证），没有标题的夹具不是这个层的真实形状。
   const pool = [
-    { id: 'e0', kind: 'experience', problem: '数据库连接池配置参数调优', solution: '调大 maxPoolSize', sourceFile: 'a.js' },
-    { id: 'e1', kind: 'experience', problem: '连接池耗尽报错', solution: '检查泄漏', sourceFile: 'b.js' },
-    { id: 'e2', kind: 'experience', problem: '其他问题', solution: 'x', sourceFile: 'c.js' },
+    { id: 'e0', kind: 'experience', title: '数据库连接池配置参数调优', problem: '数据库连接池配置参数调优', solution: '调大 maxPoolSize', sourceFile: 'a.js' },
+    { id: 'e1', kind: 'experience', title: '连接池耗尽报错', problem: '连接池耗尽报错', solution: '检查泄漏', sourceFile: 'b.js' },
+    { id: 'e2', kind: 'experience', title: '其他问题', problem: '其他问题', solution: 'x', sourceFile: 'c.js' },
   ]
-  // 查询包含经验 problem 完整短语，应触发短语加分
-  const r1 = rankExperienceScored(pool, '数据库连接池配置参数调优')
+  const expLayer = (q) => recallItems({ entries: pool, queries: [q], layers: ['experience'], limit: 9 }).layers[0]?.hits || []
+  // 查询包含经验标题完整短语，应触发短语加分
+  const r1 = expLayer('数据库连接池配置参数调优')
   check('经验层短语加分: 数据库连接池配置参数调优 -> 自身 排前', r1[0]?.item?.id === 'e0')
   // 同义词展开也应生效
-  const r2 = rankExperienceScored(pool, '连接池')
+  const r2 = expLayer('连接池')
   check('经验层同义词展开: 连接池 召回 数据库连接池配置参数调优', r2.some((e) => e.item.problem === '数据库连接池配置参数调优'))
 }
 

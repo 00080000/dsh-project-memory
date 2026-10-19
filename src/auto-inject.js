@@ -429,7 +429,15 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped, rerank =
   // 顺序与真实判据一致（support → coverage → thin → relative），最后 'cand' = 过了全部门槛
   // （注意 'cand' 不等于"真的注入了"：还要过去重/预算/冷却，那些写在同一行的 injected/silence）。
   {
+    // 两个分母必须分开：真实判据（`relative`）用的是**融合后**的分，而影子记录的 `rel`
+    // 承诺的是**词法**相对分。此前两者共用 `scored[0].score`，于是 `rel` 的分子是 BM25 原分、
+    // 分母是融合 top —— 实测同一行里 `rel` 能到 5.925（应当 ≤1），离线拿它重放阈值会全歪。
     const top = scored[0]?.score || 0
+    let lexTop = 0
+    for (const r of scored) {
+      const lex = r.bm25 ?? r.score
+      if (Number.isFinite(lex) && lex > lexTop) lexTop = lex
+    }
     const ratio = typeof cfg.signalMinRatio === 'number' && Number.isFinite(cfg.signalMinRatio) ? cfg.signalMinRatio : 0.5
     for (const r of scored) {
       const it = byId.get(r.entry.insightId)
@@ -445,8 +453,9 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped, rerank =
       const cand = {
         id: it.id,
         channel: 'hint',
-        // `rel` 恒为**词法**相对分（未融合），供离线重放对照；融合后的分另记 fused。
-        rel: Number(((r.bm25 ?? r.score) / (top || 1)).toFixed(3)),
+        // `rel` 恒为**词法**相对分（未融合，分母是词法 top），供离线重放对照；
+        // 融合后的分另记 fused，`decision: 'relative'` 用的仍是融合分（与真实判据一致）。
+        rel: Number(((r.bm25 ?? r.score) / (lexTop || 1)).toFixed(3)),
         coverage: Number(ev.coverage.toFixed(3)),
         matched: ev.matched,
         support: ev.supported,

@@ -17,7 +17,7 @@
  *
  * @module dsh-project-memory/recall
  */
-import { rankEntriesMergedScored, rankEntriesStreaming, rankExperienceScored, tokenizeRaw, CJK_RANGE } from './util/search.js'
+import { rankEntriesMergedScored, rankEntriesStreaming, tokenizeRaw, CJK_RANGE } from './util/search.js'
 
 /**
  * 短拉丁片段不算检索证据（只用于经验/洞察两层）。
@@ -309,16 +309,30 @@ export function recallItems(opts = {}) {
     const expPool = entries !== null
       ? entries
       : visibleInsights({ store, globalStore, boundTaskId }).filter((it) => it.kind === 'experience')
+    // **与洞察层共用一个适配器**（`insightToEntry`）。这里曾经用 v0.4 的 `{problem,solution}`
+    // 形状打分，而统一存储之后 `kind:'experience'` 也能由 `save_lesson` 写出——它的参数表里
+    // 没有 problem / solution，于是那种条目的 BM25 文档是三个字面量 `undefined`：任何正常查询
+    // 都 0 分，而洞察桶又排除了 experience → 两条拉取路径同时不通，条目在库里但永远查不到。
+    // 打分用 entry，命中后再换回原始条目：渲染与记账要 problem / sourceFile / id。
+    const byId = new Map(expPool.map((it) => [it?.id, it]))
+    const expEntries = expPool.map((it) => (it && typeof it.type === 'string' ? it : insightToEntry(it)))
     // 有向量时在**全量** BM25 序上融合（见 fuseVectorHits 注释），截断到 limit 放到融合之后；
     // 没有向量时沿用原来的 limit 语义，输出与纯词法路径逐字段一致。
-    const scored0 = matchedFloor(rankExperienceScored(expPool, qsLayers, rerank ? expPool.length : limit), qsLayers, Boolean(rerank))
+    const scored0 = matchedFloor(rankEntriesMergedScored(expEntries, qsLayers, rerank ? expEntries.length : limit), qsLayers, Boolean(rerank))
     if (scored0.length) {
-      const scored = fuseVectorHits(scored0, qs, rerank).slice(0, limit)
+      const scored = fuseVectorHits(scored0.map((r) => ({ item: r.entry, score: r.score })), qs, rerank).slice(0, limit)
       const top = scored[0].score || 1
       buckets.push({
         layer: 'experience',
         prior: LAYER_PRIORS.experience,
-        hits: scored.map(({ item, score, vector }) => ({ item, score, vector, prior: LAYER_PRIORS.experience, weightedScore: score, rel: score / top })),
+        hits: scored.map(({ item, score, vector }) => ({
+          item: byId.get(item?.insightId) || byId.get(item?.id) || item,
+          score,
+          vector,
+          prior: LAYER_PRIORS.experience,
+          weightedScore: score,
+          rel: score / top,
+        })),
       })
     }
   }

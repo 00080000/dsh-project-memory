@@ -557,6 +557,44 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
   }
 }
 
+// --- 14. 只给 pattern / choice 的写入也要进向量比对（查询文本 = 落盘标题）---
+// 事故形状：`save_lesson` 允许 title / pattern / choice 三选一；旧 vectorText 只认
+// title/problem/body，于是 pattern-only 的写入把空串当查询文本，`vectorNear` 直接返回 null
+// —— 0.9 自动覆盖 / 0.7 近邻提示两条带对这种最常用的 lesson 形状**整体失效**。
+{
+  const { store, globalFile, cfg } = newProject()
+  const gs = new GlobalStore(globalFile).load()
+  const r0 = store.commit((s) => saveInsight({
+    store: s, globalStore: gs,
+    raw: { kind: 'lesson', pattern: 'pnpm 不跑 postinstall', fix: 'approve-builds' },
+    scope: 'project', cfg,
+  }))
+  const seeded = store.insightItems()[0]
+  assert.equal(seeded.title, 'pnpm 不跑 postinstall', '没有 title 时标题由 pattern 推导')
+
+  const seen = []
+  const cosine = (text, items) => { seen.push(text); return new Map(items.map((it) => [it.id, 0.95])) }
+  const r1 = store.commit((s) => saveInsight({
+    store: s, globalStore: gs,
+    raw: { kind: 'lesson', pattern: 'pnpm 不跑 postinstall', fix: '用 approve-builds 放行' },
+    scope: 'project', cfg, cosine,
+  }))
+  assert.deepEqual(seen, ['pnpm 不跑 postinstall'], `只给 pattern 的写入必须带可比对文本，实得 ${JSON.stringify(seen)}`)
+  assert.equal(r1.action, 'auto-merged', '同一条知识应自动覆盖，而不是再存一条')
+  assert.equal(r1.id, r0.id)
+  assert.equal(store.insightItems().length, 1)
+
+  // 只给 choice 的 decision：标题必须能认出它（旧行为是 `(untitled)`）
+  const r2 = store.commit((s) => saveInsight({
+    store: s, globalStore: gs,
+    raw: { kind: 'decision', choice: '选 leancache 而不是 redis', reason: '免运维' },
+    scope: 'project', cfg, cosine: () => new Map(),
+  }))
+  const dec = store.insightItems().find((it) => it.id === r2.id)
+  assert.equal(dec.title, '选 leancache 而不是 redis', '只给 choice 时标题必须是 choice')
+  ok('向量带：只给 pattern/choice 的写入也进比对（查询文本 = 落盘标题）')
+}
+
 console.log(`\ninsight-store tests: ${passed} passed`)
 if (!process.env.CI_RUNNING) {
   console.log('(run via: node test/insight-store.test.mjs)')

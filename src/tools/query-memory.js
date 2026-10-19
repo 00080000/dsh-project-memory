@@ -182,8 +182,12 @@ export function queryMemoryTool(ctx, config) {
             // 统一存储后经验条目就是 insight：导入时 source_file 落在 files[0]，新写的也走同一处。
             const src = e.sourceFile || (Array.isArray(e.files) ? e.files[0] : '')
             const source = src ? ` (source: ${toAbs(root, src)})` : ''
+            // `problem`/`solution` 只是 v0.4 的字段形状：`save_lesson` 写 kind:'experience'
+            // 时没有这两个参数（正文在 fix/choice/body 里），直接用会渲染出 `undefined`。
+            const problem = e.problem || e.title || '(untitled)'
+            const solution = e.solution || e.fix || e.choice || e.body || '(no text)'
             lines.push(
-              `### Problem: ${e.problem} (score: ${Math.round(rel * 100)}, id: ${e.id})\n- solution: ${e.solution}${source}\n- updated: ${e.updatedAt}`,
+              `### Problem: ${problem} (score: ${Math.round(rel * 100)}, id: ${e.id})\n- solution: ${solution}${source}\n- updated: ${e.updatedAt}`,
             )
           }
         }
