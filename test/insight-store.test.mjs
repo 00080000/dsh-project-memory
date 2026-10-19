@@ -595,6 +595,48 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
   ok('向量带：只给 pattern/choice 的写入也进比对（查询文本 = 落盘标题）')
 }
 
+// --- 15. 向量带阈值 `0` = 关闭（不是"总是合并/总是提示"）---
+// 旧行为：`top1 >= 0` 恒真 → 把阈值设成 0 会**对每一条写入**自动覆盖最近的那条，
+// 而"关掉它"最自然的写法恰好就是 0。
+{
+  const { store, globalFile, cfg } = newProject()
+  const gs = new GlobalStore(globalFile).load()
+  const id = store.commit((s) => saveInsight({
+    store: s, globalStore: gs, raw: lesson('完全无关的甲主题', '甲做法'), scope: 'project', cfg,
+  })).id
+  // 对照：默认阈值 + 0.999 → 自动覆盖
+  const on = store.commit((s) => saveInsight({
+    store: s, globalStore: gs, raw: lesson('完全无关的乙主题', '乙做法'), scope: 'project', cfg, cosine: () => new Map([[id, 0.999]]),
+  }))
+  assert.equal(on.action, 'auto-merged', '默认阈值下 0.999 应当自动覆盖（对照）')
+  // 关掉：同一个余弦，只因为阈值是 0
+  const off = cfgInsight({ insight: { globalFile, autoMergeCos: 0, hintCos: 0 } })
+  const r = store.commit((s) => saveInsight({
+    store: s, globalStore: gs, raw: lesson('完全无关的丙主题', '丙做法'), scope: 'project', cfg: off, cosine: () => new Map([[on.id, 0.999]]),
+  }))
+  assert.notEqual(r.action, 'auto-merged', 'autoMergeCos: 0 必须表示"关闭"')
+  assert.equal(r.near, undefined, 'hintCos: 0 表示关闭近邻提示带')
+  ok('向量带阈值 0 = 关闭（autoMergeCos / hintCos）')
+}
+
+// --- 16. forget 要同时删掉向量行（否则"真删"名不副实）---
+{
+  const { root, store, globalFile, cfg } = newProject()
+  const gs = new GlobalStore(globalFile).load()
+  const id = store.commit((s) => saveInsight({
+    store: s, globalStore: gs, raw: lesson('向量行删除测试', 'x'), scope: 'project', cfg,
+  })).id
+  const memDir = path.join(root, '.dsh-project-memory')
+  const blob = Buffer.alloc(2 * 256 * 4).toString('base64')
+  writeFileSync(path.join(memDir, 'vectors.json'), JSON.stringify({ version: 1, model: 'm', dim: 256, ids: [id, 'keep'], hashes: ['a', 'b'], blob }))
+  const fTool = forgetTool({ memoryDir: '.dsh-project-memory', insight: { globalFile, maxForgetMatches: 10 } })
+  await fTool.execute({ root, id_or_query: id }, { agent: { session: { header: { cwd: root } } } })
+  const doc = JSON.parse(readFileSync(path.join(memDir, 'vectors.json'), 'utf8'))
+  assert.deepEqual(doc.ids, ['keep'], '删除要同时清掉向量行（否则不算真删）')
+  assert.equal(Buffer.from(doc.blob, 'base64').length, 256 * 4, '保留下来的行要按 stride 搬过去')
+  ok('forget：向量行随条目一起删除（不加载模型）')
+}
+
 console.log(`\ninsight-store tests: ${passed} passed`)
 if (!process.env.CI_RUNNING) {
   console.log('(run via: node test/insight-store.test.mjs)')

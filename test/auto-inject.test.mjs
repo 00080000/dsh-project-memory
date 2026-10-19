@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
 import { GlobalStore, cfgInsight } from '../src/insight-store.js'
-import { buildInjection, cfgEngine } from '../src/auto-inject.js'
+import { buildInjection, cfgEngine, createWriteCosine } from '../src/auto-inject.js'
 import { projectTags } from '../src/project-profile.js'
 
 let passed = 0
@@ -147,6 +147,17 @@ const BASE_CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
   assert.equal(a.rel, 1, `词法最强那条的 rel 必须是 1（旧实现 = BM25/融合top = ${a.rel}）`)
   assert.ok(a.vector < 0.5 && a.fused < 1, '融合分与词法相对分必须是两个数')
   ok('影子记录：rel 用词法 top 归一（≤1），与 fused 分开')
+}
+
+// --- 写入侧去重：`vectorDedup:false` 必须直接关掉，且不加载模型（否则每次写都白付 90ms）---
+{
+  assert.equal(await createWriteCosine({ autoContext: { vectorDedup: false } }, { storeDir: null, items: [] }), null)
+  // `vectorAlpha: 0` 只关重排，不该连带关掉写入去重（这里只断言"不被 alpha 短路"：
+  // 没装 leanvec 时它也是 null，所以只检查 cfgEngine 出来的开关值）。
+  assert.equal(cfgEngine({ autoContext: { vectorDedup: false } }).vectorDedup, false)
+  assert.equal(cfgEngine({ autoContext: { vectorAlpha: 0 } }).vectorDedup, true)
+  assert.equal(cfgEngine({ autoContext: {} }).vectorDedup, true, '默认开')
+  ok('写入侧去重：vectorDedup 独立于 vectorAlpha（默认开）')
 }
 
 console.log(`\nauto-inject tests: ${passed} passed`)

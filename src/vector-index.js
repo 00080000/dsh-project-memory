@@ -95,10 +95,15 @@ export function openVectorIndex({ dir = null, items = [], embed, model, dim = DI
   let reused = 0
   let computed = 0
   let dirty = false
+  /**
+   * 本进程内被删掉的 id：`forget()` 之后即使调用方还拿着旧的条目列表，也不能把它重新编码
+   * 写回去（长驻进程里 store 对象可能仍持有已删条目的引用；"删了又活过来"比不删更难排查）。
+   */
+  const dropped = new Set()
 
   const ensure = (it) => {
     const key = keyOf(it)
-    if (!key) return null
+    if (!key || dropped.has(key)) return null
     const text = vectorText(it)
     if (!text) return null
     const h = hashOf(text)
@@ -117,10 +122,17 @@ export function openVectorIndex({ dir = null, items = [], embed, model, dim = DI
     return v
   }
 
-  /** 持久化（仅在有变化时写；失败不影响本次运行）。 */
+  /**
+   * 持久化（仅在有变化时写；失败不影响本次运行）。
+   * ⚠ **不建目录**：这是缓存写入，`score()` 会在读路径上调它，`writeJsonAtomic` 的
+   * `mkdirSync(recursive)` 会在"传错 root"时于任意可写位置造出 `<root>/.dsh-project-memory`
+   * ——那正是 query_memory / memory_stats 不得不加"根存在性"护栏的原因。目录在写入侧
+   * 早就存在（条目的来源），所以这条只会挡住"从零造目录"。
+   */
   const flush = () => {
     if (!dirty || !file) return false
     try {
+      if (!existsSync(dirname(file))) return false
       const keys = [...entryMap.keys()]
       const all = new Float32Array(keys.length * dim)
       const hashes = []
@@ -134,6 +146,27 @@ export function openVectorIndex({ dir = null, items = [], embed, model, dim = DI
     } catch {
       return false // 磁盘不可写等：本次仍可用，只是下次还要重算
     }
+  }
+
+  /**
+   * 从索引里移除若干行（`forget` 之后调用）。**不需要加载模型**，也立即落盘：
+   * 删除承诺是"真删"，而向量行是标题的 256 维均值池化——留着就不是真删。
+   * @param {string[]} ids
+   * @returns {number} 实际移除的行数
+   */
+  const forget = (ids) => {
+    let n = 0
+    for (const id of ids || []) {
+      if (!id) continue
+      // 两处都要删：`usable` 是打开时读回来的快照，`ensure()` 会从它那里复用旧行 ——
+      // 只删 entryMap 的话，下一次 score 会把被删的那一行原样复活。
+      let hit = false
+      if (usable?.map?.delete(id)) hit = true
+      if (entryMap.delete(id)) hit = true
+      if (hit) { n++; dirty = true; dropped.add(id) }
+    }
+    if (n) flush()
+    return n
   }
 
   /**
@@ -167,6 +200,7 @@ export function openVectorIndex({ dir = null, items = [], embed, model, dim = DI
   return {
     score,
     flush,
+    forget,
     stats: {
       file, model, dim,
       persisted: entryMap.size,
@@ -223,22 +257,12 @@ async function resolveLeanvecDir(explicit) {
 }
 
 /**
- * 构造给 `recallItems` / `buildInjection` 用的 rerank。leanvec 不可用 → **null**。
- *
- * 装了就有向量、没装就纯词法，两条路的差别只在排序：闸门（覆盖率/共同词数）与返回条数都不变。
- * @param {object} o
- * @param {string|null} [o.storeDir] - 持久化位置（通常是项目 store 目录）；null → 只在内存里
- * @param {object[]} [o.items] - 建索引的条目（见 {@link vectorItemsFrom}）
- * @param {string|null} [o.vectorDir] - leanvec 目录（显式配置优先）
- * @param {number} [o.alpha] - 融合权重；实测 0.5 在小 k 上最优（见 recall.js 的注释）
- * @returns {Promise<{score: Function, alpha: number, stats: object}|null>}
+ * 解析当前可用的 leanvec 目录（**不加载模型**，只做 memo 过的解析 + 指纹）。
+ * 给 `memory_stats` 这类"只想知道开没开"的调用方用。
+ * @param {string|null} [vectorDir]
+ * @returns {Promise<{dir: string|null, fingerprint: string|null}>}
  */
-export async function createVectorRerank({ storeDir = null, items = [], vectorDir = null, alpha = 0.5 } = {}) {
-  // 强制关闭：`vectorDir: 'off'`（或 alpha=0）一律返回 null，连模型都不加载。
-  // 为什么需要：装了可选依赖之后，没有这个开关就无法退回纯词法——测试固定基线、
-  // 线上排查"是不是向量层导致的"都会用得上。
-  if (typeof vectorDir === 'string' && vectorDir.trim().toLowerCase() === 'off') return null
-  if (alpha === 0) return null
+export async function resolveVectorLayer(vectorDir = null) {
   const rk = `${typeof vectorDir === 'string' ? vectorDir : ''}\u0000${process.env.DSH_LEANVEC_DIR ?? ''}`
   let resolved = resolveCache.get(rk)
   if (resolved === undefined) {
@@ -246,7 +270,16 @@ export async function createVectorRerank({ storeDir = null, items = [], vectorDi
     resolved = { dir, fingerprint: dir ? leanvecFingerprint(dir) : null }
     resolveCache.set(rk, resolved) // 未安装也记下来：避免每步重复 resolve 的 IO
   }
-  const { dir, fingerprint } = resolved
+  return resolved
+}
+
+/**
+ * 解析目录 + 加载运行时 + 打开（或复用）索引。**不含 alpha**——重排与写入侧去重
+ * 共用这一层，`alpha` 只属于前者（它是个排序权重，不该控制去重是否工作）。
+ * @returns {Promise<{index: object, fingerprint: string, dir: string}|null>}
+ */
+async function openEngine({ storeDir = null, items = [], vectorDir = null } = {}) {
+  const { dir, fingerprint } = await resolveVectorLayer(vectorDir)
   if (!dir || !fingerprint) return null
   try {
     if (!runtimeCache || runtimeCache.dir !== dir) {
@@ -267,9 +300,121 @@ export async function createVectorRerank({ storeDir = null, items = [], vectorDi
       if (!index) return null
       indexCache.set(ck, index)
     }
-    const a = typeof alpha === 'number' && alpha >= 0 && alpha <= 1 ? alpha : 0.5
-    return { score: index.score, alpha: a, stats: index.stats }
+    return { index, fingerprint, dir }
   } catch {
     return null // 任何异常都降级到纯词法，绝不因为可选的向量层让召回失败
   }
+}
+
+/**
+ * 构造给 `recallItems` / `buildInjection` 用的 rerank。leanvec 不可用 → **null**。
+ *
+ * 装了就有向量、没装就纯词法，两条路的差别只在排序：闸门（覆盖率/共同词数）与返回条数都不变。
+ * @param {object} o
+ * @param {string|null} [o.storeDir] - 持久化位置（通常是项目 store 目录）；null → 只在内存里
+ * @param {object[]} [o.items] - 建索引的条目（见 {@link vectorItemsFrom}）
+ * @param {string|null} [o.vectorDir] - leanvec 目录（显式配置优先）
+ * @param {number} [o.alpha] - 融合权重；实测 0.5 在小 k 上最优（见 recall.js 的注释）
+ * @param {number} [o.itemMin] - 条目的余弦下限（**实验性**，不设则不过滤；见 auto-inject 注释）
+ * @param {number} [o.speakMin] - 通道级语义救援阈值（**实验性**，不设则不启用）
+ * @returns {Promise<{score: Function, alpha: number, itemMin?: number, speakMin?: number, stats: object}|null>}
+ */
+export async function createVectorRerank({ storeDir = null, items = [], vectorDir = null, alpha = 0.5, itemMin, speakMin } = {}) {
+  // 强制关闭：`vectorDir: 'off'`（或 alpha=0）一律返回 null，连模型都不加载。
+  // 为什么需要：装了可选依赖之后，没有这个开关就无法退回纯词法——测试固定基线、
+  // 线上排查"是不是向量层导致的"都会用得上。
+  if (typeof vectorDir === 'string' && vectorDir.trim().toLowerCase() === 'off') return null
+  if (alpha === 0) return null
+  const eng = await openEngine({ storeDir, items, vectorDir })
+  if (!eng) return null
+  const a = typeof alpha === 'number' && alpha >= 0 && alpha <= 1 ? alpha : 0.5
+  // `itemMin` / `speakMin` 只有**显式配置**时才进返回值：没有可发布的默认值（见 auto-inject
+  // 的证据），不设即整段逻辑不执行，默认路径与旧版逐字段一致。
+  const out = { score: eng.index.score, alpha: a, stats: eng.index.stats }
+  if (typeof itemMin === 'number' && Number.isFinite(itemMin)) out.itemMin = itemMin
+  if (typeof speakMin === 'number' && Number.isFinite(speakMin)) out.speakMin = speakMin
+  return out
+}
+
+/**
+ * 写入侧（近重复检测）用的余弦打分器。leanvec 不可用 / 显式关掉 → **null**。
+ *
+ * 与 `createVectorRerank` **刻意分开**：`autoContext.vectorAlpha` 是排序权重，把它设成 0
+ * 是"关掉重排"，不该连带关掉写入去重（旧实现复用同一个函数，于是 `vectorAlpha: 0` 静默
+ * 停掉了 0.9 自动覆盖 / 0.7 近邻提示）。开关是独立的 `vectorDedup`。
+ * @returns {Promise<((text: string, items: object[]) => Map<string, number>)|null>}
+ */
+export async function createVectorCosine({ storeDir = null, items = [], vectorDir = null, dedup = true } = {}) {
+  if (dedup === false) return null
+  if (typeof vectorDir === 'string' && vectorDir.trim().toLowerCase() === 'off') return null
+  const eng = await openEngine({ storeDir, items, vectorDir })
+  if (!eng) return null
+  return (text, cands) => eng.index.score(text, cands)
+}
+
+/**
+ * 删除若干条目的向量行（`forget` 之后调用）。**不加载模型**：只读文件、过滤 id、原子重写，
+ * 并同步清掉进程内缓存索引里的同名行（否则下次 flush 会把它写回去）。
+ * @param {{dir: string|null, ids: string[]}} o
+ * @returns {number} 移除的行数（尽力而为，绝不抛）
+ */
+export function forgetVectorRows({ dir = null, ids = [] } = {}) {
+  const want = new Set((ids || []).filter(Boolean))
+  if (!dir || !want.size) return 0
+  let n = 0
+  // ① 进程内缓存：按 storeDir 前缀找对应的索引（一个 store 一般只有一份）
+  for (const [ck, idx] of indexCache) {
+    if (!ck.startsWith(`${dir}\u0000`)) continue
+    if (idx && typeof idx.forget === 'function') n += idx.forget([...want])
+  }
+  // ② 磁盘：文件可能是别的进程写的，单独再清一遍（幂等）
+  const file = join(dir, FILE)
+  try {
+    if (!existsSync(file)) return n
+    const doc = JSON.parse(readFileSync(file, 'utf8'))
+    if (!doc || !Array.isArray(doc.ids) || typeof doc.blob !== 'string') return n
+    const keep = []
+    for (let i = 0; i < doc.ids.length; i++) if (!want.has(doc.ids[i])) keep.push(i)
+    if (keep.length === doc.ids.length) return n
+    const buf = Buffer.from(doc.blob, 'base64')
+    const u8 = new Uint8Array(buf)
+    const stride = Number.isInteger(doc.dim) && doc.dim > 0 ? doc.dim : DIM
+    const all = new Float32Array(u8.buffer, 0, Math.floor(u8.byteLength / 4))
+    const next = new Float32Array(keep.length * stride)
+    keep.forEach((src, i) => next.set(all.subarray(src * stride, src * stride + stride), i * stride))
+    writeJsonAtomic(file, {
+      ...doc,
+      ids: keep.map((i) => doc.ids[i]),
+      hashes: keep.map((i) => doc.hashes?.[i] ?? ''),
+      blob: Buffer.from(next.buffer, next.byteOffset, next.byteLength).toString('base64'),
+    })
+    n = Math.max(n, doc.ids.length - keep.length)
+  } catch {
+    // 损坏/不可写：删除承诺只对条目本身负责，向量缓存坏掉会在下次重建
+  }
+  return n
+}
+
+/**
+ * 索引状态摘要（**不加载模型**）：给 `memory_stats` 用的可观测量。
+ * 报告行数、陈旧行（文件里有、store 里已没有）、体积、模型指纹与落盘时间。
+ */
+export function vectorIndexSummary({ dir = null, items = [] } = {}) {
+  const live = new Set((items || []).map((it) => (it?.insightId ?? it?.id)).filter(Boolean))
+  const summary = { file: dir ? join(dir, FILE) : null, rows: 0, live: live.size, stale: 0, bytes: 0, updatedAt: null, model: null }
+  if (!dir) return summary
+  try {
+    const st = statSync(summary.file)
+    summary.bytes = st.size
+    summary.updatedAt = st.mtime.toISOString()
+    const doc = JSON.parse(readFileSync(summary.file, 'utf8'))
+    summary.model = typeof doc?.model === 'string' ? doc.model : null
+    for (const id of Array.isArray(doc?.ids) ? doc.ids : []) {
+      summary.rows++
+      if (!live.has(id)) summary.stale++
+    }
+  } catch {
+    // 没有/坏了：rows=0，上层据此说"尚未建立"
+  }
+  return summary
 }

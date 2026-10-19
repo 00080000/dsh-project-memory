@@ -56,6 +56,8 @@ export function cfgInsight(config) {
     //   · 0.90 自动覆盖 —— 落在负样本之上 0.245，只会命中逐字级再记录（"非常非常相似"）；
     //   · 0.70 提示 —— 在全部 1081 对真实条目上零噪声，而改写后的再记录有 78% 落进来。
     // 0.65 会开始误伤真实条目（1/1081），别往下调：提示是往上下文里加字的。
+    // **0 = 关闭**那条带（与仓库其它旋钮一致）：`top1 >= 0` 恒真，旧写法把 0 当"总是合并/
+    // 总是提示"，而用户关掉它的最自然写法恰好就是 0。
     autoMergeCos: num(c.autoMergeCos, 0.9),
     // 自动覆盖还要求"第一名明显领先第二名"，否则同一话题撞两条时不知道该覆盖谁。
     autoMergeMargin: num(c.autoMergeMargin, 0.05),
@@ -302,15 +304,15 @@ export function vectorNear(text, items, cosine) {
   return { item, top1, top2: top2 < 0 ? 0 : top2 }
 }
 
-/** 近邻是否够"较高"（提示带）；够就返回给调用方回报的形状。 */
+/** 近邻是否够"较高"（提示带）；`hintCos <= 0` = 关闭该带。够就返回给调用方回报的形状。 */
 function hintOf(near, cfg) {
-  if (!near || near.top1 < cfg.hintCos) return null
+  if (!near || !(cfg.hintCos > 0) || near.top1 < cfg.hintCos) return null
   return { id: near.item.id, cos: Number(near.top1.toFixed(3)), title: String(near.item.title || '').slice(0, 40) }
 }
 
-/** 自动覆盖判定：够高**且**第一名明显领先第二名（否则不知道该覆盖谁）。 */
+/** 自动覆盖判定：够高**且**第一名明显领先第二名（否则不知道该覆盖谁）；`autoMergeCos <= 0` = 关闭。 */
 function autoMergeTarget(near, cfg) {
-  if (!near || near.top1 < cfg.autoMergeCos) return null
+  if (!near || !(cfg.autoMergeCos > 0) || near.top1 < cfg.autoMergeCos) return null
   if (near.top1 - near.top2 < cfg.autoMergeMargin) return null
   return near
 }
