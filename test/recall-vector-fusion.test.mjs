@@ -109,14 +109,52 @@ same(base({ rerank: { alpha: 0.9, score: () => null } }), '向量层返回 null'
   const r1 = recallItems({ entries: withWeak, queries: ['alpha'], layers: ['experience'], limit: 9 })
   assert.ok(idsOf(r1).includes('e_weak'), `单词查询不该被闸门影响，实得 ${idsOf(r1)}`)
   ok('最小相关性闸门：单词查询不受影响（need = min(2,1) = 1）')
-  // ⚠ 有向量时闸门**不生效**：向量救回来的正是"词法弱到不足 2 个命中"的那批，
+  // ⚠ 有向量时闸门**对该条不生效**：向量救回来的正是"词法弱到不足 2 个命中"的那批，
   //   用词法的尺子筛等于砍掉向量的全部价值（同查询集 A/B 实测：融合 hit@10 72% → 64%）。
   const r2 = recallItems({
     entries: withWeak, queries: [Q], layers: ['experience'], limit: 9,
     rerank: { alpha: 0.5, score: () => new Map([['e_weak', 1]]) },
   })
   assert.ok(idsOf(r2).includes('e_weak'), `有向量时不该用词法闸门挡住语义强的条目，实得 ${idsOf(r2)}`)
-  ok('闸门只在无向量时生效：有向量时词法弱的条目仍可被语义分带出')
+  ok('闸门逐条豁免：拿到语义分的词法弱条目仍可被语义分带出')
+
+  // 但**没拿到**语义分的弱命中仍要过闸（逐条判，不是整条通道关）。否则"部分条目编码失败"
+  // 会变成噪声入口：只有 e1 有分，e_weak 没有。
+  const r3 = recallItems({
+    entries: withWeak, queries: [Q], layers: ['experience'], limit: 9,
+    rerank: { alpha: 0.5, score: () => new Map([['e1', 0.9]]) },
+  })
+  assert.ok(!idsOf(r3).includes('e_weak'), `没拿到向量分的弱命中仍要过闸，实得 ${idsOf(r3)}`)
+  ok('闸门逐条豁免：没拿到向量分的弱命中照旧被挡')
+
+  // 一条分都没有（查询编码失败 / embed 抛异常）→ 输出必须与纯词法**逐字段一致**。
+  // 旧实现按 Boolean(rerank) 整条关闸，这两条都会把 e_weak 放进来。
+  const pure = recallItems({ entries: withWeak, queries: [Q], layers: ['experience'], limit: 9 })
+  for (const [label, score] of [['返回空 Map', () => new Map()], ['抛异常', () => { throw new Error('vector down') }]]) {
+    const got = recallItems({ entries: withWeak, queries: [Q], layers: ['experience'], limit: 9, rerank: { alpha: 0.5, score } })
+    assert.deepEqual(got, pure, `${label} 时必须与纯词法逐字段一致（闸门不能跟着 rerank 一起关）`)
+  }
+  ok('退化路径：空 Map / 抛异常与纯词法逐字段一致（闸门恢复）')
+}
+
+// ---- ⑧ 缺向量分按"本轮均值"补，不能隐式当成 0.5 ----
+// 两条词法分完全相同的条目，一条 cos=0.3、一条拿不到分：后者只能按 0.3 补（打平），
+// 不能按 rel 单算 —— `rel` 等价于补了个 α·0.5，比真实余弦分布的中位数高一倍。
+{
+  const pool = [
+    { id: 'v1', title: 'alpha beta gamma delta', problem: 'alpha beta gamma delta', solution: 's' },
+    { id: 'v2', title: 'alpha beta gamma delta', problem: 'alpha beta gamma delta', solution: 's' },
+  ]
+  const r = recallItems({
+    entries: pool, queries: ['alpha beta gamma delta'], layers: ['experience'], limit: 9,
+    rerank: { alpha: 0.5, score: () => new Map([['v1', 0.3]]) },
+  })
+  const hits = r.layers[0].hits
+  assert.equal(hits.length, 2)
+  const [s0, s1] = hits.map((h) => h.score)
+  assert.ok(Math.abs(s0 - s1) < 1e-9, `缺分按均值补，同词法分应打平；实得 ${s0} vs ${s1}`)
+  assert.equal(hits.find((h) => h.item.id === 'v2').vector, undefined, '缺分条目的 vector 标记仍是 undefined')
+  ok('融合：缺向量分按本轮均值补（同词法分打平，不再被隐式 0.5 抬高）')
 }
 
 console.log(`\nrecall-vector-fusion tests: ${passed} passed`)
