@@ -1,10 +1,12 @@
 // 向量索引的持久化 / 逐条失效 / 降级回归。**不需要 leanvec**：embed 用确定性假函数注入，
 // 所以这套能进 CI，盯的是"缓存对不对、坏了会不会炸、没有向量时退不退化"。
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openVectorIndex, vectorText, leanvecFingerprint } from '../src/vector-index.js'
+import {
+  createVectorCosine, createVectorRerank, forgetVectorRows, leanvecFingerprint, openVectorIndex, vectorText,
+} from '../src/vector-index.js'
 
 let passed = 0
 const ok = (name) => { passed++; console.log('  ok', name) }
@@ -101,6 +103,70 @@ ok('vectorText：只取 title / problem（实测短文本变体最好）')
 assert.equal(leanvecFingerprint(join(dir, 'nope')), null)
 assert.equal(leanvecFingerprint(null), null)
 ok('leanvecFingerprint：不可用目录 → null')
+
+// ---- ⑪ 写路径不建目录：读路径上的 flush 不得把 store 目录造出来 ----
+{
+  const ghost = join(mkdtempSync(join(tmpdir(), 'vec-ghost-')), 'not-there', '.dsh-project-memory')
+  const idx = openVectorIndex({ dir: ghost, items: ITEMS, embed, model: MODEL })
+  assert.equal(idx.flush(), false, '目录不存在时 flush 必须失败')
+  idx.score(q, ITEMS)
+  assert.equal(existsSync(ghost), false, '读路径不得创建 store 目录（writeJsonAtomic 会 mkdir）')
+  ok('flush 不建目录：读路径不会在错误 root 下造出 store')
+}
+
+// ---- ⑫ 假 leanvec：验证「重排开关」与「写入去重开关」是分开的 ----
+// 用一份最小的假模型目录（dist 里两个文件 + src/embed.mjs），不需要真实 80MB 表。
+function fakeLeanvec() {
+  const d = mkdtempSync(join(tmpdir(), 'fake-lv-'))
+  mkdirSync(join(d, 'dist'), { recursive: true })
+  mkdirSync(join(d, 'src'), { recursive: true })
+  writeFileSync(join(d, 'dist', 'leanvec.tokenizer.json'), JSON.stringify({ dim: DIM }))
+  writeFileSync(join(d, 'dist', 'leanvec.f32'), Buffer.alloc(DIM * 4))
+  writeFileSync(join(d, 'src', 'embed.mjs'), `
+    export function loadLeanvec() {
+      return { dim: ${DIM}, size: 1, embed(t) {
+        if (!t) return null
+        const v = new Float32Array(${DIM})
+        let s = 0
+        for (let i = 0; i < ${DIM}; i++) { v[i] = Math.sin(i + t.length); s += v[i] * v[i] }
+        const n = Math.sqrt(s) || 1
+        for (let i = 0; i < ${DIM}; i++) v[i] /= n
+        return v
+      } }
+    }
+  `)
+  return d
+}
+{
+  const lvDir = fakeLeanvec()
+  const storeDir = mkdtempSync(join(tmpdir(), 'vec-config-'))
+  const items = [{ id: 'c1', title: 'pnpm 拦截安装脚本' }, { id: 'c2', title: '缓存逐出是假的' }]
+  assert.equal(await createVectorRerank({ storeDir, items, vectorDir: lvDir, alpha: 0 }), null, 'alpha=0 关掉重排')
+  const cosine = await createVectorCosine({ storeDir, items, vectorDir: lvDir })
+  assert.equal(typeof cosine, 'function', 'alpha 只管重排，不该连带关掉写入去重')
+  assert.ok(cosine('pnpm 拦截安装脚本', items).get('c1') > 0.99, '写入侧余弦要能命中自己')
+  assert.equal(await createVectorCosine({ storeDir, items, vectorDir: lvDir, dedup: false }), null, 'vectorDedup:false 才关写入去重')
+  assert.equal(await createVectorCosine({ storeDir, items, vectorDir: 'off' }), null)
+
+  const rr = await createVectorRerank({ storeDir, items, vectorDir: lvDir, alpha: 0.5 })
+  assert.equal(rr.itemMin, undefined, '不配 itemMin → 整段逻辑不启用')
+  assert.equal(rr.speakMin, undefined)
+  const rr2 = await createVectorRerank({ storeDir, items, vectorDir: lvDir, itemMin: 0.4, speakMin: 0.5 })
+  assert.equal(rr2.itemMin, 0.4)
+  assert.equal(rr2.speakMin, 0.5)
+  ok('配置解耦：alpha=0 只关重排；vectorDedup 独立；itemMin/speakMin 仅在显式配置时生效')
+
+  // ---- ⑬ forget 之后向量行真的没了（磁盘 + 进程内缓存）----
+  assert.ok(existsSync(join(storeDir, 'vectors.json')))
+  const removed = forgetVectorRows({ dir: storeDir, ids: ['c1'] })
+  assert.equal(removed, 1)
+  assert.deepEqual(JSON.parse(readFileSync(join(storeDir, 'vectors.json'), 'utf8')).ids, ['c2'])
+  const after = rr.score('pnpm 拦截安装脚本', items)
+  assert.equal(after.has('c1'), false, '缓存索引里也不得再有被删的行')
+  assert.equal(after.has('c2'), true)
+  assert.equal(forgetVectorRows({ dir: storeDir, ids: ['nope'] }), 0, '没命中就是 0')
+  ok('forget 向量行：磁盘与进程内缓存同时移除（不加载模型）')
+}
 
 rmSync(dir, { recursive: true, force: true })
 console.log(`\nvector-index tests: ${passed} passed`)

@@ -69,6 +69,7 @@ export const Config = Schema.object({
     // 但走 cordis.patch.yml 时能不能活到代码取决于宿主是否按「not a declared property」校验
     // ——无论哪种，文档里的旋钮与 Schema 已经不一致，等于半真半假。默认值以 cfgInsight 的
     // 兜底值为权威，这里只负责把键暴露出来。
+    // 向量带的两条阈值；`0` = 关闭对应那条带（不设 ≠ 0，默认值仍是 0.9 / 0.7）。
     autoMergeCos: Schema.number().default(0.9),
     autoMergeMargin: Schema.number().default(0.05),
     hintCos: Schema.number().default(0.7),
@@ -135,7 +136,18 @@ export const Config = Schema.object({
     vectorDir: Schema.string(),
     // 融合权重 (1-α)·BM25归一 + α·余弦。实测**小 k** 上 α=0.5 最优（k=3 64% vs 58%、k=5 69% vs 67%，
     // α=0.75 时 k=5 到 72%），而 α=1（纯向量）明显更差（hit@10 53% vs 81%）——所以默认 0.5 不是 1。
+    // `0` = 关掉重排（连模型都不加载）。它**只**管重排：写入侧去重看 `vectorDedup`。
     vectorAlpha: Schema.number().default(0.5),
+    // 写入侧近重复检测（0.9 自动覆盖 / 0.7 近邻提示）的独立开关。默认开；关掉只影响写入，
+    // 不影响召回排序。与 `vectorAlpha` 分开是因为两者是两件事：一个是排序权重，一个是数据写入行为。
+    vectorDedup: Schema.boolean().default(true),
+    // ⚠ 两个**实验性**旋钮：没有可发布的默认值，所以不设就不启用（不设 ≠ 0）。
+    //   itemMin  —— 提示通道的条目级余弦地板（低于它不进提示通道）
+    //   speakMin —— 通道级"语义救援"阈值（层内最高余弦够高时，本轮免于被 hintMinSupport 静音）
+    // 两者都在真实交付上量过分辨力（结论见 src/auto-inject.js 的 scoreHints 注释：**证据不足**），
+    // 留在这里是为了能在真实数据上复现那组 A/B，而不是当出厂判据。
+    vectorItemMin: Schema.number(),
+    vectorSpeakMin: Schema.number(),
     // legacy `trigger.scope` 的处置。默认 **ignore**：它的值由作者手写，几乎不可能落在
     // 自动派生的项目画像 tag 空间里（实测唯一一条带 scope 的条目因此永远无法命中），
     // 拿它当收窄条件只会判死条目。`readiness.js` 的注释一直写的是"默认忽略"，这里此前

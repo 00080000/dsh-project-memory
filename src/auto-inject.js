@@ -12,7 +12,7 @@ import { hasProjectMarker, isUnsafeRoot, memoryRootFor, resolveProjectMemoryRoot
 import { textOf } from './util/text.js'
 import { stepContent } from './util/task-view.js'
 import { insightMatchText, normalizedTokenOverlap } from './similarity.js'
-import { createVectorRerank, vectorItemsFrom } from './vector-index.js'
+import { createVectorCosine, createVectorRerank, vectorItemsFrom } from './vector-index.js'
 import { BoundedMap, SessionCache } from './util/session-cache.js'
 import { sessionWorkingDir } from './util/session-dir.js'
 import { cfgInsight, GlobalStore, defaultGlobalFile, recordHit } from './insight-store.js'
@@ -134,15 +134,21 @@ export function cfgEngine(config) {
     // 只有配置了目录（或环境变量、或装上可选依赖）才构造 rerank，见 src/vector-index.js。
     vectorDir: typeof c.vectorDir === 'string' && c.vectorDir ? c.vectorDir : null,
     vectorAlpha: typeof c.vectorAlpha === 'number' && c.vectorAlpha >= 0 && c.vectorAlpha <= 1 ? c.vectorAlpha : 0.5,
+    // 写入侧近重复检测的独立开关（默认开）。**不跟随 vectorAlpha**：那条是排序权重，
+    // 设成 0 只该关掉重排，不该连带停掉 0.9 自动覆盖 / 0.7 近邻提示。
+    vectorDedup: c.vectorDedup !== false,
+    // 两个**实验性**旋钮：没有可发布的默认值（证据见 scoreHints 的注释），所以不设就不启用。
+    vectorItemMin: typeof c.vectorItemMin === 'number' && Number.isFinite(c.vectorItemMin) ? c.vectorItemMin : undefined,
+    vectorSpeakMin: typeof c.vectorSpeakMin === 'number' && Number.isFinite(c.vectorSpeakMin) ? c.vectorSpeakMin : undefined,
   }
 }
 
 /**
  * 给写入路径（`save_lesson` / `remember`）用的向量打分器：**没装/没配就是 null**。
  *
- * 与注入路径共用一个解析入口（`cfgEngine` + `createVectorRerank`），所以"装了 leanvec 就用、
- * 没装就纯词法"这条规则只有一处实现、一处配置。返回的函数是同步的，供 `saveInsight` 在
- * 写事务里直接调用；任何异常都降级成 null，绝不因为可选的向量层挡住写入。
+ * 与注入路径共用一个解析入口（`openEngine`），但**不共用开关**：写入去重由
+ * `autoContext.vectorDedup` 控制，不受 `vectorAlpha`（排序权重）影响。返回的函数是同步的，
+ * 供 `saveInsight` 在写事务里直接调用；任何异常都降级成 null，绝不因为可选的向量层挡住写入。
  * @param {object} config - 插件配置
  * @param {{storeDir: string|null, items: object[]}} o - 持久化位置与候选池（见 vectorItemsFrom）
  * @returns {Promise<((text: string, items: object[]) => Map<string, number>)|null>}
@@ -150,9 +156,7 @@ export function cfgEngine(config) {
 export async function createWriteCosine(config, { storeDir = null, items = [] } = {}) {
   const engine = cfgEngine(config)
   try {
-    const rerank = await createVectorRerank({ storeDir, items, vectorDir: engine.vectorDir, alpha: engine.vectorAlpha })
-    if (!rerank || typeof rerank.score !== 'function') return null
-    return (text, cands) => rerank.score(text, cands)
+    return await createVectorCosine({ storeDir, items, vectorDir: engine.vectorDir, dedup: engine.vectorDedup })
   } catch {
     return null
   }
@@ -775,6 +779,9 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
       items: vectorItemsFrom(store, globalStore),
       vectorDir: cfg.vectorDir,
       alpha: cfg.vectorAlpha,
+      // 两个实验性旋钮：不配就是 undefined → 对应的闸门整段不执行（默认路径与旧版一致）
+      itemMin: cfg.vectorItemMin,
+      speakMin: cfg.vectorSpeakMin,
     }),
   })
 
