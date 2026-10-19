@@ -199,4 +199,38 @@ function exec0(root, sessionId = 'sess_unbound') {
   ok('query_memory：本根命中 → 不追加提示')
 }
 
+// 回归（0.6.x 统一存储）：`kind:'experience'` 也能由 save_lesson 写出 —— 它没有
+// problem/solution（正文在 fix/choice/pattern 里），而旧的经验桶用 v0.4 的
+// `${problem}...${solution}` 打分，那种条目的 BM25 文档是三个字面量 `undefined`：
+// 经验桶 0 分、洞察桶又排除了 experience → 条目在库里但两条拉取路径都查不到。
+{
+  const root = mkdtempSync(path.join(tmpdir(), 'pm-exp-shape-'))
+  const store = new ProjectMemoryStore(memoryRootFor(root, CONFIG.memoryDir)).load()
+  const gs = new GlobalStore(path.join(root, 'global.json')).load()
+  const cfg = cfgInsight({ insight: { globalFile: path.join(root, 'global.json') } })
+  const saved = store.commit((s) => saveInsight({
+    store: s, globalStore: gs,
+    raw: { title: 'pnpm 拦截安装脚本', kind: 'experience', pattern: 'pnpm 10 默认不跑 postinstall', fix: '用 approve-builds 放行' },
+    scope: 'project', cfg,
+  }))
+  assert.ok(saved.ok)
+  const tool = queryMemoryTool({}, CONFIG)
+  const out = await tool.execute({ query: 'pnpm 拦截安装脚本', root, type: 'experience' }, exec0(root))
+  assert.match(out, /pnpm 拦截安装脚本/, `save_lesson 写的 experience 必须能被经验桶召回：${out}`)
+  assert.ok(!/undefined/.test(out), `渲染不得出现 undefined 字段：${out}`)
+  ok('经验桶：save_lesson 形状（无 problem/solution）也能召回且不渲染 undefined')
+
+  // v0.4 remember 形状不受影响（problem/solution 仍是正文来源）
+  const s2 = new ProjectMemoryStore(memoryRootFor(root, CONFIG.memoryDir)).load()
+  s2.commit((s) => saveInsight({
+    store: s, globalStore: gs,
+    raw: { title: '缓存逐出是假的', kind: 'experience', problem: '缓存逐出是假的', solution: '看 hitRate 而不是 size' },
+    scope: 'project', cfg,
+  }))
+  const out2 = await tool.execute({ query: '缓存逐出是假的', root, type: 'experience' }, exec0(root))
+  assert.match(out2, /缓存逐出是假的/)
+  assert.match(out2, /看 hitRate/, 'problem/solution 形状的 solution 仍要出现在 solution 行')
+  ok('经验桶：v0.4 problem/solution 形状的渲染与召回不变')
+}
+
 console.log(`\nrecall tests: ${passed} passed`)

@@ -172,33 +172,10 @@ export function rankEntriesMergedScored(entries, queries, limit = 8) {
     .slice(0, limit)
 }
 
-export function rankExperience(items, queryOrQueries, limit = 5) {
-  return rankExperienceScored(items, queryOrQueries, limit).map((r) => r.item)
-}
-
-export function rankExperienceScored(items, queryOrQueries, limit = 5) {
-  const bm25 = buildBm25(
-    items,
-    (item) => `${item.problem} ${item.problem} ${item.problem} ${item.solution} ${item.sourceFile || ''}`,
-    (item) => [item.problem],
-  )
-  const queries = Array.isArray(queryOrQueries) ? queryOrQueries : [queryOrQueries]
-  const merged = new Map()
-  for (const query of queries) {
-    for (const r of bm25.score(query)) {
-      const prev = merged.get(r.doc.id)
-      if (prev) {
-        if (r.score > prev.score) prev.score = r.score
-        if (r.matched > prev.matched) prev.matched = r.matched
-      } else {
-        merged.set(r.doc.id, { item: r.doc, score: r.score, matched: r.matched })
-      }
-    }
-  }
-  return [...merged.values()]
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-}
+// 说明：经验层（`kind:'experience'`）曾有自己的打分器 `rankExperienceScored`（v0.4 的
+// `{problem,solution}` 形状）。统一存储后它与洞察层是同一个实体，也由 `save_lesson` 写出
+// （没有 problem/solution 参数），独立打分器会把那种条目打成 0 分且无处可查。现由
+// `recall.js` 用与洞察层相同的 `insightToEntry` 适配器打分，本函数随能力一起删除。
 
 function countOccurrences(text, token) {
   if (!token) return 0

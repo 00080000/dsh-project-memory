@@ -24,9 +24,15 @@ const DIM = 256
  *
  * 为什么不用完整的评分文本：实测（36 条刻意无词重叠的查询 / 103 条池）标题变体的并集
  * hit@10 是 94%，而把 300 字摘要一起喂进去只有 89%——长文本在均值池化下会被稀释向语料均值。
+ *
+ * ⚠ 兜底链必须与 `normalizeInsight` 的标题推导**逐项相同**（含 `choice` 与否决 `topic`），
+ * 且同样截到 200：写入路径拿的是**归一化之前**的 raw（`save_lesson` 允许只给
+ * pattern / choice），只认 title 会让这类写入的查询文本变成空串 → 整条向量带去重静默失效
+ * （`vectorNear` 见空文本直接返回 null）。索引侧编码的是落盘后的 title，两边同源才可比。
  */
 export function vectorText(it) {
-  return String(it?.title || it?.problem || it?.body || '').trim()
+  const t = it?.title || it?.pattern || it?.problem || it?.choice || it?.topic || it?.body
+  return String(t ?? '').trim().slice(0, 200)
 }
 
 const hashOf = (text) => createHash('sha256').update(String(text)).digest('hex').slice(0, 16)
