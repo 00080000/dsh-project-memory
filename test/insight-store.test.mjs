@@ -505,10 +505,56 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
   const outF = await fTool.execute({ root, id_or_query: id }, exec)
   assert.match(outF, /Removed 1/)
   assert.ok(outF.includes(id), `回报要带 id：${outF}`)
+  assert.ok(outF.includes('deleted.json'), `回报要给出留痕文件路径，模型才能自己去找回：${outF}`)
   assert.equal(new ProjectMemoryStore(path.join(root, '.dsh-project-memory')).load().insightItems().length, 0)
   const outNone = await fTool.execute({ root, id_or_query: 'zzz 不存在' }, exec)
   assert.match(outNone, /No matching memory found/)
-  ok('forget 工具端到端：全层删除 + 回报带 id + 无匹配明确说')
+  ok('forget 工具端到端：全层删除 + 回报带 id + 留痕路径 + 无匹配明确说')
+
+  // ⑧ 删除留痕：删除仍是真删，但最近 5 条以**完整条目**留在同目录 deleted.json（滚动淘汰）
+  {
+    const p = newProject()
+    const gs3 = new GlobalStore(p.globalFile).load()
+    const words = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf']
+    // 每条用一个只属于它的 token，避免被写入侧去重/强化带合并（那会让"删 7 条"变成"删 1 条"）。
+    const ids = words.map((w, i) => p.store.commit((s) => saveInsight({
+      store: s, globalStore: gs3,
+      raw: lesson(`${w}only${i} topic`, `${w}only${i} fix`),
+      scope: 'project', cfg: p.cfg,
+    })).id)
+    assert.equal(p.store.insightItems().length, words.length, '7 条各自独立（没被去重合并）')
+    let last
+    for (const one of ids) last = p.store.commit((s) => removeMemory({ store: s, globalStore: gs3, idOrQuery: one }))
+    assert.equal(p.store.insightItems().length, 0, '删除仍然是真删')
+    const file = path.join(p.root, '.dsh-project-memory', 'deleted.json')
+    assert.ok(existsSync(file), `留痕要落在 store 同目录：${file}`)
+    assert.deepEqual(last.keptIn, [file], '回报要给出实际写入的留痕文件')
+    const doc = JSON.parse(readFileSync(file, 'utf8'))
+    assert.equal(doc.items.length, 5, '只保留最近 5 条')
+    assert.equal(doc.items[0].id, ids[6], '最新删除的排最前')
+    assert.ok(!doc.items.some((x) => x.id === ids[0]), '更早的被滚动淘汰')
+    assert.equal(doc.items[0].home, 'project')
+    // 正文必须完整：只要 id/标题就没法"找回来再存一次"
+    const kept = doc.items[0]
+    assert.ok(kept.fix && kept.fix.includes('golf') && kept.pattern, `留痕要带完整正文：${JSON.stringify(kept)}`)
+    assert.ok(kept.deletedAt, '带删除时间')
+
+    // global 层删到 global 文件同目录，与项目层互不覆盖
+    const gsId = p.store.commit((s) => saveInsight({
+      store: s, globalStore: gs3,
+      raw: lesson('global 留痕条目', 'global 正文'),
+      scope: 'global', cfg: p.cfg,
+    })).id
+    gs3.commit()
+    const resG = p.store.commit((s) => removeMemory({ store: s, globalStore: gs3, idOrQuery: gsId }))
+    const globalFile = path.join(p.root, 'deleted.json')
+    assert.deepEqual(resG.keptIn, [globalFile], 'global 条目的留痕在 global 文件同目录')
+    const gdoc = JSON.parse(readFileSync(globalFile, 'utf8'))
+    assert.equal(gdoc.items[0].id, gsId)
+    assert.equal(gdoc.items[0].home, 'global')
+    assert.equal(gdoc.items.length, 1, 'global 与 project 各留各的，不互相挤')
+    ok('删除留痕：真删 + 最近 5 条完整条目可找回（按层分文件、滚动淘汰）')
+  }
 }
 
 console.log(`\ninsight-store tests: ${passed} passed`)

@@ -14,7 +14,7 @@ import {
 } from './icons.ts'
 import { createTranslate, zh, en } from './locales.ts'
 import { missingServices, service } from './services.ts'
-import { useTaskData, useTaskDataActions, taskDataStore, parseTaskPayloadText, type TaskStep } from './task-data-store.ts'
+import { useTaskData, useTaskDataActions, parseTaskPayloadText, type TaskStep } from './task-data-store.ts'
 import { useTaskUI, useTaskUIActions, PANEL_VIEWS } from './task-ui-store.ts'
 import { MiniBar, TaskCard } from './TaskComponents.tsx'
 import { MemoryView, type InsightScope } from './MemoryView.tsx'
@@ -102,7 +102,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   const applyPayload = (text?: string): boolean => {
     const parsed = parseTaskPayloadText(text)
     if (!parsed) return false
-    dataActions.setTasks({ tasks: parsed.tasks, boundTaskId: parsed.boundId, archivedCount: parsed.archived })
+    dataActions.setTasks({ tasks: parsed.tasks, boundTaskId: parsed.boundId, archivedCount: parsed.archived, root: parsed.root })
     setSyncedAt(Date.now())
     setSyncError(null)
     return true
@@ -133,16 +133,22 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     return applyPayload(result?.text)
   }
 
+  /**
+   * 只取数据，**不**顺手 switch。
+   *
+   * 旧实现在这里补一次 `/tasks switch <boundId>`（条件是"新 boundId 与内存里的不同"），
+   * 意图是刷新后让宿主 todo 跟随绑定任务。但那是多余的：宿主的 todo 清单是
+   * `sessionProjections` 里的 `todos` 单元（由 `todo/write` 事件折叠而来），重启/换标签页
+   * 都会从会话日志重建，不需要谁再推一次；而 switch 会 `session.append('todo/write')`，
+   * 于是"打开面板/切一次会话"就写一次会话历史（还顺手刷新任务的 lastActiveAt）。
+   * 真正的绑定动作都有明确入口：`select_task`、`/tasks switch`、面板卡片的切换按钮，
+   * 它们各自会推宿主清单（adoptStepsToSession），不需要巡检式补写。
+   */
   const refresh = async (): Promise<void> => {
     if (syncing) return
     setSyncing(true)
     try {
-      const prevBoundId = data.boundTaskId
       await runLine('/tasks')
-      const newBoundId = taskDataStore.getSnapshot().boundTaskId
-      if (newBoundId && newBoundId !== prevBoundId) {
-        await runLine(`/tasks switch ${newBoundId}`)
-      }
     } finally {
       setSyncing(false)
     }

@@ -1,7 +1,7 @@
 // PR 3 服务器侧记忆动作测试：node test/insight-actions.test.mjs
 // 覆盖：list 三 scope / confirm 草稿 / task→project 提升 / project→global 提升 /
 //       global→project 降级 / project→task 降级 / archive/restore/delete
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
@@ -90,7 +90,7 @@ function fixture() {
 
 // --- 6. archive/restore/delete ---
 {
-  const { store, gs } = fixture()
+  const { store, gs, root } = fixture()
   const a = actInsight({ store, gs, action: 'archive', scope: 'project', id: 'ins_pj' })
   assert.equal(a.ok, true)
   assert.equal(store.insightItems()[0].archived, true)
@@ -99,10 +99,16 @@ function fixture() {
   const d = actInsight({ store, gs, action: 'delete', scope: 'global', id: 'ins_gl' })
   assert.equal(d.ok, true)
   assert.equal(gs.items().length, 0)
+  // 面板删除与 forget 同一套留痕：真删，但条目落进 global 文件同目录的 deleted.json
+  const gdoc = JSON.parse(readFileSync(path.join(root, 'deleted.json'), 'utf8'))
+  assert.equal(gdoc.items.length, 1)
+  assert.equal(gdoc.items[0].id, 'ins_gl')
+  assert.equal(gdoc.items[0].home, 'global')
+  assert.deepEqual(gdoc.items[0].steps, ['a'], '留痕要带完整正文，不是只有 id/标题')
   // 不存在条目 → ok:false 且不崩
   const miss = actInsight({ store, gs, action: 'delete', scope: 'global', id: 'nope' })
   assert.equal(miss.ok, false)
-  ok('archive/restore/delete + 缺失条目安全')
+  ok('archive/restore/delete + 缺失条目安全 + 面板删除留痕')
 }
 
 // --- 7. edit：正文/trigger/标题 白名单更新（task / project / global） ---

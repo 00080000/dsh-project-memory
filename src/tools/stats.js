@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
+import { assertIndexRoot, memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
 import { truncate } from '../util/text.js'
 
@@ -23,6 +23,10 @@ export function statsTool(config) {
     },
     async execute(args, exec) {
       const root = resolveSafeIndexRoot(exec, args.root, config)
+      // 读路径也要验根存在：可选的向量层（leanvec）在索引空 store 时会落盘 vectors 缓存，
+      // 于是"传错一个 root"就能在任意可写位置造出 `<root>/.dsh-project-memory` —— 而回报
+      // 只是"空 store"，看起来像"这个项目没有记忆"。与 index_repo/watch_repo 同一道护栏。
+      assertIndexRoot(root, args.root || root)
       const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
       const overview = storeOverview(store)
       const files = Object.entries(store.files).sort((a, b) => String(b[1].indexedAt || '').localeCompare(String(a[1].indexedAt || '')))

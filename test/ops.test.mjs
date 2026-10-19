@@ -62,6 +62,18 @@ const ok = (name) => {
   // 刻意的边界：点文件只认 token 起始处。中缀的 `src/.env` 与普通点号无法区分，
   // 不在文本抽取规则内（调用方已知完整路径时应直接并入 path，而不是指望从这里猜）。
   assert.deepEqual(classifyShellCommand('sed -i s/a/b/ src/.env').targets, [])
+  // 丢弃输出的重定向不是写盘：`2>/dev/null` / `2>&1` 是读命令最常见的写法，旧判据
+  // (`>>?\s*\S`) 会把它们连同命令里**任意**路径一起算成写目标 —— 实测
+  // `ls .agents 2>/dev/null | head` → ['.agents']、`cat package.json 2>&1` → ['package.json']，
+  // 而 targets 正是 when.writes 的匹配面，于是"看一眼"会误触发"要改它"的教训。
+  assert.deepEqual(classifyShellCommand('ls .agents 2>/dev/null | head').targets, [])
+  assert.deepEqual(classifyShellCommand('cat package.json 2>&1 | grep version').targets, [])
+  assert.deepEqual(classifyShellCommand('node script.mjs 2>/dev/null').targets, [])
+  assert.deepEqual(classifyShellCommand('grep -r x . >/dev/null 2>&1').targets, [])
+  // 但真的写文件仍然要算：> / >> / 2> / 1>> 都保留
+  assert.deepEqual(classifyShellCommand('cat a.md > out.md').targets, ['a.md', 'out.md'])
+  assert.deepEqual(classifyShellCommand('printf x 1>>notes.md').targets, ['notes.md'])
+  assert.deepEqual(classifyShellCommand('make 2>build.log').targets, ['build.log'])
   const wsl = classifyShellCommand('powershell.exe -Command SetFileTime /mnt/c/x/a.pptx')
   assert.deepEqual(wsl.hosts, ['wsl'], '命令里出现 /mnt/* 或 powershell.exe → host=wsl')
   ok('写目标只来自写盘命令（含点开头文件名）；WSL 主机可被识别')

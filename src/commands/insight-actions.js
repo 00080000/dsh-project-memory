@@ -4,7 +4,7 @@
 // （命令 handler：store.commit + gs.commit）统一负责，便于单测。
 import { ProjectMemoryStore } from '../store.js'
 import { memoryRootFor, normalizeCitationFiles } from '../util/fs.js'
-import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, INSIGHT_KINDS } from '../insight-store.js'
+import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, recordDeleted, INSIGHT_KINDS } from '../insight-store.js'
 import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
 
@@ -150,6 +150,8 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       return { ok: true, text: `已审核：${insight.title}` }
     }
     if (act === 'delete') {
+      // 面板删除与 forget 同一套留痕：真删，但最近 5 条可在同目录 deleted.json 里找回来。
+      recordDeleted({ store, globalStore: gs }, [{ ...insight, home: 'task', taskId: task.id }])
       task.insights = (task.insights || []).filter((i) => i.id !== id)
       store.markTasksDirty()
       return { ok: true, text: `已删除任务级条目 ${id}` }
@@ -191,6 +193,7 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       return { ok: true, text: `已${act === 'archive' ? '归档' : '恢复'}` }
     }
     if (act === 'delete') {
+      recordDeleted({ store, globalStore: gs }, [{ ...ins, home: 'project' }])
       items.splice(idx, 1)
       store.replaceInsightItems(items)
       return { ok: true, text: `已删除 project 条目 ${id}` }
@@ -243,6 +246,7 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       return { ok: true, text: `已${act === 'archive' ? '归档' : '恢复'}` }
     }
     if (act === 'delete') {
+      recordDeleted({ store, globalStore: gs }, [{ ...ins, home: 'global' }])
       items.splice(idx, 1)
       gs.markDirty()
       return { ok: true, text: `已删除 global 条目 ${id}` }

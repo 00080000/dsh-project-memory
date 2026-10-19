@@ -559,6 +559,67 @@ function queryCoverage(query, text) {
 }
 
 /**
+ * 最近删除的保留条数。
+ *
+ * 删除仍然是**真删**（工具描述里的 "no undo" 不变）：这里只是把刚被删掉的条目按层
+ * 追加进同目录的 {@link DELETED_FILE}，滚动保留最近 5 条，供人/模型事后自己找回来。
+ *
+ * 为什么是 5：够覆盖"刚删错一条/一批"的窗口，又不足以在盘上长期留一份正文副本；
+ * 为什么按层分文件：project/task 条目落在项目 store 目录、global 落在 global 文件目录，
+ * 与各自真相源同源，删库/搬家时不会对不上。
+ */
+export const DELETED_KEEP = 5
+
+/** 删除留痕文件名（与 store 同目录）。 */
+export const DELETED_FILE = 'deleted.json'
+
+/** 某层 store 目录下的留痕文件绝对路径。 */
+export function deletedFilePath(dir) {
+  return dir ? path.join(dir, DELETED_FILE) : null
+}
+
+/**
+ * 把即将被删的条目写进各自层的留痕文件（滚动保留最近 {@link DELETED_KEEP} 条）。
+ *
+ * 契约：**永不抛、永不挡删除**。留痕是旁路，写失败只丢留痕，不允许因此让删除失败或半途而废。
+ * @param {{store?: object, globalStore?: object}} stores - 两个 store；按条目的 `home` 选目录
+ * @param {Array<object>} entries - 完整条目副本，须带 `home`（`global` 走 global 目录，其余走 store 目录）与可选 `taskId`
+ * @returns {string[]} 实际写入的留痕文件路径（去重）
+ */
+export function recordDeleted({ store, globalStore } = {}, entries = []) {
+  const now = new Date().toISOString()
+  const byDir = new Map()
+  for (const e of entries) {
+    if (!e || !e.id) continue
+    const dir = e.home === 'global'
+      ? (globalStore && globalStore.file ? path.dirname(globalStore.file) : null)
+      : (store ? store.dir : null)
+    if (!dir) continue
+    const batch = byDir.get(dir) || []
+    batch.push({ ...e, deletedAt: now })
+    byDir.set(dir, batch)
+  }
+  const written = []
+  for (const [dir, batch] of byDir) {
+    const file = deletedFilePath(dir)
+    let prev = []
+    try {
+      const doc = JSON.parse(readFileSync(file, 'utf8'))
+      if (doc && Array.isArray(doc.items)) prev = doc.items
+    } catch {
+      // 首次删除（文件不存在）或留痕文件损坏：从空开始，不因旁路数据带崩删除。
+    }
+    try {
+      writeJsonAtomic(file, { version: 1, updatedAt: now, items: [...batch, ...prev].slice(0, DELETED_KEEP) })
+      written.push(file)
+    } catch {
+      // 写不进去（只读盘 / 权限）就放弃留痕：删除本身照常进行。
+    }
+  }
+  return [...new Set(written)]
+}
+
+/**
  * 全层删除：task 内嵌 / project / global。一套判据、一次调用。
  *
  * 为什么是"全层一套"而不是给 insight 再开一条通道：对模型来说这本来就是一件事——
@@ -566,7 +627,7 @@ function queryCoverage(query, text) {
  * @param {object} o
  * @param {string} o.idOrQuery - 精确 id，或用于匹配的关键词
  * @param {number} [o.maxMatches] - 关键词命中上限；超过则**一条都不删**，只回报候选
- * @returns {{ok: boolean, removed?: object[], matches?: object[], tooMany?: boolean}}
+ * @returns {{ok: boolean, removed?: object[], matches?: object[], tooMany?: boolean, keptIn?: string[]}}
  */
 export function removeMemory({ store, globalStore, idOrQuery, maxMatches = 10 } = {}) {
   const query = String(idOrQuery ?? '').trim()
@@ -591,8 +652,8 @@ export function removeMemory({ store, globalStore, idOrQuery, maxMatches = 10 } 
     if (hit) byId.push({ ...hit, home })
   }
   if (byId.length) {
-    removeEntries({ store, globalStore }, byId)
-    return { ok: true, removed: byId }
+    const keptIn = removeEntries({ store, globalStore }, byId)
+    return { ok: true, removed: byId, keptIn }
   }
 
   // 2) 关键词：查询侧覆盖率 ≥ 0.5（与旧经验层同判据）
@@ -610,12 +671,30 @@ export function removeMemory({ store, globalStore, idOrQuery, maxMatches = 10 } 
     for (const x of list) if (queryCoverage(query, textOf(x.home, x.id)) >= 0.5) matches.push(x)
   }
   if (matches.length > maxMatches) return { ok: false, tooMany: true, matches, removed: [] }
-  removeEntries({ store, globalStore }, matches)
-  return { ok: true, removed: matches }
+  const keptIn = removeEntries({ store, globalStore }, matches)
+  return { ok: true, removed: matches, keptIn }
 }
 
-/** 按 home 把条目从各自真相源里移除。 */
+/** 按 home 把条目从各自真相源里移除；删除前先把**完整条目**写进留痕文件。 */
 function removeEntries({ store, globalStore }, entries) {
+  // 传进来的 entries 是 at() 的摘要（只有 id/home/title），留痕要的是正文，
+  // 所以这里按 id 回真相源取完整对象——顺序在 splice 之前，取不到就跳过留痕（不挡删除）。
+  const full = []
+  for (const e of entries) {
+    if (e.home === 'project') {
+      const it = (store.insightItems() || []).find((x) => x.id === e.id)
+      if (it) full.push({ ...it, home: 'project' })
+    } else if (e.home === 'global') {
+      const it = (globalStore.items() || []).find((x) => x.id === e.id)
+      if (it) full.push({ ...it, home: 'global' })
+    } else if (e.home === 'task') {
+      const task = store.getTask(e.taskId)
+      const it = (task?.insights || []).find((x) => x.id === e.id)
+      if (it) full.push({ ...it, home: 'task', taskId: e.taskId })
+    }
+  }
+  const keptIn = recordDeleted({ store, globalStore }, full)
+
   const projectIds = new Set()
   const globalIds = new Set()
   const taskIds = new Map()
@@ -636,6 +715,7 @@ function removeEntries({ store, globalStore }, entries) {
     task.insights = (task.insights || []).filter((i) => !ids.includes(i.id))
     store.markTasksDirty()
   }
+  return keptIn
 }
 
 /**

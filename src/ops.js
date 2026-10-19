@@ -90,8 +90,19 @@ const SHELL_OP_RULES = [
   [/\b(curl|wget|web_fetch)\b/, 'fetch-web'],
 ]
 
-/** 会改动文件系统的 shell 动作前缀：只有这些命令的路径才算"写目标"。 */
-const SHELL_WRITE_RE = /\b(rm|rmdir|unlink|shred|mv|cp|touch|tee|truncate|mkdir)\b|>>?\s*\S|\bsed\s+-i\b/
+/**
+ * 会改动文件系统的 shell 动作：只有这些命令的路径才算"写目标"。
+ *
+ * 重定向这一支要排除"丢弃输出"，否则 `2>/dev/null`、`2>&1`、`>/dev/null` 这些
+ * **纯读命令的惯用写法**会被当成写盘：实测 `ls .agents 2>/dev/null | head` 抽出
+ * targets=['.agents']、`cat package.json 2>&1` 抽出 ['package.json'] —— 写目标正是
+ * `when.writes` 的匹配面，于是"读/列目录"会误触发一条 `writes:['package.json']` 的教训。
+ *
+ * 规则：`>` / `>>` / `2>` 后面的目标若是 `&`（合并 fd）或 `/dev/null`（丢弃），不算写；
+ * `> file`、`2> file`、`1>> file` 仍算写。
+ */
+const SHELL_WRITE_RE =
+  /\b(rm|rmdir|unlink|shred|mv|cp|touch|tee|truncate|mkdir)\b|(?:^|[^>])[0-9]?>>?\s*(?!&|\/dev\/null(?:\b|$))\S|\bsed\s+-i\b/
 
 const WSL_HINT_RE = /\/mnt\/[a-z]\//i
 
