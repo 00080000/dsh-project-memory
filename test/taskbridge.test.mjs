@@ -49,6 +49,26 @@ const ev = (type, data) => ({ type, data })
   ok('容量裁剪：超限归档最旧（fileCount=0 → max 5）')
 }
 
+// --- 2b. 容量裁剪不得碰"仍被会话绑定"的任务 ---
+// 回归：绑定 = 这个任务还没结束，某会话随时会回来接着干。旧实现按 lastActiveAt 一刀切，
+// 长期挂着的绑定任务会被更新的任务挤成最旧、被静默归档；会话回来写 todo 时 taskbridge
+// 把"归档"按"停止同步"处理 → 另建一条新任务，同一会话的历史被静默拆成两条。
+{
+  const { root, store } = newProject()
+  const now = Date.now()
+  const old = new Date(now - 30 * 864e5).toISOString()
+  store.addTask({ id: 'tsk_bound_old', title: '长期挂着的活', projectRoot: root, steps: null, files: [], archived: false, createdAt: old, updatedAt: old, lastActiveAt: old })
+  for (let i = 0; i < 8; i++) {
+    store.addTask({ id: `tsk_new_${i}`, title: `T${i}`, projectRoot: root, steps: null, files: [], archived: false, createdAt: new Date(now + i).toISOString(), updatedAt: new Date(now + i).toISOString(), lastActiveAt: new Date(now + i).toISOString() })
+  }
+  store.setBinding('sess_old', 'tsk_bound_old')
+  store.commit(() => 0) // commit 触发 pruneTasks
+  assert.equal(store.getTask('tsk_bound_old').archived, false, '被绑定的最旧任务不得被自动归档')
+  assert.equal(store.getTasks().filter((t) => !t.archived).length, 6, '上限 5 + 1 条绑定豁免')
+  assert.equal(store.getTasks().filter((t) => t.archived).length, 3, '其余按最旧补齐裁剪')
+  ok('容量裁剪：仍被绑定的任务豁免（不静默拆掉会话正在用的任务）')
+}
+
 // --- 3. normalizeRelFile ---
 {
   const root = '/proj'

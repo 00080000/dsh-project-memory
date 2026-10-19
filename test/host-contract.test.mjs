@@ -243,4 +243,46 @@ const ok = (name) => {
   ok('reinjectItemsAfter：>0 时按步数冷却重发（0 为默认，本会话只注入一次）')
 }
 
+// ---- 4. 测试保真：node_modules 必须与 lockfile 同版本（否则"跑绿了"证明不了线上宿主） ----
+// 背景：0.6.2 声明 devDependencies 升到 0.2.1-rc.2，但 node_modules 里仍是 0.2.0-rc.2 ——
+// 测试与 typecheck 全跑在旧宿主包上，"已适配新宿主"当时没有任何证据。这个检查把
+// "装的和锁的一致"变成可判定的失败，而不是发版后靠人回忆。
+{
+  const fs = await import('node:fs')
+  const pathMod = await import('node:path')
+  const root = pathMod.resolve(import.meta.dirname, '..')
+  const pkg = JSON.parse(fs.readFileSync(pathMod.join(root, 'package.json'), 'utf8'))
+  const lock = JSON.parse(fs.readFileSync(pathMod.join(root, 'package-lock.json'), 'utf8'))
+  const installedVersion = (name) => {
+    try { return JSON.parse(fs.readFileSync(pathMod.join(root, 'node_modules', name, 'package.json'), 'utf8')).version }
+    catch { return null }
+  }
+  const drift = []
+  for (const [name, range] of Object.entries(pkg.devDependencies || {})) {
+    const want = lock.packages?.[`node_modules/${name}`]?.version
+    const have = installedVersion(name)
+    if (!have) { drift.push(`${name}: 未安装（lock 要 ${want}）`); continue }
+    if (want && have !== want) drift.push(`${name}: 装的是 ${have}，lock 要 ${want}`)
+    else if (!want) drift.push(`${name}: lock 里没有对应条目（声明 ${range}）`)
+  }
+  assert.deepEqual(drift, [], `node_modules 与 lockfile 不一致，先跑 npm ci：\n${drift.join('\n')}`)
+
+  // client 包对 cordis 的 peer 区间（~x.y.z / ^x.y.z）也必须被实际安装的 cordis 满足：
+  // 旧的 4.0.4 就是在这里漏过去的（四个 client 包都要求 ~4.0.5）。
+  const cordis = installedVersion('@deepseek-ai/cordis')
+  const unmet = []
+  for (const name of ['@deepseek-ai/dsh-client-locale', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-primitives', '@deepseek-ai/dsh-client-ui-slots']) {
+    let peer = null
+    try { peer = JSON.parse(fs.readFileSync(pathMod.join(root, 'node_modules', name, 'package.json'), 'utf8')).peerDependencies?.['@deepseek-ai/cordis'] ?? null } catch {}
+    if (!peer || !cordis) continue
+    const m = /^[~^](\d+)\.(\d+)\./.exec(peer)
+    const c = /^(\d+)\.(\d+)\./.exec(cordis)
+    if (!m || !c) continue
+    const okMajorMinor = m[1] === c[1] && m[2] === c[2]
+    if (!okMajorMinor) unmet.push(`${name} 要求 cordis ${peer}，装的是 ${cordis}`)
+  }
+  assert.deepEqual(unmet, [], `client 包的 cordis peer 未满足：\n${unmet.join('\n')}`)
+  ok('测试保真：node_modules 与 lockfile 同版本、client 包的 cordis peer 满足')
+}
+
 console.log(`\nhost-contract tests: ${passed} passed`)

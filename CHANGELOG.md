@@ -1,4 +1,43 @@
-## 0.6.2 (2026-10-17)
+## Unreleased
+
+### 新增：删除留痕——`forget` 仍真删，但最近 5 条可从 `deleted.json` 找回
+
+**问题**：删除是**不可逆**的，而 `forget` 的关键词通道是模糊匹配——判据本身没错（查询侧覆盖率是旧经验层的既定口径），但一次传错词就是一次没有痕迹的永久删除：实测 `forget 'x'` 一次删掉 9 条 global 记忆（真实事故，9 条已按原 id + 原始 `save_lesson` 参数从会话日志恢复）。
+
+**改法**（保持"真删、无撤销"语义不变，只补可恢复性）：
+
+- `removeMemory` 在真正移除前，把**即将被删的完整条目**（正文、字段、`home`，task 级带 `taskId`）追加进该层 store 同目录的 `deleted.json`：项目 / 任务级落 `<root>/.dsh-project-memory/`，global 级落 global 文件同目录。滚动保留最近 **5** 条（`DELETED_KEEP`），最新在前。
+- 留痕是**旁路**：写失败只丢留痕，绝不让删除本身失败；`recordDeleted()` 同样供面板的 `/tasks insight delete` 三个分支复用（面板删的也能找回）。
+- `forget` 的删除回报末尾直接给出留痕文件的**真实路径**（描述里静态说不清项目目录在哪，路径随 `memoryDir`/会话根变化），并说明"读它、重新存一次即可恢复"。**不新增命令**：模型/人自己去读那个文件。
+- 代价：盘上多一份最多 5 条正文的副本。不需要恢复能力的可以删文件，删了下一次删除会重新建。
+
+### 修复：读路径传错 `root` 会在别处造出目录和空 store
+
+`query_memory` / `memory_stats` 此前只做安全校验、不验根存在。可选的向量层（`leanvec`）在空 store 上会落 `vectors.json`，于是**拼写错误的 root 会在任意可写位置建出 `<root>/.dsh-project-memory`**，回报却是 "No memory matches"——看起来像"这个项目没有记忆"。两处补 `assertIndexRoot`（与 `index_repo` / `watch_repo` / `forget` / `save_lesson` / 任务工具同一道护栏），并加跨工具回归：不存在根一律拒绝且**不产生任何目录**。
+
+### 修复：容量裁剪会归档"仍被会话绑定"的任务，把一次会话拆成两条记录
+
+`pruneTasks()` 按 `lastActiveAt` 一刀切，一个长期挂着的绑定任务会被更新的任务挤成最旧而静默归档；会话回来写 todo 时 taskbridge 按"归档＝停止同步"处理，于是**另建一条新任务**——同一会话的历史被静默拆开，原条目成归档孤儿。裁剪现在跳过仍被任何会话绑定的任务（加起来的历史更值钱：上限只是启发式，而"别把正在做的任务从脚底下抽走"是正确性）。想真正停掉一个任务，先解绑或显式归档。
+
+### 修复：跨标签页任务广播不区分项目
+
+`BroadcastChannel` 名是固定的（同源所有 dsh 页面共用），消息体只带任务数组：在 A 项目点一下刷新，B 项目的面板就被贴上 A 的任务列表（而它保留自己的 `boundTaskId`，表现为"绑定莫名丢了"）。`/tasks` 载荷新增 `root`，广播按项目根作用域过滤（无根或本页未知根一律不接受），判定收进零依赖纯函数模块 `src/client/task-scope.js` 以便单测。
+
+### 修复：打开/切换面板会往会话历史里写 `todo/write`
+
+面板 `refresh()` 在"新 boundId 与内存里的不同"时会补一次 `/tasks switch`。那是多余的：宿主 todo 清单是 `sessionProjections` 的 `todos` 单元（由 `todo/write` 折叠），重启/换标签页都会从日志重建；而 switch 会 `session.append('todo/write')`，等于"看一眼面板"就写一次会话历史、顺带刷新任务的 `lastActiveAt`。绑定动作都有明确入口（`select_task` / `/tasks switch` / 面板按钮），各自由 `adoptStepsToSession` 推清单，不需要巡检式补写。
+
+### 新增：测试保真闸门——测试必须跑在 lockfile 声明的宿主版本上
+
+0.6.2 声明 devDependencies 升到 `0.2.1-rc.2`，但 `node_modules` 里仍是 `0.2.0-rc.2`（且 `cordis` 4.0.4 不满足四个 client 包的 `~4.0.5` peer）——当时的"全绿"与"已适配新宿主"都建立在不匹配的依赖上。`host-contract` 新增可判定检查：每个 `@deepseek-ai/*` devDependency 的**实际安装版本必须等于 lockfile 版本**（不等则报"先跑 npm ci"并列出差异），并校验 client 包对 `cordis` 的 peer 区间被实际安装版本满足。
+
+### 修复：`2>/dev/null`、`2>&1` 被当成"写目标"，让读命令误触发 `when.writes`
+
+`ops.js` 的写盘判据里，重定向一支是 `>>?\s*\S`——它把**丢弃输出**也算成写文件。实测 `ls .agents 2>/dev/null | head` 抽出 `targets=['.agents']`、`cat package.json 2>&1` 抽出 `['package.json']`，而 `ops.targets` 正是 `when.writes` 的匹配面：列目录 / 看文件会误触发一条 `writes:['package.json']` 的教训。现在 `>` / `>>` / `2>` 之后是 `&`（合并 fd）或 `/dev/null`（丢弃）时不算写，`> file`、`2> file`、`1>> file` 照旧算。
+
+**测试**：`npm test` 705 → **720 项 / 41 个文件**（新增 `client-task-sync`；`insight-store` +1、`host-contract` +1、`taskbridge` +1、`root-guards` +8，其余在既有 `ok` 块内补断言），`npm run typecheck` 通过。
+
+
 
 `npm test` **705 项 / 40 个文件**；`npm run typecheck` 通过。
 
