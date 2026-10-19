@@ -127,4 +127,26 @@ const BASE_CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
   ok('project-profile：package.json tags 解析')
 }
 
+// --- 影子记录：rel 必须是**词法**相对分（分母取词法 top，不是融合 top）---
+// 事故形状：融合后 `scored[0]` 已经是融合分，旧实现拿它当分母，于是 `rel` 可以 >1（实测 5.925），
+// 而离线重放正是按 `rel` 重算 signalMinRatio 的。这里造一个"词法第一但语义最低"的对照：
+// 若分母仍取融合 top，BM25 原分 / 融合 top 必然 ≠ 1。
+{
+  const A = { id: 'sh_a', kind: 'lesson', scope: 'project', title: 'alpha beta gamma delta epsilon 词法强', fix: 'fa', confidence: 0.8 }
+  const B = { id: 'sh_b', kind: 'lesson', scope: 'project', title: 'alpha beta gamma 词法略弱', fix: 'fb', confidence: 0.8 }
+  const out = buildInjection({
+    query: 'alpha beta gamma delta epsilon',
+    globalStore: globalWith([A, B]),
+    cfg: BASE_CFG,
+    rerank: { alpha: 0.5, score: () => new Map([['sh_a', 0.05], ['sh_b', 0.95]]) },
+  })
+  const cands = out.candidates.filter((c) => c.channel === 'hint')
+  assert.equal(cands.length, 2, `两个候选都要进影子记录：${JSON.stringify(out.candidates)}`)
+  for (const c of cands) assert.ok(c.rel <= 1.001, `rel 是词法相对分，不得 >1：${JSON.stringify(c)}`)
+  const a = cands.find((c) => c.id === 'sh_a')
+  assert.equal(a.rel, 1, `词法最强那条的 rel 必须是 1（旧实现 = BM25/融合top = ${a.rel}）`)
+  assert.ok(a.vector < 0.5 && a.fused < 1, '融合分与词法相对分必须是两个数')
+  ok('影子记录：rel 用词法 top 归一（≤1），与 fused 分开')
+}
+
 console.log(`\nauto-inject tests: ${passed} passed`)
