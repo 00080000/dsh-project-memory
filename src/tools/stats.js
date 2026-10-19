@@ -1,6 +1,9 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { assertIndexRoot, memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
+import { cfgInsight, defaultGlobalFile, GlobalStore } from '../insight-store.js'
+import { cfgEngine } from '../auto-inject.js'
+import { resolveVectorLayer, vectorIndexSummary, vectorItemsFrom } from '../vector-index.js'
 import { truncate } from '../util/text.js'
 
 const TOP_N = 30
@@ -42,6 +45,27 @@ export function statsTool(config) {
           lines.push(`- ${rel} [${rec.type}] entries: ${count}, indexed at ${rec.indexedAt || 'unknown'}`)
         }
         if (files.length > TOP_N) lines.push(`- ... ${files.length - TOP_N} more files`)
+      }
+      // 可选向量层的**状态**（不含模型加载）：这一层静默降级太厉害——`vectorDir` 拼错一个
+      // 字母与"没装 leanvec"在输出上完全一样，而两者的语义差别是"排序里有没有语义"。
+      // 只报三件可判定的东西：能不能用、缓存索引对不对得上、写入去重开没开。
+      {
+        const engine = cfgEngine(config)
+        const off = typeof engine.vectorDir === 'string' && engine.vectorDir.trim().toLowerCase() === 'off'
+        let resolved = { dir: null }
+        try { resolved = off ? { dir: null } : await resolveVectorLayer(engine.vectorDir) } catch { resolved = { dir: null } }
+        const memDir = memoryRootFor(root, config.memoryDir)
+        const cfgI = cfgInsight(config)
+        const globalStore = new GlobalStore(cfgI.globalFile || defaultGlobalFile()).load()
+        const vs = vectorIndexSummary({ dir: memDir, items: vectorItemsFrom(store, globalStore) })
+        const state = resolved?.dir ? `on (leanvec @ ${resolved.dir})` : off ? "off (vectorDir: 'off')" : 'off (leanvec 未解析到)'
+        lines.push('')
+        lines.push(`Vector: ${state} | re-rank alpha ${engine.vectorAlpha} | write-dedup ${engine.vectorDedup ? 'on' : 'off'}`)
+        lines.push(
+          vs.rows
+            ? `Vector index: ${vs.rows} rows · ${vs.live} live / ${vs.stale} stale · ${(vs.bytes / 1024).toFixed(0)} KB · model ${vs.model || '?'} · updated ${vs.updatedAt || '?'}`
+            : 'Vector index: 尚未建立（首次查询/写入时构建）',
+        )
       }
       return truncate(lines.join('\n'), config.maxOutputChars)
     },

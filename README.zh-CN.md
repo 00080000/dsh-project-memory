@@ -130,15 +130,17 @@ TaskPanel (Container)
 | `llmQueryExpansion` / `expansionCount` | false / 6 | 检索前用 LLM 扩展查询（默认关闭，节省 token）；扩展变体上限 |
 | `tsPath` / `enableTypeScript` | (自动) / true | 可选：强制指定 `typescript` 安装路径；`enableTypeScript: false` 彻底禁用类型感知层 |
 | `tasklist.enabled` / `tasklist.syncHostOnAdopt` | true / true | TaskBridge 自动同步（由会话 todo 清单与文件读取沉淀任务实体）；绑定任务时把其步骤推给宿主任务清单，使 dsh 镜像该任务 |
-| `insight.*` | dedupOverlap `0.7` · reinforceBand `0.65` · autoMergeCos `0.9` · autoMergeMargin `0.05` · hintCos `0.7` · maxForgetMatches `10` · maxProject `100` · maxGlobalProcedures `200` · promoteConfidence `0.7` · globalPromoteTasks `3` · decayDays `90` · `globalFile`（自动） | insight 去重 / 自动覆盖 / 近邻提示 / 删除上限 / 强化 / 提升 / 容量 / 归档设置 |
+| `insight.*` | dedupOverlap `0.7` · reinforceBand `0.65` · autoMergeCos `0.9` · autoMergeMargin `0.05` · hintCos `0.7` · maxForgetMatches `10` · maxProject `100` · maxGlobalProcedures `200` · promoteConfidence `0.7` · globalPromoteTasks `3` · decayDays `90` · `globalFile`（自动） | insight 去重 / 自动覆盖 / 近邻提示 / 删除上限 / 强化 / 提升 / 容量 / 归档设置。`autoMergeCos` / `hintCos` 设 `0` 表示**关闭**那条带 |
 | `reflection.enabled` | false | LLM 反思，**只写任务级草稿**（触发于任务切走 / 归档）。`cooldownMs` `1800000`、`maxLessonsPerReflect` `3`、`maxDecisionsPerReflect` `2` |
 | `autoContext.enabled` | true | 静默注入包装（常驻任务卡 + 受门槛约束的条目）；宿主无法解析会话 cwd 时完全透传。`maxTokens` `400`（单轮）、`editedMax` `3`（任务卡显示的最近"编辑中"文件数）、`signalMinRatio` `0.5`（提示至少达到该层最高分的一半）、`skipEchoSelfTodo` `true`、`budgetLog` `off`、`reinjectItemsAfter` `0`（同一条 insight 重复注入的冷却步数）、`rootNotice` `true` |
 | `autoContext.gateCooldownSteps` | 2 | **准入旋钮**：两次*条目*注入之间至少隔几步（常驻任务卡不受限——它是状态快照）。这是"别频繁注入"的主旋钮 |
 | `autoContext.maxItemsPerSession` / `autoContext.maxItemCharsPerSession` | 60 / 24000 | **runaway 保险丝，不是节流阀** —— 按条数与字符计的每会话硬上限：一旦触顶，本会话余下部分条目通道持续沉默 |
 | `autoContext.hintMinCoverage` | 0.45 | 提示通道的**绝对**下限：条目覆盖了查询多少 IDF 加权信息量。只用相对阈值分不出"有信号"和"矮子里拔将军" |
 | `autoContext.hintMinMatched` / `autoContext.hintMinSupport` | 2 / 0.15 | 提示还必须至少共享这么多个词；且查询里能在语料中找到对应的词占比不低于该值时，通道才出声——否则本轮整体沉默 |
-| `autoContext.vectorDir` | 未设 | **可选**语义层，只作用于经验/洞察两层；随 `leanvec`（optionalDependency）默认装上并启用（79 MB、约 +130 MB RSS）。填 `off` 强制纯词法；填路径或用 `DSH_LEANVEC_DIR` 可覆盖。只改排序、返回条数不变；启用时这两层不按词法命中数筛条目 |
-| `autoContext.vectorAlpha` | 0.5 | 这两层内 `(1-α)·词法分 + α·余弦` 的权重；`0` 关闭该层，`1`（纯向量）实测更差 |
+| `autoContext.vectorDir` | 未设 | **可选**语义层，只作用于经验/洞察两层；随 `leanvec`（optionalDependency）默认装上并启用（79 MB、约 +130 MB RSS）。填 `off` 强制纯词法；填路径或用 `DSH_LEANVEC_DIR` 可覆盖。只改排序、返回条数不变；启用时只有**没拿到余弦**的条目才继续按词法命中数筛 |
+| `autoContext.vectorAlpha` | 0.5 | 这两层内 `(1-α)·词法分 + α·余弦` 的权重；`0` 只关闭重排（写入侧去重仍在），`1`（纯向量）实测更差 |
+| `autoContext.vectorDedup` | true | 写入侧近重复检测（余弦 ≥0.9 自动覆盖、≥0.7 近邻提示）。与 `vectorAlpha` 独立；设 `false` 不影响召回排序 |
+| `autoContext.vectorItemMin` / `autoContext.vectorSpeakMin` | 未设 | **实验性**：提示通道的绝对余弦地板（条目级）与通道级语义救援。未标定——不设即关闭，开启前先看 `src/auto-inject.js` 里的实测证据 |
 | `autoContext.legacyScope` | `ignore` | 旧 `trigger.scope` 的处理：默认 `ignore`，不拿它当过滤条件；`filter` 保留旧语义。`npm run selfcheck:triggers` 会列出仍带 scope 的条目 |
 | `autoContext.auditLog` | true | 每次**真实**注入往 `injection-audit.jsonl` 追加一行（注入了什么、为什么命中、丢了什么、会话额度）；超过 `auditMaxBytes`（`262144`）轮转 `.1`。任何 IO 失败都静默 |
 | `autoContext.shadowLog` / `autoContext.shadowMaxBytes` | true / 524288 | **每步**（含什么都没注入的步）往 `admission-shadow.jsonl` 追加一行：被评分候选及其特征，以及每条候选卡在哪一关 —— 它让"换个阈值会怎样"可以离线回答。只写盘、不进 prompt；超过上限轮转，只保留一代 `.1` |

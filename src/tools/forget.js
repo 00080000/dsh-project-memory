@@ -2,6 +2,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { assertIndexRoot, memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { cfgInsight, DELETED_KEEP, GlobalStore, defaultGlobalFile, removeMemory } from '../insight-store.js'
+import { forgetVectorRows } from '../vector-index.js'
 
 /** 回报用的一行：`ins_xxx《标题》(project)`。标题已在 removeMemory 里截断。 */
 function line(e) {
@@ -62,6 +63,11 @@ export function forgetTool(config) {
         return res
       })
       globalStore.commit() // global 侧若被删过才落盘
+      if (res && res.removed.length) {
+        // 向量缓存也是"这条记忆"的一部分：`vectors.json` 里那行是标题的 256 维均值池化，
+        // 留着就不算真删。这里不加载模型（只读文件 + 原子重写），失败也只是缓存残留。
+        try { forgetVectorRows({ dir: memoryDir, ids: res.removed.map((e) => e.id) }) } catch { /* 缓存删除失败不影响删除承诺 */ }
+      }
       if (res && res.tooMany) {
         const head = res.matches.slice(0, 10).map(line)
         const more = res.matches.length > head.length ? ` …（共 ${res.matches.length} 条）` : ''
