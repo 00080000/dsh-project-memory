@@ -31,6 +31,16 @@ function nestedIndexNote(root, config) {
   )
 }
 
+/**
+ * 一段结果里最佳条目的跨层排序分（`rel × 层先验`，与 `recallItems` 返回的 `flat.hint`
+ * 同一口径）。只用于决定段落先后，不参与打分，也不改变任何条目自身的 score。
+ */
+function bestHint(hits) {
+  let best = 0
+  for (const h of hits || []) best = Math.max(best, (h.rel || 0) * (h.prior || 1))
+  return best
+}
+
 export function queryMemoryTool(ctx, config) {
   return defineTool({
     name: 'query_memory',
@@ -117,6 +127,8 @@ export function queryMemoryTool(ctx, config) {
       })
 
       const lines = []
+      // 结果段先按相关性排序，最后再拼进 lines（见下方 sections.sort）。
+      const sections = []
       // 使用记账：检索命中也是"被用到"（活跃度/衰减用得上它，见 recordHit）。查询是热路径
       // （p50 2.6ms），这里只改内存 + 标脏，**不**强制落盘——注入路径会立即落盘，这条路
       // 靠下一次自然 save 带上。记账失败绝不影响查询结果。
@@ -142,42 +154,44 @@ export function queryMemoryTool(ctx, config) {
         memHitCount = memHits.length
         if (memHits.length) {
           const top = memHits[0].weightedScore || 1
-          lines.push(`## Memory (${type === 'all' ? 'docs + symbols' : type})`)
+          const block = [`## Memory (${type === 'all' ? 'docs + symbols' : type})`]
           for (const { item: e, weightedScore } of memHits) {
             const absSource = e.sourceLine ? `${toAbs(root, e.sourcePath)}:${e.sourceLine}` : toAbs(root, e.sourcePath)
             const rel = Math.round((weightedScore / top) * 100)
             const summaryLine = `- ${e.summary}`
             // 条目状态占位（可证伪状态机落地前恒为 exact）。
             // 先立字段，后续状态机到位时只改值、不改输出契约。
-            lines.push(`### ${e.title} (score: ${rel})\n- source: ${absSource}\n- status: ${e.status || 'exact'}\n${summaryLine}`)
+            block.push(`### ${e.title} (score: ${rel})\n- source: ${absSource}\n- status: ${e.status || 'exact'}\n${summaryLine}`)
             if (e.type === 'doc') {
               // 读取期解算：链接不落盘，按当前符号表排序取前 5（见 src/link.js）
               const refs = resolveLinkedSymbols(store, e, 5).map(
                 (s) => `${s.title} @ ${toAbs(root, s.sourcePath)}:${s.sourceLine}`,
               )
-              if (refs.length) lines.push(`- references: ${refs.join('; ')}`)
+              if (refs.length) block.push(`- references: ${refs.join('; ')}`)
             }
           }
+          sections.push({ block, best: bestHint(memHits) })
         }
       }
       if (wantInsight) {
         const bucket = recalled.layers.find((l) => l.layer === 'insight')
         if (bucket && bucket.hits.length) {
-          lines.push('## Insights (lessons / decisions / procedures)')
+          const block = ['## Insights (lessons / decisions / procedures)']
           for (const { item: e, rel } of bucket.hits) {
             const scope = e.scope ? `, scope: ${e.scope}` : ''
             const files = e.files && e.files.length ? `\n- files: ${e.files.map((f) => toAbs(root, f)).join(', ')}` : ''
             const conf = typeof e.confidence === 'number' ? `\n- confidence: ${e.confidence}` : ''
-            lines.push(
+            block.push(
               `### ${e.title} (score: ${Math.round(rel * 100)}, kind: ${e.kind}${scope}, id: ${e.insightId})\n- ${e.summary}${files}${conf}`,
             )
           }
+          sections.push({ block, best: bestHint(bucket.hits) })
         }
       }
       if (type === 'all' || type === 'experience') {
         const expBucket = recalled.layers.find((l) => l.layer === 'experience')
         if (expBucket && expBucket.hits.length) {
-          lines.push(`## Experience (past problems -> solutions)`)
+          const block = ['## Experience (past problems -> solutions)']
           for (const { item: e, rel } of expBucket.hits) {
             // 统一存储后经验条目就是 insight：导入时 source_file 落在 files[0]，新写的也走同一处。
             const src = e.sourceFile || (Array.isArray(e.files) ? e.files[0] : '')
@@ -186,12 +200,19 @@ export function queryMemoryTool(ctx, config) {
             // 时没有这两个参数（正文在 fix/choice/body 里），直接用会渲染出 `undefined`。
             const problem = e.problem || e.title || '(untitled)'
             const solution = e.solution || e.fix || e.choice || e.body || '(no text)'
-            lines.push(
+            block.push(
               `### Problem: ${problem} (score: ${Math.round(rel * 100)}, id: ${e.id})\n- solution: ${solution}${source}\n- updated: ${e.updatedAt}`,
             )
           }
+          sections.push({ block, best: bestHint(expBucket.hits) })
         }
       }
+
+      // 段落顺序按相关性，而不是写死的 docs 优先：检索已经给出跨层 hint（rel × 层先验），
+      // 排版照它来。否则查一条明确的记忆时，无关的长文档会排在最前、正确答案埋在几千字符
+      // 之后——模型很可能根本没读到。sort 稳定，同分保持 memory → insight → experience。
+      sections.sort((a, b) => b.best - a.best)
+      for (const s of sections) for (const line of s.block) lines.push(line)
 
       // TaskBridge: type:'task' 专门查任务记录；type:'all' 尾部附一行任务计数提示
       const tasks = store.tasks || []

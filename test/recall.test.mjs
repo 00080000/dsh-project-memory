@@ -233,4 +233,46 @@ function exec0(root, sessionId = 'sess_unbound') {
   ok('经验桶：v0.4 problem/solution 形状的渲染与召回不变')
 }
 
+// ---- 16. 段落顺序由相关性决定，而不是写死的 docs 优先 ----
+// 真实案例：查一条很明确的记忆时，insight 层第 1（hint 1.150），doc 层第 1 却是无关的长文档
+// 条目（hint 1.000）。旧输出写死 docs → insights，模型第一眼看到无关文档，正确答案在
+// ~4.6k 字符之后。这里钉住：顺序取各段最佳条目的 rel × 层先验。
+{
+  const { root, gs, cfg } = newProject()
+  const toolCfg = { ...CONFIG, insight: { globalFile: path.join(root, 'global.json') } }
+  const store = new ProjectMemoryStore(memoryRootFor(root, CONFIG.memoryDir)).load()
+  store.commit((s) => saveInsight({ store: s, globalStore: gs, raw: INSIGHT, scope: 'project', cfg }))
+  // 同一条查询也命中一个 doc（否则测不到两段并存），但它只是摘要级命中，相关性更低。
+  store.setEntries('PUBLIC.md', [{
+    id: 'pub', type: 'doc', relPath: 'PUBLIC.md', sourcePath: 'PUBLIC.md', sourceLine: 1,
+    title: '公开仓库说明', summary: '提交前检查公开面；内部文档不要带进公开仓库；src 与 CHANGELOG 也要扫',
+  }])
+  store.save()
+
+  const out = await queryMemoryTool({}, toolCfg).execute({ query: QUERY, root }, exec0(root))
+  const iInsight = out.indexOf('## Insights')
+  const iMemory = out.indexOf('## Memory')
+  assert.ok(iInsight >= 0 && iMemory >= 0, `两段都应存在：${out.slice(0, 400)}`)
+  assert.ok(iInsight < iMemory, `insight 更强时必须排在 Memory 之前：\n${out.slice(0, 400)}`)
+  const firstHit = out.split('\n').find((l) => l.startsWith('### '))
+  assert.match(firstHit, /公开面/, `第一条命中必须是 insight：${firstHit}`)
+  ok('输出顺序：insight 更强时排在 docs 之前（第一条即正确答案）')
+}
+
+// ---- 16b. 没有 insight 命中时，doc 仍排第一（doc-only 查询行为不变） ----
+{
+  const { root } = newProject()
+  const toolCfg = { ...CONFIG, insight: { globalFile: path.join(root, 'global.json') } }
+  const store = new ProjectMemoryStore(memoryRootFor(root, CONFIG.memoryDir)).load()
+  store.setEntries('ONLY.md', [{
+    id: 'only', type: 'doc', relPath: 'ONLY.md', sourcePath: 'ONLY.md', sourceLine: 1,
+    title: '公开仓库说明', summary: '提交前检查公开面；内部文档不要带进公开仓库',
+  }])
+  store.save()
+  const out = await queryMemoryTool({}, toolCfg).execute({ query: QUERY, root }, exec0(root))
+  assert.ok(out.startsWith('## Memory'), `doc-only 查询仍以 Memory 开头：${out.slice(0, 200)}`)
+  assert.ok(!out.includes('## Insights'), '没有 insight 命中时不应出现 Insights 段')
+  ok('输出顺序：doc-only 查询保持 Memory 在前')
+}
+
 console.log(`\nrecall tests: ${passed} passed`)
