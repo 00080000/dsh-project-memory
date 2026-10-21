@@ -293,4 +293,57 @@ const dir = () => {
   ok('无标记但已有内容的根：审计照常工作')
 }
 
+// --- 11. 两份旁路日志共用同一个写入器：边缘口径写成刻意的行为决定 ---
+// 影子记录与主审计的「配置归一 + JSONL 追加」此前是两份复制品（谁补了护栏另一份就可能漏）。
+// 合并后这里钉住每条语义，避免以后当成笔误再改回去：
+//  - 上限只认「正数 number」：0 / 负数 / NaN / 字符串一律退回**该日志自己的**默认上限，
+//    不是禁用、也不是 0（0 会让 rotateIfOversized 每次 append 都轮转）；
+//  - 关闭开关只认显式 `false`：未配置 = 开（观测是这个插件唯一的仪表盘）；
+//  - 缺 memoryDir / record → 静默 false，绝不抛（旁路契约）。
+{
+  for (const bad of [0, -1, Number.NaN, '1024', null, undefined]) {
+    assert.deepEqual(cfgAudit({ autoContext: { auditMaxBytes: bad } }), { enabled: true, maxBytes: 256 * 1024 }, `auditMaxBytes=${String(bad)} 应退回默认`)
+    assert.deepEqual(cfgShadow({ autoContext: { shadowMaxBytes: bad } }), { enabled: true, maxBytes: 512 * 1024 }, `shadowMaxBytes=${String(bad)} 应退回默认`)
+  }
+  assert.equal(cfgAudit({ autoContext: { auditMaxBytes: 123 } }).maxBytes, 123, '显式数值必须被采纳')
+  assert.equal(cfgShadow({ autoContext: { shadowMaxBytes: 456 } }).maxBytes, 456, '两份配置不得串台')
+  assert.equal(cfgAudit({ autoContext: { auditLog: false } }).enabled, false)
+  assert.equal(cfgAudit({}).enabled, true, '未配置 = 开')
+  assert.equal(cfgShadow({}).enabled, true, '未配置 = 开')
+  ok('配置归一：非法上限退回各自默认；关闭只认显式 false')
+}
+
+// --- 11b. 写入器的边缘输入：缺参数静默失败；空 cfg 走默认路径 ---
+{
+  const d = dir()
+  assert.equal(appendShadowAudit(null, shadowRecordFrom({}), cfgShadow({})), false)
+  assert.equal(appendInjectionAudit(null, auditRecordFrom({}), cfgAudit({})), false)
+  assert.equal(appendShadowAudit(d, null, cfgShadow({})), false)
+  assert.equal(appendInjectionAudit(d, null, cfgAudit({})), false)
+  assert.equal(appendShadowAudit(undefined, undefined, undefined), false)
+  assert.equal(appendInjectionAudit(undefined, undefined, undefined), false)
+  // 空 cfg：enabled 默认开、maxBytes 退回默认上限——与 cfgAudit()/cfgShadow() 的产物等价。
+  assert.equal(appendShadowAudit(d, shadowRecordFrom({ sessionId: 's', step: 1 }), {}), true)
+  assert.equal(appendInjectionAudit(d, auditRecordFrom({ sessionId: 's', step: 1, text: 'x' }), {}), true)
+  assert.equal(readFileSync(shadowFileFor(d), 'utf8').trim().split('\n').length, 1)
+  assert.equal(readFileSync(auditFileFor(d), 'utf8').trim().split('\n').length, 1)
+  ok('缺 memoryDir/record → false 不抛；空 cfg = 默认开')
+}
+
+// --- 11c. 轮转与默认上限各自独立，不共用一份实现细节 ---
+// 一份 300KB 的记录：审计默认 256KB → 第二次追加必轮转；影子默认 512KB → 不轮转。
+// 若两处把默认值/常量抄串了（或共用了一个 maxBytes），这条会立刻翻脸。
+{
+  const big = (marker) => ({ at: new Date().toISOString(), marker, pad: 'x'.repeat(300 * 1024) })
+  const dShadow = dir()
+  appendShadowAudit(dShadow, big('a'), {})
+  appendShadowAudit(dShadow, big('b'), {})
+  assert.ok(!existsSync(`${shadowFileFor(dShadow)}.1`), '影子默认 512KB：300KB 不轮转')
+  const dAudit = dir()
+  appendInjectionAudit(dAudit, big('a'), {})
+  appendInjectionAudit(dAudit, big('b'), {})
+  assert.ok(existsSync(`${auditFileFor(dAudit)}.1`), '审计默认 256KB：300KB 必轮转')
+  ok('默认上限各自独立（影子 512KB / 审计 256KB），轮转只留一份 .1')
+}
+
 console.log(`\ninjection-audit tests: ${passed} passed`)
