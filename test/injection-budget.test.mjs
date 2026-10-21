@@ -1,4 +1,4 @@
-// 会话级限流测试（PLAN S3）：node test/injection-budget.test.mjs
+// 会话级限流测试：node test/injection-budget.test.mjs
 // 验收：冷却步数真的会拦住条目；会话额度真的是上限而不是目标；注入次数随步数增长被压住。
 // 观测口用审计文件（`injection-audit.jsonl`）与影子记录（`admission-shadow.jsonl`）：
 // 前者记 budget 快照与沉默原因，后者记**每一步**的候选与其门槛/预算两层结局。

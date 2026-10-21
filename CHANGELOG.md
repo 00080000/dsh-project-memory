@@ -179,13 +179,13 @@
 
 - 同一个进程里再 load 第二个大 root 时仍会结算一次——那正是预算可能被撞上的情形。`bench --json` 现在把两个口径分开：`coldLoadMs` 只记空进程冷启动，`secondStoreLoadMs` 记同进程第二个 store；合成基准的冷加载也改成独立进程量（同进程连 load 5 份副本会攒下 5 个 store，既绕不开结算也不是"冷启动"）。
 - `test/store-cache.test.mjs` 34 → **43** 项：新增"预算宽裕时不精确计量（无版本戳）""上界 ≥ 精确值且不超 8 倍""写进来的条目计入上界""同一文件重写是替换而非累加"。
-- README 双语的性能表按新口径重测（冷加载：Vue 8 ms、文档工作区 10 ms、3k 切片 70 ms、整棵树 278 ms）。
+- README 双语的性能表按新口径重测（冷加载：前端语料 8 ms、文档工作区 10 ms、3k 切片 70 ms、整棵树 278 ms）。
 
 ### 测试与修复
 
 - 新增 **5 个自然语言对照**与 **3 个 hint-only 场景**（提示通道召回 0/3、精度 1.00，只报告不设门）；其中 1 条对照在基线上就注入一条无关经验，属**已知缺陷并钉住上界**。
 - 新增 `test/recall-vector-fusion.test.mjs`（13 项）与 `test/vector-index.test.mjs`（10 项），都不需要 leanvec。
-- `test/run-test.mjs` 读开发机真实的全局 insight store，导致 `no-hit query shows store overview` 随本机经验条数变红（乱码查询被 `no` 片段命中）。现在 globalFile 指向临时文件，测试**密闭**。
+- `test/run-test.mjs` 读真实的全局 insight store，导致 `no-hit query shows store overview` 随经验条数变红（乱码查询被 `no` 片段命中）。现在 globalFile 指向临时文件，测试**密闭**。
 
 ## 0.5.16 (2026-10-11)
 
@@ -448,7 +448,7 @@ id 前缀规则 `replace(/[\\/:\s]/g, '_')` 曾在**三处各写一份**（`doc-
 - 结论：**旧的 50 MB 允许单个文件把宿主进程推到 ~1.2 GB RSS**（还有一次最长 12.5 s 的同步解析），
   这正是 issue #5 那类 OOM 的形状。原先文档与计划里写的「峰值是它的 2–4 倍」**低了 5 倍**。
 - 默认值改为 **10 MB**：最坏情况单文件增量 ≈ **+300 MB RSS**（20.6 × 10）。误伤面实测很小 ——
-  本机 8 个真实 store 里只有 1 个文件超过 10 MB（`示例项目/analysis/il2cpp/dump.cs`，28.7 MB 的生成物，
+  实测多个真实项目里只有 1 个文件超过 10 MB（一个 28.7 MB 的生成物，
   也正是最该跳过的那类：生成的、符号密集、索引收益低而内存最贵）。旋钮仍可调高，
   双语 README 的配置表与「单文件内存预算」一节都写明了各自系数。
 - 口径提醒：heap 峰值受 GC 时序影响会**非单调**（同一档符号密集语料，32 MB 量出 625 MB、
@@ -1161,7 +1161,7 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
 - 索引逻辑收敛为 `src/index-pipeline.js`；auto-inject 会话状态收敛为 `InjectionSessions`
 - 命令处理器共用 `invocationContext` / `fencedJson`
 
-未修的低优先级发现见 `RELEASE-NOTES-0.5.7.md` 的 backlog。
+未修的低优先级发现见当期的发布笔记。
 
 ## 0.5.6 (2026-09-16) — injection admission (lessons/decisions/procedures stop arriving by coincidence)
 
@@ -1217,7 +1217,7 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
 - **The READMEs now point at it** (`Performance → Reproduce it on your own project`, plus the Development block) instead of asking readers to trust the tables. The labeled-set figures in Design tradeoff #4 are scoped to their internal corpus, with the method shipped; the docs also state the two caveats found while building it — `read+hash` is OS-page-cache sensitive, and real projects score slower than the synthetic corpus.
 - **Retired the local-only harnesses it replaces** (`test/ablation*.mjs`, `test/doc-coverage*.mjs`, `test/gen-queries.mjs`, `test/simulate-agent.mjs`, `test/queries.json`) together with the dead `.gitignore` entries for them and for the August debug scaffolding.
 - **The synthetic harness ships too.** `bench/microbench.mjs` moved to `scripts/bench-synthetic.mjs` (`npm run bench:synthetic -- 5000`), so the synthetic table is reproducible as well; `bench/` itself stays local-only.
-- **Every published number re-measured on 2026-09-14** (Node 24.19, WSL2, 20 vCPU): 5k-file cold index 269 ms avg (p50 267), cold load 40 ms, cached query over 20k entries p50 2.6 / p95 5.4 ms, hot single-file re-index p50 2.4 ms, 10k-file cold index 551 ms avg, cold load 90 ms, IDF rebuild 106 ms at 40k entries (57 ms at 20k, 12 ms at 4k), symbol scan 12.9–19.2 µs/file. Table captions now name the hardware and the reproduce command; the real-project example quotes the warm-cache run and states the cold-cache first run (787 ms vs 253 ms) instead of hiding it. `README.md`, `README.zh-CN.md` and the local interview cheat sheet were updated together so no two documents quote different numbers.
+- **Every published number re-measured on 2026-09-14** (Node 24.19): 5k-file cold index 269 ms avg (p50 267), cold load 40 ms, cached query over 20k entries p50 2.6 / p95 5.4 ms, hot single-file re-index p50 2.4 ms, 10k-file cold index 551 ms avg, cold load 90 ms, IDF rebuild 106 ms at 40k entries (57 ms at 20k, 12 ms at 4k), symbol scan 12.9–19.2 µs/file. Table captions now name the environment and the reproduce command; the real-project example quotes the warm-cache run and states the cold-cache first run (787 ms vs 253 ms) instead of hiding it. `README.md`, `README.zh-CN.md` and the local notes were updated together so no two documents quote different numbers.
 
 ### Docs (README realigned with shipped behaviour)
 
@@ -1343,7 +1343,7 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
 
 ### Changed (cold-index I/O)
 
-- **Single-read indexing — cold index ~4× faster**: every indexing path read each file twice (`await sha256OfFile()` for the hash, then `readFileSync()` for the body) and paid a per-file `async readFile` thread-pool round-trip. New `readFileForIndex()` does one synchronous read and hands the same buffer to both `createHash('sha256')` and `toString('utf8')`; `index_repo`, `watch`, and lazy read-on-observe all use it. Unchanged files are still hashed without decoding. Synthetic 5,000-file corpus (WSL2, Node 24): cold index 1,093 ms → 272 ms (4.0×); the `read+hash` phase drops from 70% to 11% of the pipeline. Tests green.
+- **Single-read indexing — cold index ~4× faster**: every indexing path read each file twice (`await sha256OfFile()` for the hash, then `readFileSync()` for the body) and paid a per-file `async readFile` thread-pool round-trip. New `readFileForIndex()` does one synchronous read and hands the same buffer to both `createHash('sha256')` and `toString('utf8')`; `index_repo`, `watch`, and lazy read-on-observe all use it. Unchanged files are still hashed without decoding. Synthetic 5,000-file corpus (Node 24): cold index 1,093 ms → 272 ms (4.0×); the `read+hash` phase drops from 70% to 11% of the pipeline. Tests green.
 
 ### Fixed (host-contract + watch robustness)
 
@@ -1399,7 +1399,7 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
 - Tests: insight-store 11 / reflection-pipeline 5 / auto-inject 9 / insight-actions 7 (total 209, exit 0)
 
 ### Notes
-- Design rationale, deviations (non-destructive migration; reflection triggers subset; auto-inject host verification) and the live-verification checklist live in PLAN-v0.5.0.md §10–§12.
+- Design rationale, deviations (non-destructive migration; reflection triggers subset; auto-inject host verification) and the live-verification checklist live in the internal design notes.
 - Requires a dsh web restart to load the new server code and rebuilt client bundle.
 
 ### Fixed

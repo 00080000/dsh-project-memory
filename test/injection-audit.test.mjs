@@ -1,4 +1,4 @@
-// 注入审计测试（PLAN S0）：node test/injection-audit.test.mjs
+// 注入审计测试：node test/injection-audit.test.mjs
 // 覆盖：记录形状 / JSONL 追加 / 超限轮转 / 显式关闭 / 目录不可写时静默失败。
 import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'

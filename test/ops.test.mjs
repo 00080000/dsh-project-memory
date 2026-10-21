@@ -1,5 +1,5 @@
-// 动作平面测试（PLAN S1）：node test/ops.test.mjs
-// 验收（PLAN §8 S1）：喂本会话那 7 次真实工具调用，输出里不许出现 `dcterms` 这类标识符。
+// 动作平面测试：node test/ops.test.mjs
+// 验收（设计笔记）：喂本会话那 7 次真实工具调用，输出里不许出现 `dcterms` 这类标识符。
 import assert from 'node:assert/strict'
 
 import {
@@ -51,8 +51,8 @@ const ok = (name) => {
 
 // --- 3. 写目标只从会写盘的命令里取；读列目录不产目标 ---
 {
-  assert.deepEqual(classifyShellCommand('ls -la de-TODO.md').targets, [])
-  assert.deepEqual(classifyShellCommand('rm -f de-TODO.md').targets, ['de-TODO.md'])
+  assert.deepEqual(classifyShellCommand('ls -la notes.md').targets, [])
+  assert.deepEqual(classifyShellCommand('rm -f notes.md').targets, ['notes.md'])
   // 点开头的裸文件名同样是写目标。ops 原先只顾「带扩展名的路径」，把这一类漏了，
   // 而 ops.targets 正是 when.writes 的匹配面 —— 漏掉等于一条 writes:['.gitignore']
   // 的教训静默漏召（实测 rm -f .gitignore 曾抽出 targets=[]）。语义已与 readiness 收敛为同源。
@@ -104,7 +104,7 @@ const ok = (name) => {
     { name: 'bash', arguments: '{"command":"python3 - <<\'PY\'\\nimport zipfile, re\\napp = zin.read(\'docProps/app.xml\')\\ndcterms = None\\nPY"}' },
     { name: 'bash', arguments: '{"command":"ls -la /tmp/pptx-backup.pptx"}' },
     { name: 'bash', arguments: '{"command":"node --test test/insight-store.test.mjs"}' },
-    { name: 'read', arguments: '{"file_path":"/repo/de-TODO.md"}' },
+    { name: 'read', arguments: '{"file_path":"/repo/notes.md"}' },
   ]
   const a = activityFromCalls(sessionCalls)
   const dump = JSON.stringify(a)

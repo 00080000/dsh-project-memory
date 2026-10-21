@@ -38,7 +38,7 @@ const COMPACT_BATCH = 200
  *
  * 用 `Buffer.byteLength()` 而不是 `String.length`：CJK 在 UTF-8 里 3 字节/字符，而 V8
  * 双字节串 2 字节/字符——UTF-8 对非 ASCII 是偏高的代理指标，对纯 ASCII 精确。缓存预算
- * 容得下这个误差（实测两端 ±13%，见 `test/store-cache.test.mjs` 与 PLAN 附七）。
+ * 容得下这个误差（实测两端 ±13%，见 `test/store-cache.test.mjs` 与内部设计笔记）。
  *
  * 递归用深度上限而不是 `Set` 去环：store 的对象图来自 `JSON.parse`，本就无环；深度上限
  * 既挡畸形数据，又比逐对象 `Set` 查重快 ~30%（70119 条目实测 36ms vs 52ms）。
