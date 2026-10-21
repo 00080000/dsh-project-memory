@@ -214,7 +214,7 @@ export function intentText(text) {
     .replace(/(?:[A-Za-z0-9_.@-]+\/)+[A-Za-z0-9_.@-]+/g, ' ')
     // 带扩展名的**非 ASCII 文件名**（`示例调研.pptx` / `docs/示例.md`）：
     // 只挡 ASCII 路径不够——中文文件名整块留下，"调研""面试"这类子串照样触发 when.intents，
-    // 正是引号剥离要防的那类假阳性。ASCII 裸名（如 de-TODO.md）保持原语义，不在这里动。
+    // 正是引号剥离要防的那类假阳性。ASCII 裸名（如 notes.md）保持原语义，不在这里动。
     .replace(/\S*[^\x00-\x7F]\S*\.[A-Za-z][A-Za-z0-9]{0,7}\b/g, ' ')
     // 仓库里的裸文件名（README / CHANGELOG …）也是语料，不是意图
     .replace(/\b(?:README|CHANGELOG|LICENSE|AGENTS|CONTRIBUTING|Dockerfile|Makefile)\b/g, ' ')
