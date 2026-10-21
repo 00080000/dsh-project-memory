@@ -35,13 +35,24 @@ const DEFAULT_SHADOW_MAX_BYTES = 512 * 1024
  */
 const SHADOW_MAX_CANDIDATES = 16
 
-/** 审计配置：默认开（观测是这个插件唯一的仪表盘），显式 `auditLog: false` 才关。 */
-export function cfgAudit(config) {
+/**
+ * 两份 JSONL 旁路日志共用的配置归一。它们的差别只有「开关名 / 字节上限键 / 默认上限」，
+ * 其余判定（默认开、非法上限退回默认）必须完全一致——抄成两份就等着一边补了 `> 0`、
+ * 另一边忘了。语义刻意选择：
+ *  - `!== false` 而不是 `=== true`：未配置 = 开（观测是这个插件唯一的仪表盘）；
+ *  - `> 0` 而不是 `!= null`：0 / 负数 / NaN 都视为「没配」，退回默认上限，而不是禁用。
+ */
+function cfgSideLog(config, { enabledKey, maxKey, defaultMaxBytes }) {
   const c = (config && config.autoContext) || {}
   return {
-    enabled: c.auditLog !== false,
-    maxBytes: typeof c.auditMaxBytes === 'number' && c.auditMaxBytes > 0 ? c.auditMaxBytes : DEFAULT_MAX_BYTES,
+    enabled: c[enabledKey] !== false,
+    maxBytes: typeof c[maxKey] === 'number' && c[maxKey] > 0 ? c[maxKey] : defaultMaxBytes,
   }
+}
+
+/** 审计配置：默认开，显式 `auditLog: false` 才关。 */
+export function cfgAudit(config) {
+  return cfgSideLog(config, { enabledKey: 'auditLog', maxKey: 'auditMaxBytes', defaultMaxBytes: DEFAULT_MAX_BYTES })
 }
 
 export function auditFileFor(memoryDir) {
@@ -50,11 +61,7 @@ export function auditFileFor(memoryDir) {
 
 /** 影子记录配置：默认开（它只写盘、不进 prompt、不花 token），显式 `shadowLog: false` 才关。 */
 export function cfgShadow(config) {
-  const c = (config && config.autoContext) || {}
-  return {
-    enabled: c.shadowLog !== false,
-    maxBytes: typeof c.shadowMaxBytes === 'number' && c.shadowMaxBytes > 0 ? c.shadowMaxBytes : DEFAULT_SHADOW_MAX_BYTES,
-  }
+  return cfgSideLog(config, { enabledKey: 'shadowLog', maxKey: 'shadowMaxBytes', defaultMaxBytes: DEFAULT_SHADOW_MAX_BYTES })
 }
 
 export function shadowFileFor(memoryDir) {
@@ -122,11 +129,6 @@ export function shadowRecordFrom(input) {
 }
 
 /**
- * 追加一行影子记录。返回是否写入成功（仅供测试断言）。与主审计同约定：任何异常一律吞掉，
- * 绝不影响宿主请求。
- */
-
-/**
  * 审计**只为"已经存在"或"结论明确"的根创建 store 目录**。
  *
  * 本插件里会在"什么都没索引过"的空目录里造出 `.dsh-project-memory` 的就是下面那句
@@ -148,20 +150,35 @@ function auditDirReady(memoryDir, root) {
   return hasProjectMarker(root || path.dirname(memoryDir))
 }
 
-export function appendShadowAudit(memoryDir, record, cfg, root) {
+/**
+ * 两份旁路日志共用的追加：目录门禁 / mkdir / 轮转 / 吞异常**只有这一份实现**，
+ * 调用方只声明文件名与默认上限。分开写两份时，一处补了护栏另一处就会漏
+ * （影子记录与主审计的"不建推测根"曾经就是各写一遍）。
+ * @returns {boolean} 是否写入成功（仅供测试断言）
+ */
+function appendJsonlRecord({ memoryDir, record, cfg, root, fileFor, defaultMaxBytes }) {
   const c = cfg || {}
   if (c.enabled === false) return false
   if (!memoryDir || !record) return false
   if (!auditDirReady(memoryDir, root)) return false
   try {
     mkdirSync(memoryDir, { recursive: true })
-    const file = shadowFileFor(memoryDir)
-    rotateIfOversized(file, c.maxBytes || DEFAULT_SHADOW_MAX_BYTES)
+    const file = fileFor(memoryDir)
+    rotateIfOversized(file, c.maxBytes || defaultMaxBytes)
     appendFileSync(file, `${JSON.stringify(record)}\n`)
     return true
   } catch {
+    // 旁路契约：写不进去不能影响这一轮注入，更不能影响宿主的请求
     return false
   }
+}
+
+/**
+ * 追加一行影子记录。返回是否写入成功（仅供测试断言）。与主审计同约定：任何异常一律吞掉，
+ * 绝不影响宿主请求。
+ */
+export function appendShadowAudit(memoryDir, record, cfg, root) {
+  return appendJsonlRecord({ memoryDir, record, cfg, root, fileFor: shadowFileFor, defaultMaxBytes: DEFAULT_SHADOW_MAX_BYTES })
 }
 
 /**
@@ -208,20 +225,7 @@ export function auditRecordFrom(input) {
  * @param {{enabled?: boolean, maxBytes?: number}} [cfg] {@link cfgAudit} 的产物
  */
 export function appendInjectionAudit(memoryDir, record, cfg, root) {
-  const c = cfg || {}
-  if (c.enabled === false) return false
-  if (!memoryDir || !record) return false
-  if (!auditDirReady(memoryDir, root)) return false
-  try {
-    mkdirSync(memoryDir, { recursive: true })
-    const file = auditFileFor(memoryDir)
-    rotateIfOversized(file, c.maxBytes || DEFAULT_MAX_BYTES)
-    appendFileSync(file, `${JSON.stringify(record)}\n`)
-    return true
-  } catch {
-    // 审计是旁路：写不进去不能影响这一轮注入，更不能影响宿主的请求
-    return false
-  }
+  return appendJsonlRecord({ memoryDir, record, cfg, root, fileFor: auditFileFor, defaultMaxBytes: DEFAULT_MAX_BYTES })
 }
 
 function rotateIfOversized(file, maxBytes) {
