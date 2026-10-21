@@ -143,8 +143,8 @@ const CONFIG = { memoryDir: '.dsh-project-memory', maxOutputChars: 8000, chunkCh
 {
   const cjk = buildReadinessContext({ humanText: '把这个 示例调研.pptx 的时间改一下' })
   assert.equal(matchTrigger({ when: { intents: ['调研'] } }, cjk), null, 'CJK 文件名不得触发意图')
-  const ascii = buildReadinessContext({ humanText: '我好像把 de-TODO.md 删了，还能找回吗' })
-  assert.equal(matchTrigger({ when: { intents: ['de-TODO'] } }, ascii), 'intent:de-TODO', 'ASCII 裸名保持原语义')
+  const ascii = buildReadinessContext({ humanText: '我好像把 notes.md 删了，还能找回吗' })
+  assert.equal(matchTrigger({ when: { intents: ['notes.md'] } }, ascii), 'intent:notes.md', 'ASCII 裸名保持原语义')
   ok('意图剥离：CJK 文件名不触发，ASCII 裸名照旧')
 }
 

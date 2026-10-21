@@ -1,4 +1,4 @@
-// 注入准入的场景回归（PLAN S0/S5）：带标注的 8 个场景 + 四个数（命中 / 假阳性 / 字符 / 次数）。
+// 注入准入的场景回归：带标注的 8 个场景 + 四个数（命中 / 假阳性 / 字符 / 次数）。
 //   node test/injection-scenarios.test.mjs                 # 合成池冒烟（P/R 地板 + 对照组零注入）
 //   node test/injection-scenarios.test.mjs --selfcheck     # trigger 自检：谁推得动、谁是死值
 //   node test/injection-scenarios.test.mjs --store <项目 insights.json> [--global <global.json>]
@@ -35,13 +35,13 @@ const P = (id, title, extra = {}) => ({ id, kind: 'procedure', scope: 'global', 
  * 刻意保留致病的 trigger 写法——回归要盯的正是它们。
  */
 const POOL = [
-  P('p_arxiv', '本机查论文/仓库改用 curl', { trigger: { keywords: ['arxiv', '论文', 'paper', 'web_fetch', 'web_search', 'pptx', '爬取', '摘要'], actions: ['research', 'web-fetch'], paths: ['*.pptx'] } }), // 实测条目
+  P('p_arxiv', '查论文/仓库改用 curl', { trigger: { keywords: ['arxiv', '论文', 'paper', 'web_fetch', 'web_search', 'pptx', '爬取', '摘要'], actions: ['research', 'web-fetch'], paths: ['*.pptx'] } }), // 实测条目
   P('p_render', '无 root 把 PPTX 渲染成可校验版面', { trigger: { keywords: ['pptx', 'ppt', 'libreoffice', 'soffice', '渲染', '幻灯'], actions: ['generate-pptx', 'render'], paths: ['*.pptx', '*.pdf'] } }), // 实测条目
   L('l_pptxgenjs', 'pptxgenjs 的 LAYOUT_16x9 是 10x5.625', { trigger: { keywords: ['pptxgenjs', 'LAYOUT_16x9', '16:9', '幻灯片', 'ppt'], actions: ['generate-pptx'], paths: ['*.pptx'] } }), // 实测条目
   P('p_purge', '误删文件后的恢复顺序', { trigger: { keywords: ['误删', '恢复', '找回', 'rm', '丢了', 'deleted', 'zstd', '快照'], actions: ['delete', 'recover', 'cleanup'] } }), // 实测条目
   L('l_readimage', '工具被拒时先查能力声明', { trigger: { keywords: ['read_image', '视觉', 'inputModalities', '图片', '看图'], actions: ['read-image'], paths: ['**/settings.yaml', '*.png', '*.jpg'] } }), // 实测条目
   L('l_curated', '调研下结论前先按日期扫最近半年', { trigger: { keywords: ['调研', '空白', '综述', '方向', 'state of the art', '没人做'], actions: ['research', 'survey'] } }), // 实测条目
-  L('l_wslpnpm', '两个同名可执行文件抢先命中 PATH'), // 实测条目（无 authored trigger，只可能走提示通道）
+  L('l_pnpmver', '两个同名可执行文件抢先命中 PATH'), // 实测条目（无 authored trigger，只可能走提示通道）
   L('l_pkgfiles', '文档承诺的脚本在仓库里≠在 npm 包里', { trigger: { keywords: ['上传', '没上传', 'npm 包', '发布', '发版', '打包', 'files 白名单', 'tarball'], actions: ['npm-publish', 'npm-pack', 'git-push'], paths: ['package.json', 'README*', 'CHANGELOG*'] } }), // 实测条目
   P('p_npmpub', '发版流程', { trigger: { keywords: ['npm publish', '发版', '发布', 'release', 'version bump', 'tag', 'CHANGELOG'], scope: ['release', 'npm', 'dsh-project-memory'] } }), // 实测条目（scope 与画像 tag 错配 → 推不动）
   L('l_changelog', 'CHANGELOG 已写新版本段、package.json 未 bump'), // 实测条目（无 authored trigger）
@@ -55,7 +55,7 @@ const POOL = [
   P('p_bench', '独立基准脚本 scripts/bench.mjs', { trigger: { keywords: ['bench', '基准', '性能', '复现', 'p50'], actions: ['benchmark'], paths: ['scripts/bench.mjs', 'README.md'] } }), // 实测条目
   P('p_testing', '被问「你怎么测试的」时的答法', { trigger: { keywords: ['测试', '怎么测', '性能数据', 'benchmark', '验证', '复现'] } }), // 实测条目
   L('l_harness', '检索基准 harness 会静默骗人'), // 实测条目（无 authored trigger）
-  L('l_wslio', 'WSL2 小文件 I/O 慢约 3×'), // 实测条目（无 authored trigger）
+  L('l_slowio', '小文件 I/O 在某个文件系统上慢约 3×'), // 实测条目（无 authored trigger）
   L('l_followup', '被追问时先给机制再给结论', { trigger: { keywords: ['追问', '提问', '机制', '原理', '讲解', '引用'] } }), // 实测条目
   L('l_perfnum', '对外引用性能数字必须带规模+硬件口径', { trigger: { keywords: ['性能', '基准', 'benchmark', 'ms', '延迟', '下载量', 'star', '测试数'], actions: ['report-metrics'] } }), // 实测条目
   L('l_honesty', '对外材料只写亲手验证过的事实', { trigger: { keywords: ['夸大', '口径', '材料', '群发', '对外'] } }), // 实测条目
@@ -100,7 +100,7 @@ const SCENARIOS = [
     tags: ['dsh-plugin'],
     human: '跑一下 bench 脚本，把新的 p50 数字更新到 README 的表格里',
     actions: [bash('node scripts/bench.mjs'), edit('README.md')],
-    // l_wslio / l_harness 无 authored trigger（按需拉取）；p_testing 的意图词是"被问怎么测试"，
+    // l_slowio / l_harness 无 authored trigger（按需拉取）；p_testing 的意图词是"被问怎么测试"，
     // 本场景没有这个意图 → 三者都不进 expect。
     expect: ['p_bench'],
   },
@@ -135,7 +135,7 @@ const SCENARIOS = [
       bash('ls -la /mnt/c/Users/me/OneDrive/桌面/示例调研.pptx'),
       bash('powershell.exe -NoProfile -Command SetFileTime'),
     ],
-    // 整份 PLAN 的验收底线：文件名里的"调研"、扩展名 .pptx、powershell 命令，都不许触发任何东西。
+    // 整份设计的验收底线：文件名里的"调研"、扩展名 .pptx、powershell 命令，都不许触发任何东西。
     expect: [],
   },
   // 下面三条是**自然语言对照**（2026-10-12 新增）：expect 为空，但查询是**人类口语句子**、
@@ -196,7 +196,7 @@ const HINT_SCENARIOS = [
     tags: [],
     human: '我这个 WSL 环境里读小文件特别慢，是不是文件系统的问题',
     actions: [],
-    expect: ['l_wslio'],
+    expect: ['l_slowio'],
   },
   {
     name: 'J hint-only 检索脚本骗人',
@@ -210,7 +210,7 @@ const HINT_SCENARIOS = [
     tags: [],
     human: '我在 WSL 里装的 pnpm 好像和 CI 上跑的不是同一个版本',
     actions: [],
-    expect: ['l_wslpnpm'],
+    expect: ['l_pnpmver'],
   },
 ]
 
@@ -247,7 +247,7 @@ function runScenario(s, pool, cfg = CFG, rerank = null) {
  * 混在一起记分会让"向量臂"看起来毫无作用（本来就已经 P/R=1.00），也会掩盖 hint 通道的真实漏召。
  * `HINT_ONLY_IDS` = 池子里没有 authored trigger、**只可能**由 hint 通道交付的条目。
  */
-const HINT_ONLY_IDS = new Set(['l_wslpnpm', 'l_changelog', 'l_harness', 'l_wslio'])
+const HINT_ONLY_IDS = new Set(['l_pnpmver', 'l_changelog', 'l_harness', 'l_slowio'])
 
 function measure(pool, scenarios, rerank = null, cfg = CFG) {
   let tp = 0
