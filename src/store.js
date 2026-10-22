@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { tokenizeRaw, makeSearchText } from './util/search.js'
-import { writeJsonAtomic } from './util/fs.js'
+import { acquireDirLock, writeJsonAtomic } from './util/fs.js'
 import { backfillDerivedTriggers } from './readiness.js'
 
 const FORMAT_FILE = 'format.json'
@@ -248,6 +248,13 @@ function isRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
+/** 两个 ISO 时间戳的先后；缺失/非法一律 0，保证可比较。 */
+function newerIso(a, b) {
+  const ta = Date.parse(a || '') || 0
+  const tb = Date.parse(b || '') || 0
+  return ta - tb
+}
+
 /**
  * 落盘的 entry 只保留**不可推导的事实**。两个派生字段永远不写盘：
  *  - `linkedSymbols`：跨实体派生（取决于符号表当前状态），读取期由 src/link.js 解算；
@@ -352,6 +359,17 @@ export class ProjectMemoryStore {
     this.watchlist = []
     this._dirtyShards = new Set()
     this._removedShards = new Set()
+    /** 加载时的分片 hash：跨进程写冲突检测的基准。 */
+    this._baseFileSha = new Map()
+    /** 本地删除留痕：合并另一进程的磁盘状态时不能把它们复活。 */
+    this._deletedInsightIds = new Set()
+    this._deletedTaskIds = new Set()
+    this._deletedBindings = new Set()
+    this._removedWatch = new Set()
+    /** 上次落盘/加载时的 insight id 集合：原地 splice 的删除也要能被合并逻辑看见。 */
+    this._baseInsightIds = new Set()
+    this._lockWarned = false
+    this._conflictWarned = new Set()
     this._dirtyInsights = false
     this._dirtyTasks = false
     this._dirtyBinding = false
@@ -507,6 +525,7 @@ export class ProjectMemoryStore {
       if (!shard || typeof shard.relPath !== 'string' || !isRecord(shard.record)) continue
       this._setFileTextChars(shard.relPath, counter.chars)
       this.files[shard.relPath] = shard.record
+      this._baseFileSha.set(shard.relPath, shard.record.sha256 ?? null)
       // 畸形 shard（entries 被写成对象/null）不能让 allEntries() 在 `for…of` 上抛错，
       // 否则一个坏文件会拖垮整个进程的每一次读取。
       const list = Array.isArray(shard.entries) ? shard.entries.filter(isRecord) : []
@@ -560,6 +579,7 @@ export class ProjectMemoryStore {
     // PR3：v1 → v2 懒回填派生 trigger（纯确定性、幂等；不调用模型，不改写已有字段）
     if (backfillDerivedTriggers(this.insights)) this._dirtyInsights = true
     // 迁移与回填都会改 items；换掉整个文档后让 auxCharsOf/精确估算重算。
+    this._baseInsightIds = new Set(this.insights.items.map((it) => it?.id).filter(Boolean))
     this._auxVersion++
   }
 
@@ -630,7 +650,12 @@ export class ProjectMemoryStore {
   }
 
   replaceInsightItems(items) {
+    const next = new Set((items || []).map((it) => it?.id).filter(Boolean))
+    // 与上次落盘的基线比，而不是与当前数组比：调用方经常先原地 splice 再调用这里。
+    for (const id of this._baseInsightIds) if (!next.has(id)) this._deletedInsightIds.add(id)
+    for (const id of next) this._deletedInsightIds.delete(id)
     this.insights.items = items
+    this._baseInsightIds = next
     this._dirtyInsights = true
     this._auxVersion++
   }
@@ -707,55 +732,172 @@ export class ProjectMemoryStore {
     // 自我忽略也在无脏数据时执行：老版本建出来的 store 会在下一次 save 时补上。
     this.ensureSelfIgnore()
     if (!dirty) return
-    if (!this._formatWritten) {
-      writeJsonAtomic(path.join(this.dir, FORMAT_FILE), { version: 2, layout: 'sharded' })
-      this._formatWritten = true
-    }
-    // 存量压实：≤0.5.10 的分片带着派生字段，而那些字段只在分片被重写时才会从磁盘消失。
-    // 每轮最多补写 COMPACT_BATCH 个，让升级后的 store 在后续任意一次 save（watch 轮询、
-    // 索引、写入）里自动收敛，而不是永远停在旧体积。
-    let compactBudget = COMPACT_BATCH
-    for (const rel of this._compactQueue) {
-      if (compactBudget <= 0) break
-      compactBudget--
-      this._compactQueue.delete(rel)
-      if (this.files[rel]) this._dirtyShards.add(rel)
-    }
-    for (const rel of this._dirtyShards) {
-      if (this.files[rel]) {
-        // 父目录由 writeJsonAtomic 保证
-        writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: this.files[rel], entries: (this.entries[rel] || []).map(withoutPersistedDerived) })
-      } else {
-        this._removedShards.add(rel)
+    // 跨进程：整段读改写放进目录锁；拿不到锁就保持脏状态，等下一次写重试（不静默丢数据）。
+    const release = acquireDirLock(this.dir)
+    if (!release) {
+      if (!this._lockWarned) {
+        this._lockWarned = true
+        console.error(`[dsh-project-memory] store ${this.dir} is busy (another dsh process is writing); this save was skipped and will retry on the next write.`)
       }
+      return
     }
-    this._dirtyShards.clear()
-    for (const rel of this._removedShards) {
-      try {
-        unlinkSync(shardRelPath(this.dir, rel))
-      } catch {
-        // shard file already gone; nothing to do
+    try {
+      // 先合并另一进程已落盘的小文档，再写；分片按“加载时 hash”做冲突检测。
+      this._mergeAuxFromDisk()
+      if (!this._formatWritten) {
+        writeJsonAtomic(path.join(this.dir, FORMAT_FILE), { version: 2, layout: 'sharded' })
+        this._formatWritten = true
       }
+      // 存量压实：≤0.5.10 的分片带着派生字段，而那些字段只在分片被重写时才会从磁盘消失。
+      // 每轮最多补写 COMPACT_BATCH 个，让升级后的 store 在后续任意一次 save（watch 轮询、
+      // 索引、写入）里自动收敛，而不是永远停在旧体积。
+      let compactBudget = COMPACT_BATCH
+      for (const rel of this._compactQueue) {
+        if (compactBudget <= 0) break
+        compactBudget--
+        this._compactQueue.delete(rel)
+        if (this.files[rel]) this._dirtyShards.add(rel)
+      }
+      for (const rel of this._dirtyShards) {
+        if (this.files[rel]) {
+          const nextSha = this.files[rel].sha256 ?? null
+          const base = this._baseFileSha.get(rel) ?? null
+          const disk = this._shardDiskSha(rel)
+          // 磁盘分片在加载后被别的进程改过，且不是我们这一版 → 保留对方的，等下一轮重扫。
+          if (disk.exists && disk.sha !== base && disk.sha !== nextSha) {
+            this._warnConflict(rel)
+            continue
+          }
+          // 父目录由 writeJsonAtomic 保证
+          writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: this.files[rel], entries: (this.entries[rel] || []).map(withoutPersistedDerived) })
+          this._baseFileSha.set(rel, nextSha)
+        } else {
+          this._removedShards.add(rel)
+        }
+      }
+      this._dirtyShards.clear()
+      for (const rel of this._removedShards) {
+        const base = this._baseFileSha.get(rel) ?? null
+        const disk = this._shardDiskSha(rel)
+        if (disk.exists && disk.sha !== base) {
+          this._warnConflict(rel)
+          continue
+        }
+        try {
+          unlinkSync(shardRelPath(this.dir, rel))
+        } catch {
+          // shard file already gone; nothing to do
+        }
+        this._baseFileSha.delete(rel)
+      }
+      this._removedShards.clear()
+      if (this._dirtyInsights) {
+        // v2 → v3 是纯语义升级（`kind:'experience'` 从"影子副本"变成一等实体），形状不变；
+        // 落盘即把版本推上去，老版本读到 v3 也照样按 v2 的字段解析（它只是排除 experience 影子）。
+        if (this.insights && this.insights.version !== 3) this.insights.version = 3
+        writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights)
+        this._dirtyInsights = false
+      }
+      if (this._dirtyTasks) {
+        writeJsonAtomic(path.join(this.dir, TASKS_FILE), this.tasks)
+        this._dirtyTasks = false
+      }
+      if (this._dirtyBinding) {
+        writeJsonAtomic(path.join(this.dir, BINDING_FILE), this.binding)
+        this._dirtyBinding = false
+      }
+      if (this._dirtyWatch) {
+        writeJsonAtomic(path.join(this.dir, WATCH_FILE), this.watchlist)
+        this._dirtyWatch = false
+      }
+    } finally {
+      release()
     }
-    this._removedShards.clear()
+  }
+
+  /** 读磁盘分片的 record.sha256（不存在/损坏都返回 exists:false）。 */
+  _shardDiskSha(rel) {
+    try {
+      const doc = JSON.parse(readFileSync(shardRelPath(this.dir, rel), 'utf8'))
+      return { exists: true, sha: doc?.record?.sha256 ?? null }
+    } catch {
+      return { exists: false, sha: null }
+    }
+  }
+
+  /** 冲突只提示一次：这是“对方更新更晚”的正常并发结果，不是每轮刷屏的故障。 */
+  _warnConflict(rel) {
+    if (this._conflictWarned.has(rel)) return
+    this._conflictWarned.add(rel)
+    console.error(`[dsh-project-memory] ${rel} changed by another dsh process; this local copy was not written (it will be re-derived on the next scan).`)
+  }
+
+  /**
+   * 写盘前把另一进程已落盘的小文档合并进来。
+   *
+   * 只合并不覆盖：同 id 取 `updatedAt` 更新的一侧；本进程删掉的 id 用墓碑挡住，
+   * 避免“删了又被对方的旧副本复活”。分片不走这里（按 hash 冲突检测）。
+   */
+  _mergeAuxFromDisk() {
     if (this._dirtyInsights) {
-      // v2 → v3 是纯语义升级（`kind:'experience'` 从"影子副本"变成一等实体），形状不变；
-      // 落盘即把版本推上去，老版本读到 v3 也照样按 v2 的字段解析（它只是排除 experience 影子）。
-      if (this.insights && this.insights.version !== 3) this.insights.version = 3
-      writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights)
-      this._dirtyInsights = false
+      // 先按“上次落盘基线”记墓碑：prune/applyDecay 等原地 splice 不经过 replaceInsightItems。
+      const current = new Set(this.insights.items.map((it) => it?.id).filter(Boolean))
+      for (const id of this._baseInsightIds) if (!current.has(id)) this._deletedInsightIds.add(id)
+      for (const id of current) this._deletedInsightIds.delete(id)
+      const disk = this._loadJson(path.join(this.dir, INSIGHTS_FILE), null)
+      if (isRecord(disk) && Array.isArray(disk.items)) {
+        const byId = new Map()
+        for (const it of disk.items) if (isRecord(it) && it.id) byId.set(it.id, it)
+        for (const it of this.insights.items) {
+          if (!isRecord(it) || !it.id) continue
+          if (this._deletedInsightIds.has(it.id)) {
+            byId.delete(it.id)
+            continue
+          }
+          const prev = byId.get(it.id)
+          if (!prev || newerIso(it.updatedAt, prev.updatedAt) >= 0) byId.set(it.id, it)
+        }
+        for (const id of this._deletedInsightIds) byId.delete(id)
+        this.insights = { ...this.insights, items: [...byId.values()] }
+        this._baseInsightIds = new Set(this.insights.items.map((it) => it?.id).filter(Boolean))
+        this._auxVersion++
+      }
     }
     if (this._dirtyTasks) {
-      writeJsonAtomic(path.join(this.dir, TASKS_FILE), this.tasks)
-      this._dirtyTasks = false
+      const disk = this._loadJson(path.join(this.dir, TASKS_FILE), [])
+      if (Array.isArray(disk)) {
+        const byId = new Map()
+        for (const t of disk) if (isRecord(t) && t.id) byId.set(t.id, t)
+        for (const t of this.tasks) {
+          if (!isRecord(t) || !t.id || this._deletedTaskIds.has(t.id)) {
+            if (isRecord(t) && t.id) byId.delete(t.id)
+            continue
+          }
+          const prev = byId.get(t.id)
+          if (!prev || newerIso(t.updatedAt || t.lastActiveAt, prev.updatedAt || prev.lastActiveAt) >= 0) byId.set(t.id, t)
+        }
+        this.tasks = [...byId.values()]
+        this._auxVersion++
+      }
     }
     if (this._dirtyBinding) {
-      writeJsonAtomic(path.join(this.dir, BINDING_FILE), this.binding)
-      this._dirtyBinding = false
+      const disk = this._loadJson(path.join(this.dir, BINDING_FILE), {})
+      if (isRecord(disk)) {
+        const merged = { ...disk }
+        for (const [sid, tid] of Object.entries(this.binding)) merged[sid] = tid
+        for (const sid of this._deletedBindings) delete merged[sid]
+        this.binding = merged
+        this._auxVersion++
+      }
     }
     if (this._dirtyWatch) {
-      writeJsonAtomic(path.join(this.dir, WATCH_FILE), this.watchlist)
-      this._dirtyWatch = false
+      const disk = this._loadJson(path.join(this.dir, WATCH_FILE), [])
+      if (Array.isArray(disk)) {
+        const set = new Set([...disk, ...this.watchlist])
+        for (const root of this._removedWatch) set.delete(root)
+        this.watchlist = [...set]
+        this._auxVersion++
+      }
     }
   }
 
@@ -797,6 +939,7 @@ export class ProjectMemoryStore {
     if (!this.watchlist.includes(root)) {
       this.watchlist.push(root)
       this._dirtyWatch = true
+      this._removedWatch.delete(root)
       this._auxVersion++
       return true
     }
@@ -807,6 +950,7 @@ export class ProjectMemoryStore {
     const before = this.watchlist.length
     this.watchlist = this.watchlist.filter((r) => r !== root)
     if (this.watchlist.length !== before) {
+      this._removedWatch.add(root)
       this._dirtyWatch = true
       this._auxVersion++
     }
@@ -934,6 +1078,7 @@ export class ProjectMemoryStore {
 
   addTask(task) {
     this.tasks.push(task)
+    if (task?.id) this._deletedTaskIds.delete(task.id)
     this._dirtyTasks = true
     this._auxVersion++
   }
@@ -951,8 +1096,12 @@ export class ProjectMemoryStore {
     const idx = this.tasks.findIndex((t) => t.id === id)
     if (idx === -1) return false
     this.tasks.splice(idx, 1)
+    this._deletedTaskIds.add(id)
     for (const sid of Object.keys(this.binding)) {
-      if (this.binding[sid] === id) delete this.binding[sid]
+      if (this.binding[sid] === id) {
+        delete this.binding[sid]
+        this._deletedBindings.add(sid)
+      }
     }
     this._dirtyTasks = true
     this._dirtyBinding = true
@@ -963,6 +1112,7 @@ export class ProjectMemoryStore {
   setBinding(sessionId, taskId) {
     if (!sessionId) return
     this.binding[sessionId] = taskId
+    this._deletedBindings.delete(sessionId)
     this._dirtyBinding = true
     this._auxVersion++
   }
@@ -974,6 +1124,7 @@ export class ProjectMemoryStore {
   removeBinding(sessionId) {
     if (sessionId && sessionId in this.binding) {
       delete this.binding[sessionId]
+      this._deletedBindings.add(sessionId)
       this._dirtyBinding = true
       this._auxVersion++
     }

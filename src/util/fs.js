@@ -1,7 +1,8 @@
 import {
-  accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
+  accessSync, closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync,
   unlinkSync, writeFileSync,
 } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
@@ -34,6 +35,53 @@ export function writeJsonAtomic(file, data) {
       // tmp 已不在（rename 其实成功了）或不可删；两种都无需处理
     }
     throw err
+  }
+}
+
+/**
+ * 目录级写锁（跨进程）。写入前短暂持有，读改写之间不会交错。
+ * 锁文件是 `.write.lock`；崩溃留下的锁超过 staleMs 自动清掉。
+ * @param {string} dir 目标目录（不存在则创建）
+ * @param {{timeoutMs?: number, staleMs?: number}} [opts]
+ * @returns {null | (() => void)} 释放函数；拿不到锁返回 null
+ */
+export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000 } = {}) {
+  try {
+    mkdirSync(dir, { recursive: true })
+  } catch {
+    return null
+  }
+  const file = path.join(dir, '.write.lock')
+  const deadline = Date.now() + timeoutMs
+  const sleeper = new Int32Array(new SharedArrayBuffer(4))
+  for (;;) {
+    try {
+      const fd = openSync(file, 'wx')
+      try {
+        writeFileSync(fd, String(process.pid))
+      } finally {
+        closeSync(fd)
+      }
+      return () => {
+        try {
+          unlinkSync(file)
+        } catch {
+          // 已被 stale 清理或目录不可写：不影响写入结果
+        }
+      }
+    } catch (err) {
+      if (err?.code !== 'EEXIST') return null
+      try {
+        if (Date.now() - statSync(file).mtimeMs > staleMs) {
+          unlinkSync(file)
+          continue
+        }
+      } catch {
+        // 锁刚好被释放：下一轮重试
+      }
+      if (Date.now() >= deadline) return null
+      Atomics.wait(sleeper, 0, 0, 10)
+    }
   }
 }
 
@@ -273,6 +321,85 @@ export function walkDir(root, opts = {}) {
   skipped.sort()
   unreadable.sort()
   return { files: out, truncated, capped, skipped, unreadable }
+}
+
+/**
+ * git 工作区文件（已跟踪 + 未跟踪且未被忽略）；git 不可用/不是仓库时返回 null。
+ * `--exclude-standard` 让嵌套 `.gitignore` 也生效，构建产物与内部文档不会再进语料。
+ * @param {string} root 项目根
+ * @returns {string[]|null} 仓库相对路径（`/` 分隔）
+ */
+function gitListedFiles(root) {
+  try {
+    const out = execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    return out.split('\0').filter(Boolean)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 项目文件清单：git 仓库走 `git ls-files`（尊重 `.gitignore` 与嵌套规则），
+ * 非 git 目录回退 {@link walkDir}。返回形状与 walkDir 一致，调用方无需分支。
+ * @param {string} root 项目根
+ * @param {object} [opts] 同 walkDir，另加 `gitAware: false` 强制走 walkDir
+ * @returns {{files: string[], truncated: boolean, capped: boolean, skipped: string[], unreadable: string[]}}
+ */
+export function listProjectFiles(root, opts = {}) {
+  const listed = opts.gitAware === false ? null : gitListedFiles(root)
+  if (listed === null) return walkDir(root, opts)
+  const maxFiles = Number.isFinite(opts.maxFiles) && opts.maxFiles > 0 ? opts.maxFiles : Infinity
+  const maxDepth = Number.isFinite(opts.maxDepth) && opts.maxDepth > 0 ? opts.maxDepth : Infinity
+  const nestedName = opts.nestedStoreName || null
+  const nested = nestedName
+    ? nestedStoreRoots(root, nestedName).map((p) => relativePath(root, p))
+    : []
+  const files = []
+  const skipped = new Set()
+  let capped = false
+  for (const raw of listed) {
+    const rel = String(raw).split(path.sep).join('/')
+    if (!rel) continue
+    const segs = rel.split('/')
+    if (segs.some((s) => DEFAULT_IGNORE.has(s))) continue
+    if (segs.length > maxDepth) {
+      capped = true
+      continue
+    }
+    const under = nested.find((n) => rel === n || rel.startsWith(`${n}/`))
+    if (under) {
+      skipped.add(path.join(root, under))
+      continue
+    }
+    if (files.length >= maxFiles) {
+      capped = true
+      break
+    }
+    const abs = path.join(root, rel)
+    try {
+      if (!statSync(abs).isFile()) continue
+    } catch {
+      continue
+    }
+    files.push(abs)
+  }
+  files.sort()
+  return { files, truncated: capped, capped, skipped: [...skipped].sort(), unreadable: [] }
+}
+
+/** 单个文件是否被 git 忽略（仅 git 仓库；非 git 目录返回 false）。 */
+export function isGitIgnored(root, filePath) {
+  if (!root || !filePath || !existsSync(path.join(root, '.git'))) return false
+  try {
+    execFileSync('git', ['-C', root, 'check-ignore', '-q', '--', relativePath(root, filePath)], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function isSupportedDoc(ext) {

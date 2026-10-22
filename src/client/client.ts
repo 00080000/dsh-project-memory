@@ -89,13 +89,33 @@ function registerSlashSource(ctx: any): void {
  * @param ctx - client 根上下文
  */
 function registerTaskPanel(ctx: any): void {
-  const mount = (slots: any): void => {
+  const mount = (slots: any, effect?: (fn: () => () => void) => void): void => {
     if (!slots || typeof slots.inject !== 'function') {
       console.warn(`[${NS}] host has no slots service — task panel disabled`)
       return
     }
+    // 每个 register 都挂到 effect 上：HMR/禁用再启用时先释放旧注册，否则同 id 重复注册会抛。
+    const keep = (off: unknown): void => {
+      if (typeof off !== 'function') return
+      const dispose = () => {
+        try {
+          off()
+        } catch {
+          // 宿主已经拆掉这个槽：忽略
+        }
+      }
+      if (typeof effect === 'function') effect(() => dispose)
+    }
+    const register = (spec: object, component: any): void => {
+      try {
+        keep(slots.register(spec, component))
+      } catch (err) {
+        console.warn(`[${NS}] slot registration failed:`, err)
+      }
+    }
+
     try {
-      slots.inject('shell.overlay', () => slots.register(
+      slots.inject('shell.overlay', () => register(
         {
           name: 'shell.overlay',
           id: 'dsh-project-memory-task-panel',
@@ -109,7 +129,7 @@ function registerTaskPanel(ctx: any): void {
       // 合并后只剩一条用户命令 /tasks（子动词都记在同一个命令名下）。
       const nodeKeys = ['tasks']
       for (const key of nodeKeys) {
-        slots.inject('conversation.chat.commandview', () => slots.register(
+        slots.inject('conversation.chat.commandview', () => register(
           { name: 'conversation.chat.commandview', key },
           TaskCommandNode
         ))
@@ -118,7 +138,7 @@ function registerTaskPanel(ctx: any): void {
       // 工具调用视图：`show_task_panel` 的唯一实际效果就是开面板，而面板状态在浏览器侧；
       // 宿主进程碰不到它（宿主契约里 `ToolRunContext` 没有 `ctx`）。认领这个**工具名**后，
       // 工具结果一渲染就把面板打开 —— 见 ShowTaskPanelNode.tsx。
-      registerShowTaskPanelView(slots)
+      registerShowTaskPanelView(slots, keep)
     } catch (err) {
       console.warn(`[${NS}] task panel registration failed:`, err)
     }
@@ -126,13 +146,13 @@ function registerTaskPanel(ctx: any): void {
 
   if (typeof ctx?.inject === 'function') {
     try {
-      ctx.inject(['slots'], (scope: any) => mount(scope?.slots ?? service(ctx, 'slots')))
+      ctx.inject(['slots'], (scope: any) => mount(scope?.slots ?? service(ctx, 'slots'), scope?.effect))
       return
     } catch (err) {
       console.warn(`[${NS}] slots injection failed:`, err)
     }
   }
-  mount(service(ctx, 'slots'))
+  mount(service(ctx, 'slots'), typeof ctx?.effect === 'function' ? ctx.effect.bind(ctx) : undefined)
 }
 
 /**
