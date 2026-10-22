@@ -7,18 +7,16 @@ export function watchRepoTool(watchManager, config) {
   return defineTool({
     name: 'watch_repo',
     description:
-      'Start silent auto-refresh for a project: the plugin polls the root (configurable interval), ' +
-      'detects changed/new docs and code files via mtime+content-hash, and re-indexes only those silently. ' +
-      'No manual re-index needed after this. Call again with watch=false to stop.',
+      'Auto-refresh a project on change; watch=false stops.',
     parameters: {
       root: {
         type: 'string',
         required: true,
-        description: '要监听的项目根目录（绝对路径）。',
+        description: '项目根（绝对路径）',
       },
       watch: {
         type: 'boolean',
-        description: 'Set false to stop watching this root. Default true.',
+        description: 'false = 停止监听',
       },
     },
     output: {

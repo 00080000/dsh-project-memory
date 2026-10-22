@@ -728,6 +728,10 @@ console.log('\n== BM25 term frequency & field weighting ==')
     { id: 'head', title: 'Zephyr spec', summary: 'nothing relevant here', keywords: [], sourcePath: 'd.md' },
   ]
   check('title hit outweighs body hit', rankEntriesStreaming(fieldDocs, ['zephyr'], {}, 8)[0]?.entry.id === 'head')
+  const sigDocs = [
+    { id: 'sig1', type: 'symbol', title: 'parseThing (function)', keywords: ['parseThing', 'function'], sourcePath: 'src/a.js', text: 'parseThing(input: string): Promise<Result>' },
+  ]
+  check('symbol signature participates in search', rankEntriesStreaming(sigDocs, ['Promise Result'], {}, 5).length === 1)
 }
 
 console.log('\n== CJK query: phrase boost + synonyms ==')
@@ -759,6 +763,7 @@ const resolvedSyms = linkedStore
 check('links doc entries to mentioned symbols', resolvedSyms.some((s) => s.title.includes('PaymentService')))
 out = await queryTool.execute({ root, query: 'payments' })
 check('query shows references to linked symbols', out.includes('references:') && out.includes('PaymentService'))
+check('query output has no undefined body', !out.includes('- undefined'))
 
 console.log('\n== link hygiene ==')
 {

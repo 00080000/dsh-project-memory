@@ -131,19 +131,17 @@ export function indexRepoTool(ctx, config) {
   return defineTool({
     name: 'index_repo',
     description:
-      'Index a whole project into persistent memory. Documents (PDF/Markdown/txt) get a short cited summary plus ' +
-      'a full-chunk literal term index (no LLM at index time); ' +
-      'code files get a zero-token symbol table (function/class names with line numbers). Incremental: only changed ' +
-      'files are re-extracted (content-hash), deleted files are removed from memory. Call once per project, then query_memory.',
+      'Index a project into memory (docs + code symbols), incremental by content hash. '
+      + 'Call once per project, then query_memory.',
     parameters: {
       root: {
         type: 'string',
         required: true,
-        description: '要索引的项目根目录（绝对路径）。',
+        description: '项目根（绝对路径）',
       },
       reindex: {
         type: 'boolean',
-        description: 'Force full re-index, ignoring content-hash skips. Default false.',
+        description: '忽略哈希，强制重抽',
       },
     },
     output: {
@@ -155,8 +153,9 @@ export function indexRepoTool(ctx, config) {
       // 透传原始入参：Windows 风格路径在 POSIX 上会被 resolve 成 <cwd>/D:\...，
       // 报错时要点明这是路径风格问题，而不是“目录被删了”。
       assertIndexRoot(root, args.root)
-      assertSafeRoot(root, { requested: args.root, allowUnsafe: config?.allowUnsafeRoots === true })
-      return indexRepository(ctx, config, root, { reindex: Boolean(args.reindex) })
+      const allowUnsafe = config?.allowUnsafeRoots === true
+      assertSafeRoot(root, { requested: args.root, allowUnsafe })
+      return indexRepository(ctx, config, root, { reindex: Boolean(args.reindex), allowUnsafe })
     },
   })
 }

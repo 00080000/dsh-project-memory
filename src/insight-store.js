@@ -30,7 +30,7 @@ export const SECRET_PATTERNS = [
 ]
 
 /** 检测疑似密钥/token/私钥形态内容；命中返回第一个命中字段名，否则 null。 */
-export function containsSecretFields(ins, fields = ['title', 'body', 'pattern', 'fix', 'problem', 'solution', 'choice', 'reason']) {
+export function containsSecretFields(ins, fields = ['title', 'body', 'pattern', 'fix', 'problem', 'solution', 'choice', 'reason', 'steps']) {
   for (const f of fields) {
     const v = ins && ins[f]
     if (!v) continue
@@ -484,6 +484,9 @@ export function pruneItems(items, max, nowIso) {
 
 // ---- Global 存储（~/.config/dsh-project-memory/global.json） ----
 
+/** 进程内按文件路径复用；整份文档读改写，两个实例会互相覆盖。 */
+const globalStoreCache = new Map()
+
 function readJson(file, fallback) {
   let raw
   try {
@@ -518,14 +521,23 @@ export class GlobalStore {
   constructor(file) {
     this.file = file
     this.doc = null
+    this._dirty = false
   }
 
   load() {
-    if (!this.doc) {
-      this.doc = normalizeDoc(readJson(this.file, null))
-      // 与 project 级一致：global 条目也要补派生 trigger（提示通道用它提升召回；确定性、幂等）。
-      if (backfillDerivedTriggers(this.doc)) this.markDirty()
+    // 整份文档读改写：同一路径必须共用实例，否则两个工具/会话交错时后写覆盖先写。
+    // 与 ProjectMemoryStore 的 storeCache 同语义；这里只按路径缓存（global 文件只有一个）。
+    const key = path.resolve(this.file)
+    const hot = globalStoreCache.get(key)
+    if (hot) {
+      this.doc = hot.doc
+      this._dirty = hot._dirty
+      return hot
     }
+    this.doc = normalizeDoc(readJson(this.file, null))
+    // 与 project 级一致：global 条目也要补派生 trigger（提示通道用它提升召回；确定性、幂等）。
+    if (backfillDerivedTriggers(this.doc)) this.markDirty()
+    globalStoreCache.set(key, this)
     return this
   }
 

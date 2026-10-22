@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { assertIndexRoot, memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
+import { assertIndexRoot, memoryRootFor, normalizeCitationFiles, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { cfgInsight, saveInsight, GlobalStore, defaultGlobalFile } from '../insight-store.js'
 import { ensureGlobalInit } from '../global-seed.js'
@@ -10,28 +10,26 @@ export function rememberTool(config) {
   return defineTool({
     name: 'remember',
     description:
-      'Save an experience note (problem -> solution) into project memory, e.g. a bug you just fixed. ' +
-      'It lands as a `kind:experience` entry in the same store as lessons / decisions / procedures, so query_memory ' +
-      'finds it and the same dedup applies (near-identical writes merge, similar ones report the nearest id). ' +
-      'Prefer save_lesson for anything that is not a problem->solution note.',
+      'Save a problem→solution note as kind:experience; same dedup as save_lesson. '
+      + 'Prefer save_lesson for anything that is not a problem→solution note.',
     parameters: {
       problem: {
         type: 'string',
         required: true,
-        description: 'The problem/situation, e.g. "pdfjs OPS import fails on Node 24".',
+        description: '问题/现象',
       },
       solution: {
         type: 'string',
         required: true,
-        description: 'The concrete fix or decision, e.g. "import OPS from pdfjs-dist/legacy/build/pdf.mjs".',
+        description: '具体解法',
       },
       root: {
         type: 'string',
-        description: '项目根目录，默认当前工作目录。',
+        description: '项目根（默认当前工作目录）',
       },
       source_file: {
         type: 'string',
-        description: 'Optional file the problem is about, for traceability.',
+        description: '关联文件（项目相对）',
       },
     },
     output: {
@@ -45,6 +43,8 @@ export function rememberTool(config) {
       const memoryDir = memoryRootFor(root, config.memoryDir)
       const store = new ProjectMemoryStore(memoryDir).load()
       const cfg = cfgInsight(config)
+      // 与 save_lesson 同一条约束：files 只收项目内相对路径，项目外/逃出根的丢弃并回报。
+      const citation = normalizeCitationFiles(args.source_file ? [args.source_file] : [], root)
       ensureGlobalInit(config) // 幂等：project 写入可能被自动提升到 global
       const globalStore = new GlobalStore(cfg.globalFile || defaultGlobalFile()).load()
       // 与 save_lesson 同一条写入路径 ⇒ 同一套去重/自动覆盖/近邻提示；没装 leanvec 时 `cosine` 为 null，
@@ -55,7 +55,7 @@ export function rememberTool(config) {
         kind: 'experience',
         problem: args.problem,
         solution: args.solution,
-        files: args.source_file ? [args.source_file] : undefined,
+        files: citation.files.length ? citation.files : undefined,
         confidence: 1,
       }
       let result
@@ -66,7 +66,10 @@ export function rememberTool(config) {
       globalStore.commit()
       if (!result || !result.ok) return `Failed: ${result?.error || '写入未完成'}`
       const verb = result.action === 'created' ? 'Saved' : 'Updated existing'
-      return `${verb} experience note (${result.id}).${result.hint ? ` ${result.hint}` : ''}`
+      const dropped = citation.dropped.length
+        ? `\n（${citation.dropped.length} 个 source_file 不是项目内路径，已丢弃）`
+        : ''
+      return `${verb} experience note (${result.id}).${result.hint ? ` ${result.hint}` : ''}${dropped}`
     },
   })
 }

@@ -2,8 +2,8 @@
  * dsh-project-memory — 微基准测试（micro-benchmark）
  *
  * 直接驱动内核热路径（不经过 defineTool / HTTP / LLM）：
- *   - store.js       : load / commit / addExperience(findSupersede) / removeExperience
- *   - util/search.js : buildBm25 / rankEntriesStreaming / rankExperienceScored
+ *   - store.js       : load / commit / removeFile
+ *   - util/search.js : buildBm25 / rankEntriesStreaming
  *   - symbols.js     : scanSymbols（零 token 符号抽取，无 LLM）
  *   - link.js        : resolveLinkedSymbols（doc↔symbol 交叉链接，读取期解算）
  *   - insight-store.js: GlobalStore read/write + saveInsight（归一化去重）
@@ -23,8 +23,8 @@ import { performance } from 'node:perf_hooks'
 import { ProjectMemoryStore } from '../src/store.js'
 import { walkDir, readFileForIndex, relativePath, storeKey, isSupportedCode } from '../src/util/fs.js'
 import { scanSymbols } from '../src/symbols.js'
-import { rankEntriesStreaming, rankExperienceScored, makeSearchText } from '../src/util/search.js'
-import { GlobalStore, saveInsight, normalizeInsight } from '../src/insight-store.js'
+import { rankEntriesStreaming, makeSearchText } from '../src/util/search.js'
+import { GlobalStore, saveInsight, normalizeInsight, cfgInsight } from '../src/insight-store.js'
 import { normalizedTokenOverlap } from '../src/similarity.js'
 
 const FILES = Number(process.argv[2] || 5000)
@@ -329,26 +329,37 @@ async function main() {
     console.log(`       -> 候选池 1000，最高 overlap ≈ ${Math.round(bestSeen * 100)}%`)
   }
 
-  // ---------- 8. remember（addExperience + findSupersede）----------
-  console.log('\n--- 9. remember / addExperience（problem→solution，双向 0.7 去重）---')
+  // ---------- 8. remember（saveInsight，kind:experience）----------
+  console.log('\n--- 8. remember / saveInsight（problem→solution，去重合并）---')
   {
     const root = tmpd('pm-exp-')
     const store = new ProjectMemoryStore(path.join(root, config.memoryDir)).load()
-    // 用互异的 problem（含随机 token）让经验池真实增长，避免互相 supersede 合并成一条
+    const expCfg = { ...cfgInsight({}), maxProject: 2000 }
+    // 用互异的 problem（含随机 token）让经验池真实增长，避免互相合并成一条
     const times = []
     const total = []
     for (let i = 0; i < 1000; i++) {
-      // 每个 problem 含两个高熵 token，使公共词只占 <0.7，池真实增长而非互相 supersede
       const uniq = Math.floor(Math.random() * 1e9).toString(36)
       const rand = Math.random().toString(36).slice(2, 10)
       const t0 = performance.now()
-      store.addExperience({ problem: `payment gateway timeout ${uniq} ${rand}`, solution: `add exponential backoff ${uniq}` })
+      store.commit((s) => saveInsight({
+        store: s,
+        raw: {
+          kind: 'experience',
+          title: `payment gateway timeout ${uniq} ${rand}`,
+          problem: `payment gateway timeout ${uniq} ${rand}`,
+          solution: `add exponential backoff ${uniq}`,
+        },
+        scope: 'project',
+        cfg: expCfg,
+      }))
       const dt = performance.now() - t0
       times.push(dt)
       total.push(dt)
     }
-    show('addExperience 单条 (含去重扫描,池增长)', stats('exp', times))
-    console.log(`       -> 池增长到 ${store.experience.length} 条；1000 次累计 ${total.reduce((s, t) => s + t, 0).toFixed(1)} ms`)
+    const experience = store.insightItems().filter((it) => it.kind === 'experience').length
+    show('saveInsight(experience) 单条 (含去重扫描,池增长)', stats('exp', times))
+    console.log(`       -> 池增长到 ${experience} 条；1000 次累计 ${total.reduce((s, t) => s + t, 0).toFixed(1)} ms`)
   }
 
   // 清理
