@@ -934,11 +934,11 @@ function saveTaskInsight(store, globalStore, task, raw, cfg, now, source, cosine
   // 自动提升。否则一条 LLM 生成的 draft 可以覆盖作者手写的 project 级知识，草稿审核也就
   // 失去意义。确认走显式编辑（applyUpdate 会清 draft）或面板的 confirm。
   const draftOnly = raw.draft === true || source === 'reflect'
+  const base = { ...raw, source, sourceTaskIds: [task.id] }
+  const text = insightMatchText(base)
   if (!draftOnly) {
     // 1) 已有 project 级知识 → 挂成员/命中，不再在 task 层重复存
     const pjItems = store.insightItems()
-    const base = { ...raw, source, sourceTaskIds: [task.id] }
-    const text = insightMatchText(base)
     const pjNear = vectorNear(vectorText(base), pjItems, cosine)
     const pjTarget = autoMergeTarget(pjNear, cfg)
     if (pjTarget) {
@@ -1006,6 +1006,16 @@ function saveTaskInsight(store, globalStore, task, raw, cfg, now, source, cosine
           hint: `跨任务去重：并入任务 ${holderId} 既有条目（现 ${size} 个任务命中）${replaced.length ? `，覆盖字段 ${replaced.join('/')}` : ''}${promoted ? `；自动提升 project ${promoted} 条` : ''}`,
         }
       }
+    }
+  }
+  if (draftOnly) {
+    // 同一任务的重复反思只保留一份草稿；跨任务不合并（各任务的审核上下文独立）。
+    const existingDrafts = (task.insights || []).filter((it) => it && it.draft === true)
+    const hit = findBestOverlapMatch(text, existingDrafts)
+    if (hit && hit.score >= cfg.dedupOverlap) {
+      const { replaced } = mergeInto(hit.item, base, cfg, now)
+      store.markTasksDirty()
+      return { ok: true, action: 'merged', id: hit.item.id, taskId: task.id, replaced, hint: '已合并到本任务既有草稿' }
     }
   }
   // 4) 新建于当前任务
