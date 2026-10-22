@@ -379,6 +379,75 @@ window.__ModuleLoader__.load({
 			} catch {}
 		}
 		//#endregion
+		//#region src/client/commands.ts
+		/**
+		* 客户端命令调用层：所有 `remote.commands.execute` 只走这里。
+		*
+		* 三件事必须集中在一处，否则每个调用点都会各漏一项：
+		*  - 超时/取消（宿主 RPC 不返回时不能把面板永久锁死）；
+		*  - 信封解析（宿主 `{ok:false,error}` 与 `{ok:true,value}` 是两种形状）；
+		*  - 错误归一（调用点只关心 ok/text/error，不重复猜）。
+		*/
+		function errorText(value) {
+			if (typeof value === "string") return value;
+			if (value && typeof value === "object") {
+				const record = value;
+				if (typeof record.message === "string" && record.message) return record.message;
+				if (typeof record.code === "string" && record.code) return record.code;
+			}
+			return "";
+		}
+		/**
+		* 执行一条 `/tasks` 命令。
+		* @param ctx client 上下文（服务一律软探测）
+		* @param sessionId 当前会话；为空表示没有可用数据通道
+		* @param line 完整命令行（以 `/tasks` 开头）
+		* @param timeoutMs 超时；到点 abort，调用方拿到可重试的错误态
+		*/
+		async function invokeCommand(ctx, sessionId, line, timeoutMs = 15e3) {
+			const commands = service(ctx, "remote.commands");
+			if (!sessionId || !commands || typeof commands.execute !== "function") return {
+				ok: false,
+				text: "",
+				error: "no-channel"
+			};
+			const controller = typeof AbortController === "function" ? new AbortController() : null;
+			const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+			try {
+				const response = await commands.execute(sessionId, line, [], controller?.signal);
+				const envelope = response && typeof response === "object" ? response : null;
+				if (envelope && envelope.ok === false) return {
+					ok: false,
+					text: "",
+					error: errorText(envelope.error) || "command rejected"
+				};
+				const execution = envelope && "value" in envelope ? envelope.value : envelope;
+				if (execution === void 0 || execution === null) return {
+					ok: false,
+					text: "",
+					error: "unknown or malformed command"
+				};
+				const result = execution.result ?? execution;
+				if (result?.kind === "error") return {
+					ok: false,
+					text: "",
+					error: String(result.text ?? "command error")
+				};
+				return {
+					ok: true,
+					text: typeof result?.text === "string" ? result.text : ""
+				};
+			} catch (err) {
+				return {
+					ok: false,
+					text: "",
+					error: controller?.signal.aborted === true ? "command timed out" : String(err?.message ?? err)
+				};
+			} finally {
+				if (timer !== null) clearTimeout(timer);
+			}
+		}
+		//#endregion
 		//#region src/client/task-scope.js
 		/**
 		* 跨标签页任务广播的**项目作用域**判定（纯函数，无 React / 无 BroadcastChannel 依赖）。
@@ -558,6 +627,18 @@ window.__ModuleLoader__.load({
 				y: 0
 			};
 		}
+		/** 位置必须留在视口内：换小屏/拔掉外接屏后，持久化的坐标可能已经看不见。 */
+		function clampPosition(value) {
+			if (typeof window === "undefined") return defaultPosition();
+			const pos = value;
+			const x = Number(pos?.x);
+			const y = Number(pos?.y);
+			if (!Number.isFinite(x) || !Number.isFinite(y)) return defaultPosition();
+			return {
+				x: Math.max(8, Math.min(x, window.innerWidth - 80)),
+				y: Math.max(8, Math.min(y, window.innerHeight - 40))
+			};
+		}
 		/**
 		* 启动时的初始状态：
 		* - closed 恒为 true（不读取 localStorage 的 closed），刷新后面板隐藏；
@@ -570,7 +651,7 @@ window.__ModuleLoader__.load({
 					const parsed = JSON.parse(saved);
 					return {
 						expandedTaskIds: Array.isArray(parsed.expandedTaskIds) ? parsed.expandedTaskIds : [],
-						panelPosition: parsed.panelPosition ?? defaultPosition(),
+						panelPosition: clampPosition(parsed.panelPosition),
 						minimized: parsed.minimized !== false,
 						closed: true,
 						theme: typeof parsed.theme === "string" ? parsed.theme : "native",
@@ -630,7 +711,7 @@ window.__ModuleLoader__.load({
 				setPanelPosition(pos) {
 					setUIState({
 						...uiState,
-						panelPosition: pos
+						panelPosition: clampPosition(pos)
 					});
 				},
 				open() {
@@ -875,12 +956,17 @@ window.__ModuleLoader__.load({
 		//#region \0dsh-css:src/client/TaskPanel.module.css.mjs
 		const css$1 = ".vZSZnG_panel{pointer-events:auto;background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));border:1px solid var(--dsw-alias-border-l2,#7f7f7f4d);border-radius:14px;flex-direction:column;width:380px;max-width:calc(100vw - 24px);max-height:min(70vh,640px);font-family:inherit;animation:.18s ease-out vZSZnG_panelIn;display:flex;position:fixed;overflow:hidden;box-shadow:0 12px 32px #00000029,0 2px 8px #00000014}@keyframes vZSZnG_panelIn{0%{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}.vZSZnG_dragHandle{cursor:grab;z-index:1;justify-content:center;align-items:center;height:12px;display:flex;position:absolute;top:0;left:0;right:0}.vZSZnG_dragHandle:active{cursor:grabbing}.vZSZnG_handleGrip{background:var(--dsw-alias-separator-primary,#7f7f7f59);opacity:.8;border-radius:2px;width:32px;height:3px}.vZSZnG_header{border-bottom:1px solid var(--dsw-alias-border-l1,#7f7f7f2e);-webkit-user-select:none;user-select:none;justify-content:space-between;align-items:center;gap:8px;padding:10px 10px 8px 14px;display:flex}.vZSZnG_headerLeft{align-items:center;gap:6px;min-width:0;display:flex}.vZSZnG_headerIcon{color:var(--dsw-alias-label-secondary);flex:none}.vZSZnG_headerTitle{color:var(--dsw-alias-label-primary);white-space:nowrap;margin:0;font-size:13px;font-weight:600;line-height:20px}.vZSZnG_headerRight{align-items:center;gap:2px;margin-left:auto;display:flex}.vZSZnG_hintsOff{opacity:.45}.vZSZnG_hintsOff:hover{opacity:.75}.vZSZnG_counts{color:var(--dsw-alias-label-tertiary);white-space:nowrap;margin-right:4px;font-size:11px;line-height:16px}.vZSZnG_boundBadge{color:var(--dsw-alias-label-primary-foreground,#fff);background:var(--dsw-alias-button-primary-fill,#3a6ef5);white-space:nowrap;border-radius:7px;flex:none;padding:0 6px;font-size:10px;line-height:14px}.vZSZnG_notice{color:var(--dsw-alias-state-warn-label,#b7791f);background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1a);word-break:break-all;border-radius:8px;margin:8px 12px 0;padding:6px 10px;font-size:12px;line-height:18px}.vZSZnG_taskList{scrollbar-width:thin;scrollbar-color:var(--dsw-alias-scrollbar-bg-l2,transparent) transparent;flex-direction:column;gap:6px;padding:8px;display:flex;overflow-y:auto}.vZSZnG_emptyState{text-align:center;color:var(--dsw-alias-label-secondary);padding:36px 24px 30px}.vZSZnG_emptyTitle{color:var(--dsw-alias-label-primary);margin:0 0 6px;font-size:13px;font-weight:600}.vZSZnG_emptyDesc{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:20px}.vZSZnG_syncHint{color:var(--dsw-alias-label-dimmed);justify-content:center;align-items:center;gap:6px;margin:10px 0 0;font-size:11px;display:flex}.vZSZnG_card{border:1px solid var(--dsw-alias-border-l1,#7f7f7f29);background:var(--dsw-alias-bg-base,transparent);content-visibility:auto;contain-intrinsic-size:auto 140px;border-radius:10px;transition:border-color .15s;overflow:hidden}.vZSZnG_cardBound{border-color:var(--dsw-alias-border-l3,#7f7f7f59);box-shadow:inset 0 0 0 .5px var(--dsw-alias-border-l3,transparent)}.vZSZnG_cardHead{cursor:pointer;text-align:left;background:0 0;border:none;justify-content:space-between;align-items:center;gap:8px;width:100%;padding:8px 10px 7px;display:flex}.vZSZnG_cardHead:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_cardTitleRow{align-items:center;gap:6px;min-width:0;display:flex}.vZSZnG_cardTitle{color:var(--dsw-alias-label-primary);white-space:nowrap;text-overflow:ellipsis;font-size:13px;font-weight:500;line-height:20px;overflow:hidden}.vZSZnG_cardMeta{color:var(--dsw-alias-label-tertiary);flex:none;align-items:center;gap:8px;display:flex}.vZSZnG_progressText{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}.vZSZnG_updated{color:var(--dsw-alias-label-dimmed);font-size:10px;line-height:14px}.vZSZnG_chevron{color:var(--dsw-alias-label-tertiary);display:inline-flex}.vZSZnG_track{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f);border-radius:1px;height:2px;margin:0 10px 6px;overflow:hidden}.vZSZnG_trackFill{background:var(--dsw-alias-label-primary-bluish,var(--dsw-alias-button-primary-fill,#3a6ef5));border-radius:1px;height:100%;transition:width .2s}.vZSZnG_cardBody{border-top:1px solid var(--dsw-alias-border-l1,#7f7f7f24);overscroll-behavior:contain;max-height:300px;padding:8px 10px 10px;overflow-y:auto}.vZSZnG_section{margin-bottom:8px}.vZSZnG_section:last-child{margin-bottom:0}.vZSZnG_sectionLabel{color:var(--dsw-alias-label-secondary);align-items:center;gap:6px;margin-bottom:4px;font-size:11px;line-height:16px;display:flex}.vZSZnG_sectionCount{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1a);color:var(--dsw-alias-label-tertiary);border-radius:6px;padding:0 5px;font-size:10px;line-height:14px}.vZSZnG_stepsList{flex-direction:column;gap:1px;margin:0;padding:0;list-style:none;display:flex}.vZSZnG_stepRow{align-items:flex-start;gap:7px;padding:3px 2px;display:flex}.vZSZnG_stepRow>svg{flex:none;margin-top:2px}.vZSZnG_stepDone{color:var(--dsw-alias-label-dimmed)}.vZSZnG_stepRun{color:var(--dsw-alias-label-primary-bluish,#3a6ef5)}.vZSZnG_stepPending{background:var(--dsw-alias-border-l3,#7f7f7f80);border-radius:50%;flex:none;width:8px;height:8px;margin:5px 3px}.vZSZnG_stepContent{color:var(--dsw-alias-label-secondary);word-break:break-word;white-space:pre-wrap;font-size:12px;line-height:20px}.vZSZnG_stepContentDone{color:var(--dsw-alias-label-dimmed);text-decoration:line-through}.vZSZnG_stepContentRun{color:var(--dsw-alias-label-primary)}.vZSZnG_muted{color:var(--dsw-alias-label-dimmed);font-size:11px;line-height:18px}.vZSZnG_filesList{flex-direction:column;margin:0;padding:0;list-style:none;display:flex}.vZSZnG_fileRow{cursor:pointer;text-align:left;background:0 0;border:none;border-radius:6px;align-items:center;gap:6px;width:100%;padding:3px 4px;display:flex}.vZSZnG_fileRow:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_fileDot{background:var(--dsw-alias-border-l3,#7f7f7f80);border-radius:50%;flex:none;width:5px;height:5px}.vZSZnG_filePath{color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;text-align:left;direction:rtl;font-family:ui-monospace,SF Mono,Menlo,Consolas,monospace;font-size:11px;line-height:18px;overflow:hidden}.vZSZnG_fileLine{color:var(--dsw-alias-label-dimmed);flex:none;font-size:10px;line-height:18px}.vZSZnG_cardFooter{gap:6px;margin-top:8px;display:flex}@media (prefers-reduced-motion:reduce){.vZSZnG_panel{animation:none}.vZSZnG_trackFill,.vZSZnG_card{transition:none}}.vZSZnG_miniBar{border:1px solid var(--dsw-alias-border-l3,#7f7f7f4d);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));max-width:min(46vw,340px);height:34px;color:var(--dsw-alias-label-primary);cursor:grab;-webkit-user-select:none;user-select:none;pointer-events:auto;border-radius:999px;align-items:center;gap:7px;padding:0 12px;font-size:12px;line-height:18px;transition:background .15s,border-color .15s;display:inline-flex;position:fixed;box-shadow:0 6px 20px #00000024,0 1px 4px #00000014}.vZSZnG_miniBar:active{cursor:grabbing}.vZSZnG_miniBar:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_miniIcon{color:var(--dsw-alias-label-secondary);flex:none}.vZSZnG_miniText{white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.vZSZnG_miniChevron{color:var(--dsw-alias-label-tertiary);flex:none}.vZSZnG_taskList{flex:auto;min-height:0}.vZSZnG_card{flex-direction:column;display:flex}.vZSZnG_boundaryFallback{border:1px solid var(--dsw-alias-border-l3,#7f7f7f4d);background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-secondary);cursor:pointer;pointer-events:auto;border-radius:999px;padding:4px 10px;font-size:12px;line-height:18px;position:fixed;top:64px;right:16px}.vZSZnG_stepToggle{cursor:pointer;background:0 0;border:none;border-radius:4px;flex:none;align-items:center;margin-top:2px;padding:0;display:inline-flex}.vZSZnG_stepToggle:hover{background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f)}.vZSZnG_stepToggle:disabled{cursor:default;opacity:.5}.vZSZnG_stepEditable{cursor:text;border-radius:3px}.vZSZnG_stepEditable:hover{outline:1px dashed var(--dsw-alias-border-l3,#7f7f7f66);outline-offset:1px}.vZSZnG_stepInput{box-sizing:border-box;width:auto;min-width:0;font:inherit;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base,transparent);border:1px solid var(--dsw-alias-border-l3,#7f7f7f73);border-radius:5px;flex:auto;padding:0 5px;font-size:12px;line-height:20px}.vZSZnG_editorArea{box-sizing:border-box;min-width:0;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base,transparent);border:1px solid var(--dsw-alias-border-l3,#7f7f7f73);resize:none;vertical-align:middle;cursor:text;white-space:pre-wrap;word-break:break-word;border-radius:5px;flex:1;margin:0;padding:2px 5px;font-family:inherit;font-size:12px;line-height:20px;overflow:hidden}.vZSZnG_editorArea:focus{border-color:var(--dsw-alias-border-l3,#7f7f7f99);outline:none}.vZSZnG_stepDragging{opacity:.3;background:var(--dsw-alias-interactive-bg-hover,#7f7f7f14)}.vZSZnG_cardTitleEditable{cursor:text;border-radius:3px}.vZSZnG_cardTitleEditable:hover{outline:1px dashed var(--dsw-alias-border-l3,#7f7f7f66);outline-offset:1px}.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:color-mix(in srgb, var(--dsw-alias-bg-layer-2,#fff) 90%, transparent);-webkit-backdrop-filter:blur(18px)saturate(1.2);border:1px solid color-mix(in srgb, var(--dsw-alias-border-l2,#7f7f7f4d) 80%, transparent)}.vZSZnG_panel[data-theme=glass] .vZSZnG_card{background:color-mix(in srgb, var(--dsw-alias-bg-base,transparent) 84%, transparent);border-color:color-mix(in srgb, var(--dsw-alias-border-l1,#7f7f7f29) 60%, transparent)}.vZSZnG_panel[data-theme=glass] .vZSZnG_cardBody{border-top-color:color-mix(in srgb, var(--dsw-alias-border-l1,#7f7f7f24) 60%, transparent)}@media (prefers-reduced-transparency:reduce){.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:var(--dsw-alias-bg-layer-2,#fff);-webkit-backdrop-filter:none;backdrop-filter:none}.vZSZnG_panel[data-theme=glass] .vZSZnG_card{background:var(--dsw-alias-bg-base,transparent)}}@supports not ((-webkit-backdrop-filter:blur(1px)) or (backdrop-filter:blur(1px))){.vZSZnG_panel[data-theme=glass],.vZSZnG_miniBar[data-theme=glass]{background:var(--dsw-alias-bg-layer-2,#fff)}}.vZSZnG_panel[data-theme=brutal]{box-shadow:none;border-width:1px;border-radius:6px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_card{border:1px solid var(--dsw-alias-border-l3,#7f7f7f6b);background:var(--dsw-alias-bg-base,transparent);box-shadow:none;border-radius:3px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardHead{padding:7px 10px 6px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardTitle{letter-spacing:.01em;font-weight:650}.vZSZnG_panel[data-theme=brutal] .vZSZnG_headerTitle{letter-spacing:.03em}.vZSZnG_panel[data-theme=brutal] .vZSZnG_boundBadge{border-radius:2px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_track{border-radius:0;height:3px}.vZSZnG_panel[data-theme=brutal] .vZSZnG_trackFill{border-radius:0}.vZSZnG_panel[data-theme=brutal] .vZSZnG_cardBody{border-top:1px solid var(--dsw-alias-border-l2,#7f7f7f3d)}.vZSZnG_panel[data-theme=mono] .vZSZnG_headerTitle,.vZSZnG_panel[data-theme=mono] .vZSZnG_counts,.vZSZnG_panel[data-theme=mono] .vZSZnG_cardTitle,.vZSZnG_panel[data-theme=mono] .vZSZnG_progressText,.vZSZnG_panel[data-theme=mono] .vZSZnG_stepContent,.vZSZnG_panel[data-theme=mono] .vZSZnG_filePath{font-family:ui-monospace,SF Mono,Menlo,Consolas,Liberation Mono,monospace}.vZSZnG_panel[data-theme=mono] .vZSZnG_cardTitle{font-size:12px}.vZSZnG_panel[data-theme=mono] .vZSZnG_stepContent{font-size:11.5px}.vZSZnG_panel[data-theme=mono] .vZSZnG_card{border-radius:5px}.vZSZnG_panel[data-theme=mono] .vZSZnG_trackFill{border-radius:0}.vZSZnG_panel[data-theme=mono] .vZSZnG_stepPending{border-radius:1px}.vZSZnG_panel[data-theme=mono] .vZSZnG_updated{letter-spacing:.02em}.vZSZnG_headerIconBtn{color:inherit;cursor:pointer;background:0 0;border:none;border-radius:0;flex:none;justify-content:center;align-items:center;margin:0;padding:0;display:inline-flex}.vZSZnG_headerIcon{color:var(--dsw-alias-label-secondary);flex:none;display:block}.vZSZnG_headerLeft{min-width:0}.vZSZnG_headerTitle{text-overflow:ellipsis;flex:0 auto;min-width:0;overflow:hidden}.vZSZnG_headerRight{min-width:0}.vZSZnG_counts{text-overflow:ellipsis;flex:none;max-width:45%;margin-left:auto;overflow:hidden}.vZSZnG_dragGhost{pointer-events:none;z-index:9999;transition:left 50ms,top 50ms;position:fixed;transform:translate(-50%,-50%)}.vZSZnG_dragGhostCard{background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));border:1px solid var(--dsw-alias-border-l3,#7f7f7f59);color:var(--dsw-alias-label-primary);white-space:nowrap;border-radius:8px;align-items:center;gap:8px;max-width:280px;padding:8px 12px;font-size:12px;line-height:20px;display:inline-flex;transform:scale(.9);box-shadow:0 8px 24px #0000002e,0 2px 8px #0000001a}.vZSZnG_dragGhostContent{text-overflow:ellipsis;word-break:break-word;flex:1;min-width:0;overflow:hidden}.vZSZnG_dragGhostClose{width:20px;height:20px;color:var(--dsw-alias-label-tertiary);cursor:pointer;opacity:.6;background:0 0;border:none;border-radius:4px;flex:none;justify-content:center;align-items:center;margin-left:8px;font-size:16px;line-height:1;transition:opacity .15s,background .15s,color .15s;display:inline-flex}.vZSZnG_dragGhostClose:hover{opacity:1;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover,#7f7f7f1f)}.vZSZnG_dropTargetBefore{position:relative}.vZSZnG_dropTargetBefore:before{content:\"\";background:var(--dsw-alias-button-primary-fill,#3a6ef5);height:2px;box-shadow:0 0 4px var(--dsw-alias-button-primary-fill,#3a6ef5);border-radius:1px;animation:.8s ease-in-out infinite vZSZnG_dropPulse;position:absolute;top:-1px;left:0;right:0}.vZSZnG_dropTargetAfter{position:relative}.vZSZnG_dropTargetAfter:after{content:\"\";background:var(--dsw-alias-button-primary-fill,#3a6ef5);height:2px;box-shadow:0 0 4px var(--dsw-alias-button-primary-fill,#3a6ef5);border-radius:1px;animation:.8s ease-in-out infinite vZSZnG_dropPulse;position:absolute;bottom:-1px;left:0;right:0}@keyframes vZSZnG_dropPulse{0%,to{opacity:.6}50%{opacity:1}}.vZSZnG_memoryPane{flex-direction:column;gap:6px;max-height:480px;padding:8px 10px 10px;display:flex;overflow:auto}.vZSZnG_memToolbar{justify-content:space-between;align-items:center;gap:8px;display:flex}.vZSZnG_memCount{opacity:.75;font-size:12px;font-weight:600}.vZSZnG_memList{flex-direction:column;gap:6px;display:flex}.vZSZnG_memSentinel{flex:none;height:1px}.vZSZnG_memFooter{flex-direction:column;align-items:center;gap:4px;padding:6px 0 2px;font-size:12px;display:flex}.vZSZnG_memRow{border:1px solid var(--dsw-border-weak,#80808040);background:color-mix(in srgb, var(--dsw-bg-secondary,#f5f5f5) 45%, transparent);content-visibility:auto;contain-intrinsic-size:auto 76px;border-radius:6px;flex-direction:column;gap:4px;padding:6px 8px;display:flex}.vZSZnG_memRowArchived{opacity:.55}.vZSZnG_memRowMain{flex-direction:column;gap:2px;display:flex}.vZSZnG_memTitle{word-break:break-word;align-items:flex-start;gap:6px;font-size:13px;line-height:1.35;display:flex}.vZSZnG_kindBadge{background:var(--dsw-accent-soft,#5078ff26);color:var(--dsw-accent,#4d6bfe);border-radius:4px;flex:none;padding:0 5px;font-size:11px;line-height:1.5}.vZSZnG_memMeta{flex-wrap:wrap;align-items:center;gap:4px;display:flex}.vZSZnG_badge{background:color-mix(in srgb, var(--dsw-fg,#222) 8%, transparent);border-radius:4px;padding:0 5px;font-size:11px;line-height:1.5}.vZSZnG_badgeDraft{color:#b26a00;background:#ffb40029}.vZSZnG_badgeArchived{opacity:.8}.vZSZnG_memBody{opacity:.8;word-break:break-word;font-size:12px}.vZSZnG_memActs{flex-wrap:wrap;gap:4px;display:flex}.vZSZnG_memToolbarActs{align-items:center;gap:6px;display:flex}.vZSZnG_memNew{border:1px solid var(--dsw-border-weak,#80808040);border-radius:6px;flex-direction:column;gap:6px;padding:8px;display:flex}.vZSZnG_memNewRow{align-items:center;gap:8px;display:flex}.vZSZnG_memLabel{opacity:.8;align-items:center;gap:6px;font-size:12px;display:inline-flex}.vZSZnG_memNew select,.vZSZnG_memNew textarea{box-sizing:border-box;width:100%}";
 		const tagId$1 = "@yolk_vat-y/dsh-project-memory/TaskPanel.module.css";
-		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$1) + "]") === null) {
-			const tag = document.createElement("style");
-			tag.dataset.plugin = "@yolk_vat-y/dsh-project-memory";
-			tag.dataset.pluginCss = tagId$1;
-			tag.textContent = css$1;
-			document.head.appendChild(tag);
+		if (typeof document !== "undefined") {
+			const selector = "style[data-plugin-css=" + JSON.stringify(tagId$1) + "]";
+			const existing = document.querySelector(selector);
+			if (existing) existing.textContent = css$1;
+			else {
+				const tag = document.createElement("style");
+				tag.dataset.plugin = "@yolk_vat-y/dsh-project-memory";
+				tag.dataset.pluginCss = tagId$1;
+				tag.textContent = css$1;
+				document.head.appendChild(tag);
+			}
 		}
 		var TaskPanel_module_css_default = {
 			"badge": "vZSZnG_badge",
@@ -1093,7 +1179,14 @@ window.__ModuleLoader__.load({
 				},
 				"data-theme": theme === "native" ? void 0 : theme,
 				onMouseDown,
+				onKeyDown: (e) => {
+					if (e.key === "Enter" || e.key === " ") {
+						e.preventDefault();
+						open();
+					}
+				},
 				role: "button",
+				tabIndex: 0,
 				title: showHints ? hint : void 0,
 				"aria-label": hint,
 				children: [
@@ -1154,9 +1247,17 @@ window.__ModuleLoader__.load({
 				"data-task-id": task.id,
 				className: `${TaskPanel_module_css_default.card}${isBound ? ` ${TaskPanel_module_css_default.cardBound}` : ""}`,
 				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: TaskPanel_module_css_default.cardHead,
+						role: "button",
+						tabIndex: 0,
 						onClick: handleHeadClick,
+						onKeyDown: (e) => {
+							if (e.key === "Enter" || e.key === " ") {
+								e.preventDefault();
+								handleHeadClick(e);
+							}
+						},
 						onMouseDownCapture: () => {
 							if (titleEdit !== null) suppressHeadClick.current = true;
 						},
@@ -2029,7 +2130,7 @@ window.__ModuleLoader__.load({
 									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 										className: TaskPanel_module_css_default.memActs,
 										children: [
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+											scope !== "task" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 												variant: "outline",
 												size: "sm",
 												disabled: busy,
@@ -2255,6 +2356,7 @@ window.__ModuleLoader__.load({
 			const degraded = missingServices(ctx);
 			const sessionId = useSessionId(ctx);
 			const [syncing, setSyncing] = (0, react.useState)(false);
+			const syncingRef = (0, react.useRef)(false);
 			const [syncedAt, setSyncedAt] = (0, react.useState)(0);
 			const [syncError, setSyncError] = (0, react.useState)(null);
 			const showHints = ui.showHints;
@@ -2283,26 +2385,23 @@ window.__ModuleLoader__.load({
 				return true;
 			};
 			const runLine = async (line) => {
-				const commands = service(ctx, "remote.commands");
-				if (!sessionId || !commands || typeof commands.execute !== "function") {
-					setSyncError(t("panel.no-channel"));
+				const result = await invokeCommand(ctx, sessionId, line);
+				if (!result.ok) {
+					setSyncError(result.error === "no-channel" ? t("panel.no-channel") : result.error || t("panel.sync-failed"));
 					return false;
 				}
-				let response;
+				return applyPayload(result.text);
+			};
+			const withLock = async (fn) => {
+				if (syncingRef.current) return;
+				syncingRef.current = true;
+				setSyncing(true);
 				try {
-					response = await commands.execute(sessionId, line, []);
-				} catch (err) {
-					setSyncError(String(err?.message ?? err));
-					return false;
+					await fn();
+				} finally {
+					syncingRef.current = false;
+					setSyncing(false);
 				}
-				const envelope = response;
-				const execution = envelope && typeof envelope === "object" && "value" in envelope ? envelope.value : envelope;
-				const result = execution?.result ?? execution;
-				if (result?.kind === "error") {
-					setSyncError(result.text ?? "command error");
-					return false;
-				}
-				return applyPayload(result?.text);
 			};
 			/**
 			* 只取数据，**不**顺手 switch。
@@ -2316,83 +2415,46 @@ window.__ModuleLoader__.load({
 			* 它们各自会推宿主清单（adoptStepsToSession），不需要巡检式补写。
 			*/
 			const refresh = async () => {
-				if (syncing) return;
-				setSyncing(true);
-				try {
-					await runLine("/tasks");
-				} finally {
-					setSyncing(false);
-				}
+				await withLock(() => runLine("/tasks"));
 			};
 			const handleAction = async (verb, taskId) => {
-				if (syncing) return;
-				setSyncing(true);
-				try {
-					await runLine(`/tasks ${verb} ${taskId}`);
-				} finally {
-					setSyncing(false);
-				}
+				await withLock(() => runLine(`/tasks ${verb} ${taskId}`));
 			};
 			const handleInsightTask = async (action, id) => {
-				if (syncing) return;
-				setSyncing(true);
-				try {
+				await withLock(async () => {
 					await runLine(`/tasks insight ${action} task ${id}`);
-					await refresh();
-				} finally {
-					setSyncing(false);
-				}
-			};
-			const pushSteps = (taskId, steps) => {
-				runLine(`/tasks todos ${JSON.stringify(steps.map((s) => ({
-					content: s.content,
-					status: s.status
-				})))}`);
+					await runLine("/tasks");
+				});
 			};
 			const cycleStatus = (taskId, index) => {
 				const task = data.tasks.find((tt) => tt.id === taskId);
 				if (!task) return;
-				const next = (task.steps || []).map((s, i) => {
-					if (i !== index) return s;
-					const cur = STATUS_CYCLE.indexOf(s.status);
-					return {
-						...s,
-						status: STATUS_CYCLE[(cur + 1) % STATUS_CYCLE.length]
-					};
-				});
-				pushSteps(taskId, next);
+				const cur = STATUS_CYCLE.indexOf((task.steps || [])[index]?.status);
+				const next = STATUS_CYCLE[(cur + 1) % STATUS_CYCLE.length];
+				withLock(() => runLine(`/tasks step ${taskId} ${index} ${next}`));
 			};
 			const commitStepText = (taskId, index, value) => {
 				const task = data.tasks.find((tt) => tt.id === taskId);
 				const trimmed = value.trim();
 				if (!task) return;
 				if ((task.steps || [])[index]?.content === trimmed || !trimmed) return;
-				const next = (task.steps || []).map((s, i) => i === index ? {
-					...s,
-					content: trimmed
-				} : s);
-				pushSteps(taskId, next);
+				withLock(() => runLine(`/tasks step-text ${taskId} ${index} ${JSON.stringify(trimmed)}`));
 			};
 			const reorderSteps = (taskId, fromIndex, toIndex) => {
 				if (fromIndex === toIndex) return;
-				const task = data.tasks.find((tt) => tt.id === taskId);
-				if (!task) return;
-				const steps = [...task.steps || []];
-				const [moved] = steps.splice(fromIndex, 1);
-				const targetIndex = toIndex > fromIndex ? toIndex - 1 : toIndex;
-				steps.splice(targetIndex, 0, moved);
-				pushSteps(taskId, steps);
+				if (!data.tasks.find((tt) => tt.id === taskId)) return;
+				withLock(() => runLine(`/tasks step-move ${taskId} ${fromIndex} ${toIndex}`));
 			};
 			const commitTitle = (taskId, value) => {
 				const task = data.tasks.find((tt) => tt.id === taskId);
 				const trimmed = value.trim();
 				if (!task) return;
 				if (task.title === trimmed || !trimmed) return;
-				runLine(`/tasks rename ${taskId} ${JSON.stringify(trimmed)}`);
+				withLock(() => runLine(`/tasks rename ${taskId} ${JSON.stringify(trimmed)}`));
 			};
 			const expand = () => {
 				uiActions.open();
-				if (Date.now() - Math.max(data.lastUpdate, syncedAt) > 3e4) refresh();
+				if (Date.now() - Math.max(data.lastUpdate, syncedAt) > 5e3) refresh();
 			};
 			const THEMES = [
 				"native",
@@ -2408,6 +2470,8 @@ window.__ModuleLoader__.load({
 			};
 			const panelRef = (0, react.useRef)(null);
 			const drag = (0, react.useRef)(null);
+			const [dragPos, setDragPos] = (0, react.useState)(null);
+			const dragPosRef = (0, react.useRef)(null);
 			const handleDragStart = (e) => {
 				if (e.target !== e.currentTarget) return;
 				const rect = panelRef.current?.getBoundingClientRect();
@@ -2422,7 +2486,11 @@ window.__ModuleLoader__.load({
 					panelRef.current?.offsetHeight;
 					const x = Math.max(8, Math.min(window.innerWidth - width - 8, ev.clientX - drag.current.dx));
 					const y = Math.max(8, Math.min(window.innerHeight - 64, ev.clientY - drag.current.dy));
-					uiActions.setPanelPosition({
+					dragPosRef.current = {
+						x,
+						y
+					};
+					setDragPos({
 						x,
 						y
 					});
@@ -2431,30 +2499,25 @@ window.__ModuleLoader__.load({
 					drag.current = null;
 					window.removeEventListener("mousemove", onMove);
 					window.removeEventListener("mouseup", onUp);
+					if (dragPosRef.current) uiActions.setPanelPosition(dragPosRef.current);
+					dragPosRef.current = null;
+					setDragPos(null);
 				};
 				window.addEventListener("mousemove", onMove);
 				window.addEventListener("mouseup", onUp);
 			};
+			const refreshRef = (0, react.useRef)(() => {});
+			refreshRef.current = () => {
+				refresh();
+			};
 			(0, react.useEffect)(() => {
-				if (!sessionId) return;
-				if (!ui.closed) refresh();
-			}, [sessionId]);
-			(0, react.useEffect)(() => {
-				const ctxWithEvents = ctx;
-				const handler = () => {
-					uiActions.open();
-					if (Date.now() - Math.max(data.lastUpdate, syncedAt) > 3e4) refresh();
-				};
-				ctxWithEvents?.events?.on?.("dsh:task-panel:show", handler);
-				return () => {
-					ctxWithEvents?.events?.off?.("dsh:task-panel:show", handler);
-				};
+				if (ui.closed || !sessionId) return;
+				if (Date.now() - Math.max(data.lastUpdate, syncedAt) < 5e3) return;
+				refreshRef.current();
 			}, [
-				ctx,
-				uiActions,
-				data.lastUpdate,
-				syncedAt,
-				refresh
+				ui.closed,
+				ui.view,
+				sessionId
 			]);
 			if (ui.closed) return null;
 			if (ui.minimized) {
@@ -2477,8 +2540,8 @@ window.__ModuleLoader__.load({
 				className: TaskPanel_module_css_default.panel,
 				ref: panelRef,
 				style: {
-					left: ui.panelPosition.x,
-					top: ui.panelPosition.y
+					left: (dragPos ?? ui.panelPosition).x,
+					top: (dragPos ?? ui.panelPosition).y
 				},
 				"data-theme": style === "native" ? void 0 : style,
 				children: [
@@ -2648,12 +2711,17 @@ window.__ModuleLoader__.load({
 		//#region \0dsh-css:src/client/TaskCommandNode.module.css.mjs
 		const css = ".TPe-xa_row{max-width:100%;color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;align-items:center;gap:6px;padding:2px 0;font-size:12px;line-height:20px;display:inline-flex;overflow:hidden}.TPe-xa_row[data-variant=ok]{color:var(--dsw-alias-label-secondary)}.TPe-xa_row[data-variant=error]{color:var(--dsw-alias-state-warn-label,#b7791f)}.TPe-xa_row[data-variant=running]{color:var(--dsw-alias-label-dimmed)}.TPe-xa_icon{color:var(--dsw-alias-label-tertiary);flex:none}";
 		const tagId = "@yolk_vat-y/dsh-project-memory/TaskCommandNode.module.css";
-		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
-			const tag = document.createElement("style");
-			tag.dataset.plugin = "@yolk_vat-y/dsh-project-memory";
-			tag.dataset.pluginCss = tagId;
-			tag.textContent = css;
-			document.head.appendChild(tag);
+		if (typeof document !== "undefined") {
+			const selector = "style[data-plugin-css=" + JSON.stringify(tagId) + "]";
+			const existing = document.querySelector(selector);
+			if (existing) existing.textContent = css;
+			else {
+				const tag = document.createElement("style");
+				tag.dataset.plugin = "@yolk_vat-y/dsh-project-memory";
+				tag.dataset.pluginCss = tagId;
+				tag.textContent = css;
+				document.head.appendChild(tag);
+			}
 		}
 		var TaskCommandNode_module_css_default = {
 			"icon": "TPe-xa_icon",
@@ -2798,11 +2866,14 @@ window.__ModuleLoader__.load({
 			return null;
 		}
 		/** 把 `show_task_panel` 的视图注册进宿主的 `tool.call.toolview` 槽。 */
-		function registerShowTaskPanelView(slots) {
-			slots.inject("tool.call.toolview", () => slots.register({
-				name: "tool.call.toolview",
-				key: "show_task_panel"
-			}, ShowTaskPanelNode));
+		function registerShowTaskPanelView(slots, keep) {
+			slots.inject("tool.call.toolview", () => {
+				const off = slots.register({
+					name: "tool.call.toolview",
+					key: "show_task_panel"
+				}, ShowTaskPanelNode);
+				if (typeof keep === "function") keep(off);
+			});
 		}
 		//#endregion
 		//#region src/client/slash.ts
@@ -3008,33 +3079,49 @@ window.__ModuleLoader__.load({
 		* @param ctx - client 根上下文
 		*/
 		function registerTaskPanel(ctx) {
-			const mount = (slots) => {
+			const mount = (slots, effect) => {
 				if (!slots || typeof slots.inject !== "function") {
 					console.warn(`[${NS}] host has no slots service — task panel disabled`);
 					return;
 				}
+				const keep = (off) => {
+					if (typeof off !== "function") return;
+					const dispose = () => {
+						try {
+							off();
+						} catch {}
+					};
+					if (typeof effect === "function") effect(() => dispose);
+				};
+				const register = (spec, component) => {
+					try {
+						keep(slots.register(spec, component));
+					} catch (err) {
+						console.warn(`[${NS}] slot registration failed:`, err);
+					}
+				};
 				try {
-					slots.inject("shell.overlay", () => slots.register({
+					slots.inject("shell.overlay", () => register({
 						name: "shell.overlay",
 						id: "dsh-project-memory-task-panel",
 						order: 100
 					}, () => (0, react.createElement)(TaskPanelEntry, { ctx })));
-					for (const key of ["tasks"]) slots.inject("conversation.chat.commandview", () => slots.register({
+					for (const key of ["tasks"]) slots.inject("conversation.chat.commandview", () => register({
 						name: "conversation.chat.commandview",
 						key
 					}, TaskCommandNode));
-					registerShowTaskPanelView(slots);
+					registerShowTaskPanelView(slots, keep);
 				} catch (err) {
 					console.warn(`[${NS}] task panel registration failed:`, err);
 				}
 			};
 			if (typeof ctx?.inject === "function") try {
-				ctx.inject(["slots"], (scope) => mount(scope?.slots ?? service(ctx, "slots")));
+				ctx.inject(["slots"], (scope) => mount(scope?.slots ?? service(ctx, "slots"), scope?.effect));
 				return;
 			} catch (err) {
 				console.warn(`[${NS}] slots injection failed:`, err);
 			}
-			mount(service(ctx, "slots"));
+			mount(service(ctx, "slots"), typeof ctx?.effect === "function" ? ctx.effect.bind(ctx) : void 0);
 		}
 		/**
 		* 过了宽限期仍然读不到必需服务时，打**一条**点名缺失项的告警。

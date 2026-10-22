@@ -258,7 +258,7 @@ console.log('\n== index_repo guards ==')
   const project = tempProject('pm-guard-repo-')
   writeFileSync(path.join(project, 'a.js'), 'export function a() {}\n')
   const report = await indexRepoTool({}, CONFIG).execute({ root: project })
-  check('a safe project still indexes normally', report.includes('Indexed project:') && report.includes('code symbols updated: 1'))
+  check('a safe project still indexes normally', report.includes('Indexed project:') && report.includes('code files updated: 1'))
 }
 
 console.log('\n== index_doc refuses documents outside a project ==')

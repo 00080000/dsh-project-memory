@@ -1,6 +1,6 @@
 import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { isUnsafeRoot, memoryDirName, memoryRootFor, relativePath, scanLimits, storeKey, walkDir } from './util/fs.js'
+import { isUnsafeRoot, listProjectFiles, memoryDirName, memoryRootFor, relativePath, scanLimits, storeKey } from './util/fs.js'
 import { OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from './index-pipeline.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileChanged, isTypeScriptFile } from './enhancer.js'
@@ -206,7 +206,7 @@ export class WatchManager {
     // 本轮用的 store：命中缓存即 O(1)，被逐出则重新读盘。整个 pollRoot 期间共用同一个实例。
     const store = this.storeFor(root)
 
-    const { files, truncated, capped, skipped: nestedRoots, unreadable } = walkDir(root, {
+    const { files, truncated, capped, skipped: nestedRoots, unreadable } = listProjectFiles(root, {
       ...scanLimits(this.config),
       nestedStoreName: memoryDirName(this.config),
     })

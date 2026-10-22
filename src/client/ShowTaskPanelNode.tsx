@@ -43,9 +43,12 @@ export function ShowTaskPanelNode(props: any) {
 }
 
 /** 把 `show_task_panel` 的视图注册进宿主的 `tool.call.toolview` 槽。 */
-export function registerShowTaskPanelView(slots: any): void {
-  slots.inject('tool.call.toolview', () => slots.register(
-    { name: 'tool.call.toolview', key: 'show_task_panel' },
-    ShowTaskPanelNode,
-  ))
+export function registerShowTaskPanelView(slots: any, keep?: (off: unknown) => void): void {
+  slots.inject('tool.call.toolview', () => {
+    const off = slots.register(
+      { name: 'tool.call.toolview', key: 'show_task_panel' },
+      ShowTaskPanelNode,
+    )
+    if (typeof keep === 'function') keep(off)
+  })
 }

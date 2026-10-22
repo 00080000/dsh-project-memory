@@ -102,9 +102,8 @@ export function cfgEngine(config) {
     // 整块重发同一条 1200 字 procedure 只是重复占位。>0 用于历史可能被外部裁剪的场景。
     reinjectItemsAfter: typeof c.reinjectItemsAfter === 'number' && c.reinjectItemsAfter >= 0 ? c.reinjectItemsAfter : 0,
     // ---- S2/S3/S4 新增（准入化改造） ----
-    // 旧 `scope` 的处理：'filter'（默认，保留旧语义——不静默改用户数据）或 'ignore'。
-    // legacy `trigger.scope`：默认 **ignore**（与 `src/index.js` 的 schema 默认一致）。
-    // 值由作者手写，落不进自动派生的画像 tag 空间 → 当收窄条件用等于判死条目。
+    // 旧 `scope` 的处理：默认 **ignore**（保留历史数据、不静默改用户数据）；
+    // legacy `trigger.scope` 的值由作者手写，落不进自动派生的画像 tag 空间 → 当收窄条件用等于判死条目。
     // 显式配 'filter' 才恢复旧的收窄语义。
     legacyScope: c.legacyScope === 'filter' ? 'filter' : 'ignore',
     // 条目通道的步间隔：两次"条目注入"之间至少隔这么多步（常驻任务卡不受限——它是状态快照，
@@ -815,6 +814,10 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   const injectedText = notice ? (built.text ? `${notice}\n${built.text}` : notice) : built.text
   if (!injectedText || fp === sessions.lastText.peek(sessionId)) return null
   sessions.lastText.set(sessionId, fp)
+  const itemCount = built.reasons.length
+  const summary = itemCount
+    ? `memory inject: ${itemCount} item(s)${built.entry ? ' + task card' : ''}`
+    : built.entry ? 'memory inject: task card' : 'memory root notice'
 
   // 只记真的进了上下文的那几条：dropped 的没被看到，不能记账（否则以后永远不再注入）。
   const seen = sessions.items.ensure(sessionId)
@@ -856,7 +859,7 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     silence: silence.reason,
   }), audit, root)
 
-  return { ...decision, messages: [...decision.messages, injectionMessage(injectedText)] }
+  return { ...decision, messages: [...decision.messages, injectionMessage(injectedText, summary)] }
 }
 
 /**
@@ -920,16 +923,16 @@ function recordDropped({ sessions, sessionId, dropped, budgetLog }) {
 }
 
 /** 追加的注入消息：必须是带 source 的完整消息——裸 {role,content} 会让宿主读 message.source 时崩。 */
-function injectionMessage(text) {
+function injectionMessage(text, summary) {
   return createUserMessage({
     content: [{ type: 'text', text: `\n\n${INJECT_MARK} ${PLUGIN_NAME} · auto-context\n${text}` }],
-    // 这一块是「同一生产者后续快照会取代的当前状态」，不是一次性通知。
-    // 宿主 ContextFormed 是判别联合：snapshot 必须带 sections（notice 才需要 summary）。
-    // kind 必须是生产者自有的（v4 没有 'plugin' 兜底 kind），见 SOURCE_KIND 的注释。
+    // 宿主对第三方生产者的 `snapshot` 只做追加，不会用后一条替换前一条（只有它自己的
+    // runtime-context 走 surfaceOp replace）。所以这里声明 `notice`：它如实表示“这一步注入了
+    // 什么”，不会让 UI 打出“取代先前快照”的空头承诺。summary 是 UI 收起时的一行说明。
     source: {
       kind: SOURCE_KIND,
-      form: 'snapshot',
-      sections: [{ name: 'project-memory', text }],
+      form: 'notice',
+      summary,
     },
   })
 }
