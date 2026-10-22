@@ -1,6 +1,6 @@
 # dsh-project-memory
 
-> 如果这个插件帮你省下 1 小时 Debug 时间，请点个 Star。
+> If this plugin saves you an hour of debugging, a star would be appreciated.
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -22,7 +22,7 @@ A persistent **project development memory** for [DeepSeek Harness](https://githu
 - **Automatic, read-time memorization** — a file is memorized the moment the model reads it, so memory is a byproduct of normal work rather than an upfront scan, and files nobody reads are never indexed. A background poll re-memorizes changed files only.
 - **Doc ↔ code cross-linking** — a document that mentions a symbol is surfaced when that symbol is queried. Links are resolved against the current symbol table, so they cannot go stale.
 - **Hybrid recall** — ranked search over documents, symbols, experience notes and insights, with optional LLM query expansion. The experience/insight layers are re-ordered by cosine when `leanvec` is present — installed by default, absent ⇒ pure lexical. Tuned for CJK: phrase boost, a synonym table, and CJK-aware boundaries for doc↔symbol linking.
-- **Experience notes** — problems → solutions, deduplicated by overlap rather than repeated, bounded by project size, and returned only when a search matches.
+- **Experience notes** — problems → solutions, deduplicated by overlap rather than repeated, bounded by project size, and surfaced both by search and by the same injection path as lessons.
 - **Tiered insight memory (lessons / decisions / procedures)** — one entity across task, project and global scope. Near-duplicates merge or reinforce, and promotion moves an entry between scopes instead of copying it. Use is recorded, so decay and capacity rank by activity rather than age alone. The panel exposes a per-scope view for reviewing and editing entries. That list is ordered newest-first and loaded incrementally: 30 entries at a time, with the next page prefetched before the reader reaches the bottom and off-screen rows skipped by the renderer, so a large memory stays responsive.
 - **Triggered injection** — an insight may carry an authored trigger: only `when` triggers, `guard` narrows it, and `prevents` records what breaks without the entry. Corpus text can never trigger an injection; the statistical channel is gated separately and silent by default.
 
@@ -48,10 +48,12 @@ Each indexed project has its own store at `<root>/.dsh-project-memory/`. It keep
 
 The tools below are **invoked by the agent**, not typed by the user. In the chat, just ask naturally — e.g. "index this project" or "what does the auth module do?" — or simply keep working, and the agent calls the matching tool automatically. By default files are indexed the moment the model reads them, so memory fills in while you work. `watch_repo` keeps explicitly-watched roots fresh in the background; `index_repo` forces a full backfill (unchanged files are skipped).
 
+In a git work tree the corpus is whatever `git ls-files --cached --others --exclude-standard` lists — tracked files plus untracked files that are not ignored — so `.gitignore`, nested rules included, decides what gets remembered. A directory that is not a git work tree falls back to a plain walk (no ignore rules). Lazy indexing applies the same check per file; an explicit `index_doc` always indexes what you point it at.
+
 | Tool | Purpose |
 |---|---|
 | `index_doc file_path` | Index one document (PDF/MD/txt): chunk, summarize deterministically, and store with a `path:line` citation. Unchanged files are skipped. |
-| `index_repo root` | Index a whole project: documents get deterministic summaries, code files get a token-free symbol table. Incremental, cleans up deleted files, cross-links documents to symbols. A non-existent or excluded root is rejected before anything is written. |
+| `index_repo root` | Index a whole project: documents get deterministic summaries, code files get a token-free symbol table. Incremental and self-healing: the store follows the file listing, so deleted, ignored or moved files are dropped, and documents are cross-linked to symbols. A non-existent or excluded root is rejected before anything is written. |
 | `watch_repo root` | Enable automatic refresh: a background poll detects new and changed files and re-indexes only those. Watched roots persist across restarts; a non-existent or excluded root is refused, roots that disappear are dropped rather than re-created. |
 | `memory_stats root` | Show what the store contains: totals, last index time, and the per-file list sorted by recency. |
 | `query_memory query` | Ranked search over documents, symbols, experience and insights, optionally query-expanded by the LLM. `type` selects a layer (`all` / `doc` / `symbol` / `experience` / `insight` / `task`). Returns hits with relative scores, sources or insight ids, and doc→symbol references. |
@@ -61,7 +63,7 @@ The tools below are **invoked by the agent**, not typed by the user. In the chat
 | `show_task_panel` | Show the task panel in the UI. Call when the user asks to see the task list or when you want to display the panel. |
 | `/tasks` (typed by the user, not the model) | The only user command: shows the task stack and drives the workflow card. Every other action is a **sub-verb** invoked by card buttons: `switch` / `archive` / `unbind` / `rename` / `todos …` / `step` / `step-move` / `step-text` for tasks, `insight list [scope] [offset] [limit]` / `confirm` / `promote` / `demote` / `archive` / `restore` / `delete` / `save` / `edit` for memory. |
 | `remember problem solution` | Save an experience note. It is a `kind: 'experience'` insight — same store, same dedup and same delete path as lessons / decisions / procedures. Similar problems merge or overwrite instead of duplicating. |
-| `forget id_or_query` | Delete memories — lessons / decisions / procedures and legacy experience notes alike, across task / project / global in one call, without knowing which layer the entry lives in. An exact id deletes that one entry; keywords match by **query-side coverage** (the same rule the legacy experience layer always used). Real deletion, no undo; when keywords match more than the cap (default 10) it deletes nothing and only lists the candidates. The **5** most recently deleted entries are kept as full entries in that layer's `deleted.json` next to its store (`<root>/.dsh-project-memory/deleted.json` for the project layer, beside the global file for global), and the deletion result prints that path — read it and save again to recover a mis-delete. |
+| `forget id_or_query` | Delete memories — lessons / decisions / procedures and experience notes alike, across task / project / global in one call, without knowing which layer the entry lives in. An exact id deletes that one entry; keywords match by **query-side coverage** (matched query terms ÷ query terms). Real deletion, no undo; when keywords match more than the cap (default 10) it deletes nothing and only lists the candidates. The **5** most recently deleted entries are kept as full entries in that layer's `deleted.json` next to its store (`<root>/.dsh-project-memory/deleted.json` for the project layer, beside the global file for global), and the deletion result prints that path — read it and save again to recover a mis-delete. |
 | `save_lesson` | Save a lesson / decision / procedure at task, project or global scope; passing `id` **overwrites that entry in place** (only the fields you pass, the previous values stay in `prev` — write them back with the same id). Before writing it compares against existing memory: cosine ≥ 0.9 auto-overwrites that entry, ≥ 0.7 reports the nearest id in the result; without `leanvec` it falls back to lexical overlap ≥ 0.7 merge / 0.65–0.7 reinforce. Two tasks hitting the same insight promote it task → project, three or more → global. Key params: `id`, `title`, `kind`, `scope`, the content (`pattern`/`fix`, `choice`/`reason` or `steps`), and `trigger` (`when` is the only trigger surface, `guard` narrows it, `prevents` records what breaks without it). |
 
 `/tasks` appears in the web `/` menu inside an icon-bearing **Workflow** group, with three view entries — Tasks / Project Memory / Global Memory (labelled in the UI language). It is the plugin's only registered command; every other action rides it as a sub-verb driven by card buttons.
@@ -77,7 +79,7 @@ The design follows four principles:
 
 Building the **memory** does not require an upfront scan: files are memorized as the model reads them, so the **memory** grows to cover exactly what has been worked with. Re-reading an unchanged file is a no-op, so the **memory** stays fresh with minimal ongoing overhead.
 
-The store is per-project and follows the codebase: changed files are re-extracted by content hash, deleted files are removed. Experience notes are now `kind: 'experience'` entries in `insights.json` — retrieval-only, so accumulation does not affect context.
+The store is per-project and follows the codebase: changed files are re-extracted by content hash, deleted files are removed. Experience notes are `kind: 'experience'` entries in `insights.json` — retrieval-only, so accumulation does not affect context.
 
 ## Design
 
@@ -85,7 +87,6 @@ The store is per-project and follows the codebase: changed files are re-extracte
 .dsh-project-memory/
   format.json      layout marker (v2, sharded)
   shards/          one self-describing JSON per indexed source file — writes touch only dirty shards
-  experience.json.migrated  read-only archive of v0.4 notes (imported into insights.json on first load)
   watch.json       watched roots
   tasks.json       TaskBridge task entities (cross-session)
   binding.json     current session ↔ task binding
@@ -98,7 +99,7 @@ The store is per-project and follows the codebase: changed files are re-extracte
 - **Incremental** — a content hash per file; only changed files are re-extracted.
 - **Cross-linking** — a returned document chunk resolves the symbols it mentions against the **current** symbol table and appends them as `references`, so a doc indexed before its symbols still links correctly.
 - **Query expansion** — when enabled, `query_memory` asks the LLM to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and merges the scores; when off, queries never touch the LLM. Indexing itself is model-free.
-- **Consistency** — the fact layer follows the codebase (hash re-extract / remove-on-delete); the experience layer is retrieval-only with supersede and `forget`. The store lock is in-process, so avoid running multiple dsh instances against the same project store.
+- **Consistency** — the fact layer follows the codebase (hash re-extract / remove-on-delete); the experience layer is retrieval-only with supersede and `forget`. Writes take a cross-process directory lock (`.write.lock`) around a short read-modify-write, so two dsh instances can share one project store: shards converge by `indexedAt`, and a save that cannot get the lock is deferred and retried.
 
 ## Architecture (Task Panel)
 
@@ -142,7 +143,7 @@ The workflow panel is collapsible, adapts to dsh and theme plugin styles, and of
 | `autoContext.vectorAlpha` | 0.5 | weight of `(1-α)·lexical + α·cosine` in those layers; `0` disables re-ranking only (write-side dedup stays on), `1` (pure vector) measured worse |
 | `autoContext.vectorDedup` | true | write-side near-duplicate detection (cosine ≥ 0.9 auto-overwrite, ≥ 0.7 near-neighbour hint). Independent of `vectorAlpha`; `false` keeps recall ranking untouched |
 | `autoContext.vectorItemMin` / `autoContext.vectorSpeakMin` | unset | **experimental** absolute-cosine gates for the hint channel (per-entry floor / channel-level semantic rescue). Uncalibrated — unset means off; see the evidence in `src/auto-inject.js` before enabling |
-| `autoContext.legacyScope` | `ignore` | how a legacy `trigger.scope` is treated: `ignore` (default) does not use it as a filter; `filter` keeps the old behaviour. `npm run selfcheck:triggers` lists entries that still carry a scope |
+| `autoContext.legacyScope` | `ignore` | how a legacy `trigger.scope` is treated: `ignore` (default) does not use it as a filter; `filter` applies it as a filter. `npm run selfcheck:triggers` lists entries that still carry a scope |
 | `autoContext.auditLog` | true | append one JSONL line per **actual** injection to `injection-audit.jsonl` (what / why / dropped / budget); rotates to `.1` past `auditMaxBytes` (`262144`). Silent on I/O errors |
 | `autoContext.shadowLog` / `autoContext.shadowMaxBytes` | true / 524288 | append one JSONL line **per step** (including steps that injected nothing) to `admission-shadow.jsonl`: scored candidates with their features and the gate that rejected each one — what makes a threshold change answerable offline. Disk only, never in the prompt; rotates keeping one `.1` generation |
 
@@ -158,7 +159,7 @@ When the root comes from the working directory, the model gets one notice per se
 
 **Scan limits.** One pass covers at most `maxScanFiles` files (20000) and `maxScanDepth` directory levels (12). A truncated pass is reported in the `index_repo` result and logged once per root by the watcher, and it does not remove entries it did not reach. A directory that cannot be read (e.g. `EACCES`) counts as a truncated pass too and is named in the result: a read failure is not a deletion.
 
-**Per-file memory budget.** `maxFileSizeMb` is a memory gate, not a disk-space preference. Indexing a file first materializes it — the whole buffer plus decoded text for code, or every PDF page's text plus the joined markdown for documents — and the peak scales with the file's size. Measured on this machine with `npm run bench:peak` (peak RSS fitted against disk size over a 1–50 MB ladder, one fresh process per point): **≈10×** for typical source code (1 declaration per ~1.4 KB), **≈22×** for symbol-dense code (1 per 220 B) and **≈20×** for a text-heavy PDF, on top of a ~52 MB process baseline plus a one-off ≈175 MB the first time a PDF is parsed. The 10 MB default therefore keeps a single file at roughly **+300 MB RSS** for code and **+370 MB** for a PDF; raising the cap raises that ceiling proportionally. The old default of 50 MB let one ordinary-sized file drive the host process to ~1.2 GB.
+**Per-file memory budget.** `maxFileSizeMb` is a memory gate, not a disk-space preference. Indexing a file first materializes it — the whole buffer plus decoded text for code, or every PDF page's text plus the joined markdown for documents — and the peak scales with the file's size. Measured on this machine with `npm run bench:peak` (peak RSS fitted against disk size over a 1–50 MB ladder, one fresh process per point): **≈10×** for typical source code (1 declaration per ~1.4 KB), **≈22×** for symbol-dense code (1 per 220 B) and **≈20×** for a text-heavy PDF, on top of a ~52 MB process baseline plus a one-off ≈175 MB the first time a PDF is parsed. The 10 MB default therefore keeps a single file at roughly **+300 MB RSS** for code and **+370 MB** for a PDF; raising the cap raises that ceiling proportionally.
 
 The store lives in the tree it indexes and **ignores itself**: a `*` rule inside the store keeps it out of `git status` and `git add -A`, and means `git clean -fd` leaves it alone. To commit project memory deliberately, `git add -f .dsh-project-memory` — tracked files are not affected by ignore rules.
 
@@ -248,7 +249,7 @@ Pass `--queries your-queries.json` to run the labeled-set method (hit@5 / hit@10
 
 ## Design tradeoffs
 
-- **Synchronous lock-free transactions over async locks** — DSH runs single-process by architecture, so locking for a rare multi-process case would only slow the hot path (every `remember` / `forget` / `index_doc`).
+- **A short filesystem lock, not an embedded database** — each save holds an exclusive `.write.lock` only for the read-modify-write (parsing stays outside it), waits at most 2 s for a busy peer and then retries. Two dsh instances can share one store. No WAL, no daemon, no native dependency.
 - **Watch: compute outside, commit inside** — no lock is held during parsing, and polling with mtime + content hash is used instead of `fs.watch`: it behaves identically on network drives, Docker volumes and WSL, without duplicate-trigger or missed-event failure modes.
 - **Corrupt shards are quarantined, not repaired** — a shard that fails to parse is renamed and only that file is re-indexed, so there is no WAL or embedded database adding native dependencies, lock contention and failure modes of their own.
 - **Vectors re-rank, they do not rank** — on a paraphrased-query set, pure vector replacement is worse than BM25 (hit@10 **53% vs 69%**) while weighted fusion helps at small k (hit@3 **53% vs 50%**), so the optional layer only re-orders the experience/insight layers and never gates. Lexical retrieval still answers the queries this plugin targets: on a real project with 29 labelled queries, file-level hit@5 is **96.6%**, and whole-chunk terms raise document term coverage from **27.3% to 100%** with MRR unchanged (**0.958** vs **0.955**).
@@ -257,7 +258,7 @@ Pass `--queries your-queries.json` to run the labeled-set method (hit@5 / hit@10
 - **Full entries returned directly** — entries are already compact, so returning them whole is more verifiable and one round-trip cheaper.
 - **`forget` by query is aggressive; use IDs for precision** — experience notes are low-risk, high-volume and retrieval-only, so stale noise hurts more than an over-broad delete. For exact deletion use the ID shown by `query_memory`.
 - **TypeScript enhancement is optional, lazy and cached** — it runs in the background, never blocks indexing, and falls back to the regex scanner; its queue is bounded, and any dropped files are reported. The **default lib is not loaded**: inference that depends on global types (`Promise`/`Array`/DOM) degrades to `any`/`unknown`, while explicit annotations are unaffected.
-- **Subagent sessions are out of scope for now**
+- **Subagent sessions are out of scope**
 
 ## Development (for contributors)
 
