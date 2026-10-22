@@ -9,18 +9,16 @@ export function indexDocTool(ctx, config) {
   return defineTool({
     name: 'index_doc',
     description:
-      'Index a project document (PDF, Markdown, txt) into persistent project memory: split into sections, ' +
-      'store a short cited summary plus a full-chunk literal term index (no LLM at index time), for later ' +
-      'query_memory recall. Re-indexing the same unchanged file is a no-op (content-hash skip).',
+      'Index one document (PDF/MD/txt) into project memory; unchanged files are skipped.',
     parameters: {
       file_path: {
         type: 'string',
         required: true,
-        description: 'Absolute path to the document to index.',
+        description: '文档绝对路径',
       },
       root: {
         type: 'string',
-        description: '项目根目录（store 存放处），默认会话的项目根。',
+        description: '项目根（默认会话项目根）',
       },
     },
     output: {

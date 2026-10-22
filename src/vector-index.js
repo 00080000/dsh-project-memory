@@ -282,7 +282,9 @@ async function openEngine({ storeDir = null, items = [], vectorDir = null } = {}
   const { dir, fingerprint } = await resolveVectorLayer(vectorDir)
   if (!dir || !fingerprint) return null
   try {
-    if (!runtimeCache || runtimeCache.dir !== dir) {
+    // 运行时按「目录 + 模型指纹」缓存：同一目录换了模型文件时必须重新加载，
+    // 否则会用旧模型编码、却把新指纹写进 vectors.json。
+    if (!runtimeCache || runtimeCache.dir !== dir || runtimeCache.fingerprint !== fingerprint) {
       const mod = await import(pathToFileURL(join(dir, 'src', 'embed.mjs')).href)
       const lv = mod.loadLeanvec({
         table: join(dir, 'dist', 'leanvec.f32'),

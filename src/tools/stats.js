@@ -12,12 +12,11 @@ export function statsTool(config) {
   return defineTool({
     name: 'memory_stats',
     description:
-      'Show what the project memory store contains: totals (files / entries / experience notes), last index time, ' +
-      'and the per-file list with entry counts sorted by most recently indexed. Use this to answer "what is in my memory store" without reading JSON files.',
+      'Show store totals, last index time and the per-file index list.',
     parameters: {
       root: {
         type: 'string',
-        description: '项目根目录，默认当前工作目录。',
+        description: '项目根（默认当前工作目录）',
       },
     },
     output: {

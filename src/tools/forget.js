@@ -29,21 +29,18 @@ export function forgetTool(config) {
   return defineTool({
     name: 'forget',
     description:
-      'Delete memories by id or by matching keywords — lessons / decisions / procedures and experience notes, ' +
-      'at task / project / global scope alike (one call, no need to know which layer it lives in). Real deletion, no undo. ' +
-      'An exact id deletes that one entry; keywords match on how much of the query the entry covers. ' +
-      'A keyword that matches more than the configured cap deletes nothing and lists the candidates instead. ' +
-      `The ${DELETED_KEEP} most recently deleted entries are kept in that layer's deleted.json next to its store ` +
-      '(the path is returned after every deletion) — read it to recover an accidental deletion and save it again.',
+      'Delete memories by id or matching keywords, at task/project/global scope. Real deletion, no undo; '
+      + 'the last 5 deleted entries are kept in deleted.json. A keyword matching more than the cap deletes nothing '
+      + 'and lists the candidates instead.',
     parameters: {
       id_or_query: {
         type: 'string',
         required: true,
-        description: 'Insight/experience id (from save_lesson, query_memory or a near-match hint), or keywords to match. An exact id always wins over treating it as keywords.',
+        description: '精确 id 或关键词；id 优先',
       },
       root: {
         type: 'string',
-        description: '项目根目录，默认当前工作目录。',
+        description: '项目根（默认当前工作目录）',
       },
     },
     output: {
