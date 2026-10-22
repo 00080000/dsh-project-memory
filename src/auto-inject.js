@@ -217,7 +217,8 @@ export function shouldEchoTaskCard(task, cfg) {
 }
 
 /** 任务卡 + 非草稿任务级 insights 摘要（常驻块主体）。
- * withEdited=false 用于去重指纹：排除随写文件高频变化的“编辑中”行。 */
+ * withEdited=false 只留给需要稳定正文的调用方；去重指纹现在**包含**“编辑中”行：
+ * 否则常驻卡会永远停在第一次注入时的文件列表（写文件不会改变指纹）。 */
 export function buildEntryContent(task, cfg, { withEdited = true } = {}) {
   if (!task) return ''
   const c = cfg || {}
@@ -534,11 +535,12 @@ export function buildInjection(opts) {
     rerank: opts.rerank || null,
   })
 
-  // 常驻块文本。去重指纹只看稳定内容（任务标题/步骤/insights + 相关 insights）：
-  // “编辑中”随每次写文件变化，若参与指纹会导致每写一个文件就重发整块（噪音 + token 浪费）。
+  // 常驻块文本。去重指纹包含“编辑中”行：否则这条常驻状态只会在别的条目变化时顺带更新，
+  // 模型会一直看到旧文件列表。editedFiles 只返回文件名（不含时间戳），所以同一个文件
+  // 反复写不会改变指纹；只有热点文件集合/顺序变化时才重发整块。
   const echo = cfg.entryOn !== false && shouldEchoTaskCard(task, cfg)
   const entry = echo ? buildEntryContent(task, cfg) : ''
-  const entryStable = echo ? buildEntryContent(task, cfg, { withEdited: false }) : ''
+  const entryStable = entry
   let used = entry.length
   let itemUsed = 0
   let itemCount = 0

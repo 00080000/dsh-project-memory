@@ -49,6 +49,52 @@ interface ListPayload {
   items: InsightRow[]
 }
 
+/**
+ * 切页缓存：任务/项目/全局三页在同一个面板里来回切时，30 秒内直接复用上一份列表，
+ * 不再发 /tasks insight list。宿主每次命令都会在会话里留一个 command 节点，
+ * 而"切回刚才那页"并不需要重新证明数据没变；动作之后的 reloadWindow 会更新缓存。
+ */
+const INSIGHT_CACHE_TTL_MS = 30_000
+const INSIGHT_CACHE_MAX = 12
+interface InsightCacheEntry {
+  rows: InsightRow[]
+  total: number
+  nextOffset: number | null
+  at: number
+}
+const insightCache = new Map<string, InsightCacheEntry>()
+
+function insightCacheKey(sessionId: string | null, scope: InsightScope): string {
+  return `${sessionId || ''}|${scope}`
+}
+
+function readInsightCache(sessionId: string | null, scope: InsightScope): InsightCacheEntry | null {
+  const hit = insightCache.get(insightCacheKey(sessionId, scope))
+  if (!hit) return null
+  if (Date.now() - hit.at > INSIGHT_CACHE_TTL_MS) {
+    insightCache.delete(insightCacheKey(sessionId, scope))
+    return null
+  }
+  return hit
+}
+
+function writeInsightCache(
+  sessionId: string | null,
+  scope: InsightScope,
+  rows: InsightRow[],
+  total: number,
+  nextOffset: number | null,
+): void {
+  const key = insightCacheKey(sessionId, scope)
+  insightCache.delete(key)
+  insightCache.set(key, { rows, total, nextOffset, at: Date.now() })
+  while (insightCache.size > INSIGHT_CACHE_MAX) {
+    const oldest = insightCache.keys().next().value
+    if (oldest === undefined) break
+    insightCache.delete(oldest)
+  }
+}
+
 export function parseInsightPayloadText(text?: string | null): ListPayload | null {
   if (!text) return null
   let jsonBlock: string | null = null
@@ -185,7 +231,11 @@ export function MemoryView({
           setError('unparsable payload')
           return
         }
-        setRows((prev) => (append ? appendUnique(prev, parsed.items) : parsed.items))
+        setRows((prev) => {
+          const next = append ? appendUnique(prev, parsed.items) : parsed.items
+          writeInsightCache(sessionId, requestedScope, next, parsed.total, parsed.nextOffset)
+          return next
+        })
         setTotal(parsed.total)
         setNextOffset(parsed.nextOffset)
       } finally {
@@ -210,12 +260,23 @@ export function MemoryView({
   }, [load])
 
   useEffect(() => {
-    // 换 scope / 换会话 = 换了一个列表：清空并从头取第一页。
+    // 换 scope / 换会话 = 换了一个列表：先看 30 秒缓存，命中就不发命令。
     setRows([])
     setTotal(0)
     setNextOffset(null)
     setError(null)
     if (!sessionId) return
+    const cached = readInsightCache(sessionId, scope)
+    if (cached) {
+      setRows(cached.rows)
+      setTotal(cached.total)
+      setNextOffset(cached.nextOffset)
+      // 上一页的在途请求可能还没回落；缓存命中时直接把加载态关掉。
+      setLoading(false)
+      setLoadingMore(false)
+      setShowSpinner(false)
+      return
+    }
     void loadRef.current(0, PAGE_SIZE, false)
   }, [scope, sessionId])
 

@@ -14,12 +14,21 @@ export function TaskCommandNode({ node }: { node?: any }) {
   const name = node?.name ?? 'task'
   const outcome = node?.outcome ?? null
   const args = typeof node?.args === 'string' ? node.args : ''
-  const verb = args.trim().split(/\s+/)[0] ?? ''
-  const isList = name === 'tasks' || !verb
+  const tokens = args.trim().split(/\s+/).filter(Boolean)
+  const verb = tokens[0] ?? ''
+  const sub = tokens[1] ?? ''
+  const isTasks = name === 'tasks'
+  // 合并后只有一个用户命令 /tasks：记忆列表是 `/tasks insight list …`，
+  // 不能只按命令名判断——否则切一次记忆页就会留一行“已执行”节点。
+  const isInsight = name === 'insight' || (isTasks && verb === 'insight')
+  const insightVerb = name === 'insight' ? verb : sub
+  const isList = isInsight
+    ? (name === 'insight' ? (!verb || verb === 'list') : sub === 'list')
+    : isTasks && !verb
   const text = outcome?.text ?? ''
 
-  const parsedTasks = name !== 'insight' ? parseTaskPayloadText(text) : null
-  const parsedInsights = name === 'insight' ? parseInsightPayloadText(text) : null
+  const parsedTasks = isInsight ? null : parseTaskPayloadText(text)
+  const parsedInsights = isInsight ? parseInsightPayloadText(text) : null
 
   // 该节点是否“现场执行”（挂载时处于执行中）：为 true 说明是用户当场输入的命令，
   // 完成后同步数据并打开面板。刷新/切换会话后历史节点以完成态重挂载，
@@ -47,20 +56,16 @@ export function TaskCommandNode({ node }: { node?: any }) {
     return <div className={css.row} data-variant="error">/{name} 失败{brief ? `：${brief}` : ''}</div>
   }
 
-  // /insight：列表只显示一行摘要，动作类只显示一句结果（永不整段渲染）
-  if (name === 'insight') {
-    if (verb === 'list' && parsedInsights) {
-      const scope = parsedInsights.scope
-      const count = parsedInsights.count ?? parsedInsights.items.length
-      return (
-        <div className={css.row} data-variant="ok">
-          <IconFolderOpenOutline16 className={css.icon} />
-          <span>记忆 {scope} · {count} 条 · 已同步到记忆视图</span>
-        </div>
-      )
-    }
+  // 列表型命令是**面板自己的读通道**，不是对话内容：宿主每次 execute 都会写
+  // command/run + command/done，客户端唯一能抑制的就是这里的渲染。载荷已同步进 store
+  // （/tasks 还会打开面板），再留一行只会让切页/刷新在会话里堆节点。
+  // 解析失败时保留一行，避免"命令成功了却什么都不显示"。
+  if (isList && (isInsight ? parsedInsights : parsedTasks)) return null
+
+  // /insight：动作类只显示一句结果（永不整段渲染）
+  if (isInsight) {
     const note = String(text ?? '').split('\n')[0].slice(0, 120)
-    return <div className={css.row} data-variant="ok">/insight {verb} {note || '已完成'}</div>
+    return <div className={css.row} data-variant="ok">/insight {insightVerb} {note || '已完成'}</div>
   }
 
   if (!isList) {

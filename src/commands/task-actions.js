@@ -230,6 +230,8 @@ export function taskCommandDefinition(config, ctx) {
           if (task.archived) return { kind: 'error', text: `[task] 已归档: ${task.title}` }
           task.archived = true
           task.updatedAt = new Date().toISOString()
+          // 归档 = 停止续做：绑定一并清掉，否则 binding.json 会永久指向这条已归档任务。
+          store.removeBindingsForTask(task.id)
           store.markTasksDirty()
           store.save()
           // 反思钩子：归档即收割（默认关）

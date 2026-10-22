@@ -1668,6 +1668,41 @@ window.__ModuleLoader__.load({
 		* 列表是**增量加载**的：首屏只取 PAGE_SIZE 条，滚到底前 600px 预取下一页追加。
 		* 分页的决策逻辑在 ./paging.js（纯函数，可单测），本组件只把它接到渲染上。
 		*/
+		/**
+		* 切页缓存：任务/项目/全局三页在同一个面板里来回切时，30 秒内直接复用上一份列表，
+		* 不再发 /tasks insight list。宿主每次命令都会在会话里留一个 command 节点，
+		* 而"切回刚才那页"并不需要重新证明数据没变；动作之后的 reloadWindow 会更新缓存。
+		*/
+		const INSIGHT_CACHE_TTL_MS = 3e4;
+		const INSIGHT_CACHE_MAX = 12;
+		const insightCache = /* @__PURE__ */ new Map();
+		function insightCacheKey(sessionId, scope) {
+			return `${sessionId || ""}|${scope}`;
+		}
+		function readInsightCache(sessionId, scope) {
+			const hit = insightCache.get(insightCacheKey(sessionId, scope));
+			if (!hit) return null;
+			if (Date.now() - hit.at > INSIGHT_CACHE_TTL_MS) {
+				insightCache.delete(insightCacheKey(sessionId, scope));
+				return null;
+			}
+			return hit;
+		}
+		function writeInsightCache(sessionId, scope, rows, total, nextOffset) {
+			const key = insightCacheKey(sessionId, scope);
+			insightCache.delete(key);
+			insightCache.set(key, {
+				rows,
+				total,
+				nextOffset,
+				at: Date.now()
+			});
+			while (insightCache.size > INSIGHT_CACHE_MAX) {
+				const oldest = insightCache.keys().next().value;
+				if (oldest === void 0) break;
+				insightCache.delete(oldest);
+			}
+		}
 		function parseInsightPayloadText(text) {
 			if (!text) return null;
 			let jsonBlock = null;
@@ -1789,7 +1824,11 @@ window.__ModuleLoader__.load({
 						setError("unparsable payload");
 						return;
 					}
-					setRows((prev) => append ? appendUnique(prev, parsed.items) : parsed.items);
+					setRows((prev) => {
+						const next = append ? appendUnique(prev, parsed.items) : parsed.items;
+						writeInsightCache(sessionId, requestedScope, next, parsed.total, parsed.nextOffset);
+						return next;
+					});
 					setTotal(parsed.total);
 					setNextOffset(parsed.nextOffset);
 				} finally {
@@ -1811,6 +1850,16 @@ window.__ModuleLoader__.load({
 				setNextOffset(null);
 				setError(null);
 				if (!sessionId) return;
+				const cached = readInsightCache(sessionId, scope);
+				if (cached) {
+					setRows(cached.rows);
+					setTotal(cached.total);
+					setNextOffset(cached.nextOffset);
+					setLoading(false);
+					setLoadingMore(false);
+					setShowSpinner(false);
+					return;
+				}
 				loadRef.current(0, 30, false);
 			}, [scope, sessionId]);
 			(0, react.useEffect)(() => {
@@ -2514,11 +2563,7 @@ window.__ModuleLoader__.load({
 				if (ui.closed || !sessionId) return;
 				if (Date.now() - Math.max(data.lastUpdate, syncedAt) < 5e3) return;
 				refreshRef.current();
-			}, [
-				ui.closed,
-				ui.view,
-				sessionId
-			]);
+			}, [ui.closed, sessionId]);
 			if (ui.closed) return null;
 			if (ui.minimized) {
 				const label = boundTask ? `${t("minibar.current")}: ${boundTask.title}` : activeTasks.length > 0 ? `${t("minibar.current")}: ${activeTasks.length} ${t("minibar.tasks")}` : t("minibar.no-task");
@@ -2737,11 +2782,16 @@ window.__ModuleLoader__.load({
 		function TaskCommandNode({ node }) {
 			const name = node?.name ?? "task";
 			const outcome = node?.outcome ?? null;
-			const verb = (typeof node?.args === "string" ? node.args : "").trim().split(/\s+/)[0] ?? "";
-			const isList = name === "tasks" || !verb;
+			const tokens = (typeof node?.args === "string" ? node.args : "").trim().split(/\s+/).filter(Boolean);
+			const verb = tokens[0] ?? "";
+			const sub = tokens[1] ?? "";
+			const isTasks = name === "tasks";
+			const isInsight = name === "insight" || isTasks && verb === "insight";
+			const insightVerb = name === "insight" ? verb : sub;
+			const isList = isInsight ? name === "insight" ? !verb || verb === "list" : sub === "list" : isTasks && !verb;
 			const text = outcome?.text ?? "";
-			const parsedTasks = name !== "insight" ? parseTaskPayloadText(text) : null;
-			const parsedInsights = name === "insight" ? parseInsightPayloadText(text) : null;
+			const parsedTasks = isInsight ? null : parseTaskPayloadText(text);
+			const parsedInsights = isInsight ? parseInsightPayloadText(text) : null;
 			const live = (0, react.useRef)(outcome === null);
 			(0, react.useEffect)(() => {
 				if (!parsedTasks || !live.current) return;
@@ -2775,29 +2825,15 @@ window.__ModuleLoader__.load({
 					]
 				});
 			}
-			if (name === "insight") {
-				if (verb === "list" && parsedInsights) {
-					const scope = parsedInsights.scope;
-					const count = parsedInsights.count ?? parsedInsights.items.length;
-					return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: TaskCommandNode_module_css_default.row,
-						"data-variant": "ok",
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconFolderOpenOutline16, { className: TaskCommandNode_module_css_default.icon }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [
-							"记忆 ",
-							scope,
-							" · ",
-							count,
-							" 条 · 已同步到记忆视图"
-						] })]
-					});
-				}
+			if (isList && (isInsight ? parsedInsights : parsedTasks)) return null;
+			if (isInsight) {
 				const note = String(text ?? "").split("\n")[0].slice(0, 120);
 				return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 					className: TaskCommandNode_module_css_default.row,
 					"data-variant": "ok",
 					children: [
 						"/insight ",
-						verb,
+						insightVerb,
 						" ",
 						note || "已完成"
 					]

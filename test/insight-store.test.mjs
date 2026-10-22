@@ -19,6 +19,7 @@ import {
   recordHit,
   containsSecretFields,
   removeMemory,
+  promoteAllTasksToProject,
 } from '../src/insight-store.js'
 import { ensureGlobalInit } from '../src/global-seed.js'
 import { normalizedTokenOverlap } from '../src/similarity.js'
@@ -240,6 +241,66 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
   assert.equal((gs.items()[0].sourceTaskIds || []).length, 3)
   assert.equal(gs.items()[0].movedFrom.scope, 'project')
   ok('跨任务累积 sourceTaskIds：2 任务→project，3 任务→global（无双写）')
+}
+
+// --- 6b. reflection 草稿只落任务：不覆盖 project、不跨任务合并、未确认不提升 ---
+{
+  const { root, store, globalFile, cfg } = newProject()
+  const gs = new GlobalStore(globalFile).load()
+  taskOf(store, root, 'tsk_d1', 'D1')
+  taskOf(store, root, 'tsk_d2', 'D2')
+  const project = store.commit((s) => saveInsight({
+    store: s, globalStore: gs, scope: 'project', cfg,
+    raw: lesson('JWT 未校验 exp', '作者手写的旧解法', 0.9),
+  }))
+  assert.ok(project.ok)
+  const draftRaw = { ...lesson('JWT 未校验 exp', 'LLM 草稿解法', 0.95), draft: true }
+  const d1 = store.commit((s) => saveInsight({
+    store: s, globalStore: gs, raw: draftRaw, scope: 'task', taskId: 'tsk_d1', cfg, source: 'reflect',
+  }))
+  assert.equal(d1.action, 'created', '草稿必须新建在任务层，而不是合并进 project')
+  assert.equal(store.insightItems()[0].fix, '作者手写的旧解法', 'project 正文不得被草稿覆盖')
+  assert.equal(store.getTask('tsk_d1').insights[0].draft, true)
+  // 第二个任务写同样的草稿：仍各自留在任务层，不跨任务合并
+  const d2 = store.commit((s) => saveInsight({
+    store: s, globalStore: gs, raw: draftRaw, scope: 'task', taskId: 'tsk_d2', cfg, source: 'reflect',
+  }))
+  assert.equal(d2.action, 'created')
+  assert.equal(store.insightItems().length, 1, 'project 仍只有作者那一条')
+  // 即使草稿被手工标成 2 个任务命中，也不能自动提升
+  store.getTask('tsk_d1').insights[0].sourceTaskIds = ['tsk_d1', 'tsk_d2']
+  const promoted = promoteAllTasksToProject(store, gs, cfg, new Date().toISOString())
+  assert.equal(promoted, 0, '草稿不参与自动提升')
+  assert.equal(store.getTask('tsk_d1').insights[0].draft, true)
+  // 显式编辑 = 确认：draft 清掉，旧正文留在 prev
+  const confirmed = store.commit((s) => saveInsight({
+    store: s, globalStore: gs, cfg, raw: { id: d1.id, fix: '人工确认后的解法' },
+  }))
+  assert.equal(confirmed.action, 'updated')
+  const confirmedItem = store.getTask('tsk_d1').insights[0]
+  assert.equal(confirmedItem.draft, false)
+  assert.equal(confirmedItem.fix, '人工确认后的解法')
+  assert.equal(confirmedItem.prev.fix, 'LLM 草稿解法')
+  // 无字段变化也能确认
+  const confirmed2 = store.commit((s) => saveInsight({
+    store: s, globalStore: gs, cfg, raw: { id: d2.id },
+  }))
+  assert.equal(confirmed2.hint, '已确认草稿（draft=false）')
+  assert.equal(store.getTask('tsk_d2').insights[0].draft, false)
+  // 非草稿写入不得把正文并进另一条未确认草稿
+  const draftSpecial = store.commit((s) => saveInsight({
+    store: s, globalStore: gs, cfg, source: 'reflect', scope: 'task', taskId: 'tsk_d1',
+    raw: { ...lesson('草稿专属知识', '草稿正文', 0.9), draft: true },
+  }))
+  const agentSpecial = store.commit((s) => saveInsight({
+    store: s, globalStore: gs, cfg, scope: 'task', taskId: 'tsk_d2',
+    raw: lesson('草稿专属知识', '直接写入的正文', 0.9),
+  }))
+  assert.equal(draftSpecial.action, 'created')
+  assert.equal(agentSpecial.action, 'created', '非草稿写入不得并入 draft')
+  assert.equal(store.getTask('tsk_d1').insights.find((i) => i.id === draftSpecial.id).draft, true, '草稿仍待确认')
+  assert.equal(store.getTask('tsk_d2').insights.find((i) => i.id === agentSpecial.id).draft, false)
+  ok('reflection 草稿：只落任务、不覆盖 project、未确认不提升；显式编辑即确认')
 }
 
 // --- 7. confidence 闸门：2 任务命中但置信不足 → 不提升 ---

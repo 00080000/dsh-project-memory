@@ -370,6 +370,9 @@ export class ProjectMemoryStore {
     this._baseInsightIds = new Set()
     this._lockWarned = false
     this._conflictWarned = new Set()
+    /** 锁竞争跳过落盘后的有限次延迟重试；unref，避免拖住进程退出。 */
+    this._saveRetryTimer = null
+    this._saveRetryAttempts = 0
     this._dirtyInsights = false
     this._dirtyTasks = false
     this._dirtyBinding = false
@@ -418,6 +421,7 @@ export class ProjectMemoryStore {
     this._migrateLegacyIfNeeded()
     this._loadSharded()
     this._loadInsights()
+    this._pruneBindings()
     this._removeLegacyTypeCache()
     // 有些路径只读不写（审计 jsonl 直接写在 store 目录里），所以这里也补一次自我忽略，
     // 让老版本建出来的 store 在第一次 load 就补上。
@@ -510,6 +514,27 @@ export class ProjectMemoryStore {
     if (chars > 0) this._fileTextChars.set(relPath, chars)
     else this._fileTextChars.delete(relPath)
     this._textChars += chars - prev
+  }
+
+  /**
+   * 绑定只对“还能续做”的任务有意义：任务已删除或已归档时清掉对应会话绑定。
+   * 否则 binding.json 会永久留着指向归档任务的条目，下一次 todo 写入又会建新任务。
+   * 只标脏、不立刻落盘——读路径不应为了清理额外写一次盘。
+   */
+  _pruneBindings() {
+    const byId = new Map((this.tasks || []).filter((t) => t && t.id).map((t) => [t.id, t]))
+    let changed = false
+    for (const sid of Object.keys(this.binding || {})) {
+      const task = byId.get(this.binding[sid])
+      if (task && !task.archived) continue
+      delete this.binding[sid]
+      this._deletedBindings.add(sid)
+      changed = true
+    }
+    if (changed) {
+      this._dirtyBinding = true
+      this._auxVersion++
+    }
   }
 
   _loadSharded() {
@@ -737,8 +762,9 @@ export class ProjectMemoryStore {
     if (!release) {
       if (!this._lockWarned) {
         this._lockWarned = true
-        console.error(`[dsh-project-memory] store ${this.dir} is busy (another dsh process is writing); this save was skipped and will retry on the next write.`)
+        console.error(`[dsh-project-memory] store ${this.dir} is busy (another dsh process is writing); this save was skipped and will retry shortly.`)
       }
+      this._scheduleSaveRetry()
       return
     }
     try {
@@ -762,9 +788,21 @@ export class ProjectMemoryStore {
         if (this.files[rel]) {
           const nextSha = this.files[rel].sha256 ?? null
           const base = this._baseFileSha.get(rel) ?? null
-          const disk = this._shardDiskSha(rel)
-          // 磁盘分片在加载后被别的进程改过，且不是我们这一版 → 保留对方的，等下一轮重扫。
+          const disk = this._shardDiskRecord(rel)
+          // 磁盘分片在加载后被别的进程改过，且不是我们这一版：按 indexedAt 收敛，
+          // 本地更新则覆盖（否则显式 index 的结果会静默丢掉），对方更新则把对方读回内存。
           if (disk.exists && disk.sha !== base && disk.sha !== nextSha) {
+            const localAt = Date.parse(this.files[rel].indexedAt || '') || 0
+            const diskAt = Date.parse(disk.record?.indexedAt || '') || 0
+            if (localAt > diskAt) {
+              writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: this.files[rel], entries: (this.entries[rel] || []).map(withoutPersistedDerived) })
+              this._baseFileSha.set(rel, nextSha)
+              continue
+            }
+            this.files[rel] = disk.record
+            this.entries[rel] = (disk.entries || []).map(stripPersistedDerived)
+            this._entriesVersion++
+            this._baseFileSha.set(rel, disk.sha)
             this._warnConflict(rel)
             continue
           }
@@ -778,8 +816,14 @@ export class ProjectMemoryStore {
       this._dirtyShards.clear()
       for (const rel of this._removedShards) {
         const base = this._baseFileSha.get(rel) ?? null
-        const disk = this._shardDiskSha(rel)
+        const disk = this._shardDiskRecord(rel)
         if (disk.exists && disk.sha !== base) {
+          // 删除与另一进程的更新撞车：没有删除时间戳可比，保守采用对方版本，
+          // 至少让内存与磁盘一致（旧实现只跳过写，内存仍认为已删）。
+          this.files[rel] = disk.record
+          this.entries[rel] = (disk.entries || []).map(stripPersistedDerived)
+          this._entriesVersion++
+          this._baseFileSha.set(rel, disk.sha)
           this._warnConflict(rel)
           continue
         }
@@ -813,16 +857,40 @@ export class ProjectMemoryStore {
     } finally {
       release()
     }
+    this._saveRetryAttempts = 0
   }
 
-  /** 读磁盘分片的 record.sha256（不存在/损坏都返回 exists:false）。 */
-  _shardDiskSha(rel) {
+  /** 读磁盘分片（不存在/损坏都返回 exists:false）。 */
+  _shardDiskRecord(rel) {
     try {
       const doc = JSON.parse(readFileSync(shardRelPath(this.dir, rel), 'utf8'))
-      return { exists: true, sha: doc?.record?.sha256 ?? null }
+      if (!isRecord(doc) || typeof doc.relPath !== 'string' || !isRecord(doc.record)) {
+        return { exists: false, sha: null, record: null, entries: [] }
+      }
+      return {
+        exists: true,
+        sha: doc.record.sha256 ?? null,
+        record: doc.record,
+        entries: Array.isArray(doc.entries) ? doc.entries : [],
+      }
     } catch {
-      return { exists: false, sha: null }
+      return { exists: false, sha: null, record: null, entries: [] }
     }
+  }
+
+  /** 锁竞争后的有限次延迟重试；失败仍保持脏状态，下一次写继续尝试。 */
+  _scheduleSaveRetry() {
+    if (this._saveRetryTimer || this._saveRetryAttempts >= 3) return
+    this._saveRetryAttempts++
+    this._saveRetryTimer = setTimeout(() => {
+      this._saveRetryTimer = null
+      try {
+        this.save()
+      } catch (err) {
+        console.error(`[dsh-project-memory] deferred save failed: ${err?.message || err}`)
+      }
+    }, 100)
+    this._saveRetryTimer.unref?.()
   }
 
   /** 冲突只提示一次：这是“对方更新更晚”的正常并发结果，不是每轮刷屏的故障。 */
@@ -1097,16 +1165,31 @@ export class ProjectMemoryStore {
     if (idx === -1) return false
     this.tasks.splice(idx, 1)
     this._deletedTaskIds.add(id)
-    for (const sid of Object.keys(this.binding)) {
-      if (this.binding[sid] === id) {
-        delete this.binding[sid]
-        this._deletedBindings.add(sid)
-      }
-    }
+    this.removeBindingsForTask(id)
     this._dirtyTasks = true
-    this._dirtyBinding = true
     this._auxVersion++
     return true
+  }
+
+  /**
+   * 清掉所有指向该任务的会话绑定。归档/删除任务时调用：任务已停用，绑定再留着
+   * 只会在下一次 todo 写入时被当成"没有任务"再建一条新任务，旧条目却永远占着 binding.json。
+   * @param {string} taskId
+   * @returns {boolean} 是否真的删掉了绑定
+   */
+  removeBindingsForTask(taskId) {
+    let changed = false
+    for (const sid of Object.keys(this.binding)) {
+      if (this.binding[sid] !== taskId) continue
+      delete this.binding[sid]
+      this._deletedBindings.add(sid)
+      changed = true
+    }
+    if (changed) {
+      this._dirtyBinding = true
+      this._auxVersion++
+    }
+    return changed
   }
 
   setBinding(sessionId, taskId) {
@@ -1159,10 +1242,15 @@ export class ProjectMemoryStore {
     return toArchive.length
   }
 
-  commit(fn) {
+  /**
+   * @param {(store: ProjectMemoryStore) => any} fn 变更函数
+   * @param {{save?: boolean}} [options] save=false 时只标脏，由调用方在回合结束统一 flush。
+   *   文件工具每读一次都会更新任务热点，逐次落盘会把 tasks.json 写成每工具调用一次。
+   */
+  commit(fn, options = {}) {
     const result = fn(this)
     this.pruneTasks()
-    this.save()
+    if (options.save !== false) this.save()
     return result
   }
 
