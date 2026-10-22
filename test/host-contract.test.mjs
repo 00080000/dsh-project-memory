@@ -4,7 +4,7 @@
 //      reject 或返回 undefined —— 宿主 agent.ts 直接读 decision.kind，undefined 会崩掉整步。
 //   2. WatchManager 的非法轮询间隔（NaN → 1ms 轮询风暴）与轮询重入（慢轮询叠加）。
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { installAutoInject, isOwnInjection } from '../src/auto-inject.js'
@@ -22,11 +22,19 @@ const ok = (name) => {
 {
   let handler
   const ctx = { on: (event, fn) => { if (event === 'agent/pre-step') handler = fn } }
-  installAutoInject(ctx, { memoryDir: '.dsh-project-memory', autoContext: { enabled: true } })
+  // 隔离根：用临时项目而不是 process.cwd()，否则测试会把审计/影子日志写进开发者真实 store。
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'host-contract-root-'))
+  writeFileSync(path.join(projectRoot, 'package.json'), '{}')
+  const globalFile = path.join(mkdtempSync(path.join(tmpdir(), 'host-contract-global-')), 'global.json')
+  installAutoInject(ctx, {
+    memoryDir: '.dsh-project-memory',
+    autoContext: { enabled: true, rootNotice: false, shadowLog: false, auditLog: false },
+    insight: { globalFile },
+  })
   assert.equal(typeof handler, 'function')
 
   const payload = {
-    agent: { session: { id: 's1', header: { cwd: process.cwd() } } },
+    agent: { session: { id: 's1', header: { cwd: projectRoot } } },
     messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
   }
 
@@ -202,11 +210,11 @@ const ok = (name) => {
   assert.ok(first && first.includes('大 procedure'), '首次应注入 procedure')
   assert.ok(first.includes('去重验证'), '首次应带常驻任务卡')
 
-  // W1 使用记账：注入即写 hitCount/lastHitAt 并**立即落盘**（重开 store 可见）。
+  // W1 使用记账：注入即写 hitCount/lastHitAt 并**立即落盘**（直接读文件，绕过进程内缓存）。
   // 只标脏不落盘的话，注入路径不会走到任何 save()，进程退出就丢。
   {
-    const reread = new GlobalStore(globalFile).load()
-    const hit = reread.items().find((i) => i.id === 'ins_big_procedure')
+    const onDisk = JSON.parse(readFileSync(globalFile, 'utf8'))
+    const hit = onDisk.items.find((i) => i.id === 'ins_big_procedure')
     assert.equal(hit.hitCount, 1, '注入一次 → hitCount=1 且已落盘')
     assert.ok(hit.lastHitAt, 'lastHitAt 已写')
   }

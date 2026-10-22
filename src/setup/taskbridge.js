@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { memoryRootFor, resolveProjectMemoryRoot } from '../util/fs.js'
 import { sessionWorkingDir } from '../util/session-dir.js'
 import { ProjectMemoryStore } from '../store.js'
+import { BoundedMap } from '../util/session-cache.js'
 import { stepContent, stepStatus } from '../util/task-view.js'
 
 const FS_FILE_TOOLS = new Set(['read', 'write', 'edit', 'read_image'])
@@ -281,13 +282,17 @@ export function onSessionEvent(config, session, event, meta, ctx) {
 /** 插件接线：订阅 session/event；卸载时清会话元数据。 */
 export function setupTaskbridge(ctx, config) {
   if (config.tasklist?.enabled === false) return
-  const meta = new Map()
+  // 会话元数据按会话封顶：旧实现用无界 Map，长期运行的 web 进程里每个会话都会永久留一条。
+  const meta = new BoundedMap(200)
   ctx.on('session/event', (session, event) => {
     try {
       onSessionEvent(config, session, event, meta, ctx)
     } catch (err) {
       console.error('[dsh-project-memory] taskbridge:', err?.message)
     }
+  })
+  ctx.on('session/disposed', (session) => {
+    if (session?.id) meta.delete(session.id)
   })
   ctx.effect(() => () => meta.clear())
 }

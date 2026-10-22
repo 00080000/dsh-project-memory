@@ -47,6 +47,23 @@ function taskOf(store, root, id, title) {
 
 const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: pattern, kind: 'lesson', pattern, fix, confidence: conf })
 
+// --- 0. GlobalStore 进程内单例（整份文档读改写，两个实例会互相覆盖） ---
+{
+  const { globalFile } = newProject()
+  const a = new GlobalStore(globalFile).load()
+  const b = new GlobalStore(globalFile).load()
+  assert.equal(a, b)
+  a.items().push({ id: 'g_a', kind: 'lesson', scope: 'global', title: 'A' })
+  a.markDirty()
+  a.commit()
+  b.items().push({ id: 'g_b', kind: 'lesson', scope: 'global', title: 'B' })
+  b.markDirty()
+  b.commit()
+  const onDisk = JSON.parse(readFileSync(globalFile, 'utf8')).items.map((it) => it.id).sort()
+  assert.deepEqual(onDisk, ['g_a', 'g_b'])
+  ok('GlobalStore 进程内单例：两个实例不互相覆盖')
+}
+
 // --- 1. insights.json 存取往返（store.commit 事务） ---
 {
   const { root, store } = newProject()
@@ -185,6 +202,13 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
   assert.equal(store.insightItems().length, 0)
   assert.ok(containsSecretFields({ fix: '-----BEGIN RSA PRIVATE KEY-----\nabc' }))
   assert.ok(!containsSecretFields({ fix: '用 jose 校验 exp' }))
+  // procedure 的正文在 steps 里：这一路也必须过同一把尺子。
+  const rs = store.commit((s) => saveInsight({
+    store: s, globalStore: gs, scope: 'project', cfg,
+    raw: { kind: 'procedure', title: 'steps leak', steps: ['export TOKEN=sk-abcdefghijklmnopqrstuvwxyz123456'] },
+  }))
+  assert.equal(rs.ok, false)
+  assert.match(rs.error, /拒绝写入|密钥|token/i)
   ok('写盘前密文过滤：token/私钥形态拒绝，正常内容放行')
 }
 

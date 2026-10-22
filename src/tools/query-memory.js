@@ -45,29 +45,26 @@ export function queryMemoryTool(ctx, config) {
   return defineTool({
     name: 'query_memory',
     description:
-      'Search persistent project memory: doc summaries and code symbol tables (indexed via index_doc/index_repo), ' +
-      'experience notes (problem -> solution, saved via remember) and insights (lessons / decisions / procedures, ' +
-      'saved via save_lesson). Every hit returns its source path and line, or its insight id, so you can verify. ' +
-      'Docs are cross-linked to the code symbols they mention. ' +
-      'Use BEFORE grepping when you need orientation, a spec constraint, or a past decision.',
+      'Search project memory: docs, symbols, experience and insights. Returns cited sources or insight ids. '
+      + 'Use before grepping for orientation, a spec constraint, or a past decision.',
     parameters: {
       query: {
         type: 'string',
         required: true,
-        description: 'What to look for, e.g. "payment module fees", "who handles refunds", "spec constraint on timeouts".',
+        description: 'What to look for',
       },
       root: {
         type: 'string',
-        description: '搜索用的项目根目录，默认当前工作目录。',
+        description: '项目根（默认当前工作目录）',
       },
       type: {
         type: 'string',
         enum: ['all', 'doc', 'symbol', 'experience', 'insight', 'task'],
-        description: 'Which memory layer to search. Default "all". "insight" searches lessons / decisions / procedures; "task" searches task records.',
+        description: 'all|doc|symbol|experience|insight|task；默认 all',
       },
       limit: {
         type: 'number',
-        description: 'Max results to return. Default 8.',
+        description: '最多返回条数，默认 8',
       },
     },
     output: {
@@ -158,10 +155,12 @@ export function queryMemoryTool(ctx, config) {
           for (const { item: e, weightedScore } of memHits) {
             const absSource = e.sourceLine ? `${toAbs(root, e.sourcePath)}:${e.sourceLine}` : toAbs(root, e.sourcePath)
             const rel = Math.round((weightedScore / top) * 100)
-            const summaryLine = `- ${e.summary}`
+            // 符号没有 summary：它的正文就是一行声明。缺正文时退到标题，绝不输出 `- undefined`。
+            const body = e.type === 'symbol' ? (e.text || e.title) : e.summary
+            const summaryLine = body ? `\n- ${body}` : ''
             // 条目状态占位（可证伪状态机落地前恒为 exact）。
             // 先立字段，后续状态机到位时只改值、不改输出契约。
-            block.push(`### ${e.title} (score: ${rel})\n- source: ${absSource}\n- status: ${e.status || 'exact'}\n${summaryLine}`)
+            block.push(`### ${e.title} (score: ${rel})\n- source: ${absSource}\n- status: ${e.status || 'exact'}${summaryLine}`)
             if (e.type === 'doc') {
               // 读取期解算：链接不落盘，按当前符号表排序取前 5（见 src/link.js）
               const refs = resolveLinkedSymbols(store, e, 5).map(
