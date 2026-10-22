@@ -208,6 +208,16 @@ function evictStoreCache(keepKey) {
     const oldest = storeCache.keys().next().value
     if (oldest === undefined || oldest === keepKey) break
     if (exact) total -= _estimateResidentBytes(storeCache.get(oldest))
+    // 逐出前先落盘：任务热点/人类消息是延迟写的（turn/end 才 flush），
+    // 若这里直接丢实例，还没到回合结束的变更就再也回不来了。save() 无脏数据时自己早退。
+    const evicted = storeCache.get(oldest)
+    if (evicted && evicted.hasDirty()) {
+      try {
+        evicted.save()
+      } catch (err) {
+        console.error(`[dsh-project-memory] evicted store save failed: ${err?.message || err}`)
+      }
+    }
     storeCache.delete(oldest)
   }
   // 没做过精确计量就不报"单实例超预算"：算都没算，报出来的数是估的。真超预算时
@@ -522,12 +532,16 @@ export class ProjectMemoryStore {
    * 只标脏、不立刻落盘——读路径不应为了清理额外写一次盘。
    */
   _pruneBindings() {
-    const byId = new Map((this.tasks || []).filter((t) => t && t.id).map((t) => [t.id, t]))
+    // 旧 store/手工损坏的 JSON 可能不是期望形状；读路径不能因此抛错。
+    const tasks = Array.isArray(this.tasks) ? this.tasks : []
+    const binding = this.binding
+    if (!binding || typeof binding !== 'object' || Array.isArray(binding)) return
+    const byId = new Map(tasks.filter((t) => t && t.id).map((t) => [t.id, t]))
     let changed = false
-    for (const sid of Object.keys(this.binding || {})) {
-      const task = byId.get(this.binding[sid])
+    for (const sid of Object.keys(binding)) {
+      const task = byId.get(binding[sid])
       if (task && !task.archived) continue
-      delete this.binding[sid]
+      delete binding[sid]
       this._deletedBindings.add(sid)
       changed = true
     }
@@ -737,6 +751,17 @@ export class ProjectMemoryStore {
     }
   }
 
+  /** 是否有待落盘的变更；逐出缓存前用它避免为干净 store 触发 save 的旁路副作用。 */
+  hasDirty() {
+    return this._compactQueue.size > 0
+      || this._dirtyShards.size > 0
+      || this._removedShards.size > 0
+      || this._dirtyInsights
+      || this._dirtyTasks
+      || this._dirtyBinding
+      || this._dirtyWatch
+  }
+
   save() {
     // 没有脏数据就不落盘。watch 每轮对每个根都无条件 commit → save；照旧执行的话，
     // 末尾的 ID 缓存失效会打在跨实例共享的 store 上，等于每轮清空一次 IDF 复用（v0.3.4 的 20x）。
@@ -799,10 +824,7 @@ export class ProjectMemoryStore {
               this._baseFileSha.set(rel, nextSha)
               continue
             }
-            this.files[rel] = disk.record
-            this.entries[rel] = (disk.entries || []).map(stripPersistedDerived)
-            this._entriesVersion++
-            this._baseFileSha.set(rel, disk.sha)
+            this._adoptDiskShard(rel, disk)
             this._warnConflict(rel)
             continue
           }
@@ -820,10 +842,7 @@ export class ProjectMemoryStore {
         if (disk.exists && disk.sha !== base) {
           // 删除与另一进程的更新撞车：没有删除时间戳可比，保守采用对方版本，
           // 至少让内存与磁盘一致（旧实现只跳过写，内存仍认为已删）。
-          this.files[rel] = disk.record
-          this.entries[rel] = (disk.entries || []).map(stripPersistedDerived)
-          this._entriesVersion++
-          this._baseFileSha.set(rel, disk.sha)
+          this._adoptDiskShard(rel, disk)
           this._warnConflict(rel)
           continue
         }
@@ -858,6 +877,19 @@ export class ProjectMemoryStore {
       release()
     }
     this._saveRetryAttempts = 0
+  }
+
+  /**
+   * 冲突时采用另一进程的分片：内存里的 record/entries 与磁盘对齐，并让 IDF/驻留账失效。
+   * 磁盘 entries 可能来自旧版本或损坏文件，和 `_loadSharded` 一样只收 record。
+   */
+  _adoptDiskShard(rel, disk) {
+    const entries = (disk.entries || []).filter(isRecord).map(stripPersistedDerived)
+    this.files[rel] = disk.record
+    this.entries[rel] = entries
+    this._setFileTextChars(rel, entryTextChars(entries))
+    this._entriesVersion++
+    this._baseFileSha.set(rel, disk.sha)
   }
 
   /** 读磁盘分片（不存在/损坏都返回 exists:false）。 */

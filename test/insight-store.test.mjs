@@ -292,6 +292,13 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
     store: s, globalStore: gs, cfg, source: 'reflect', scope: 'task', taskId: 'tsk_d1',
     raw: { ...lesson('草稿专属知识', '草稿正文', 0.9), draft: true },
   }))
+  const draftRepeat = store.commit((s) => saveInsight({
+    store: s, globalStore: gs, cfg, source: 'reflect', scope: 'task', taskId: 'tsk_d1',
+    raw: { ...lesson('草稿专属知识', '草稿正文 2', 0.9), draft: true },
+  }))
+  assert.equal(draftRepeat.action, 'merged', '同一任务的重复反思草稿应合并')
+  assert.equal(draftRepeat.id, draftSpecial.id)
+  assert.equal(store.getTask('tsk_d1').insights.filter((i) => i.title === '草稿专属知识' && i.draft).length, 1)
   const agentSpecial = store.commit((s) => saveInsight({
     store: s, globalStore: gs, cfg, scope: 'task', taskId: 'tsk_d2',
     raw: lesson('草稿专属知识', '直接写入的正文', 0.9),
