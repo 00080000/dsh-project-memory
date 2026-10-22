@@ -272,6 +272,9 @@ export function applyUpdate(item, raw, nowIso) {
   }
   item.updatedAt = now
   if (item.archived) item.archived = false
+  // 显式编辑一条草稿 = 作者确认：不再要求先开面板点“确认”。reflection 产出的 draft
+  // 因此可以被 save_lesson 带 id 直接改正文并转正；没有字段变化时也至少完成确认。
+  if (item.draft === true) item.draft = false
   return replaced
 }
 
@@ -832,17 +835,21 @@ export function saveInsight({ store, globalStore, raw, scope, taskId, cfg, sourc
   if (raw && raw.id) {
     const found = findInsightAnywhere({ store, globalStore }, raw.id)
     if (!found) return { ok: false, error: `找不到要更新的条目: ${raw.id}（可能已被删除/提升；用 query_memory 重新确认 id）` }
+    const wasDraft = found.item.draft === true
     const replaced = applyUpdate(found.item, raw, now)
     if (found.scope === 'global') globalStore.markDirty()
     else if (found.scope === 'task') store.markTasksDirty()
     else store.replaceInsightItems(store.insightItems())
+    const hint = replaced.length
+      ? `已就地更新（覆盖字段：${replaced.join('/')}，旧值在 prev）`
+      : wasDraft ? '已确认草稿（draft=false）' : '没有字段变化'
     return {
       ok: true,
       action: 'updated',
       id: raw.id,
       scope: found.scope,
       replaced,
-      hint: replaced.length ? `已就地更新（覆盖字段：${replaced.join('/')}，旧值在 prev）` : '没有字段变化',
+      hint: wasDraft && replaced.length ? `${hint}；草稿已确认` : hint,
     }
   }
   const s = scope || 'project'
@@ -923,74 +930,81 @@ function buildHint(res, pruned, promoted) {
 // ---- scope = task ----
 
 function saveTaskInsight(store, globalStore, task, raw, cfg, now, source, cosine) {
-  // 1) 已有 project 级知识 → 挂成员/命中，不再在 task 层重复存
-  const pjItems = store.insightItems()
-  const base = { ...raw, source, sourceTaskIds: [task.id] }
-  const text = insightMatchText(base)
-  const pjNear = vectorNear(vectorText(base), pjItems, cosine)
-  const pjTarget = autoMergeTarget(pjNear, cfg)
-  if (pjTarget) {
-    const { replaced } = mergeInto(pjTarget.item, base, cfg, now)
-    store.replaceInsightItems(pjItems)
-    applyDecay(pjItems, cfg, now)
-    pruneItems(pjItems, cfg.maxProject, now)
-    const promoted = promoteProjectToGlobal(store, globalStore, cfg, now)
-    return { ok: true, action: 'auto-merged', id: pjTarget.item.id, scope: 'project', replaced, cos: Number(pjTarget.top1.toFixed(3)), hint: `相似度 ${pjTarget.top1.toFixed(3)}，已自动覆盖 project 级既有条目${replaced.length ? `（覆盖字段 ${replaced.join('/')}）` : ''}${promoted ? '；已自动提升 global' : ''}` }
-  }
-  const pjHit = findBestOverlapMatch(text, pjItems)
-  if (pjHit && pjHit.score >= cfg.dedupOverlap) {
-    const { replaced } = mergeInto(pjHit.item, base, cfg, now)
-    store.replaceInsightItems(pjItems)
-    applyDecay(pjItems, cfg, now)
-    pruneItems(pjItems, cfg.maxProject, now)
-    const promoted = promoteProjectToGlobal(store, globalStore, cfg, now)
-    return { ok: true, action: 'linked-project', id: pjHit.item.id, scope: 'project', replaced, hint: `该知识已在 project 级，累计第 ${(pjHit.item.sourceTaskIds || []).length} 个任务命中${promoted ? '；已自动提升 global' : ''}` }
-  }
-  // 2) 已有 global 级知识 → 同样只挂命中
-  if (globalStore) {
-    const glNear = vectorNear(vectorText(base), globalStore.items(), cosine)
-    const glTarget = autoMergeTarget(glNear, cfg)
-    if (glTarget) {
-      const { replaced } = mergeInto(glTarget.item, base, cfg, now)
-      globalStore.markDirty()
-      return { ok: true, action: 'auto-merged', id: glTarget.item.id, scope: 'global', replaced, cos: Number(glTarget.top1.toFixed(3)), hint: `相似度 ${glTarget.top1.toFixed(3)}，已自动覆盖 global 级既有条目${replaced.length ? `（覆盖字段 ${replaced.join('/')}）` : ''}` }
+  // 反思产出是**待确认草稿**：只落在当前任务，绝不参与 project/global/跨任务的自动合并或
+  // 自动提升。否则一条 LLM 生成的 draft 可以覆盖作者手写的 project 级知识，草稿审核也就
+  // 失去意义。确认走显式编辑（applyUpdate 会清 draft）或面板的 confirm。
+  const draftOnly = raw.draft === true || source === 'reflect'
+  if (!draftOnly) {
+    // 1) 已有 project 级知识 → 挂成员/命中，不再在 task 层重复存
+    const pjItems = store.insightItems()
+    const base = { ...raw, source, sourceTaskIds: [task.id] }
+    const text = insightMatchText(base)
+    const pjNear = vectorNear(vectorText(base), pjItems, cosine)
+    const pjTarget = autoMergeTarget(pjNear, cfg)
+    if (pjTarget) {
+      const { replaced } = mergeInto(pjTarget.item, base, cfg, now)
+      store.replaceInsightItems(pjItems)
+      applyDecay(pjItems, cfg, now)
+      pruneItems(pjItems, cfg.maxProject, now)
+      const promoted = promoteProjectToGlobal(store, globalStore, cfg, now)
+      return { ok: true, action: 'auto-merged', id: pjTarget.item.id, scope: 'project', replaced, cos: Number(pjTarget.top1.toFixed(3)), hint: `相似度 ${pjTarget.top1.toFixed(3)}，已自动覆盖 project 级既有条目${replaced.length ? `（覆盖字段 ${replaced.join('/')}）` : ''}${promoted ? '；已自动提升 global' : ''}` }
     }
-    const glHit = findBestOverlapMatch(text, globalStore.items())
-    if (glHit && glHit.score >= cfg.dedupOverlap) {
-      const { replaced } = mergeInto(glHit.item, base, cfg, now)
-      globalStore.markDirty()
-      return { ok: true, action: 'linked-global', id: glHit.item.id, scope: 'global', replaced, hint: `该知识已在 global 级，累计第 ${(glHit.item.sourceTaskIds || []).length} 个任务命中` }
+    const pjHit = findBestOverlapMatch(text, pjItems)
+    if (pjHit && pjHit.score >= cfg.dedupOverlap) {
+      const { replaced } = mergeInto(pjHit.item, base, cfg, now)
+      store.replaceInsightItems(pjItems)
+      applyDecay(pjItems, cfg, now)
+      pruneItems(pjItems, cfg.maxProject, now)
+      const promoted = promoteProjectToGlobal(store, globalStore, cfg, now)
+      return { ok: true, action: 'linked-project', id: pjHit.item.id, scope: 'project', replaced, hint: `该知识已在 project 级，累计第 ${(pjHit.item.sourceTaskIds || []).length} 个任务命中${promoted ? '；已自动提升 global' : ''}` }
     }
-  }
-  // 3) 跨任务池去重合并（同一坑只留一份，sourceTaskIds 累积）
-  const pool = allTaskInsights(store)
-  const poolNear = vectorNear(vectorText(base), pool, cosine)
-  const poolTarget = autoMergeTarget(poolNear, cfg)
-  if (poolTarget) {
-    const { replaced } = mergeInto(poolTarget.item, base, cfg, now)
-    store.markTasksDirty()
-    const holder = taskContaining(store, poolTarget.item.id)
-    if (holder) {
-      const promoted = promoteAllTasksToProject(store, globalStore, cfg, now)
-      return { ok: true, action: 'auto-merged', id: poolTarget.item.id, taskId: holder.id, scope: 'task', replaced, cos: Number(poolTarget.top1.toFixed(3)), hint: `相似度 ${poolTarget.top1.toFixed(3)}，已自动覆盖任务 ${holder.id} 的既有条目${replaced.length ? `（覆盖字段 ${replaced.join('/')}）` : ''}${promoted ? `；自动提升 project ${promoted} 条` : ''}` }
+    // 2) 已有 global 级知识 → 同样只挂命中
+    if (globalStore) {
+      const glNear = vectorNear(vectorText(base), globalStore.items(), cosine)
+      const glTarget = autoMergeTarget(glNear, cfg)
+      if (glTarget) {
+        const { replaced } = mergeInto(glTarget.item, base, cfg, now)
+        globalStore.markDirty()
+        return { ok: true, action: 'auto-merged', id: glTarget.item.id, scope: 'global', replaced, cos: Number(glTarget.top1.toFixed(3)), hint: `相似度 ${glTarget.top1.toFixed(3)}，已自动覆盖 global 级既有条目${replaced.length ? `（覆盖字段 ${replaced.join('/')}）` : ''}` }
+      }
+      const glHit = findBestOverlapMatch(text, globalStore.items())
+      if (glHit && glHit.score >= cfg.dedupOverlap) {
+        const { replaced } = mergeInto(glHit.item, base, cfg, now)
+        globalStore.markDirty()
+        return { ok: true, action: 'linked-global', id: glHit.item.id, scope: 'global', replaced, hint: `该知识已在 global 级，累计第 ${(glHit.item.sourceTaskIds || []).length} 个任务命中` }
+      }
     }
-  }
-  const hit = findBestOverlapMatch(text, pool)
-  if (hit && hit.score >= cfg.dedupOverlap) {
-    const { replaced } = mergeInto(hit.item, base, cfg, now)
-    const holder = taskContaining(store, hit.item.id)
-    if (holder) {
+    // 3) 跨任务池去重合并（同一坑只留一份，sourceTaskIds 累积）。
+    // 草稿不是已确认知识：非草稿写入不得把正文并进一条 draft（那会让新知识永远停在待审状态）。
+    const pool = allTaskInsights(store).filter((it) => it.draft !== true)
+    const poolNear = vectorNear(vectorText(base), pool, cosine)
+    const poolTarget = autoMergeTarget(poolNear, cfg)
+    if (poolTarget) {
+      const { replaced } = mergeInto(poolTarget.item, base, cfg, now)
       store.markTasksDirty()
-      const holderId = holder.id
-      const promoted = promoteAllTasksToProject(store, globalStore, cfg, now)
-      const size = (hit.item.sourceTaskIds || []).length
-      return {
-        ok: true,
-        action: 'merged',
-        id: hit.item.id,
-        taskId: holderId,
-        replaced,
-        hint: `跨任务去重：并入任务 ${holderId} 既有条目（现 ${size} 个任务命中）${replaced.length ? `，覆盖字段 ${replaced.join('/')}` : ''}${promoted ? `；自动提升 project ${promoted} 条` : ''}`,
+      const holder = taskContaining(store, poolTarget.item.id)
+      if (holder) {
+        const promoted = promoteAllTasksToProject(store, globalStore, cfg, now)
+        return { ok: true, action: 'auto-merged', id: poolTarget.item.id, taskId: holder.id, scope: 'task', replaced, cos: Number(poolTarget.top1.toFixed(3)), hint: `相似度 ${poolTarget.top1.toFixed(3)}，已自动覆盖任务 ${holder.id} 的既有条目${replaced.length ? `（覆盖字段 ${replaced.join('/')}）` : ''}${promoted ? `；自动提升 project ${promoted} 条` : ''}` }
+      }
+    }
+    const hit = findBestOverlapMatch(text, pool)
+    if (hit && hit.score >= cfg.dedupOverlap) {
+      const { replaced } = mergeInto(hit.item, base, cfg, now)
+      const holder = taskContaining(store, hit.item.id)
+      if (holder) {
+        store.markTasksDirty()
+        const holderId = holder.id
+        const promoted = promoteAllTasksToProject(store, globalStore, cfg, now)
+        const size = (hit.item.sourceTaskIds || []).length
+        return {
+          ok: true,
+          action: 'merged',
+          id: hit.item.id,
+          taskId: holderId,
+          replaced,
+          hint: `跨任务去重：并入任务 ${holderId} 既有条目（现 ${size} 个任务命中）${replaced.length ? `，覆盖字段 ${replaced.join('/')}` : ''}${promoted ? `；自动提升 project ${promoted} 条` : ''}`,
+        }
       }
     }
   }
@@ -1016,6 +1030,8 @@ export function promoteAllTasksToProject(store, globalStore, cfg, now) {
     const list = task.insights || []
     for (const ins of [...list]) {
       if (ins.scope && ins.scope !== 'task') continue
+      // 草稿必须先被确认；自动提升绕过审核就等于把 reflection 的猜测变成项目资产。
+      if (ins.draft === true) continue
       const members = new Set(ins.sourceTaskIds || [])
       if (members.size < 2) continue
       if (num(ins.confidence, 0) < cfg.promoteConfidence) continue
@@ -1059,6 +1075,7 @@ export function promoteProjectToGlobal(store, globalStore, cfg, now) {
   let moved = 0
   for (const ins of [...items]) {
     if (ins.scope && ins.scope !== 'project') continue
+    if (ins.draft === true) continue
     const members = new Set(ins.sourceTaskIds || [])
     if (members.size < cfg.globalPromoteTasks) continue
     const glItems = globalStore.items()

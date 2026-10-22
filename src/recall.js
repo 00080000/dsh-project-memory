@@ -138,6 +138,8 @@ export function insightToEntry(ins) {
     kind: ins?.kind,
     scope: ins?.scope,
     confidence: ins?.confidence,
+    // 上一版被覆盖的字段：pull 侧要能显示，模型才知道能不能写回。
+    prev: ins?.prev && typeof ins.prev === 'object' ? ins.prev : undefined,
     files: Array.isArray(ins?.files) ? ins.files : [],
     symbols: Array.isArray(ins?.symbols) ? ins.symbols : [],
     title: String(ins?.title || '(untitled)'),

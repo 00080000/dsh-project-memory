@@ -202,7 +202,7 @@ export function onSessionEvent(config, session, event, meta, ctx) {
             // 直接改了 task 内容就必须走标脏入口：只手置 _dirtyTasks 会漏掉驻留估算的新版本维。
             s.markTasksDirty()
           }
-        })
+        }, { save: false })
       } catch {
         /* 人类消息戳记失败不影响主流程 */
       }
@@ -269,13 +269,34 @@ export function onSessionEvent(config, session, event, meta, ctx) {
     if (!rel) return
     const kind = WRITE_TOOLS.has(data.name) ? 'write' : READ_TOOLS.has(data.name) ? 'read' : null
     if (!kind) return
+    // 文件工具调用是最高频的写口：每次 commit 都落盘会把 tasks.json 写成“每读一个文件一次”。
+    // 这里只改内存 + 标脏，回合结束（turn/end）或会话销毁时统一 flush。
     store.commit((s) => {
       const task = s.getTask(taskId)
       if (!task || task.archived) return
       touchTaskFile(task, rel, kind, now)
       task.lastActiveAt = now
       s.markTasksDirty()
-    })
+    }, { save: false })
+  }
+}
+
+/** 把延迟写的任务变更落盘；没有脏数据时 save() 自身早退。 */
+export function flushTaskStore(cwd, config) {
+  if (!cwd) return
+  try {
+    const { store } = taskStoreFor(cwd, config)
+    if (store) store.save()
+  } catch (err) {
+    console.error('[dsh-project-memory] taskbridge flush:', err?.message || err)
+  }
+}
+
+function flushSessionTaskStore(session, config, ctx) {
+  try {
+    flushTaskStore(sessionWorkingDir(session, { ctx }), config)
+  } catch (err) {
+    console.error('[dsh-project-memory] taskbridge flush:', err?.message || err)
   }
 }
 
@@ -290,8 +311,13 @@ export function setupTaskbridge(ctx, config) {
     } catch (err) {
       console.error('[dsh-project-memory] taskbridge:', err?.message)
     }
+    // 文件热点/人类消息戳记是延迟写：回合结束补一次落盘，崩溃时最多丢一个回合的计数。
+    if (event?.type === 'turn/end') {
+      flushSessionTaskStore(session, config, ctx)
+    }
   })
   ctx.on('session/disposed', (session) => {
+    flushSessionTaskStore(session, config, ctx)
     if (session?.id) meta.delete(session.id)
   })
   ctx.effect(() => () => meta.clear())

@@ -41,6 +41,19 @@ function bestHint(hits) {
   return best
 }
 
+/** 被覆盖字段的上一版：只显示一行，方便模型判断是否写回；空槽不占位。 */
+function previousLine(item) {
+  if (!item || !item.prev || typeof item.prev !== 'object' || Array.isArray(item.prev)) return ''
+  const parts = []
+  for (const [key, value] of Object.entries(item.prev)) {
+    if (value === undefined || value === null || value === '') continue
+    const text = typeof value === 'string' ? value : JSON.stringify(value)
+    if (!text) continue
+    parts.push(`${key}=${text}`)
+  }
+  return parts.length ? parts.join('; ').slice(0, 300) : ''
+}
+
 export function queryMemoryTool(ctx, config) {
   return defineTool({
     name: 'query_memory',
@@ -142,25 +155,39 @@ export function queryMemoryTool(ctx, config) {
         }
       }
       if (wantMemory) {
-        // doc/symbol 同源同尺度：合并后按加权分排序（规范段提权已计入 weightedScore）
-        const memHits = recalled.layers
-          .filter((l) => l.layer === 'doc' || l.layer === 'symbol')
-          .flatMap((l) => l.hits)
-          .sort((a, b) => b.weightedScore - a.weightedScore)
-          .slice(0, limit)
+        // doc/symbol 的原始 BM25 分不可直接比：符号正文短，同等相关时分会更高/更低，
+        // 用原始分排序会让一层把另一层整体挤掉。先按**层内相对分 rel** 排序，并在
+        // limit≥2 时各保留一条，剩余名额再按 rel 填。
+        const docHits = recalled.layers.find((l) => l.layer === 'doc')?.hits || []
+        const symbolHits = recalled.layers.find((l) => l.layer === 'symbol')?.hits || []
+        const byRel = (a, b) => (b.rel || 0) - (a.rel || 0) || (b.weightedScore || 0) - (a.weightedScore || 0)
+        const merged = [...docHits, ...symbolHits].sort(byRel)
+        const picked = []
+        const seenHits = new Set()
+        const take = (h) => {
+          if (!h || picked.length >= limit) return
+          const key = h.item?.id || `${h.item?.type}:${h.item?.title}`
+          if (seenHits.has(key)) return
+          seenHits.add(key)
+          picked.push(h)
+        }
+        if (limit >= 2) {
+          for (const h of [docHits[0], symbolHits[0]].filter(Boolean).sort(byRel)) take(h)
+        }
+        for (const h of merged) take(h)
+        const memHits = picked
         memHitCount = memHits.length
         if (memHits.length) {
-          const top = memHits[0].weightedScore || 1
           const block = [`## Memory (${type === 'all' ? 'docs + symbols' : type})`]
-          for (const { item: e, weightedScore } of memHits) {
+          for (const { item: e, rel } of memHits) {
             const absSource = e.sourceLine ? `${toAbs(root, e.sourcePath)}:${e.sourceLine}` : toAbs(root, e.sourcePath)
-            const rel = Math.round((weightedScore / top) * 100)
+            const score = Math.round((rel || 0) * 100)
             // 符号没有 summary：它的正文就是一行声明。缺正文时退到标题，绝不输出 `- undefined`。
             const body = e.type === 'symbol' ? (e.text || e.title) : e.summary
             const summaryLine = body ? `\n- ${body}` : ''
             // 条目状态占位（可证伪状态机落地前恒为 exact）。
             // 先立字段，后续状态机到位时只改值、不改输出契约。
-            block.push(`### ${e.title} (score: ${rel})\n- source: ${absSource}\n- status: ${e.status || 'exact'}${summaryLine}`)
+            block.push(`### ${e.title} (score: ${score})\n- source: ${absSource}\n- status: ${e.status || 'exact'}${summaryLine}`)
             if (e.type === 'doc') {
               // 读取期解算：链接不落盘，按当前符号表排序取前 5（见 src/link.js）
               const refs = resolveLinkedSymbols(store, e, 5).map(
@@ -180,8 +207,9 @@ export function queryMemoryTool(ctx, config) {
             const scope = e.scope ? `, scope: ${e.scope}` : ''
             const files = e.files && e.files.length ? `\n- files: ${e.files.map((f) => toAbs(root, f)).join(', ')}` : ''
             const conf = typeof e.confidence === 'number' ? `\n- confidence: ${e.confidence}` : ''
+            const previous = previousLine(e)
             block.push(
-              `### ${e.title} (score: ${Math.round(rel * 100)}, kind: ${e.kind}${scope}, id: ${e.insightId})\n- ${e.summary}${files}${conf}`,
+              `### ${e.title} (score: ${Math.round(rel * 100)}, kind: ${e.kind}${scope}, id: ${e.insightId})\n- ${e.summary}${files}${conf}${previous ? `\n- previous: ${previous}` : ''}`,
             )
           }
           sections.push({ block, best: bestHint(bucket.hits) })

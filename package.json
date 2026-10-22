@@ -26,6 +26,7 @@
     "bench": "node scripts/bench.mjs",
     "bench:synthetic": "node scripts/bench-synthetic.mjs",
     "bench:peak": "node --expose-gc scripts/file-peak.mjs",
+    "bench:store": "node scripts/bench-store.mjs",
     "schema:size": "node scripts/tool-schema-size.mjs",
     "build:client": "tsdown"
   },

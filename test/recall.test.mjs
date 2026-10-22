@@ -275,4 +275,37 @@ function exec0(root, sessionId = 'sess_unbound') {
   ok('输出顺序：doc-only 查询保持 Memory 在前')
 }
 
+// ---- 17. prev 在 pull 侧可见：模型能判断是否写回旧值 ----
+{
+  const { root, store, gs, cfg } = newProject()
+  const r = store.commit((s) => saveInsight({
+    store: s, globalStore: gs, scope: 'project', cfg,
+    raw: { ...INSIGHT, fix: '旧解法：先扫 src 注释' },
+  }))
+  store.commit((s) => saveInsight({
+    store: s, globalStore: gs, cfg,
+    raw: { id: r.id, fix: '新解法：先扫 src 注释与 CHANGELOG' },
+  }))
+  const toolCfg = { ...CONFIG, insight: { globalFile: path.join(root, 'global.json') } }
+  const out = await queryMemoryTool({}, toolCfg).execute({ query: QUERY, root, type: 'insight' }, exec0(root))
+  assert.match(out, /previous: fix=旧解法：先扫 src 注释/, `prev 必须出现在 pull 输出里：${out}`)
+  ok('query_memory：覆盖字段的上一版（prev）可见')
+}
+
+// ---- 18. doc/symbol 跨层合并不再按原始 BM25 分互相挤占 ----
+{
+  const root = mkdtempSync(path.join(tmpdir(), 'pm-merge-doc-sym-'))
+  const filler = 'alpha '.repeat(40)
+  for (let i = 0; i < 6; i++) {
+    writeFileSync(path.join(root, `doc${i}.md`), `# alpha doc ${i}\n\n${filler}\n`)
+  }
+  writeFileSync(path.join(root, 'alpha.js'), 'export function alphaFn() { return 1 }\n')
+  await indexRepository({}, CONFIG, root, {})
+  const toolCfg = { ...CONFIG, insight: { globalFile: path.join(root, 'global.json') } }
+  const out = await queryMemoryTool({}, toolCfg).execute({ query: 'alpha', root, limit: 2 }, exec0(root))
+  assert.match(out, /alphaFn/, `limit=2 时符号层必须保留一条：${out}`)
+  assert.match(out, /alpha doc/, `limit=2 时文档层必须保留一条：${out}`)
+  ok('doc/symbol 跨层合并：按层内相对分排序，并各保留一条')
+}
+
 console.log(`\nrecall tests: ${passed} passed`)

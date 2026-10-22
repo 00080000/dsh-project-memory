@@ -99,20 +99,26 @@ const BASE_CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
   ok('buildInjection → 任务级 entry（常驻块）')
 }
 
-// --- 6. 热点文件变化不改变去重指纹（不触发重新注入）---
+// --- 6. “编辑中”行变化必须改变去重指纹；同一个文件的写时间变化不改变 ---
 {
   const file = path.join(mkdtempSync(path.join(tmpdir(), 'inject-hot-')), 'global.json')
   const cfg = cfgEngine({})
-  const mkTask = () => ({
+  const mkTask = (files = ['a.js'], extraMeta = {}) => ({
     id: 'tsk_h', title: '重构 auth JWT', steps: [{ content: '接 jose' }], insights: [],
-    files: ['a.js'], fileMeta: { 'a.js': { lastWriteAt: '2024-01-01T00:00:00.000Z', lastReadAt: '2024-01-01T00:00:00.000Z' } },
+    files,
+    fileMeta: {
+      'a.js': { lastWriteAt: '2024-01-01T00:00:00.000Z', lastReadAt: '2024-01-01T00:00:00.000Z' },
+      ...extraMeta,
+    },
   })
   const build = (task) => buildInjection({ query: '继续重构', task, globalStore: new GlobalStore(file).load(), projectTagsList: [], cfg })
   const before = build(mkTask())
-  const after = build({ ...mkTask(), files: ['b.js', 'a.js'], fileMeta: { 'a.js': { lastWriteAt: '2024-01-01T00:00:00.000Z', lastReadAt: '2024-01-01T00:00:00.000Z' }, 'b.js': { lastWriteAt: '2024-02-02T00:00:00.000Z', lastReadAt: '2024-02-02T00:00:00.000Z' } } })
-  assert.notEqual(before.text, after.text, '热点文件变化后注入文本确实变了')
-  assert.equal(before.dedupeText, after.dedupeText, '但去重指纹文本保持稳定')
-  ok('热点文件变化不触发重新注入（dedupeText 稳定）')
+  const after = build(mkTask(['b.js', 'a.js'], { 'b.js': { lastWriteAt: '2024-02-02T00:00:00.000Z', lastReadAt: '2024-02-02T00:00:00.000Z' } }))
+  assert.notEqual(before.text, after.text, '热点文件集合变化后注入文本确实变了')
+  assert.notEqual(before.dedupeText, after.dedupeText, '“编辑中”变化必须改变去重指纹')
+  const sameFileLater = build(mkTask(['a.js'], { 'a.js': { lastWriteAt: '2024-03-03T00:00:00.000Z', lastReadAt: '2024-03-03T00:00:00.000Z' } }))
+  assert.equal(before.dedupeText, sameFileLater.dedupeText, '同一个文件反复写不应改变指纹')
+  ok('“编辑中”集合变化触发更新，同一文件的写时间变化不触发')
 }
 
 // --- 7. project-profile：tags 解析与缓存 ---

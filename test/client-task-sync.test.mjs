@@ -50,4 +50,16 @@ ok('载荷取根：非空字符串才算，其余归一为 null')
   ok('面板刷新不写会话历史：refresh 只发 /tasks')
 }
 
+// 5) 切页不得再发 /tasks；列表型命令节点不再渲染
+{
+  const panel = readFileSync(new URL('../src/client/TaskPanel.tsx', import.meta.url), 'utf8')
+  assert.ok(panel.includes('}, [ui.closed, sessionId])'), '面板补数据只依赖开关/会话，不依赖当前页')
+  assert.ok(!panel.includes('[ui.closed, ui.view, sessionId]'), '切页不得触发 /tasks 刷新')
+  const node = readFileSync(new URL('../src/client/TaskCommandNode.tsx', import.meta.url), 'utf8')
+  assert.match(node, /isTasks && verb === 'insight'/, '必须识别合并后的 /tasks insight …')
+  assert.match(node, /sub === 'list'/, '必须识别 /tasks insight list')
+  assert.match(node, /if \(isList && \(isInsight \? parsedInsights : parsedTasks\)\) return null/, '列表命令成功时不再渲染节点')
+  ok('切页不刷新任务数据；列表型命令节点不渲染')
+}
+
 console.log(`\nclient-task-sync tests: ${passed} passed`)
