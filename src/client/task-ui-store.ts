@@ -43,6 +43,19 @@ function defaultPosition(): { x: number; y: number } {
   return { x: 0, y: 0 }
 }
 
+/** 位置必须留在视口内：换小屏/拔掉外接屏后，持久化的坐标可能已经看不见。 */
+function clampPosition(value: unknown): { x: number; y: number } {
+  if (typeof window === 'undefined') return defaultPosition()
+  const pos = value as { x?: unknown; y?: unknown } | null | undefined
+  const x = Number(pos?.x)
+  const y = Number(pos?.y)
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return defaultPosition()
+  return {
+    x: Math.max(8, Math.min(x, window.innerWidth - 80)),
+    y: Math.max(8, Math.min(y, window.innerHeight - 40)),
+  }
+}
+
 /**
  * 启动时的初始状态：
  * - closed 恒为 true（不读取 localStorage 的 closed），刷新后面板隐藏；
@@ -56,7 +69,7 @@ function getDefaultUIState(): TaskUIState {
         const parsed = JSON.parse(saved)
         return {
           expandedTaskIds: Array.isArray(parsed.expandedTaskIds) ? parsed.expandedTaskIds : [],
-          panelPosition: parsed.panelPosition ?? defaultPosition(),
+          panelPosition: clampPosition(parsed.panelPosition),
           minimized: parsed.minimized !== false,
           closed: true,
           theme: typeof parsed.theme === 'string' ? parsed.theme : 'native',
@@ -114,7 +127,7 @@ export const taskUIStore = {
       setUIState({ ...uiState, expandedTaskIds: taskIds })
     },
     setPanelPosition(pos: { x: number; y: number }): void {
-      setUIState({ ...uiState, panelPosition: pos })
+      setUIState({ ...uiState, panelPosition: clampPosition(pos) })
     },
     open(): void {
       setUIState({ ...uiState, minimized: false, closed: false })

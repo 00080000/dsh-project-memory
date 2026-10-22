@@ -425,7 +425,7 @@ export function MemoryView({
               </div>
               {row.body && row.body !== row.title && <div className={css.memBody}>{String(row.body).slice(0, 160)}</div>}
               <div className={css.memActs}>
-                <Button variant="outline" size="sm" disabled={busy} onClick={() => startEdit(row)}>{t('mem.edit')}</Button>
+                {scope !== 'task' && <Button variant="outline" size="sm" disabled={busy} onClick={() => startEdit(row)}>{t('mem.edit')}</Button>}
                 {scope === 'task' && !row.archived && (
                   <>
                     {row.draft && <Button variant="outline" size="sm" disabled={busy} onClick={() => void act('confirm', row.id)}>{t('mem.confirm')}</Button>}

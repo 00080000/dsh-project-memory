@@ -10,7 +10,7 @@ import { readFileSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { normalizedTokenOverlap, findBestOverlapMatch, insightMatchText } from './similarity.js'
-import { writeJsonAtomic } from './util/fs.js'
+import { acquireDirLock, writeJsonAtomic } from './util/fs.js'
 import { backfillDerivedTriggers } from './readiness.js'
 import { vectorText } from './vector-index.js'
 import { tokenize } from './util/search.js'
@@ -42,6 +42,13 @@ export function containsSecretFields(ins, fields = ['title', 'body', 'pattern', 
 
 function num(v, d) {
   return typeof v === 'number' && Number.isFinite(v) ? v : d
+}
+
+/** 两个 ISO 时间戳的先后；缺失/非法一律 0。 */
+function newerIso(a, b) {
+  const ta = Date.parse(a || '') || 0
+  const tb = Date.parse(b || '') || 0
+  return ta - tb
 }
 
 /** 合并配置（config.insight 之上补默认）。 */
@@ -522,6 +529,9 @@ export class GlobalStore {
     this.file = file
     this.doc = null
     this._dirty = false
+    this._baseIds = new Set()
+    this._deletedIds = new Set()
+    this._lockWarned = false
   }
 
   load() {
@@ -537,6 +547,7 @@ export class GlobalStore {
     this.doc = normalizeDoc(readJson(this.file, null))
     // 与 project 级一致：global 条目也要补派生 trigger（提示通道用它提升召回；确定性、幂等）。
     if (backfillDerivedTriggers(this.doc)) this.markDirty()
+    this._baseIds = new Set(this.doc.items.map((it) => it?.id).filter(Boolean))
     globalStoreCache.set(key, this)
     return this
   }
@@ -549,12 +560,42 @@ export class GlobalStore {
     this._dirty = true
   }
 
-  /** 变更提交：fn(this.doc) 后原子落盘。 */
+  /** 变更提交：fn(this.doc) 后加锁、合并另一进程的磁盘状态、原子落盘。 */
   commit(fn) {
     const res = fn ? fn(this.doc, this) : undefined
-    if (this._dirty || res !== undefined) {
+    if (!this._dirty && res === undefined) return res
+    // 本进程从基线里删掉的 id（removeMemory 直接 splice，没有单独的删除 API）。
+    const current = new Set(this.doc.items.map((it) => it?.id).filter(Boolean))
+    for (const id of this._baseIds) if (!current.has(id)) this._deletedIds.add(id)
+    for (const id of current) this._deletedIds.delete(id)
+    const release = acquireDirLock(path.dirname(this.file))
+    if (!release) {
+      if (!this._lockWarned) {
+        this._lockWarned = true
+        console.error(`[dsh-project-memory] global store ${this.file} is busy (another dsh process is writing); this save was skipped and will retry on the next write.`)
+      }
+      return res
+    }
+    try {
+      const disk = normalizeDoc(readJson(this.file, null))
+      const byId = new Map()
+      for (const it of disk.items) if (it?.id) byId.set(it.id, it)
+      for (const it of this.doc.items) {
+        if (!it?.id) continue
+        if (this._deletedIds.has(it.id)) {
+          byId.delete(it.id)
+          continue
+        }
+        const prev = byId.get(it.id)
+        if (!prev || newerIso(it.updatedAt, prev.updatedAt) >= 0) byId.set(it.id, it)
+      }
+      for (const id of this._deletedIds) byId.delete(id)
+      this.doc.items = [...byId.values()]
       writeJsonAtomic(this.file, this.doc)
       this._dirty = false
+      this._baseIds = new Set(this.doc.items.map((it) => it?.id).filter(Boolean))
+    } finally {
+      release()
     }
     return res
   }

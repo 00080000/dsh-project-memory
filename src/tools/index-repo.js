@@ -1,7 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
 import { statSync } from 'node:fs'
-import { assertIndexRoot, assertSafeRoot, memoryDirName, memoryRootFor, relativePath, scanLimits, storeKey, walkDir } from '../util/fs.js'
+import { assertIndexRoot, assertSafeRoot, listProjectFiles, memoryDirName, memoryRootFor, relativePath, scanLimits, storeKey } from '../util/fs.js'
 import { DROP, OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from '../index-pipeline.js'
 import { ProjectMemoryStore } from '../store.js'
 import { onFileIndexed, isTypeScriptFile, enhanceQueueStats } from '../enhancer.js'
@@ -38,7 +38,7 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
     batch = []
   }
 
-  const { files, truncated, capped, skipped: nestedRoots, unreadable } = walkDir(root, {
+  const { files, truncated, capped, skipped: nestedRoots, unreadable } = listProjectFiles(root, {
     ...scanLimits(config),
     nestedStoreName: memoryDirName(config),
   })
@@ -87,7 +87,7 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
   const stats = store.stats()
   let report =
     `Indexed project: ${root}\n` +
-    `docs indexed: ${indexed}, code symbols updated: ${updated}, unchanged skipped: ${skipped}, removed: ${removed}\n` +
+    `docs indexed: ${indexed}, code files updated: ${updated}, unchanged skipped: ${skipped}, removed: ${removed}\n` +
     `memory store: ${stats.files} files, ${stats.entries} entries, ${stats.experience} experience notes`
   if (unreadable.length) {
     const rels = unreadable.map((p) => storeKey(relativePath(root, p)))

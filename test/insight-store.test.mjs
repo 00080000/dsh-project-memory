@@ -663,7 +663,7 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
 
 // --- 17. 自动覆盖的"池内相对带"：同质池里 0.92 不再覆盖，稀疏池里照旧覆盖 ---
 // 绝对阈值 0.9 是损的：语料一旦模板化（池内彼此都很像），0.9 会开始命中**不同**的知识，
-// 而这条带是破坏性写入。判据改成 max(autoMergeCos, 池内 μ+5σ)，只收紧不放宽。
+// 而这条带是破坏性写入。判据改成 max(autoMergeCos, 池内 μ+3σ)，只收紧不放宽。
 {
   const seed = (n) => {
     const p = newProject()

@@ -13,8 +13,9 @@ import {
   IconQuestionOutline14,
 } from './icons.ts'
 import { createTranslate, zh, en } from './locales.ts'
+import { invokeCommand } from './commands.ts'
 import { missingServices, service } from './services.ts'
-import { useTaskData, useTaskDataActions, parseTaskPayloadText, type TaskStep } from './task-data-store.ts'
+import { useTaskData, useTaskDataActions, parseTaskPayloadText } from './task-data-store.ts'
 import { useTaskUI, useTaskUIActions, PANEL_VIEWS } from './task-ui-store.ts'
 import { MiniBar, TaskCard } from './TaskComponents.tsx'
 import { MemoryView, type InsightScope } from './MemoryView.tsx'
@@ -78,6 +79,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   const degraded = missingServices(ctx)
   const sessionId = useSessionId(ctx)
   const [syncing, setSyncing] = useState(false)
+  const syncingRef = useRef(false)
   const [syncedAt, setSyncedAt] = useState(0)
   const [syncError, setSyncError] = useState<string | null>(null)
   // 提示信息开关落在 UI store（持久化）：关掉后面板内所有悬停 title 气泡都不再弹出。
@@ -109,28 +111,25 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   }
 
   const runLine = async (line: string): Promise<boolean> => {
-    // 软探测（services.ts）：`remote.commands` 是**独立注册的扁平服务**，必须按整名读；
-    // `ctx.remote.commands` 走属性路径，会被 inject 门控挡下（本插件顶层 inject 为空）。
-    const commands = service(ctx, 'remote.commands')
-    if (!sessionId || !commands || typeof commands.execute !== 'function') {
-      setSyncError(t('panel.no-channel'))
+    const result = await invokeCommand(ctx, sessionId, line)
+    if (!result.ok) {
+      setSyncError(result.error === 'no-channel' ? t('panel.no-channel') : (result.error || t('panel.sync-failed')))
       return false
     }
-    let response: any
+    return applyPayload(result.text)
+  }
+
+  // 锁用 ref 而不是渲染快照里的 state：同一 tick 的两次触发也能被挡住。
+  const withLock = async (fn: () => Promise<unknown>): Promise<void> => {
+    if (syncingRef.current) return
+    syncingRef.current = true
+    setSyncing(true)
     try {
-      response = await commands.execute(sessionId, line, [])
-    } catch (err) {
-      setSyncError(String((err as { message?: unknown } | null | undefined)?.message ?? err))
-      return false
+      await fn()
+    } finally {
+      syncingRef.current = false
+      setSyncing(false)
     }
-    const envelope = response as { ok?: boolean; value?: any } | null | undefined
-    const execution = envelope && typeof envelope === 'object' && 'value' in envelope ? envelope.value : envelope
-    const result = execution?.result ?? execution
-    if (result?.kind === 'error') {
-      setSyncError(result.text ?? 'command error')
-      return false
-    }
-    return applyPayload(result?.text)
   }
 
   /**
@@ -145,51 +144,27 @@ function TaskPanelView({ ctx }: { ctx: any }) {
    * 它们各自会推宿主清单（adoptStepsToSession），不需要巡检式补写。
    */
   const refresh = async (): Promise<void> => {
-    if (syncing) return
-    setSyncing(true)
-    try {
-      await runLine('/tasks')
-    } finally {
-      setSyncing(false)
-    }
+    await withLock(() => runLine('/tasks'))
   }
 
   const handleAction = async (verb: 'switch' | 'archive', taskId: string): Promise<void> => {
-    if (syncing) return
-    setSyncing(true)
-    try {
-      await runLine(`/tasks ${verb} ${taskId}`)
-    } finally {
-      setSyncing(false)
-    }
+    await withLock(() => runLine(`/tasks ${verb} ${taskId}`))
   }
 
   // v0.5：任务卡内联记忆动作（confirm/promote/delete 于 /insight task 层），随后刷新任务数据
   const handleInsightTask = async (action: 'confirm' | 'promote' | 'delete', id: string): Promise<void> => {
-    if (syncing) return
-    setSyncing(true)
-    try {
+    await withLock(async () => {
       await runLine(`/tasks insight ${action} task ${id}`)
-      await refresh()
-    } finally {
-      setSyncing(false)
-    }
-  }
-
-  const pushSteps = (taskId: string, steps: TaskStep[]): void => {
-    void runLine(`/tasks todos ${JSON.stringify(steps.map((s) => ({ content: s.content, status: s.status })))}`)
+      await runLine('/tasks')
+    })
   }
 
   const cycleStatus = (taskId: string, index: number) => {
     const task = data.tasks.find((tt) => tt.id === taskId)
     if (!task) return
-    const steps = task.steps || []
-    const next = steps.map((s, i) => {
-      if (i !== index) return s
-      const cur = STATUS_CYCLE.indexOf(s.status)
-      return { ...s, status: STATUS_CYCLE[(cur + 1) % STATUS_CYCLE.length] }
-    })
-    pushSteps(taskId, next)
+    const cur = STATUS_CYCLE.indexOf((task.steps || [])[index]?.status as (typeof STATUS_CYCLE)[number])
+    const next = STATUS_CYCLE[(cur + 1) % STATUS_CYCLE.length]
+    void withLock(() => runLine(`/tasks step ${taskId} ${index} ${next}`))
   }
 
   const commitStepText = (taskId: string, index: number, value: string) => {
@@ -198,19 +173,15 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     if (!task) return
     const same = (task.steps || [])[index]?.content === trimmed
     if (same || !trimmed) return
-    const next = (task.steps || []).map((s, i) => (i === index ? { ...s, content: trimmed } : s))
-    pushSteps(taskId, next)
+    void withLock(() => runLine(`/tasks step-text ${taskId} ${index} ${JSON.stringify(trimmed)}`))
   }
 
   const reorderSteps = (taskId: string, fromIndex: number, toIndex: number) => {
     if (fromIndex === toIndex) return
     const task = data.tasks.find((tt) => tt.id === taskId)
     if (!task) return
-    const steps = [...(task.steps || [])]
-    const [moved] = steps.splice(fromIndex, 1)
-    const targetIndex = toIndex > fromIndex ? toIndex - 1 : toIndex
-    steps.splice(targetIndex, 0, moved)
-    pushSteps(taskId, steps)
+    // 服务端按拖拽的 from/to 自己算落点；这里不再回写整份数组。
+    void withLock(() => runLine(`/tasks step-move ${taskId} ${fromIndex} ${toIndex}`))
   }
 
   const commitTitle = (taskId: string, value: string) => {
@@ -219,12 +190,12 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     if (!task) return
     const same = task.title === trimmed
     if (same || !trimmed) return
-    void runLine(`/tasks rename ${taskId} ${JSON.stringify(trimmed)}`)
+    void withLock(() => runLine(`/tasks rename ${taskId} ${JSON.stringify(trimmed)}`))
   }
 
   const expand = () => {
     uiActions.open()
-    if (Date.now() - Math.max(data.lastUpdate, syncedAt) > 30_000) {
+    if (Date.now() - Math.max(data.lastUpdate, syncedAt) > 5_000) {
       void refresh()
     }
   }
@@ -239,6 +210,9 @@ function TaskPanelView({ ctx }: { ctx: any }) {
 
   const panelRef = useRef<HTMLDivElement>(null)
   const drag = useRef<{ dx: number; dy: number } | null>(null)
+  // 拖动期间位置只进本地 state；mouseup 才写 UI store（否则每个 mousemove 都同步写 localStorage）。
+  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null)
+  const dragPosRef = useRef<{ x: number; y: number } | null>(null)
 
   const handleDragStart = (e: React.MouseEvent) => {
     if (e.target !== e.currentTarget) return
@@ -251,40 +225,29 @@ function TaskPanelView({ ctx }: { ctx: any }) {
       const height = panelRef.current?.offsetHeight ?? 480
       const x = Math.max(8, Math.min(window.innerWidth - width - 8, ev.clientX - drag.current.dx))
       const y = Math.max(8, Math.min(window.innerHeight - 64, ev.clientY - drag.current.dy))
-      uiActions.setPanelPosition({ x, y })
+      dragPosRef.current = { x, y }
+      setDragPos({ x, y })
     }
     const onUp = () => {
       drag.current = null
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+      if (dragPosRef.current) uiActions.setPanelPosition(dragPosRef.current)
+      dragPosRef.current = null
+      setDragPos(null)
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
   }
 
-  // 会话切换时仅同步数据，不自动打开面板
+  // 打开面板/切页时若数据过期就刷新：面板不能显示“暂无任务”而实际上有任务。
+  const refreshRef = useRef<() => void>(() => {})
+  refreshRef.current = () => { void refresh() }
   useEffect(() => {
-    if (!sessionId) return
-    // 仅当面板已打开时才自动刷新
-    if (!ui.closed) {
-      void refresh()
-    }
-  }, [sessionId])
-
-  // 监听模型工具请求打开面板
-  useEffect(() => {
-    const ctxWithEvents = ctx
-    const handler = () => {
-      uiActions.open()
-      if (Date.now() - Math.max(data.lastUpdate, syncedAt) > 30_000) {
-        void refresh()
-      }
-    }
-    ctxWithEvents?.events?.on?.('dsh:task-panel:show', handler)
-    return () => {
-      ctxWithEvents?.events?.off?.('dsh:task-panel:show', handler)
-    }
-  }, [ctx, uiActions, data.lastUpdate, syncedAt, refresh])
+    if (ui.closed || !sessionId) return
+    if (Date.now() - Math.max(data.lastUpdate, syncedAt) < 5_000) return
+    refreshRef.current()
+  }, [ui.closed, ui.view, sessionId])
 
   // 彻底隐藏：不渲染任何东西
   if (ui.closed) {
@@ -320,7 +283,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     <div
       className={css.panel}
       ref={panelRef}
-      style={{ left: ui.panelPosition.x, top: ui.panelPosition.y }}
+      style={{ left: (dragPos ?? ui.panelPosition).x, top: (dragPos ?? ui.panelPosition).y }}
       data-theme={style === 'native' ? undefined : style}
     >
       <div className={css.dragHandle} onMouseDown={handleDragStart} title={showHints ? t('task.drag') : undefined}>

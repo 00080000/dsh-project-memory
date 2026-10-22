@@ -114,7 +114,7 @@ const ok = (name) => {
   ok('空闲轮询退避（15s→30s→60s），有变化立即回到 base')
 }
 
-// ---- 3. 注入消息的 source 语义：snapshot + sections ----
+// ---- 3. 注入消息的 source 语义：notice + summary ----
 {
   const root = mkdtempSync(path.join(tmpdir(), 'inject-form-'))
   const globalFile = path.join(mkdtempSync(path.join(tmpdir(), 'inject-form-g-')), 'global.json')
@@ -150,12 +150,14 @@ const ok = (name) => {
     'kind 必须是生产者自有 kind；写 "plugin" 会被宿主的 v4 source 准入直接拒掉（整轮崩）')
   assert.equal(injected.source.plugin, undefined,
     'v4 形状里没有 plugin 字段（迁移会丢弃它），写它等于又造一种宿主不认识的形状')
-  assert.equal(injected.source.form, 'snapshot', '这是会被后续快照取代的当前状态，不是 notice')
-  assert.equal(injected.source.summary, undefined, 'snapshot 不得携带 notice 的 summary（宿主判别联合）')
-  assert.ok(Array.isArray(injected.source.sections) && injected.source.sections.length === 1)
-  assert.equal(injected.source.sections[0].name, 'project-memory')
-  assert.ok(injected.source.sections[0].text.includes('注入语义验证'), 'sections.text 是模型看到的那份贡献')
-  ok('注入 source 声明为 snapshot + sections（通道不变）')
+  // 宿主对第三方 snapshot 只追加、不替换；用 notice 才是如实声明。
+  assert.equal(injected.source.form, 'notice', '第三方 snapshot 不会被宿主替换，应声明为 notice')
+  assert.equal(typeof injected.source.summary, 'string')
+  assert.ok(injected.source.summary.length > 0, 'notice 必须带一行 summary')
+  assert.equal(injected.source.sections, undefined, 'notice 不得携带 snapshot 的 sections（宿主判别联合）')
+  const body = injected.content.map((b) => b.text).join('\n')
+  assert.ok(body.includes('注入语义验证'), '正文仍是模型看到的那份贡献')
+  ok('注入 source 声明为 notice + summary（不再承诺被取代）')
 }
 
 // ---- 4. 条目级去重：同一份 procedure 不得因"整块指纹变了"被重复注入 ----

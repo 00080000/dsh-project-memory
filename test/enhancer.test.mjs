@@ -52,10 +52,9 @@ const enhanced = (store, rel) => (store.entries[rel] || []).some((e) => e.enhanc
 
 initTypeScript()
 if (!getTsVersion()) {
-  // 没装 typescript 时 L2 增强整体关闭（enqueueEnhance 直接早返回），本文件无从断言。
-  console.log('  --  typescript not resolvable, skipping (L2 enhancer is off)')
-  console.log('\nALL CHECKS PASSED (0 passed)')
-  process.exit(0)
+  // typescript 是 devDependency：缺了说明依赖没装好，不能伪装成“全绿”。
+  console.error('  FAIL: typescript not resolvable; run npm install before the test suite')
+  process.exit(1)
 }
 console.log(`  --  typescript ${getTsVersion()}`)
 

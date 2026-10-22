@@ -471,7 +471,7 @@ check('caps summary length', summarizeText(huge).length <= 300)
 console.log('\n== index_repo ==')
 const repoTool = indexRepoTool(ctx, config)
 out = await repoTool.execute({ root })
-check('indexes repo picks up code symbols, skips unchanged doc', out.includes('docs indexed: 0') && out.includes('code symbols updated: 1'))
+check('indexes repo picks up code symbols, skips unchanged doc', out.includes('docs indexed: 0') && out.includes('code files updated: 1'))
 
 console.log('\n== index_repo skips dumps ==')
 const dumpDir = mkdtempSync(path.join(tmpdir(), 'pm-dump-'))
@@ -703,7 +703,7 @@ check('no lost writes under contention (commit-based)', lockStore.insightItems()
 console.log('\n== incremental cleanup ==')
 writeFileSync(pyPath, 'class PaymentService:\n    def charge(self, amount):\n        pass\n')
 out = await repoTool.execute({ root })
-check('reindex keeps docs, updates changed code', out.includes('docs indexed: 0') && out.includes('code symbols updated: 1'))
+check('reindex keeps docs, updates changed code', out.includes('docs indexed: 0') && out.includes('code files updated: 1'))
 
 console.log('\n== merged BM25 (query expansion fallback) ==')
 // 走生产函数 rankEntriesMergedScored（recall 的 insight 层用同一条）

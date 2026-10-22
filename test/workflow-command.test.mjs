@@ -114,6 +114,28 @@ function fixture() {
   ok('/tasks <switch|unbind|…> → 任务动作处理器，且副作用真的落盘')
 }
 
+// ---- 4b. 单步原子写：step / step-text / step-move ----
+{
+  const { definition, invocation, config, root } = fixture()
+  const step = definition.handler(invocation(' step tsk_a 0 completed'))
+  assert.equal(step.kind, 'success', `step 期望 success，实得 ${JSON.stringify(step).slice(0, 200)}`)
+  let reread = new ProjectMemoryStore(path.join(root, config.memoryDir)).load()
+  assert.equal(reread.getTask('tsk_a').steps[0].status, 'completed', 'step 只改目标步骤')
+
+  const text = definition.handler(invocation(' step-text tsk_a 0 "改后的步骤"'))
+  assert.equal(text.kind, 'success')
+  reread = new ProjectMemoryStore(path.join(root, config.memoryDir)).load()
+  assert.equal(reread.getTask('tsk_a').steps[0].content, '改后的步骤', 'step-text 落盘')
+
+  definition.handler(invocation(' switch tsk_a'))
+  definition.handler(invocation(' todos [{"content":"a","status":"pending"},{"content":"b","status":"pending"},{"content":"c","status":"pending"}]'))
+  const moved = definition.handler(invocation(' step-move tsk_a 0 2'))
+  assert.equal(moved.kind, 'success')
+  reread = new ProjectMemoryStore(path.join(root, config.memoryDir)).load()
+  assert.deepEqual(reread.getTask('tsk_a').steps.map((s) => s.content), ['b', 'a', 'c'], 'step-move 按拖拽语义落点')
+  ok('/tasks step|step-text|step-move：单步原子写，不再回写整份 steps')
+}
+
 // ---- 5. 唯一注册点：index.js 只能注册一条命令 ----
 {
   const source = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8')

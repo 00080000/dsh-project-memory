@@ -31,8 +31,13 @@
  * @property {string[]} [sourceTaskIds] 曾在哪些任务中出现/被命中（提升判定唯一依据）
  * @property {'reflect' | 'agent' | 'user' | 'migrate'} [source] 来源
  * @property {{ scope: string, id: string, at: string }} [movedFrom] 提升/降级审计
- * @property {{ keywords: string[], symbols?: string[], scope?: string[] }} [trigger]
- *   procedure 的 "生成 Skill" 触发规则（无独立 skill 实体）
+ * @property {{ when?: { ops?: string[], writes?: string[], intents?: string[] },
+ *   guard?: { paths?: string[], not_paths?: string[], hosts?: string[], tags?: string[] },
+ *   prevents?: string, keywords?: string[], symbols?: string[], actions?: string[],
+ *   paths?: string[], scope?: string[] }} [trigger]
+ *   authored 触发规则：when 是唯一触发面（三者取或），guard 只收窄；旧字段仅为历史数据兼容。
+ * @property {{ keywords: string[], actions: string[], paths: string[] }} [triggerDerived]
+ *   从正文确定性派生的检索信号，只提升召回、不参与强制注入
  * @property {number} [confidence] 0..1
  * @property {number} [hitCount] 被注入/命中的次数（强化信号，无 LLM）
  * @property {string} [lastHitAt] 最近一次命中时间 ISO（衰减/归档依据）
@@ -52,11 +57,11 @@
  * @property {number} [autoMergeMargin] 自动覆盖还要求第一名领先第二名这么多（默认 0.05）
  * @property {number} [hintCos] 向量近邻提示带（默认 0.7，只在返回文本里提示 id，不改数据）
  * @property {number} [maxForgetMatches] forget 关键词删除的命中上限（默认 10）；超了一条都不删，只回报候选
- * @property {number} [maxProject] project insights 容量（归档区另计）
+ * @property {number} [maxProject] project insights 容量（含归档；超限先删归档条目）
  * @property {number} [maxGlobalProcedures] global insights 容量
  * @property {number} [promoteConfidence] 提升 project 所需最低 confidence
  * @property {number} [globalPromoteTasks] sourceTaskIds ≥ N → 提升 global
- * @property {number} [decayDays] 久置归档启发：hitCount==0 超该天数 → 归档（软删）
+ * @property {number} [decayDays] 久置归档启发：最近活动（hit/updated/created）超该天数 → 归档（软删）
  * @property {string} [globalFile] global.json 绝对路径（默认 ~/.config/dsh-project-memory/global.json）
  */
 

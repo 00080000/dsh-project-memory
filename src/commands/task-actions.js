@@ -7,7 +7,7 @@ import { renderTaskSnapshot, buildTaskPayload } from './tasks.js'
 import { fireReflect } from '../reflection-pipeline.js'
 import { resolveRoute } from '../llm-route.js'
 import { fencedJson, invocationContext } from './invocation.js'
-import { stepContent, stepProgress, stepStatus } from '../util/task-view.js'
+import { STEP_STATUSES, stepContent, stepProgress, stepStatus } from '../util/task-view.js'
 
 function describeTask(t) {
   const { done, total } = stepProgress(t)
@@ -73,7 +73,7 @@ export function taskCommandDefinition(config, ctx) {
           }
           return snap
         }
-        if (!['unbind', 'todos', 'rename'].includes(verb) && (!taskId || rest.length)) {
+        if (!['unbind', 'todos', 'rename', 'step', 'step-move', 'step-text'].includes(verb) && (!taskId || rest.length)) {
           return { kind: 'error', text: '[task] 用法: /task switch|archive <任务id> | unbind' }
         }
         const { root, store } = taskStoreFor(cwd, config)
@@ -88,6 +88,58 @@ export function taskCommandDefinition(config, ctx) {
           }
           const note = '已取消当前任务绑定并清空会话任务清单（需要时可让模型重新规划）'
           return withTaskSnapshot(config, cwd, sid, store, note)
+        }
+
+        // 单步原子写：客户端不再回写整份 steps，避免两个并发动作互相覆盖。
+        if (verb === 'step' || verb === 'step-move' || verb === 'step-text') {
+          if (!taskId) return { kind: 'error', text: `[task] ${verb} 需要任务 id` }
+          const task = store.getTask(taskId)
+          if (!task) return { kind: 'error', text: `[task] 找不到任务: ${taskId}` }
+          if (!Array.isArray(task.steps)) task.steps = []
+          if (verb === 'step') {
+            const index = Number(rest[0])
+            const status = rest[1]
+            if (!Number.isInteger(index) || !STEP_STATUSES.has(status) || !task.steps[index]) {
+              return { kind: 'error', text: '[task] step 需要 <index> <pending|in_progress|completed>' }
+            }
+            const prev = task.steps[index]
+            task.steps[index] = {
+              ...(prev && typeof prev === 'object' ? prev : { content: stepContent(prev) }),
+              status,
+            }
+          } else if (verb === 'step-move') {
+            const from = Number(rest[0])
+            const to = Number(rest[1])
+            if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || from >= task.steps.length) {
+              return { kind: 'error', text: '[task] step-move 需要合法的 from/to' }
+            }
+            const [moved] = task.steps.splice(from, 1)
+            const target = to > from ? to - 1 : to
+            task.steps.splice(Math.max(0, Math.min(target, task.steps.length)), 0, moved)
+          } else {
+            const index = Number(rest[0])
+            const payload = restAfter(raw, 3).trim()
+            let content = payload
+            try {
+              const parsed = JSON.parse(payload)
+              if (typeof parsed === 'string') content = parsed
+            } catch { /* 非 JSON 时按原样取 payload */ }
+            if (!Number.isInteger(index) || !task.steps[index] || !content.trim()) {
+              return { kind: 'error', text: '[task] step-text 需要 <index> <json文本>' }
+            }
+            const prev = task.steps[index]
+            task.steps[index] = {
+              ...(prev && typeof prev === 'object' ? prev : { content: stepContent(prev) }),
+              content: content.trim(),
+            }
+          }
+          const now = new Date().toISOString()
+          task.updatedAt = now
+          task.lastActiveAt = now
+          store.markTasksDirty()
+          store.save()
+          if (shouldAdoptToHost(config)) adoptStepsToSession(session, task)
+          return withTaskSnapshot(config, cwd, sid, store, `已更新「${task.title}」步骤`)
         }
 
         // /task rename <任务id> <json标题> —— 双击任务标题改名

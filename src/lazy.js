@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { statSync } from 'node:fs'
-import { findProjectRoot, isUnsafeRoot, memoryRootFor, relativePath, storeKey } from './util/fs.js'
+import { findProjectRoot, isGitIgnored, isUnsafeRoot, memoryRootFor, relativePath, storeKey } from './util/fs.js'
 import { DROP, OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from './index-pipeline.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileObserved } from './enhancer.js'
@@ -17,6 +17,8 @@ export async function indexFile(ctx, config, filePath, watchManager = null, sess
   const extraRoots = watchManager ? [...watchManager.roots.keys()] : []
   const root = findProjectRoot(filePath, { extraRoots, sessionRoot })
   if (!root || isUnsafeRoot(root)) return false
+  // 被 .gitignore 排除的文件（构建产物 / 内部文档）不进语料；显式 index_doc 不受此限。
+  if (isGitIgnored(root, filePath)) return false
 
   const memoryDir = memoryRootFor(root, config.memoryDir)
   const store = new ProjectMemoryStore(memoryDir).load()

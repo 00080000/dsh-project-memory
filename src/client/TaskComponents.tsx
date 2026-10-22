@@ -164,7 +164,14 @@ export function MiniBar({ label, hint, showHints, position, theme, onMove, open 
       style={{ left: position.x, top: position.y }}
       data-theme={theme === 'native' ? undefined : theme}
       onMouseDown={onMouseDown}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          open()
+        }
+      }}
       role="button"
+      tabIndex={0}
       title={showHints ? hint : undefined}
       aria-label={hint}
     >
@@ -244,7 +251,7 @@ export function TaskCard({
     if (headClickTimer.current !== null) window.clearTimeout(headClickTimer.current)
   }, [])
 
-  const handleHeadClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+  const handleHeadClick = (e: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
     if (suppressHeadClick.current) {
       // 上一次 mousedown 落在标题编辑框内（失焦提交产生），吞掉这次点击，不切换展开
       suppressHeadClick.current = false
@@ -269,9 +276,17 @@ export function TaskCard({
 
   return (
     <article data-task-id={task.id} className={`${css.card}${isBound ? ` ${css.cardBound}` : ''}`}>
-      <button
+      <div
         className={css.cardHead}
+        role="button"
+        tabIndex={0}
         onClick={handleHeadClick}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            handleHeadClick(e)
+          }
+        }}
         onMouseDownCapture={() => {
           // 标题编辑中，点击卡片头任意处都会先失焦提交；标记该次点击以在 onClick 中吞掉，
           // 避免“改名提交一下、卡片又收起/展开一下”的误切换。
@@ -311,7 +326,7 @@ export function TaskCard({
           <span className={css.updated}>{timeAgo(task.updatedAt || task.lastActiveAt)}</span>
           <span className={css.chevron}>{expanded ? <IconChevronUpOutline14 /> : <IconChevronDownOutline14 />}</span>
         </div>
-      </button>
+      </div>
       {steps.length > 0 && (
         <div className={css.track}>
           <div className={css.trackFill} style={{ width: `${pct}%` }} />

@@ -58,7 +58,7 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 | `select_task` | 将会话绑定到某任务（此后 todo 清单与读文件同步进该任务）。按 `taskId` 精确绑定，或按 `title` 完全匹配（多个同名返回候选；无则新建）。带 title 可改名；自动解归档。 |
 | `archive_task` | 归档任务（隐藏默认视图、不占容量、停止同步）。`select_task` 可恢复。 |
 | `show_task_panel` | 在 UI 中打开任务面板。用户要求查看任务列表或你想展示面板时调用。 |
-| `/tasks`（用户输入，不经模型） | 唯一的用户命令：展示任务栈并驱动工作流卡片。其余动作是它的**子动词**，由卡片按钮调用：`switch` / `archive` / `unbind` / `rename` / `todos …` 为任务动作，`insight list [offset] [limit]` / `confirm` / `promote` / `demote` / `archive` / `restore` / `delete` / `save` / `edit` 为记忆动作。 |
+| `/tasks`（用户输入，不经模型） | 唯一的用户命令：展示任务栈并驱动工作流卡片。其余动作是它的**子动词**，由卡片按钮调用：`switch` / `archive` / `unbind` / `rename` / `todos …` / `step` / `step-move` / `step-text` 为任务动作，`insight list [scope] [offset] [limit]` / `confirm` / `promote` / `demote` / `archive` / `restore` / `delete` / `save` / `edit` 为记忆动作。 |
 | `remember problem solution` | 保存经验笔记。它就是 `kind: 'experience'` 的 insight——与教训 / 决策 / 流程同库、同去重、同删除入口。相似问题合并或覆盖而非重复。 |
 | `forget id_or_query` | 删除记忆——教训 / 决策 / 流程与经验笔记一视同仁，task / project / global 全层一次搞定，不必先知道它在哪一层。精确 id 删那一条；关键词按**查询侧覆盖率**匹配（与旧经验层同判据）。真删、无撤销；关键词命中超过上限（默认 10）时**一条都不删**，只列出候选。最近删除的 **5 条**会以完整条目留在该层 store 同目录的 `deleted.json`（项目层 `<root>/.dsh-project-memory/deleted.json`，global 层在 global 文件旁），删除回报里给出真实路径——删错时读它、重新保存一次即可找回。 |
 | `save_lesson` | 在 task/project/global 任一作用域保存教训 / 决策 / 流程；带 `id` 就是**就地覆盖**既有条目（只改本次显式传的字段，旧值留在 `prev`，用同一个 id 再写一次即可写回）。写入前与既有记忆比对：余弦 ≥ 0.9 自动覆盖那一条，≥ 0.7 在返回里提示近邻 id；`leanvec` 不在时退回词法 overlap ≥ 0.7 合并、0.65–0.7 强化。同一 insight 被 2+ 任务命中自动 task→project、3+ → global。主要参数：`id`、`title`、`kind`、`scope`、正文（`pattern`/`fix`、`choice`/`reason` 或 `steps`）、`trigger`（`when` 是唯一触发面，`guard` 只能收窄，`prevents` 记下没有它会坏在哪）。 |
@@ -264,7 +264,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ```bash
 npm install
-npm test                    # 743 项测试
+npm test                    # 747 项测试
 npm run eval:injection      # 合成池 P/R：精确率 0.94 / 召回率 1.00，另有 3 个 hint-only 场景
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）

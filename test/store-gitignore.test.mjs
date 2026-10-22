@@ -25,8 +25,7 @@ function check(name, cond) {
 const git = spawnSync('git', ['--version'], { encoding: 'utf8' })
 if (git.status !== 0) {
   // 没有 git 就跳过（本地极简环境）；CI 三个平台都带 git。
-  console.log('  --  git not available, skipping')
-  console.log('\nALL CHECKS PASSED (0 passed)')
+  console.log('  SKIP: git not available (self-ignore test needs git)')
   process.exit(0)
 }
 
