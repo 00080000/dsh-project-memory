@@ -24,7 +24,7 @@ const SRC = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8'
 const STORAGE_KEY = 'dsh-pm-task-panel-ui'
 
 // ---- 每个测试独立的一份宿主替身（localStorage 写入可观测，用来判"面板有没有被打开"） ----
-function makeHost({ slotUnavailable = null } = {}) {
+function makeHost({ slotUnavailable = null, jsx = () => null } = {}) {
   const writes = []
   const storage = {
     getItem: () => null,
@@ -74,7 +74,7 @@ function makeHost({ slotUnavailable = null } = {}) {
   const client = registration.factory((spec) => {
     if (spec === '@deepseek-ai/dsh-client-ui-primitives') return primitives
     if (spec === 'react') return react
-    if (spec === 'react/jsx-runtime') return { jsx: () => null, jsxs: () => null, Fragment: 'Fragment' }
+    if (spec === 'react/jsx-runtime') return { jsx, jsxs: jsx, Fragment: 'Fragment' }
     if (spec === '@deepseek-ai/dsh-client-ui-slots') return {}
     if (spec === '@deepseek-ai/dsh-client-locale') return {}
     if (spec === '@deepseek-ai/dsh-client-store') return {}
@@ -152,6 +152,22 @@ const panelOpened = (writes) => writes.some(([k, v]) => k === STORAGE_KEY && Str
   h.client.apply(undefined)
   h.client.apply({})
   ok('畸形 ctx（slots 空壳 / undefined / {}）时 apply 不抛错')
+}
+
+// --- 6. 列表型命令节点不再渲染；动作节点仍保留 ---
+{
+  const h = makeHost({ jsx: (type, props, key) => ({ type, props, key }) })
+  h.client.apply(h.ctx)
+  const CommandView = h.regs.find((r) => r.name === 'conversation.chat.commandview' && r.key === 'tasks').Component
+  const taskList = '```json\n{"tasks":[],"boundId":null,"archived":0,"root":null}\n```'
+  const insightList = '```json\n{"scope":"project","count":0,"total":0,"offset":0,"items":[],"nextOffset":null}\n```'
+  const tasks = h.render(CommandView, { node: { name: 'tasks', args: '', outcome: { kind: 'success', text: taskList } } })
+  assert.equal(tasks.out, null, '/tasks 列表成功时不应留下可见节点')
+  const insights = h.render(CommandView, { node: { name: 'tasks', args: 'insight list project 0 30', outcome: { kind: 'success', text: insightList } } })
+  assert.equal(insights.out, null, '/tasks insight list 成功时不应留下可见节点')
+  const action = h.render(CommandView, { node: { name: 'tasks', args: 'switch tsk_1', outcome: { kind: 'success', text: '已切换' } } })
+  assert.ok(action.out, '动作类命令仍要显示一行结果')
+  ok('命令节点：列表成功隐藏，动作结果保留')
 }
 
 console.log(`\nclient-toolview tests: ${passed} passed`)

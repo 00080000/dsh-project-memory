@@ -240,16 +240,16 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     window.addEventListener('mouseup', onUp)
   }
 
-  // 只在面板**从关闭变为打开**时补一次数据；切页不刷新。
-  // 宿主把每次 execute 都记成命令节点，切一次任务/项目/全局页就发一条 /tasks 会
-  // 在对话里堆节点，而任务数据在面板内已经由动作结果即时更新。
+  // 只在面板打开、或切回任务页时补一次数据；切到记忆页不发任务命令。
+  // 命令节点本身由 TaskCommandNode 隐藏，所以这次补数据不会在对话里留下可见行；
+  // 但切回任务页必须刷新，否则刚在记忆页确认/提升的草稿状态会一直显示旧值。
   const refreshRef = useRef<() => void>(() => {})
   refreshRef.current = () => { void refresh() }
   useEffect(() => {
-    if (ui.closed || !sessionId) return
+    if (ui.closed || !sessionId || ui.view !== 'task') return
     if (Date.now() - Math.max(data.lastUpdate, syncedAt) < 5_000) return
     refreshRef.current()
-  }, [ui.closed, sessionId])
+  }, [ui.closed, ui.view, sessionId])
 
   // 彻底隐藏：不渲染任何东西
   if (ui.closed) {
@@ -382,7 +382,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
       {syncError && <div className={css.notice}>{t('panel.sync-failed')}: {syncError}</div>}
 
       {view !== 'task' ? (
-        <MemoryView ctx={ctx} sessionId={sessionId} scope={view as InsightScope} boundTaskId={data.boundTaskId} showHints={showHints} t={t} />
+        <MemoryView ctx={ctx} sessionId={sessionId} scope={view as InsightScope} root={data.root ?? null} boundTaskId={data.boundTaskId} showHints={showHints} t={t} />
       ) : activeTasks.length === 0 ? (
         <div className={css.emptyState}>
           <p className={css.emptyTitle}>{t('panel.empty')}</p>

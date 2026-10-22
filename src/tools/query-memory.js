@@ -47,7 +47,8 @@ function previousLine(item) {
   const parts = []
   for (const [key, value] of Object.entries(item.prev)) {
     if (value === undefined || value === null || value === '') continue
-    const text = typeof value === 'string' ? value : JSON.stringify(value)
+    const raw = typeof value === 'string' ? value : JSON.stringify(value)
+    const text = raw ? raw.replace(/\s+/g, ' ').trim() : ''
     if (!text) continue
     parts.push(`${key}=${text}`)
   }

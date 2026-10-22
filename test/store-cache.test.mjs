@@ -99,10 +99,14 @@ console.log('\n== 驱逐：超预算丢掉最旧的，keepKey 豁免且不静默
   const originalError = console.error
   console.error = (...args) => errors.push(args.join(' '))
   try {
-    new ProjectMemoryStore(dirA).load()
+    const storeA = new ProjectMemoryStore(dirA).load()
+    // 延迟写的任务变更：逐出时必须先落盘，否则回合结束前就丢了。
+    storeA.addTask({ id: 'tsk_evict', title: '逐出前落盘', steps: [], files: [], archived: false, createdAt: 'x', updatedAt: 'x', lastActiveAt: 'x' })
     check('第一个 store 进入缓存', cacheKeys().includes(path.resolve(dirA)))
     new ProjectMemoryStore(dirB).load()
     check('超预算时最旧的 store 被逐出', !cacheKeys().includes(path.resolve(dirA)))
+    const evictedTasks = JSON.parse(readFileSync(path.join(dirA, 'tasks.json'), 'utf8'))
+    check('逐出前把未落盘的任务写进 tasks.json', evictedTasks.some((t) => t.id === 'tsk_evict'))
     check('刚加载的 keepKey 即使超预算也留下（有意豁免）', cacheKeys().includes(path.resolve(dirB)))
     check(
       '单实例超预算会告警而不是静默（D4）',

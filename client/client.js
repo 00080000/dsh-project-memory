@@ -1676,20 +1676,21 @@ window.__ModuleLoader__.load({
 		const INSIGHT_CACHE_TTL_MS = 3e4;
 		const INSIGHT_CACHE_MAX = 12;
 		const insightCache = /* @__PURE__ */ new Map();
-		function insightCacheKey(sessionId, scope) {
-			return `${sessionId || ""}|${scope}`;
+		function insightCacheKey(sessionId, scope, root, boundTaskId) {
+			return `${sessionId || ""}|${root || ""}|${scope}|${boundTaskId || ""}`;
 		}
-		function readInsightCache(sessionId, scope) {
-			const hit = insightCache.get(insightCacheKey(sessionId, scope));
+		function readInsightCache(sessionId, scope, root, boundTaskId) {
+			const key = insightCacheKey(sessionId, scope, root, boundTaskId);
+			const hit = insightCache.get(key);
 			if (!hit) return null;
 			if (Date.now() - hit.at > INSIGHT_CACHE_TTL_MS) {
-				insightCache.delete(insightCacheKey(sessionId, scope));
+				insightCache.delete(key);
 				return null;
 			}
 			return hit;
 		}
-		function writeInsightCache(sessionId, scope, rows, total, nextOffset) {
-			const key = insightCacheKey(sessionId, scope);
+		function writeInsightCache(sessionId, scope, root, boundTaskId, rows, total, nextOffset) {
+			const key = insightCacheKey(sessionId, scope, root, boundTaskId);
 			insightCache.delete(key);
 			insightCache.set(key, {
 				rows,
@@ -1737,7 +1738,7 @@ window.__ModuleLoader__.load({
 				experience: t("mem.kind.experience")
 			}[kind] ?? kind;
 		}
-		function MemoryView({ ctx, sessionId, scope, boundTaskId, showHints, t }) {
+		function MemoryView({ ctx, sessionId, scope, root, boundTaskId, showHints, t }) {
 			const [rows, setRows] = (0, react.useState)([]);
 			const [total, setTotal] = (0, react.useState)(0);
 			const [nextOffset, setNextOffset] = (0, react.useState)(null);
@@ -1826,7 +1827,7 @@ window.__ModuleLoader__.load({
 					}
 					setRows((prev) => {
 						const next = append ? appendUnique(prev, parsed.items) : parsed.items;
-						writeInsightCache(sessionId, requestedScope, next, parsed.total, parsed.nextOffset);
+						writeInsightCache(sessionId, requestedScope, root, boundTaskId, next, parsed.total, parsed.nextOffset);
 						return next;
 					});
 					setTotal(parsed.total);
@@ -1839,7 +1840,12 @@ window.__ModuleLoader__.load({
 						setLoadingMore(false);
 					}
 				}
-			}, [runLine, sessionId]);
+			}, [
+				runLine,
+				sessionId,
+				root,
+				boundTaskId
+			]);
 			const loadRef = (0, react.useRef)(load);
 			(0, react.useEffect)(() => {
 				loadRef.current = load;
@@ -1850,7 +1856,7 @@ window.__ModuleLoader__.load({
 				setNextOffset(null);
 				setError(null);
 				if (!sessionId) return;
-				const cached = readInsightCache(sessionId, scope);
+				const cached = readInsightCache(sessionId, scope, root, boundTaskId);
 				if (cached) {
 					setRows(cached.rows);
 					setTotal(cached.total);
@@ -2560,10 +2566,14 @@ window.__ModuleLoader__.load({
 				refresh();
 			};
 			(0, react.useEffect)(() => {
-				if (ui.closed || !sessionId) return;
+				if (ui.closed || !sessionId || ui.view !== "task") return;
 				if (Date.now() - Math.max(data.lastUpdate, syncedAt) < 5e3) return;
 				refreshRef.current();
-			}, [ui.closed, sessionId]);
+			}, [
+				ui.closed,
+				ui.view,
+				sessionId
+			]);
 			if (ui.closed) return null;
 			if (ui.minimized) {
 				const label = boundTask ? `${t("minibar.current")}: ${boundTask.title}` : activeTasks.length > 0 ? `${t("minibar.current")}: ${activeTasks.length} ${t("minibar.tasks")}` : t("minibar.no-task");
@@ -2702,6 +2712,7 @@ window.__ModuleLoader__.load({
 						ctx,
 						sessionId,
 						scope: view,
+						root: data.root ?? null,
 						boundTaskId: data.boundTaskId,
 						showHints,
 						t

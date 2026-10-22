@@ -64,15 +64,18 @@ interface InsightCacheEntry {
 }
 const insightCache = new Map<string, InsightCacheEntry>()
 
-function insightCacheKey(sessionId: string | null, scope: InsightScope): string {
-  return `${sessionId || ''}|${scope}`
+function insightCacheKey(sessionId: string | null, scope: InsightScope, root: string | null, boundTaskId: string | null): string {
+  // 同一会话里 cd 到另一个项目时 sessionId 不变；不带 root 会把上一个项目的列表复用过来。
+  // task 页还依赖当前绑定的任务：换绑后必须重新取，不能复用上一个任务的草稿列表。
+  return `${sessionId || ''}|${root || ''}|${scope}|${boundTaskId || ''}`
 }
 
-function readInsightCache(sessionId: string | null, scope: InsightScope): InsightCacheEntry | null {
-  const hit = insightCache.get(insightCacheKey(sessionId, scope))
+function readInsightCache(sessionId: string | null, scope: InsightScope, root: string | null, boundTaskId: string | null): InsightCacheEntry | null {
+  const key = insightCacheKey(sessionId, scope, root, boundTaskId)
+  const hit = insightCache.get(key)
   if (!hit) return null
   if (Date.now() - hit.at > INSIGHT_CACHE_TTL_MS) {
-    insightCache.delete(insightCacheKey(sessionId, scope))
+    insightCache.delete(key)
     return null
   }
   return hit
@@ -81,11 +84,13 @@ function readInsightCache(sessionId: string | null, scope: InsightScope): Insigh
 function writeInsightCache(
   sessionId: string | null,
   scope: InsightScope,
+  root: string | null,
+  boundTaskId: string | null,
   rows: InsightRow[],
   total: number,
   nextOffset: number | null,
 ): void {
-  const key = insightCacheKey(sessionId, scope)
+  const key = insightCacheKey(sessionId, scope, root, boundTaskId)
   insightCache.delete(key)
   insightCache.set(key, { rows, total, nextOffset, at: Date.now() })
   while (insightCache.size > INSIGHT_CACHE_MAX) {
@@ -131,6 +136,7 @@ export function MemoryView({
   ctx,
   sessionId,
   scope,
+  root,
   boundTaskId,
   showHints,
   t,
@@ -138,6 +144,7 @@ export function MemoryView({
   ctx: any
   sessionId: string | null
   scope: InsightScope
+  root: string | null
   boundTaskId: string | null
   showHints: boolean
   t: any
@@ -233,7 +240,7 @@ export function MemoryView({
         }
         setRows((prev) => {
           const next = append ? appendUnique(prev, parsed.items) : parsed.items
-          writeInsightCache(sessionId, requestedScope, next, parsed.total, parsed.nextOffset)
+          writeInsightCache(sessionId, requestedScope, root, boundTaskId, next, parsed.total, parsed.nextOffset)
           return next
         })
         setTotal(parsed.total)
@@ -248,7 +255,7 @@ export function MemoryView({
         }
       }
     },
-    [runLine, sessionId],
+    [runLine, sessionId, root, boundTaskId],
   )
 
   // load 的身份随 runLine 变（ctx/sessionId 变化）；用 ref 持有它，让下面的 effect
@@ -266,7 +273,7 @@ export function MemoryView({
     setNextOffset(null)
     setError(null)
     if (!sessionId) return
-    const cached = readInsightCache(sessionId, scope)
+    const cached = readInsightCache(sessionId, scope, root, boundTaskId)
     if (cached) {
       setRows(cached.rows)
       setTotal(cached.total)
