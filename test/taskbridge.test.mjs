@@ -1,11 +1,11 @@
 // TaskBridge 单元测试：node test/taskbridge.test.mjs
 // 覆盖：store 任务持久化/容量裁剪、路径归一化、todo/write 自动建任务+绑定+快照覆盖（子代理不建档、标题取清单首条）、tool/call 文件跟踪、工具契约不在此测（需宿主 exec）。
-import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
 import { ProjectMemoryStore, _estimateResidentBytes as estimate } from '../src/store.js'
-import { normalizeRelFile, genTaskId, onSessionEvent, adoptStepsToSession, shouldAdoptToHost, isSubagentSession } from '../src/setup/taskbridge.js'
+import { normalizeRelFile, genTaskId, onSessionEvent, adoptStepsToSession, shouldAdoptToHost, isSubagentSession, flushTaskStore } from '../src/setup/taskbridge.js'
 import { taskCommandDefinition } from '../src/commands/task-actions.js'
 import { selectTaskTool, archiveTaskTool } from '../src/tools/task-tools.js'
 
@@ -126,6 +126,45 @@ const ev = (type, data) => ({ type, data })
   onSessionEvent(config, sess('sessC', root), ev('tool/call', { name: 'read', arguments: JSON.stringify({ file_path: 'a.ts' }) }), meta)
   assert.equal(store.getTasks().length, 1)
   ok('tool/call：绑定后 files 并集；项目外/非文件工具/未绑定均忽略')
+}
+
+// --- 5b. 文件热点延迟落盘：回合结束才写 tasks.json ---
+{
+  const { root, store } = newProject()
+  const meta = new Map()
+  const session = sess('sessLazy', root)
+  onSessionEvent(config, session, ev('todo/write', { todos: [{ content: '改支付', status: 'in_progress' }] }), meta)
+  const taskId = store.getBoundTaskId('sessLazy')
+  onSessionEvent(config, session, ev('tool/call', { name: 'read', arguments: JSON.stringify({ file_path: 'src/lazy.ts' }) }), meta)
+  const tasksFile = path.join(root, '.dsh-project-memory', 'tasks.json')
+  const before = JSON.parse(readFileSync(tasksFile, 'utf8'))
+  assert.deepEqual(before.find((t) => t.id === taskId).files, [], '工具调用不得逐次写 tasks.json')
+  flushTaskStore(root, config)
+  const after = JSON.parse(readFileSync(tasksFile, 'utf8'))
+  assert.deepEqual(after.find((t) => t.id === taskId).files, ['src/lazy.ts'], '回合结束 flush 后落盘')
+  ok('tool/call 延迟落盘：flush 前不写，flush 后写入')
+}
+
+// --- 5c. 归档/加载清理绑定：binding.json 不再永久指向已归档任务 ---
+{
+  const { root, store } = newProject()
+  const now = new Date().toISOString()
+  store.addTask({ id: 'tsk_arch', title: '要归档的', projectRoot: root, steps: null, files: [], archived: false, createdAt: now, updatedAt: now, lastActiveAt: now })
+  store.setBinding('s_arch', 'tsk_arch')
+  store.save()
+  const def = taskCommandDefinition(config, {})
+  def.handler({ agent: { id: 's_arch', session: sess('s_arch', root) }, rawInput: 'archive tsk_arch' })
+  assert.equal(store.getTask('tsk_arch').archived, true)
+  assert.equal(store.getBoundTaskId('s_arch'), undefined, '归档动作要清掉指向它的绑定')
+  // 加载时也清理历史遗留的“绑定到已归档任务”：手工造一个旧 store，避免进程内缓存命中。
+  const legacyRoot = mkdtempSync(path.join(tmpdir(), 'tbridge-legacy-'))
+  const legacyDir = path.join(legacyRoot, '.dsh-project-memory')
+  mkdirSync(legacyDir, { recursive: true })
+  writeFileSync(path.join(legacyDir, 'tasks.json'), JSON.stringify([{ id: 'tsk_old_arch', title: '旧归档', archived: true }]))
+  writeFileSync(path.join(legacyDir, 'binding.json'), JSON.stringify({ s_legacy: 'tsk_old_arch' }))
+  const reloaded = new ProjectMemoryStore(legacyDir).load()
+  assert.equal(reloaded.getBoundTaskId('s_legacy'), undefined, '加载时清理指向归档任务的绑定')
+  ok('任务绑定生命周期：归档清绑定 + 加载清理孤儿绑定')
 }
 
 // --- 6. 反向接管 adoptStepsToSession：有步骤→推宿主 todo/write；无步骤/关开关→不推 ---

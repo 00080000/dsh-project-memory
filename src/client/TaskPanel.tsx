@@ -240,14 +240,16 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     window.addEventListener('mouseup', onUp)
   }
 
-  // 打开面板/切页时若数据过期就刷新：面板不能显示“暂无任务”而实际上有任务。
+  // 只在面板**从关闭变为打开**时补一次数据；切页不刷新。
+  // 宿主把每次 execute 都记成命令节点，切一次任务/项目/全局页就发一条 /tasks 会
+  // 在对话里堆节点，而任务数据在面板内已经由动作结果即时更新。
   const refreshRef = useRef<() => void>(() => {})
   refreshRef.current = () => { void refresh() }
   useEffect(() => {
     if (ui.closed || !sessionId) return
     if (Date.now() - Math.max(data.lastUpdate, syncedAt) < 5_000) return
     refreshRef.current()
-  }, [ui.closed, ui.view, sessionId])
+  }, [ui.closed, sessionId])
 
   // 彻底隐藏：不渲染任何东西
   if (ui.closed) {
