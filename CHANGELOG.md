@@ -1,3 +1,135 @@
+## 0.6.4 (2026-10-22)
+
+**0.6.3 之后的收口**：11 个提交全部是修复与内部整理，没有新增工具、没有删除配置项。用户能感觉到的变化集中在三处——语料开始跟随 `.gitignore`、几个"设成 0 本该关闭"的旋钮真的关闭了、面板里改一步不再整份回写。**升级前请读第一条与「向量层」那条**。
+
+### 修改：索引语料改走 git 清单，`.gitignore` 与嵌套规则生效
+
+**问题**：`walkDir` 是纯文件系统遍历，`.gitignore` 里写着的构建产物、内部文档、私有笔记一律进语料——用户 `index_repo` 之后才发现"这东西不该被记住"。
+
+**改法**：
+
+- 新增 `listProjectFiles()`：git 工作树走 `git ls-files -z --cached --others --exclude-standard`（已跟踪文件 + 未被忽略的未跟踪文件），嵌套 `.gitignore` 一并生效；非 git 目录回退 `walkDir`（忽略规则不生效，与旧版一致）；之后再叠 `DEFAULT_IGNORE` 段名与 `maxScanFiles` / `maxScanDepth` 上限。
+- 子模块只以 gitlink 出现，`statSync().isFile()` 为假直接丢弃；已删除但未暂存的路径也不会因此复活。
+- 「读到即索引」对单个文件用 `git check-ignore -q` 判一次；显式 `index_doc` 不受此限。
+- 扫描被截断（`capped`）时照旧**不清理**未见文件：没扫到 ≠ 被删了。
+
+**升级注意**：老 store 里以前从被忽略路径索引进来的文件、以及子模块里的内容，会在升级后第一次**完整**索引时计入 `removed` 并删掉——那是派生索引，把文件重新纳入跟踪或显式 `index_doc` 即可重建。`index_repo` 的报告措辞也从 `code symbols updated` 改为 `code files updated`。
+
+### 修复：两个进程同时写同一份 store 会互相覆盖
+
+**问题**：`save()` 的"读—改—写"没有跨进程保护，后写的一方整段覆盖先写的一方：`insights.json` / `tasks.json` / `binding.json` 的改动直接丢。分片撞车时旧实现还会"跳过写入但内存以为写了"，进程内与磁盘长期分叉。
+
+**改法**：
+
+- `acquireDirLock()`：在 store 目录下用 `openSync('wx')` 原子建 `.write.lock` 并写入 pid；2 秒内每 10 ms 重试一次，锁文件 mtime 超过 10 秒判为 stale 直接删；拿不到锁就**保留脏状态**、100 ms 间隔最多再试 3 次，只警告一次，而不是让工具调用失败。
+- 锁内先 `_mergeAuxFromDisk()`：`insights` / `tasks` / `binding` / watchlist 按 `updatedAt`（任务用 `updatedAt || lastActiveAt`）取较新的一侧，平局取本地；本地删除用墓碑集合防复活；watchlist 取并集减墓碑。
+- 分片冲突以"加载时 sha"为基线：磁盘 sha 既不是基线也不是本次写入 → 按 `indexedAt` 收敛（本地更新则覆盖，磁盘更新则读回内存），并只提示一次。
+- 缓存逐出前先 `hasDirty()` 再 `save()`：延迟落盘之后，LRU 逐出不能把还没 flush 的任务热点直接扔掉。
+
+**代价**：重试耗尽、或进程在 flush 前退出，仍可能丢掉这一回合尚未落盘的热点计数（正文写入同样依赖这次 flush）。
+
+### 修复：经验层与洞察层各用一套打分器，`save_lesson` 写出的条目恒 0 分
+
+**问题**：`save_lesson` 写出的 experience 条目没有 `problem` / `solution`，而旧 `rankExperienceScored` 拼给 BM25 的文档是三个字面量 `undefined` → 该条目**恒 0 分**；洞察桶又按 kind 排除了 experience，于是两条召回路径同时断掉：条目在库里，查不到，`query_memory` 还会印出 `Problem: undefined`。同一处还有两个连带问题：只给 `pattern` 的 lesson，`vectorText` 只认 title/problem/body，空串让 `vectorNear` 返回 null，0.9 自动覆盖与 0.7 近邻提示整体失效；只给 `choice` 的 decision，标题落成 `(untitled)`。影子审计里 `rel` 的分子是 BM25 分、分母却是融合 top，实测能到 5.925。
+
+**改法**：经验层改用洞察层同一个 `insightToEntry` + `rankEntriesMergedScored`，命中后用 `byId` 换回原条目，`rankExperience(Scored)` 删除；`normalizeInsight` 的标题链补 `choice`；`vectorText` 用同一条链（title → pattern → problem → choice → topic → body）并截 200 字符；影子记录新增 `lexTop`，`rel = 词法分 / lexTop`，真实排序判据仍用融合分；渲染侧 problem→title、solution→fix→choice→body 兜底。
+
+**影响**：experience 恢复可召回（短语加分、同义词展开都生效），不再输出 `undefined`。影子 `rel` 从"可以大于 1"变成"≤ 1"——按旧刻度做过的离线重放需要重标定。
+
+### 修复：相关性闸门被整条关掉；缺向量分的条目按本轮均值补
+
+**问题**：`matchedFloor` 的旧签名带 `hasVector`，只要 `Boolean(rerank)` 为真就整条通道不再筛。于是"装了 `leanvec` 但本轮给不出余弦"（查询编码失败、`embed` 抛异常、返回空 Map）时，单片段就 3.13 分的那种弱命中全漏进来——注释承诺的"逐字段退回纯词法"从来没成立过。另一头，缺向量分的条目按 `score = rel` 排序，等价于隐式补了一个 `α·0.5`；真实 store 里 7381 对余弦的中位数只有 0.28，查询→标题的 top-1 多在 0.51–0.63，于是"低余弦"条目反而被"完全没有向量"的压住。
+
+**改法**：`matchedFloor(scored, queries)` 去掉 `hasVector`，改判 `typeof r.vector === 'number' || (r.matched ?? 0) >= need`（`need = min(2, 查询词数)`）；顺序改为 融合 → 逐条闸门 → 截断 `limit`，经验层与洞察层同序；一条余弦都没有时 `fuseVectorHits` 原样返回未归一化的 `scored`，闸门对全体生效；缺分按 `neutral = 本轮已有余弦的均值` 补：`score = (1-α)·rel + α·(v ?? neutral)`。
+
+**影响**：向量层开着但部分条目无分时，这两层单轮可能**少于** `limit` 条（旧行为是整条通道不筛）；全量编码失败时与纯词法逐字段一致；低余弦条目不再被无分条目反超。
+
+### 修复：`vectorAlpha: 0` 连带关掉写入去重，`autoMergeCos` / `hintCos: 0` 的语义反了
+
+**问题**（四个都是"以为自己关了、其实全开或全关"）：
+
+- `forget` 只删条目，`vectors.json` 里那行 256 维均值池化还在——"真删"名不副实，下个进程还会把它复用回来。
+- 写入侧的去重复用了召回侧的重排器，而后者 `alpha === 0` 直接返回 null：`vectorAlpha: 0`（只想关重排）会静默停掉 0.9 自动覆盖与 0.7 近邻提示。
+- `autoMergeCos: 0` / `hintCos: 0` 在旧代码里是 `top1 >= 0` 恒真：设 0 等于"每条写入都覆盖最近一条 / 每次都给提示"，而设 0 恰恰是关闭它最自然的写法。
+- `vectorDir` 拼错和"没装 `leanvec`"在输出上毫无区别。
+
+**改法**：
+
+- 新增 `autoContext.vectorDedup`（默认 `true`），写入侧去重与 `vectorAlpha` 解耦；`createVectorCosine` 独立于 alpha。
+- `autoMergeCos` / `hintCos` 设 0 现在是**关闭**（`!(cos > 0) → null`）。
+- `forget` 同步清向量行：内存索引同时删 `usable` 快照与 `entryMap`（只删后者会被下次打分复活），磁盘 `vectors.json` 按 stride 重写；不加载模型，异常吞掉。
+- `memory_stats` 多两行：向量层状态（`off` / `re-rank alpha` / `write-dedup`）与索引统计（rows / live / stale / KB / model / updated），`vectorDir` 配错不再静默。
+- 新增实验性 `vectorItemMin` / `vectorSpeakMin`（绝对余弦闸门，不设即关，未标定）。
+
+**影响**：`vectorAlpha: 0` 只关重排，写入去重默认仍开（会加载模型）；`forget` 之后 `vectors.json` 会缩行、条目不再复活。`vectors.json` 格式未变（version 1 + ids / hashes / blob）。
+
+### 修复：自动覆盖的绝对阈值在密集语料里会改错条目
+
+**问题**：0.9 只对"当前语料 + 当前模型"成立。语料一模板化（大量同句式条目），池内最近邻余弦整体抬到 0.9 附近，0.9 就会去覆盖**不同**的知识；换模型、换向量表也会整体平移尺度。而自动覆盖是破坏性写入——直接改写既有条目正文，误合并等于静默丢数据。
+
+**改法**：`vectorNear` 顺路累计有限余弦的 n / Σv / Σv²，返回 `mu` / `sigma` / `n`；μ 与 σ **排除候选自己**（`restN = n - 1`、`restSum = sum - top1`、`restSumSq = sumSq - top1²`，`restN > 1` 才算总体标准差）；`autoMergeTarget` 的门槛改成 `floor = max(autoMergeCos, mu + 3σ)`，仍要求 `top1 - top2 >= autoMergeMargin`。`AUTO_MERGE_SIGMA = 3`：池 ≤300 时随机撞上的最大余弦约在 μ+2.9σ。只收紧不放宽——真实 store（122 条 / 7381 对）mean 0.281、sd 0.104 → μ+3σ ≈ 0.59 < 0.9，行为不变。
+
+**影响**：密集语料里 0.92 不再自动覆盖（宁可多存一条，不改错一条）；稀疏与中等密度池逐字段不变，`hintCos` 的 0.7 提示带不受影响。
+
+### 修复：`query_memory` 的分节按固定顺序，最相关的常常落在最后
+
+**问题**：结果按写死的分节顺序拼（Memory → Insights → Experience），分节内部有排序、分节之间没有。最相关的那条落在第三节时，被前面几节的弱结果挤到 4k 字符之后——分数明明是它最高。
+
+**改法**：每个分节取一个 `bestHint`（最佳条目的 `rel × 层先验`：insight 1.15、doc/symbol 1.0、experience 0.9，与 `recallItems` 的 `flat.hint` 同口径），按它降序排段后再拼输出；稳定排序，同分保原序。只决定段落先后，不参与打分、不改任何条目自己的 `score`。
+
+**影响**：同一查询的输出分节顺序会变（doc-only 查询仍 Memory 在前）；条目分数、数量与 token 总量不变。
+
+### 修复：符号的一行声明落盘了却不参与检索
+
+**问题**：符号条目存了 `text`（签名 / 重载 / 类型体），但 `weightedFieldText` 只拼 title、keywords、summary、terms——于是"哪些函数收 union 类型""谁返回 `Promise<void>`"这类只能从签名回答的问题，检索侧完全看不到。顺带修掉 `query_memory` 里符号标题缺失时输出的 `- undefined`。
+
+**改法**：`weightedFieldText` 并入 `entry.text`（只落盘不检索等于白存）；渲染侧用 `text || title` 兜底。符号仍是每个一行、不新增字段，落盘体积不变；标题仍保留 5 倍权重，名字命中不会被签名盖过。
+
+**影响**：带参数、返回类型或类型体的查询能命中符号；`query_memory` 的符号段会显示一行声明。
+
+### 修改：工具 schema 压到约 5.4k 字符，并加了预算守卫
+
+**问题**：工具描述与参数 schema 每次请求都要随上下文带上，是固定成本；0.6.x 期间它逐条膨胀到约 9100 字符。
+
+**改法**：12 个工具的描述收敛成一句、参数说明去掉重复语义（`enum` / `required` 保留），`index_repo` / `query_memory` / `save_lesson` 等逐个重写；新增 `test/tool-schema-size.test.mjs`，把"描述 + 参数 schema"的总长钉在 5600 字符以内（当前 **5367** 字符 / 12 个工具，含工具名约 5493）。
+
+**影响**：每轮固定开销降约 43%；工具行为与参数契约不变。
+
+### 整理：审计写入器归一、global store 单例、`steps` 纳入密钥检测
+
+- 影子审计与主审计共用一份配置归一（`cfgSideLog()`：默认开、只认显式 `false`、非法上限退回默认值）与一个写入器；两者只剩文件名与默认上限不同（审计 256 KB、影子 512 KB，各留一代 `.1`）。日志名、字段、轮转行为全不变。
+- `GlobalStore` 按文件路径复用实例（与 project store 的 `storeCache` 同语义）：两个工具 / 会话交错读写同一份 `global.json`，不再后写覆盖先写。
+- 向量缓存的键加上模型指纹；taskbridge 的会话 Map 改成有界并在 `disposed` 时清理。
+- `remember` 的 `source_file` 走 `normalizeCitationFiles()`：项目外的路径丢弃并回报，不再把任意绝对路径写进记忆。
+- `containsSecretFields` 的默认字段加上 `steps`：流程类条目此前只查前八个字段，`steps` 数组里的密钥 / token 形态逃过检测。
+- `index_repo` 透传 `allowUnsafe`，与其它工具对排除名单的处理保持一致。
+
+### 修复：面板改一步要回写整份 steps；草稿会污染 project/global；切页把命令写进会话
+
+**问题**（这一批的症状都在"看不见的写放大"上）：
+
+- 改一步状态就 `todos` 回写整份 `steps`：两个动作并发时互相覆盖，步数一多还带上整个数组。
+- 反思草稿（`draft` / `source: reflect`）参与 project/global 的自动合并与自动提升——LLM 草稿能改写手写知识。
+- 每切一次记忆页就发 `/tasks insight list`，会话里堆一串命令节点，历史被这些噪声占满。
+- 文件工具每次调用写一次 `tasks.json`；拖动每 `mousemove` 写一次 localStorage，小窗口下卡片还能被拖出视口；"编辑中"的行不进去重指纹，写文件后模型一直看到旧的文件列表。
+- 归档后 `binding.json` 仍指着那个任务；`_pruneBindings` 遇到畸形 JSON 直接抛错。
+
+**改法**：
+
+- 新增三个原子子命令 `/tasks step <i> <status>`、`/tasks step-text <i> <json>`、`/tasks step-move <from> <to>`（落点由服务端按拖拽语义算），RPC 收进 `src/client/commands.ts`（15 秒 AbortController、信封与错误归一）；拖动只进本地 state，`mouseup` 才写 UI store，位置 clamp 在视口内；卡片头从 `button` 改成 `div[role=button]` 并补键盘处理。
+- 草稿或 `source: reflect` 的条目跳过 project/global 合并与跨任务提升；跨任务池过滤 draft；显式编辑即转正（无变化也算确认）。
+- 切页命中 30 秒缓存（键 `session|root|scope|boundTaskId`，换项目、换绑都会失效），列表型命令节点不再渲染；面板只在打开 / 切回任务页时补数据。
+- 文件热点延迟落盘（`commit(..., { save: false })`），`turn/end` 与 `session/disposed` 统一 flush；缓存逐出前先落盘。
+- 归档与 `load()` 时清理绑定；`_pruneBindings` 加形状防御。
+
+**影响**：切页不再在对话里留行；换项目 / 换绑任务不串列表；`tasks.json` 写入频次明显下降。**已有草稿不再自动提升**，需要显式确认才进入 project/global。
+
+### 整理：示例与文档里的专名中性化
+
+README 双语与 CHANGELOG 里的具体框架名（`Vue`）、硬件与机器信息（`20 vCPU` / `本机` / 具体月份）、内部文件名（`PLAN-*` / `RELEASE-NOTES-*` / `de-TODO`）换成中性写法；测试夹具里的内部文件名改成 `notes.md` 这类占位。零运行时行为变化。
+
+**测试**：`npm test` 720 → **756 项 / 44 个文件**（新增 `gitignore-index` / `store-concurrent` / `tool-schema-size`；`insight-store`、`recall`、`recall-vector-fusion`、`vector-index`、`auto-inject`、`client-toolview`、`client-task-sync` 等在既有 `ok` 块内补断言）；`npm run typecheck` 通过；`npm run build:client` 重建与提交产物零差异。
+
 ## 0.6.3 (2026-10-20)
 
 ### 新增：删除留痕——`forget` 仍真删，但最近 5 条可从 `deleted.json` 找回
@@ -37,7 +169,7 @@
 
 **测试**：`npm test` 705 → **720 项 / 41 个文件**（新增 `client-task-sync`；`insight-store` +1、`host-contract` +1、`taskbridge` +1、`root-guards` +8，其余在既有 `ok` 块内补断言），`npm run typecheck` 通过。
 
-
+## 0.6.2 (2026-10-17)
 
 `npm test` **705 项 / 40 个文件**；`npm run typecheck` 通过。
 
