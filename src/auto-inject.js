@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { ProjectMemoryStore } from './store.js'
-import { hasProjectMarker, isUnsafeRoot, memoryRootFor, resolveProjectMemoryRoot } from './util/fs.js'
+import { hasProjectMarker, memoryRootFor, resolveProjectMemoryRoot, rootRejection } from './util/fs.js'
 import { textOf } from './util/text.js'
 import { stepContent } from './util/task-view.js'
 import { insightMatchText, normalizedTokenOverlap } from './similarity.js'
@@ -702,11 +702,12 @@ export function installAutoInject(ctx, config) {
 /** 已就「会话根不安全」提示过的目录：每个进程、每个根只提示一次。 */
 const warnedUnsafeRoots = new Set()
 
-function warnUnsafeSessionRoot(root) {
+function warnUnsafeSessionRoot(root, rejection) {
   if (warnedUnsafeRoots.has(root)) return
   warnedUnsafeRoots.add(root)
+  const field = rejection?.field ? `; adjust \`${rejection.field}\` under \`- id: project-memory\` if this is intentional` : ''
   console.error(
-    `[dsh-project-memory] session cwd ${root} is not a project root (home / system / package-manager prefix); ` +
+    `[dsh-project-memory] session cwd ${root} is not a project root (${rejection?.reason || 'home / system / package-manager prefix'}${field}); ` +
       'project memory and its audit logs are disabled for this session. Start dsh inside a project directory to enable them.',
   )
 }
@@ -722,16 +723,17 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   const cwd = sessionWorkingDir(session, { agent: payload?.agent })
   const sessionId = session && session.id
   if (!cwd || !sessionId) return null
-  // 会话 cwd 是家目录/系统目录时整条链路停在这里：不读 store（历史遗留的超大 store
-  // 光是 load() 就能 OOM），也不写审计——`appendShadowAudit` 里的 mkdirSync 正是把
-  // `.dsh-project-memory` 造进家目录、进而触发"目录自标记 → 家目录被锁成项目"的那一步。
-  if (isUnsafeRoot(cwd)) {
-    warnUnsafeSessionRoot(cwd)
+  // 会话 cwd 命中内置名单 / roots.deny / roots.exclude 时整条链路停在这里：不读 store
+  // （历史遗留的超大 store 光是 load() 就能 OOM），也不写审计——`appendShadowAudit` 里的
+  // mkdirSync 正是把 `.dsh-project-memory` 造进家目录、进而触发"目录自标记 → 家目录被锁成项目"的那一步。
+  const rejection = rootRejection(cwd, config)
+  if (rejection) {
+    warnUnsafeSessionRoot(cwd, rejection)
     return null
   }
   // 记忆根与懒索引/工具侧同一套解析：项目标记优先，其次是安全的会话工作目录。
   // 少了这一步，同一个会话的审计日志与懒索引会落在两个不同的 store 里。
-  const root = resolveProjectMemoryRoot(cwd)
+  const root = resolveProjectMemoryRoot(cwd, config)
   if (!root) return null
 
   const query = lastUserText(decision.messages)

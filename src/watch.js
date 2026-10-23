@@ -1,6 +1,6 @@
 import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { isUnsafeRoot, listProjectFiles, memoryDirName, memoryRootFor, relativePath, scanLimits, storeKey } from './util/fs.js'
+import { listProjectFiles, memoryDirName, memoryRootFor, relativePath, rootRejection, scanLimits, storeKey } from './util/fs.js'
 import { OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from './index-pipeline.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileChanged, isTypeScriptFile } from './enhancer.js'
@@ -36,7 +36,10 @@ export class WatchManager {
     return best
   }
 
-  /** 危险根是否被显式放行（唯一开关，显式工具调用与 watch 共用同一判据）。 */
+  /**
+   * 危险根是否被显式放行（兼容旧调用点；真正的判定统一走 rootRejection）。
+   * 注意：这个开关只放开内置名单，`roots.deny` / `roots.exclude` 仍然优先。
+   */
   unsafeAllowed() {
     return this.config?.allowUnsafeRoots === true
   }
@@ -45,7 +48,7 @@ export class WatchManager {
     const cwd = process.cwd()
     // cwd 是家目录/系统目录时直接跳过：旧顺序是「先 load 再判断」，而历史遗留的超大 store
     // 光读盘就能 OOM —— 那恰恰是 issue #5 的报告者重启后会撞上的场景。
-    if (!this.unsafeAllowed() && isUnsafeRoot(cwd)) return
+    if (rootRejection(cwd, this.config)) return
     // 用 load() 的返回值：storeCache 命中时 load() 返回的是缓存实例，忽略返回值会拿到空 store
     const store = new ProjectMemoryStore(memoryRootFor(cwd, this.config.memoryDir)).load()
     if (existsSync(store.dir)) {
@@ -53,10 +56,10 @@ export class WatchManager {
       for (const root of [...store.watchlist]) {
         if (typeof root !== 'string' || !root) continue
         // 自愈剔除两类条目：已不存在的根（每轮白跑，还会把目录重新 mkdir 出来），
-        // 以及不该整体监听的根（文件系统根 / 家目录 / 系统与包管理器前缀）——
-        // 后者同时**修复历史遗留**：0.5.8 及以前被误判进去的家目录、/opt/homebrew
-        // 会在下一次启动时被自动摘掉，不需要用户手删 watch.json。
-        if (!existsSync(root) || (!this.unsafeAllowed() && isUnsafeRoot(root))) {
+        // 以及按当前配置不能整体监听的根（内置名单 / roots.deny / roots.exclude）。
+        // 后者同时**修复历史遗留**与"新增 deny 后 watch.json 仍留着旧根"：下一次启动
+        // 就会自动摘掉，不需要用户手删 watch.json。
+        if (!existsSync(root) || rootRejection(root, this.config)) {
           store.removeWatch(root)
           dropped++
           continue
@@ -71,8 +74,9 @@ export class WatchManager {
     // 根目录不存在就拒绝：否则每轮 poll 都会 commit → save → mkdirSync，
     // 把一条历史遗留、已被删除的 watchlist 条目重新「创建」出来。
     if (!existsSync(root)) return false
-    // 文件系统根 / 家目录 / 系统前缀不整体监听（它们的子目录允许），除非显式放行。
-    if (!this.unsafeAllowed() && isUnsafeRoot(root)) return false
+    // 文件系统根 / 家目录 / 系统前缀 / roots.deny 不整体监听（它们的子目录允许），
+    // roots.exclude 下的目录同样不监听；除非配置显式放行（仅内置名单可放行）。
+    if (rootRejection(root, this.config)) return false
     if (!this.roots.has(root)) {
       // **不在这里 load()**：`restorePersisted()` 会对 cwd store 的整条 watchlist 逐个 addRoot，
       // 急切读盘等于「watch 过多少个根，启动就同步读多少个 store 的全部 shard」——一个万文件
@@ -209,6 +213,7 @@ export class WatchManager {
     const { files, truncated, capped, skipped: nestedRoots, unreadable } = listProjectFiles(root, {
       ...scanLimits(this.config),
       nestedStoreName: memoryDirName(this.config),
+      config: this.config,
     })
     if (nestedRoots.length && !this._nestedStoreWarned.has(root)) {
       // 同上，只提示一次。这里同时说明"旧副本会被本轮清掉"——升级后的存量重复就是这么收敛的。

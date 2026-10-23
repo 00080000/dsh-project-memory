@@ -12,8 +12,13 @@
         watch: true
         watchInterval: 30
         # 危险根护栏（家目录 / 文件系统根 / 系统与包管理器前缀整体扫描会吃满内存）。
-        # 懒索引/会话审计/任务桥永不越权；true 放开**显式**带 root 的工具调用，也放行 autoIndexOnFirstUse。
+        # 兼容开关：只放开内置名单；roots.deny / roots.exclude 仍然优先。
         allowUnsafeRoots: false
+        # 自定义根名单（可选；allow/deny 精确匹配目录本身，exclude 是子树前缀）。
+        # roots:
+        #   allow: []
+        #   deny: []
+        #   exclude: []
         # 单次扫描上限；截断会报告，且不会删除未扫到的条目。
         maxScanFiles: 20000
         maxScanDepth: 12

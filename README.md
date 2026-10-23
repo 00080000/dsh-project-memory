@@ -128,7 +128,8 @@ The workflow panel is collapsible, adapts to dsh and theme plugin styles, and of
 | `autoIndexOnFirstUse` | false | full scan of the current working directory on plugin load (opt-in) |
 | `watch` / `watchInterval` | true / 30 | background refresh; base poll interval in seconds (polls stay quiet while a turn is running — a 5-minute fallback keeps external edits fresh — and one merged scan runs at turn end; idle polls back off up to 2 minutes and reset on any change) |
 | `maxScanFiles` / `maxScanDepth` | 20000 / 12 | per-scan caps on files and directory depth; a truncated pass is reported and never removes what it did not reach. Cannot be disabled: `0` or any invalid value falls back to the default |
-| `allowUnsafeRoots` | false | allow **explicit** tool calls to target a directory on the excluded list. Lazy indexing, session audit and TaskBridge always stay inert there; `autoIndexOnFirstUse` does not — this flag releases it too |
+| `allowUnsafeRoots` | false | compatibility switch that releases the **built-in** excluded list for every root decision (including lazy indexing, session audit and TaskBridge). It only applies to the built-in list — `roots.deny` / `roots.exclude` still win; to release a single directory, prefer an exact `roots.allow` entry |
+| `roots.allow` / `roots.deny` / `roots.exclude` | `[]` / `[]` / `[]` | custom root lists (machine/profile level, CLI and web alike). `allow` / `deny` match the directory itself exactly; `exclude` is a path-boundary prefix and covers the whole subtree (no file under it enters the index). Priority: `exclude` > `deny` > `allow` > built-in list; the filesystem root can never be a root. `~` / `~/...` expansion, non-absolute entries are ignored with a one-time stderr warning, Windows is case-insensitive |
 | `llmQueryExpansion` / `expansionCount` | false / 6 | expand queries via the LLM before search (off by default to save tokens); max variants |
 | `tsPath` / `enableTypeScript` | (auto) / true | optional absolute path to a specific `typescript` install; set `enableTypeScript: false` to disable the type-aware layer entirely |
 | `tasklist.enabled` / `tasklist.syncHostOnAdopt` | true / true | TaskBridge auto-sync (task entities from the session todo list and file reads); push a bound task's steps to the host task list so dsh mirrors it |
@@ -155,7 +156,17 @@ The two most relevant switches are `lazyIndexing` (index a file the moment the m
 
 When the root comes from the working directory, the model gets one notice per session naming it and how to change it; mute with `autoContext.rootNotice: false`. Starting dsh in a container directory such as `~/workspace` therefore makes that directory the root, and memory spans everything beneath it up to the scan limit — start dsh inside the project for one store per project.
 
-**Excluded directories.** Not used as a root, matched exactly (subdirectories are unaffected): the filesystem root, the home directory, temp directories — `os.tmpdir()` and the shared ones (`/tmp`, `/var/tmp`, `%TEMP%`, `%SystemRoot%\Temp`) — and system / package-manager prefixes (`/opt/homebrew` on POSIX; `%SystemRoot%`, `%ProgramFiles%`, `%ProgramData%` on Windows). A session in one of these runs without memory, with one line on stderr.
+**Excluded directories.** By default, these are not used as a root, matched exactly (subdirectories are unaffected): the filesystem root, the home directory, temp directories — `os.tmpdir()` and the shared ones (`/tmp`, `/var/tmp`, `%TEMP%`, `%SystemRoot%\Temp`) — and system / package-manager prefixes (`/opt/homebrew` on POSIX; `%SystemRoot%`, `%ProgramFiles%`, `%ProgramData%` on Windows). A session in one of these runs without memory, with one line on stderr.
+
+**Custom root lists.** The `roots` block overrides that decision. All three accept `~` / `~/...`; non-absolute entries are ignored with a one-time stderr warning (relative paths would resolve against the host cwd and are unpredictable); Windows is case-insensitive:
+
+- `roots.allow` — allow a directory even when it is on the built-in list, matched exactly. The filesystem root is not eligible.
+- `roots.deny` — this directory cannot be a root, matched exactly; its subdirectories can still be roots of their own.
+- `roots.exclude` — no file in this subtree enters the index, matched by path-boundary prefix (subdirectories included); no new root is inferred inside it either. A complete scan of a parent root skips it and removes previously indexed entries under it.
+
+`deny` only decides whether the directory itself can be a root: when a parent is already a root, files under a denied child are still indexed by that parent — use `exclude` (or `.gitignore`, which the git-aware scan already honours) to drop the files too. Explicit `index_doc` also respects `exclude` and returns `Not indexed` for a file under it.
+
+Priority is `exclude` > `deny` > `allow` > built-in list. `allowUnsafeRoots: true` remains as a compatibility switch that only releases the built-in list; `deny` / `exclude` still win. The same verdict is shared by explicit tool calls, lazy indexing, watch, the session audit trail and TaskBridge. After adding a `deny` / `exclude` entry, roots already persisted in `watch.json` are dropped on the next startup. Configure under `config:` of `- id: project-memory` (CLI and web alike); the web UI does not expose a dedicated settings page yet.
 
 **Scan limits.** One pass covers at most `maxScanFiles` files (20000) and `maxScanDepth` directory levels (12). A truncated pass is reported in the `index_repo` result and logged once per root by the watcher, and it does not remove entries it did not reach. A directory that cannot be read (e.g. `EACCES`) counts as a truncated pass too and is named in the result: a read failure is not a deletion.
 
@@ -176,7 +187,11 @@ Settings live in the plugin's config object. To change them, add an override ent
     maxScanFiles: 20000         # per-scan file cap (truncation is reported, never deletes)
     maxScanDepth: 12            # per-scan directory-depth cap
     enableTypeScript: true      # on: type-aware enhancement when TS is installed (default)
-    # allowUnsafeRoots: false   # keep false unless you really want to index a home/system dir explicitly
+    # allowUnsafeRoots: false   # compatibility switch: built-in list only; prefer roots.allow below
+    # roots:                     # custom root lists (empty by default)
+    #   allow: [/srv/projects/demo]        # exact release of a built-in directory (filesystem root excluded)
+    #   deny: [/srv/shared]                # exact: this directory cannot be a root; children still can
+    #   exclude: [/srv/monorepo/archive]   # subtree prefix: no file under it enters the index
     # tsPath: /custom/path/to/typescript  # optional: force specific TS install
     # autoContext:              # note: the next two keys live under autoContext, not at the top level
     #   budgetLog: once         # debugging: log budget drops to stderr (default off = silent)
@@ -266,7 +281,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 756 tests
+npm test                    # 810 tests
 npm run eval:injection      # synthetic pool P/R: precision 0.93 / recall 1.00, + a 3-scenario hint-only group
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)
