@@ -17,7 +17,7 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
   // 不存在的 root 连同 .dsh-project-memory 一起 mkdirSync 出来。
   assertIndexRoot(root)
   // 再校验安全：家目录 / 系统目录 / Homebrew 前缀整体索引会吃满内存（issue #5）。
-  assertSafeRoot(root, { allowUnsafe })
+  assertSafeRoot(root, { allowUnsafe, config })
   const memoryDir = memoryRootFor(root, config.memoryDir)
   const store = new ProjectMemoryStore(memoryDir).load()
 
@@ -41,6 +41,7 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
   const { files, truncated, capped, skipped: nestedRoots, unreadable } = listProjectFiles(root, {
     ...scanLimits(config),
     nestedStoreName: memoryDirName(config),
+    config,
   })
   for (const filePath of files) {
     const rel = storeKey(relativePath(root, filePath))
@@ -153,9 +154,8 @@ export function indexRepoTool(ctx, config) {
       // 透传原始入参：Windows 风格路径在 POSIX 上会被 resolve 成 <cwd>/D:\...，
       // 报错时要点明这是路径风格问题，而不是“目录被删了”。
       assertIndexRoot(root, args.root)
-      const allowUnsafe = config?.allowUnsafeRoots === true
-      assertSafeRoot(root, { requested: args.root, allowUnsafe })
-      return indexRepository(ctx, config, root, { reindex: Boolean(args.reindex), allowUnsafe })
+      assertSafeRoot(root, { requested: args.root, config })
+      return indexRepository(ctx, config, root, { reindex: Boolean(args.reindex) })
     },
   })
 }

@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { statSync } from 'node:fs'
-import { findProjectRoot, isGitIgnored, isUnsafeRoot, memoryRootFor, relativePath, storeKey } from './util/fs.js'
+import { excludedEntryForPath, findProjectRoot, isGitIgnored, memoryRootFor, relativePath, rootRejection, storeKey } from './util/fs.js'
 import { DROP, OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from './index-pipeline.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileObserved } from './enhancer.js'
@@ -12,11 +12,13 @@ export { findProjectRoot }
 export async function indexFile(ctx, config, filePath, watchManager = null, sessionRoot = null) {
   const kind = fileKind(path.extname(filePath).toLowerCase())
   if (!kind) return false
+  // roots.exclude 是子树级否定：被排除的文件连根都不推导，直接不落任何记忆。
+  if (excludedEntryForPath(filePath, config)) return false
   // 根来源优先级：显式 watch 过的根 → 项目标记 → 会话工作目录（安全时）。
   // 显式登记过的根优先，是为了让"没有标记但被 watch_repo 指定过"的项目也能持续刷新。
   const extraRoots = watchManager ? [...watchManager.roots.keys()] : []
-  const root = findProjectRoot(filePath, { extraRoots, sessionRoot })
-  if (!root || isUnsafeRoot(root)) return false
+  const root = findProjectRoot(filePath, { extraRoots, sessionRoot, config })
+  if (!root || rootRejection(root, config)) return false
   // 被 .gitignore 排除的文件（构建产物 / 内部文档）不进语料；显式 index_doc 不受此限。
   if (isGitIgnored(root, filePath)) return false
 

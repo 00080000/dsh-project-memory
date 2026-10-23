@@ -1,6 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
-import { assertIndexRoot, assertSafeRoot, isUnsafeRoot, memoryRootFor, sessionMemoryRootOrNull } from '../util/fs.js'
+import { assertIndexRoot, assertSafeRoot, memoryRootFor, rootRejection, sessionMemoryRootOrNull } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 
 export function watchRepoTool(watchManager, config) {
@@ -31,7 +31,7 @@ export function watchRepoTool(watchManager, config) {
       if (args.watch !== false) {
         try {
           assertIndexRoot(root, args.root)
-          assertSafeRoot(root, { requested: args.root, allowUnsafe: config?.allowUnsafeRoots === true })
+          assertSafeRoot(root, { requested: args.root, config })
         } catch (err) {
           return `Not watching: ${err.message}`
         }
@@ -58,7 +58,7 @@ export function watchRepoTool(watchManager, config) {
         // （这正是要修的场景），而写它会在家目录里造出 .dsh-project-memory。那份
         // watch.json 现在也没有任何启动路径会读取（restorePersisted 只认会话 cwd），
         // 留着即可；会话侧的镜像条目照常摘掉。
-        if (!isUnsafeRoot(root)) {
+        if (!rootRejection(root, config)) {
           new ProjectMemoryStore(memoryDir).load().commit((s) => s.removeWatch(root))
         }
         await mirrorSessionWatchlist(false)

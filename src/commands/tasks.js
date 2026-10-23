@@ -32,7 +32,7 @@ export function buildTaskPayload(tasks, boundId, archived, root = null) {
  * 任务动作命令复用同一函数，面板只需解析尾部 JSON 即可刷新。
  */
 export function renderTaskSnapshot(config, cwd, sid) {
-  const root = projectRootFor(cwd)
+  const root = projectRootFor(cwd, config)
   if (!root) return { kind: 'error', text: NO_PROJECT_ROOT_NOTE }
   const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
   const tasks = store.getTasks()

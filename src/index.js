@@ -1,5 +1,5 @@
 import Schema from '@deepseek-ai/schemastery'
-import { DEFAULT_SCAN_DEPTH, DEFAULT_SCAN_FILES, isUnsafeRoot } from './util/fs.js'
+import { DEFAULT_SCAN_DEPTH, DEFAULT_SCAN_FILES, assertSafeRoot } from './util/fs.js'
 import { indexDocTool } from './tools/index-doc.js'
 import { indexRepoTool, indexRepository } from './tools/index-repo.js'
 import { queryMemoryTool } from './tools/query-memory.js'
@@ -45,9 +45,18 @@ export const Config = Schema.object({
   watch: Schema.boolean().default(true),
   watchInterval: Schema.number().default(30),
   // 危险根护栏（issue #5）：家目录 / 文件系统根 / 系统目录 / 包管理器前缀（/opt/homebrew …）
-  // 整体扫描会吃满内存，默认一律拒绝。懒索引、会话审计、任务桥在这类目录里始终零副作用；
-  // `autoIndexOnFirstUse` 不在此列——本开关同样放行它。其余只放开**显式**带 root 的工具调用。
+  // 整体扫描会吃满内存，默认一律拒绝（懒索引、会话审计、任务桥默认零副作用）。
+  // `roots.*` 是机器/配置档级的例外表（精确匹配的 allow/deny，子树级前缀的 exclude）；
+  // `allowUnsafeRoots` 保留为兼容，只放开内置名单，deny / exclude 仍然优先。
   allowUnsafeRoots: Schema.boolean().default(false),
+  roots: Schema.object({
+    // 即使在内置名单里也允许作根。精确匹配；文件系统根不在可放行之列。
+    allow: Schema.array(Schema.string()).default([]),
+    // 这个目录不能当根。精确匹配：子目录仍可各自成根。
+    deny: Schema.array(Schema.string()).default([]),
+    // 这棵子树里的文件一律不进索引（前缀匹配，含子目录）。
+    exclude: Schema.array(Schema.string()).default([]),
+  }).default({}),
   // 单次扫描上限。超过即截断（并跳过"删除本轮未见到条目"的清理，避免把没扫到的文件误删）。
   // **不可取消**：0 / 负数 / 非数值一律回落默认值（见 util/fs.js 的 scanLimits）。
   maxScanFiles: Schema.number().default(DEFAULT_SCAN_FILES),
@@ -238,14 +247,11 @@ export function apply(ctx, config) {
         // 全量索引 cwd 是显式开启的行为，但"cwd 是家目录"几乎总是误用：拒绝并说明，
         // 而不是替用户把整棵树扫一遍（旧实现直接 indexRepository(ctx, config, cwd)，
         // 没有任何护栏——这正是 issue #5 里最直接的 OOM 入口）。
-        if (isUnsafeRoot(root) && config.allowUnsafeRoots !== true) {
-          if (!cancelled) {
-            console.error(
-              `[dsh-project-memory] autoIndexOnFirstUse skipped: cwd ${root} is not a project root ` +
-                '(home / system / package-manager prefix). Start dsh inside a project directory, ' +
-                'or set allowUnsafeRoots: true to override.',
-            )
-          }
+        // 这里走与工具调用同一个 assertSafeRoot：roots.allow / deny / exclude 全部生效。
+        try {
+          assertSafeRoot(root, { config })
+        } catch (err) {
+          if (!cancelled) console.error(`[dsh-project-memory] autoIndexOnFirstUse skipped: ${err.message}`)
           return
         }
         try {

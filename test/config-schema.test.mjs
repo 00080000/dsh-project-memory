@@ -38,5 +38,16 @@ const ok = (name) => {
   ok('autoMergeCos / autoMergeMargin / hintCos / maxForgetMatches 已在 Schema 声明')
 }
 
+// --- 3. 可配置根名单：issue #8 的三个键必须都在 Schema 里（否则文档/代码生效、配置却不生效）---
+{
+  const declared = Config.dict?.roots?.dict
+  assert.ok(declared && typeof declared === 'object', 'Config.roots 必须是 object schema（否则无法枚举声明键）')
+  for (const key of ['allow', 'deny', 'exclude']) {
+    assert.ok(Object.hasOwn(declared, key), `roots.${key} 必须在 Config 里声明`)
+    assert.deepEqual(declared[key].meta?.default, [], `roots.${key} 的默认值必须是空数组`)
+  }
+  ok('roots.allow / roots.deny / roots.exclude 已在 Schema 声明且默认 []')
+}
+
 console.log(`\nconfig-schema tests: ${passed} passed`)
 console.log('(run via: node test/config-schema.test.mjs)')
