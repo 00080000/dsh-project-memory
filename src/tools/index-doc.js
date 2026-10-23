@@ -1,6 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
-import { assertIndexRoot, assertReadableFile, assertSafeRoot, findProjectRoot, memoryRootFor, sessionMemoryRootOrNull, sha256OfFile, storeKey } from '../util/fs.js'
+import { assertIndexRoot, assertReadableFile, assertSafeRoot, excludedEntryForPath, findProjectRoot, memoryRootFor, sessionMemoryRootOrNull, sha256OfFile, storeKey } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { docEntriesNeedBackfill } from '../doc-index.js'
 import { ProjectMemoryStore } from '../store.js'
@@ -27,16 +27,24 @@ export function indexDocTool(ctx, config) {
     },
     async execute(args, exec) {
       const filePath = assertReadableFile(args.file_path, config.maxFileSizeMb)
+      // roots.exclude 是"这棵子树里的文件一律不进索引"：显式 index_doc 也要服从。
+      const excluded = excludedEntryForPath(filePath, config)
+      if (excluded) {
+        return (
+          `Not indexed: ${filePath} is inside the subtree excluded by \`roots.exclude\` entry ${JSON.stringify(excluded.raw)}. ` +
+          'Remove that entry from `config.roots.exclude` under `- id: project-memory` if this file should be indexed.'
+        )
+      }
       const explicit = args.root && args.root.trim() ? args.root : null
       let root
       if (explicit) {
         root = path.resolve(explicit)
         assertIndexRoot(root, explicit)
-        assertSafeRoot(root, { requested: explicit, allowUnsafe: config?.allowUnsafeRoots === true })
+        assertSafeRoot(root, { requested: explicit, config })
       } else {
         // 与懒索引同序：文件自身的项目标记优先，其次才是会话记忆根（安全但无标记的 cwd）。
         const sessionRoot = sessionMemoryRootOrNull(exec, config)
-        root = findProjectRoot(filePath, { sessionRoot })
+        root = findProjectRoot(filePath, { sessionRoot, config })
         if (!root) {
           return (
             `Not indexed: ${filePath} is not inside a detected project ` +

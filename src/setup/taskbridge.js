@@ -44,13 +44,13 @@ export const NO_PROJECT_ROOT_NOTE =
  * "会话工作目录"归属，没有标记的普通目录也要能用）；cwd 是家目录/系统/包管理器前缀
  * 且上方没有标记时返回 null。
  */
-export function projectRootFor(cwd) {
-  return resolveProjectMemoryRoot(cwd || process.cwd())
+export function projectRootFor(cwd, config) {
+  return resolveProjectMemoryRoot(cwd || process.cwd(), config)
 }
 
 /** 没有可用项目根时返回 `{ root: null, store: null }`，调用方据此整段跳过。 */
 export function taskStoreFor(cwd, config) {
-  const root = projectRootFor(cwd)
+  const root = projectRootFor(cwd, config)
   if (!root) return { root: null, store: null }
   return { root, store: new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load() }
 }

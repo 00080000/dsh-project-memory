@@ -271,6 +271,12 @@ export function walkDir(root, opts = {}) {
   // 扫描也该同意这一点；否则父根会把子项目的全部内容再存一份（实测一个父目录
   // 的 store 里 9075/9081 个文件是子根 store 的重复副本）。
   const nestedStoreName = opts.nestedStoreName || null
+  // `roots.exclude` 是子树级前缀匹配：命中的目录整棵剪掉，命中的文件直接不收。
+  const policy = isCompiledRootPolicy(opts.policy)
+    ? opts.policy
+    : isCompiledRootPolicy(opts.config)
+      ? opts.config
+      : opts.config ? compileRootPolicy(opts.config) : null
   const out = []
   const skipped = []
   const unreadable = []
@@ -295,6 +301,7 @@ export function walkDir(root, opts = {}) {
       const full = path.join(dir, entry.name)
       if (entry.isDirectory()) {
         if (ignoreNames.has(entry.name)) continue
+        if (policy && excludedEntryForAbs(full, policy)) continue
         if (nestedStoreName && hasOwnStore(full, nestedStoreName)) {
           skipped.push(full)
           continue
@@ -306,6 +313,7 @@ export function walkDir(root, opts = {}) {
         }
         stack.push([full, depth + 1])
       } else {
+        if (policy && excludedEntryForAbs(full, policy)) continue
         if (out.length >= maxFiles) {
           truncated = true
           capped = true
@@ -350,6 +358,11 @@ function gitListedFiles(root) {
  * @returns {{files: string[], truncated: boolean, capped: boolean, skipped: string[], unreadable: string[]}}
  */
 export function listProjectFiles(root, opts = {}) {
+  const policy = isCompiledRootPolicy(opts.policy)
+    ? opts.policy
+    : isCompiledRootPolicy(opts.config)
+      ? opts.config
+      : opts.config ? compileRootPolicy(opts.config) : null
   const listed = opts.gitAware === false ? null : gitListedFiles(root)
   if (listed === null) return walkDir(root, opts)
   const maxFiles = Number.isFinite(opts.maxFiles) && opts.maxFiles > 0 ? opts.maxFiles : Infinity
@@ -366,6 +379,11 @@ export function listProjectFiles(root, opts = {}) {
     if (!rel) continue
     const segs = rel.split('/')
     if (segs.some((s) => DEFAULT_IGNORE.has(s))) continue
+    const abs = path.join(root, rel)
+    // 与 walkDir 同一判据：exclude 是子树级前缀，git 清单里的文件同样要过这一关。
+    // 这一步必须在 maxDepth 之前：被排除文件不该把扫描标成 truncated（否则本轮
+    // 不会清理"未见到的旧条目"，排除规则反而让旧索引留在盘上）。
+    if (policy && excludedEntryForAbs(abs, policy)) continue
     if (segs.length > maxDepth) {
       capped = true
       continue
@@ -379,7 +397,6 @@ export function listProjectFiles(root, opts = {}) {
       capped = true
       break
     }
-    const abs = path.join(root, rel)
     try {
       if (!statSync(abs).isFile()) continue
     } catch {
@@ -615,57 +632,363 @@ const UNSAFE = collectUnsafeRootSets()
 const UNSAFE_DIRS = UNSAFE.unsafe
 const SHARED_TEMP_DIRS = UNSAFE.sharedTemp
 
-/** 判定依据文案：用于拒绝时告诉用户「为什么是它」。 */
-function unsafeReason(abs) {
-  const key = storeKey(abs)
-  const parsed = path.parse(abs)
-  if (abs === parsed.root) return 'the filesystem root'
-  let home = null
-  try {
-    home = storeKey(path.resolve(os.homedir()))
-  } catch {
-    home = null
+// ---------------------------------------------------------------------------
+// 用户可配置的根名单（`roots.allow` / `roots.deny` / `roots.exclude`）。
+//
+// 三个字段的匹配口径刻意不同，别合并成一个：
+//   - allow / deny：**精确匹配**，只针对目录本身。`deny: /srv/shared` 不拒绝
+//     `/srv/shared/myproj`——它自己是一个合法项目根。
+//   - exclude：**路径边界前缀匹配**，整棵子树都算。子树里的文件一律不进索引，
+//     也不能在这棵子树里推出新的项目根。
+//
+// 优先级：exclude > deny > allow > 内置名单。`allowUnsafeRoots: true` 保留为兼容，
+// 只放开**内置名单**；deny / exclude 仍然优先。文件系统根永远不能当根（allow 也不行）。
+// ---------------------------------------------------------------------------
+
+const ROOT_POLICY_FIELDS = ['allow', 'deny', 'exclude']
+
+/** 每条告警只打一次：配置在进程内是静态的，重复刷屏没有信息量。 */
+const warnedRootPolicyEntries = new Set()
+
+function warnRootPolicyOnce(key, message, warn) {
+  if (warnedRootPolicyEntries.has(key)) return
+  warnedRootPolicyEntries.add(key)
+  const log = typeof warn === 'function' ? warn : console.error
+  log(`[dsh-project-memory] ${message}`)
+}
+
+function expandHomeEntry(value, home, pathApi) {
+  if (value === '~') return home
+  if (value.startsWith('~/') || value.startsWith('~\\')) {
+    return home ? pathApi.resolve(home, value.slice(2)) : null
   }
-  if (home && key === home) return 'your home directory'
-  if (SHARED_TEMP_DIRS.has(key)) return 'the shared temp directory'
+  return value
+}
+
+function normalizeRootPolicyEntries(list, field, { platform, pathApi, home, warn }) {
+  const out = []
+  if (list === undefined || list === null) return out
+  if (!Array.isArray(list)) {
+    warnRootPolicyOnce(
+      `shape:${field}`,
+      `config.roots.${field} must be an array of absolute paths; ignoring it.`,
+      warn,
+    )
+    return out
+  }
+  for (const raw of list) {
+    if (typeof raw !== 'string') {
+      warnRootPolicyOnce(
+        `type:${field}:${typeof raw}`,
+        `config.roots.${field} contains a non-string entry; ignoring it (only absolute path strings are accepted).`,
+        warn,
+      )
+      continue
+    }
+    const value = raw.trim()
+    if (!value) continue
+    const expanded = expandHomeEntry(value, home, pathApi)
+    if (expanded === null) {
+      warnRootPolicyOnce(
+        `home:${field}:${value}`,
+        `config.roots.${field} entry ${JSON.stringify(value)} cannot be expanded: the home directory is unavailable.`,
+        warn,
+      )
+      continue
+    }
+    if (!pathApi.isAbsolute(expanded)) {
+      warnRootPolicyOnce(
+        `relative:${field}:${value}`,
+        `config.roots.${field} entry ignored (not an absolute path): ${JSON.stringify(value)}. ` +
+          'Relative paths would be resolved against the host cwd and are unpredictable; use an absolute path or ~/...',
+        warn,
+      )
+      continue
+    }
+    let abs
+    try {
+      abs = pathApi.resolve(expanded)
+    } catch {
+      warnRootPolicyOnce(
+        `resolve:${field}:${value}`,
+        `config.roots.${field} entry ignored (cannot be resolved): ${JSON.stringify(value)}.`,
+        warn,
+      )
+      continue
+    }
+    out.push({ abs, key: storeKey(abs, platform), raw: value })
+  }
+  return out
+}
+
+function isCompiledRootPolicy(value) {
+  return Boolean(value && typeof value === 'object' && value.__rootPolicy === true)
+}
+
+/**
+ * 把插件 config 编译成一份可复用的根判定策略。
+ *
+ * 参数化（platform / pathApi / home / env）是为了在任意平台上验证 Windows 语义，
+ * 与 `collectUnsafeRootSets()` 的测试惯例一致；生产路径只用无参形式。
+ *
+ * @param {object} [config] 插件 config（只读 `config.roots` 与 `config.allowUnsafeRoots`）
+ * @param {{platform?: string, pathApi?: object, home?: string|null, env?: object, warn?: Function,
+ *   allowUnsafe?: boolean, unsafeDirs?: Set<string>, sharedTemp?: Set<string>}} [opts]
+ * @returns {object} 策略对象（内部结构，调用方应通过 rootRejection/isUnsafeRoot/isExcludedPath 使用）
+ */
+export function compileRootPolicy(config, opts = {}) {
+  const platform = opts.platform || process.platform
+  const pathApi = opts.pathApi || path
+  const home = Object.prototype.hasOwnProperty.call(opts, 'home') ? opts.home : safeHomedir()
+  const warn = opts.warn
+  const rawRoots = config && typeof config === 'object' ? config.roots : undefined
+  const roots = rawRoots && typeof rawRoots === 'object' && !Array.isArray(rawRoots) ? rawRoots : {}
+  if (rawRoots !== undefined && (typeof rawRoots !== 'object' || rawRoots === null || Array.isArray(rawRoots))) {
+    warnRootPolicyOnce(
+      'shape:roots',
+      'config.roots must be an object with `allow` / `deny` / `exclude` arrays; ignoring it.',
+      warn,
+    )
+  }
+
+  const entries = {}
+  for (const field of ROOT_POLICY_FIELDS) {
+    entries[field] = normalizeRootPolicyEntries(roots[field], field, { platform, pathApi, home, warn })
+  }
+
+  let builtin = opts.unsafeDirs || null
+  let sharedTemp = opts.sharedTemp || null
+  if (!builtin || !sharedTemp) {
+    // 只有"完全没传模拟参数"时才复用模块级集合。只要显式给了 platform / pathApi /
+    // home / tmp / env 中的任一个，就按这些参数重算——否则在 Linux 上模拟 Windows
+    // 或换一个 home 时，内置名单会悄悄沿用当前机器的那一份。
+    const simulated = ['platform', 'pathApi', 'home', 'tmp', 'env'].some((key) =>
+      Object.prototype.hasOwnProperty.call(opts, key),
+    )
+    if (!simulated && platform === process.platform) {
+      builtin = builtin || UNSAFE_DIRS
+      sharedTemp = sharedTemp || SHARED_TEMP_DIRS
+    } else {
+      const sets = collectUnsafeRootSets({
+        platform,
+        home,
+        tmp: Object.prototype.hasOwnProperty.call(opts, 'tmp') ? opts.tmp : os.tmpdir(),
+        env: opts.env || process.env,
+        pathApi,
+      })
+      builtin = builtin || sets.unsafe
+      sharedTemp = sharedTemp || sets.sharedTemp
+    }
+  }
+
+  const allowEntries = new Map(entries.allow.map((e) => [e.key, e.raw]))
+  const denyEntries = new Map(entries.deny.map((e) => [e.key, e.raw]))
+  return {
+    __rootPolicy: true,
+    platform,
+    pathApi,
+    home,
+    allowUnsafeRoots: config?.allowUnsafeRoots === true || opts.allowUnsafe === true,
+    allow: new Set(allowEntries.keys()),
+    deny: new Set(denyEntries.keys()),
+    exclude: entries.exclude,
+    allowEntries,
+    denyEntries,
+    builtin,
+    sharedTemp,
+  }
+}
+
+function policyFor(configOrPolicy, opts) {
+  if (isCompiledRootPolicy(configOrPolicy)) return configOrPolicy
+  return compileRootPolicy(configOrPolicy, opts)
+}
+
+/** `parent` 是否等于 `child` 或它的祖先（按路径分隔符，含子树）。 */
+function isInsideKey(parentKey, childKey, sep) {
+  if (parentKey === childKey) return true
+  const prefix = parentKey.endsWith(sep) ? parentKey : `${parentKey}${sep}`
+  return childKey.startsWith(prefix)
+}
+
+function excludedEntryForAbs(abs, policy) {
+  if (!policy.exclude.length) return null
+  let absResolved
+  try {
+    absResolved = policy.pathApi.resolve(abs)
+  } catch {
+    return null
+  }
+  const key = storeKey(absResolved, policy.platform)
+  for (const entry of policy.exclude) {
+    if (isInsideKey(entry.key, key, policy.pathApi.sep)) return entry
+  }
+  return null
+}
+
+/**
+ * 某个文件/目录是否落在 `roots.exclude` 的子树里。
+ * @returns {{abs: string, key: string, raw: string}|null} 命中的条目（用于报告），否则 null
+ */
+export function excludedEntryForPath(filePath, configOrPolicy, opts) {
+  if (typeof filePath !== 'string' || !filePath) return null
+  const policy = policyFor(configOrPolicy, opts)
+  let abs
+  try {
+    abs = policy.pathApi.resolve(filePath)
+  } catch {
+    return null
+  }
+  return excludedEntryForAbs(abs, policy)
+}
+
+/** 文案用的「为什么是它」。 */
+function unsafeReason(abs, policy = {}) {
+  const platform = policy.platform || process.platform
+  const pathApi = policy.pathApi || path
+  const key = storeKey(abs, platform)
+  const parsed = pathApi.parse(abs)
+  if (key === storeKey(parsed.root, platform)) return 'the filesystem root'
+  if (policy.home) {
+    try {
+      if (key === storeKey(pathApi.resolve(policy.home), platform)) return 'your home directory'
+    } catch {
+      // 家目录不可解析：继续按临时/系统目录归类
+    }
+  } else {
+    try {
+      if (key === storeKey(path.resolve(os.homedir()), platform)) return 'your home directory'
+    } catch {
+      // 同上
+    }
+  }
+  const shared = policy.sharedTemp || SHARED_TEMP_DIRS
+  if (shared.has(key)) return 'the shared temp directory'
   return 'a system directory that is never a project root'
 }
 
-/** 这个目录能否当项目记忆根？纯判定，无副作用。 */
-export function isUnsafeRoot(root) {
-  if (typeof root !== 'string' || !root) return true
+/**
+ * 根判定的**唯一实现**：返回 null（可用）或一条命中记录。
+ *
+ * 命中记录带 `kind` / `field` / `entry` / `reason`，调用方据此生成"是哪条命中的、
+ * 该改哪个字段"的拒绝文案。优先级在这里一眼可见：exclude → deny → 内置（allow
+ * 与 allowUnsafeRoots 只作用于内置名单）→ 文件系统根永远拒绝。
+ *
+ * @param {string} root 候选根
+ * @param {object} [configOrPolicy] 插件 config，或 `compileRootPolicy()` 的返回值
+ */
+export function rootRejection(root, configOrPolicy, opts) {
+  const policy = policyFor(configOrPolicy, opts)
+  if (typeof root !== 'string' || !root) {
+    return { kind: 'invalid', field: null, entry: null, reason: 'not a usable directory path' }
+  }
   let abs
   try {
-    abs = path.resolve(root)
+    abs = policy.pathApi.resolve(root)
   } catch {
-    return true
+    return { kind: 'invalid', field: null, entry: null, reason: 'not a usable directory path' }
   }
-  const parsed = path.parse(abs)
-  if (!parsed.dir || abs === parsed.root) return true
-  return UNSAFE_DIRS.has(storeKey(abs))
+  const platform = policy.platform
+  const key = storeKey(abs, platform)
+  const parsed = policy.pathApi.parse(abs)
+  if (!parsed.dir || key === storeKey(parsed.root, platform)) {
+    return { kind: 'filesystem-root', abs, field: null, entry: null, reason: 'the filesystem root' }
+  }
+  const excluded = excludedEntryForAbs(abs, policy)
+  if (excluded) {
+    return {
+      kind: 'exclude',
+      abs,
+      field: 'roots.exclude',
+      entry: excluded.raw,
+      reason: `inside the subtree excluded by ${JSON.stringify(excluded.raw)}`,
+    }
+  }
+  if (policy.deny.has(key)) {
+    return {
+      kind: 'deny',
+      abs,
+      field: 'roots.deny',
+      entry: policy.denyEntries.get(key) || null,
+      reason: 'listed in roots.deny',
+    }
+  }
+  if (policy.builtin.has(key) && !policy.allowUnsafeRoots && !policy.allow.has(key)) {
+    return { kind: 'builtin', abs, field: 'roots.allow', entry: null, reason: unsafeReason(abs, policy) }
+  }
+  return null
+}
+
+/** 这个目录能否当项目记忆根？纯判定，无副作用。 */
+export function isUnsafeRoot(root, configOrPolicy, opts) {
+  return rootRejection(root, configOrPolicy, opts) !== null
+}
+
+const CONFIG_LOCATION = 'under `- id: project-memory` → `config:`'
+
+/** 把命中记录变成一句可执行的拒绝文案。 */
+function rootRejectionMessage(target, rejection) {
+  const head = `Refusing to use ${target} as a project memory root: `
+  switch (rejection.kind) {
+    case 'filesystem-root':
+      return (
+        head +
+        'it is the filesystem root. That can never be a project memory root; pass a project directory instead.'
+      )
+    case 'exclude':
+      return (
+        head +
+        `it is inside the subtree excluded by \`roots.exclude\` entry ${JSON.stringify(rejection.entry)}. ` +
+        `Remove that entry from \`config.roots.exclude\` ${CONFIG_LOCATION} if this directory should be a root.`
+      )
+    case 'deny':
+      return (
+        head +
+        `it is listed in \`roots.deny\`${rejection.entry ? ` as ${JSON.stringify(rejection.entry)}` : ''}. ` +
+        `Remove that entry from \`config.roots.deny\` ${CONFIG_LOCATION} to allow it.`
+      )
+    case 'builtin':
+      return (
+        head +
+        `it is ${rejection.reason}, a built-in protected root. Indexing or watching it would walk the whole ` +
+        'directory tree (hundreds of thousands of files) and exhaust memory. Pass a project directory instead, ' +
+        `or add this exact directory to \`config.roots.allow\` ${CONFIG_LOCATION} if you really mean it ` +
+        '(or set `allowUnsafeRoots: true` to allow every built-in protected directory).'
+      )
+    default:
+      return head + `${rejection.reason}. Pass an absolute project directory instead.`
+  }
 }
 
 export class UnsafeRootError extends Error {
-  constructor(root, requested) {
+  constructor(root, requested, options = {}) {
     const target = requested && String(requested).trim() ? String(requested) : String(root)
-    super(
-      `Refusing to use ${target} as a project memory root: it is ${unsafeReason(path.resolve(root))}. ` +
-        'Indexing or watching it would walk the whole directory tree (hundreds of thousands of files) and exhaust memory. ' +
-        'Pass a project directory instead, or set allowUnsafeRoots: true if you really mean it.',
-    )
+    const rejection = options.rejection || rootRejection(root, options.config)
+    super(rootRejectionMessage(target, rejection))
     this.name = 'UnsafeRootError'
     this.root = root
+    this.code = rejection.kind
+    this.kind = rejection.kind
+    this.reason = rejection.reason
+    this.field = rejection.field
+    this.entry = rejection.entry
   }
 }
 
 /**
  * 校验「这个根可以当项目记忆根」。所有把目录当根写盘的入口都必须先过这一关：
  * 写盘前拒绝，比事后清理 `.dsh-project-memory` 便宜得多。
+ *
+ * `allowUnsafe` 是旧的内部兼容参数，语义等同 `allowUnsafeRoots: true`——只放开内置
+ * 名单，绝不会越过 `roots.deny` / `roots.exclude`。
  */
-export function assertSafeRoot(root, { requested = root, allowUnsafe = false } = {}) {
-  if (allowUnsafe) return root
-  if (!isUnsafeRoot(root)) return root
-  throw new UnsafeRootError(root, requested)
+export function assertSafeRoot(root, { requested = root, allowUnsafe = false, config } = {}) {
+  const policy = isCompiledRootPolicy(config)
+    ? (allowUnsafe && !config.allowUnsafeRoots ? { ...config, allowUnsafeRoots: true } : config)
+    : compileRootPolicy(config, { allowUnsafe })
+  const rejection = rootRejection(root, policy)
+  if (!rejection) return root
+  throw new UnsafeRootError(root, requested, { rejection })
 }
 
 export function resolveIndexRoot(exec, explicitRoot) {
@@ -770,11 +1093,16 @@ function nearestMarker(absPath, markers, isUnsafe) {
 /**
  * 项目根推导（**只认标记与显式声明，绝不从文件路径兜底**）。
  *
+ * `roots.exclude` 在这条链路里是最强的否定：文件落在被排除的子树里 → 直接 null，
+ * 不再向上找标记，也不会退回会话工作目录（那棵树本来就不该进任何索引）。
+ *
  * @param {string} filePath 目标文件（也接受目录内探针文件路径）
- * @param {{ extraRoots?: Iterable<string>, sessionRoot?: string|null, isUnsafe?: (dir: string) => boolean }} [opts]
+ * @param {{ extraRoots?: Iterable<string>, sessionRoot?: string|null, isUnsafe?: (dir: string) => boolean,
+ *   config?: object, policy?: object }} [opts]
  *   `extraRoots`：显式登记过的根（watch_repo / watchManager）。
  *   `sessionRoot`：会话工作目录，作为**最后**一级推定——仅当文件确实在它里面、
  *   且它是安全目录时采用。
+ *   `config`：插件 config；`roots.deny` / `roots.exclude` / `roots.allow` 由此生效。
  *   `isUnsafe`：危险根判定，默认 `isUnsafeRoot`。可注入是为了让"被拒前缀里有一个合法
  *   `.git`"这条反直觉输入能在任意平台上用一个临时目录复现（`/opt/homebrew` 正是被
  *   `.git` 主动选中的，不是兜底误判——issue #5 的现场复核结论）。
@@ -782,13 +1110,21 @@ function nearestMarker(absPath, markers, isUnsafe) {
  */
 export function findProjectRoot(filePath, opts = {}) {
   if (typeof filePath !== 'string' || !filePath) return null
-  const isUnsafe = typeof opts.isUnsafe === 'function' ? opts.isUnsafe : isUnsafeRoot
+  const policy = isCompiledRootPolicy(opts.policy)
+    ? opts.policy
+    : isCompiledRootPolicy(opts.config)
+      ? opts.config
+      : compileRootPolicy(opts.config, { allowUnsafe: opts.allowUnsafe === true })
+  const isUnsafe = typeof opts.isUnsafe === 'function'
+    ? opts.isUnsafe
+    : (dir) => rootRejection(dir, policy) !== null
   let abs
   try {
     abs = path.resolve(filePath)
   } catch {
     return null
   }
+  if (excludedEntryForAbs(abs, policy)) return null
   const explicit = longestRootContaining(opts.extraRoots || [], abs)
   if (explicit) return isUnsafe(explicit) ? null : explicit
 
@@ -803,11 +1139,12 @@ export function findProjectRoot(filePath, opts = {}) {
 /**
  * **会话记忆根**：本插件所有"这个会话的记忆放哪"的唯一答案。
  * 声明优先（标记）→ 会话工作目录（安全时）→ null（家目录/系统目录，且没有标记）。
+ * `config` 里的 `roots.*` 与 `allowUnsafeRoots` 与工具侧共用同一套判定。
  */
-export function resolveProjectMemoryRoot(cwd) {
+export function resolveProjectMemoryRoot(cwd, config) {
   const base = resolveDir(cwd) || resolveDir(process.cwd())
   if (!base) return null
-  return findProjectRoot(path.join(base, PROJECT_PROBE), { sessionRoot: base })
+  return findProjectRoot(path.join(base, PROJECT_PROBE), { sessionRoot: base, config })
 }
 
 /**
@@ -819,13 +1156,14 @@ export function resolveSafeIndexRoot(exec, explicitRoot, config) {
   const allowUnsafe = config?.allowUnsafeRoots === true
   const explicit = explicitRoot && String(explicitRoot).trim() ? String(explicitRoot) : null
   if (explicit) {
-    return assertSafeRoot(path.resolve(explicit), { requested: explicit, allowUnsafe })
+    return assertSafeRoot(path.resolve(explicit), { requested: explicit, allowUnsafe, config })
   }
   const cwd = resolveIndexRoot(exec)
-  const root = resolveProjectMemoryRoot(cwd)
+  const root = resolveProjectMemoryRoot(cwd, config)
   if (root) return root
-  if (allowUnsafe) return cwd
-  throw new UnsafeRootError(cwd, cwd)
+  // allowUnsafeRoots 只放开内置名单；cwd 被 deny / exclude / 文件系统根命中时仍然拒绝。
+  if (allowUnsafe && !rootRejection(cwd, config)) return cwd
+  throw new UnsafeRootError(cwd, cwd, { config })
 }
 
 /** 尽力而为的会话记忆根：拿不到就返回 null（用于审计镜像这类旁路，不抛错）。 */

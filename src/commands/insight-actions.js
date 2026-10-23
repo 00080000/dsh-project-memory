@@ -396,7 +396,7 @@ export function insightCommandDefinition(config, ctx) {
         const { cwd } = invocationContext(invocation)
         const lineRaw = (invocation?.rawInput || '').trim()
         const raw = lineRaw.split(/\s+/).filter(Boolean)
-        const root = projectRootFor(cwd)
+        const root = projectRootFor(cwd, config)
         if (!root) return { kind: 'error', text: NO_PROJECT_ROOT_NOTE }
         if (!raw[0]) return { kind: 'error', text: '[insight] 用法见面板' }
         const verb = raw[0]

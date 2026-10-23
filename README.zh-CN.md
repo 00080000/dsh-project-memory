@@ -127,7 +127,8 @@ TaskPanel (Container)
 | `autoIndexOnFirstUse` | false | 插件加载时对当前工作目录做全量扫描（可选） |
 | `watch` / `watchInterval` | true / 30 | 后台刷新；基础轮询间隔（秒）；回合进行中静默（5 分钟兜底，外部改动仍会自愈），回合结束立刻合并扫一次；空闲时逐步退避到最长 2 分钟，一有变化立即回到该值 |
 | `maxScanFiles` / `maxScanDepth` | 20000 / 12 | 单次扫描的文件数与目录深度硬上限；被截断时会在报告里说明，且不会删除没扫到的条目。**无法取消**：`0` 或任何非法值都回落到默认值 |
-| `allowUnsafeRoots` | false | 允许**显式**工具调用指向排除名单上的目录。懒索引、会话审计与 TaskBridge 始终不越权；`autoIndexOnFirstUse` 不在此列——它同样被这个开关放行 |
+| `allowUnsafeRoots` | false | 兼容开关：放开**内置**排除名单，所有根判定入口（含懒索引、会话审计、任务桥）都生效。它只作用于内置名单——`roots.deny` / `roots.exclude` 仍然优先；只想放开一个目录时用 `roots.allow` |
+| `roots.allow` / `roots.deny` / `roots.exclude` | `[]` / `[]` / `[]` | 自定义根名单（机器/配置档级，CLI 与 web 通用）。`allow` / `deny` 精确匹配目录本身；`exclude` 按路径边界前缀匹配整棵子树（其中的文件一律不进索引）。优先级 `exclude` > `deny` > `allow` > 内置名单，文件系统根永远不能当根。支持 `~`/`~/...`；非绝对路径忽略并在 stderr 告警一次；Windows 下大小写不敏感 |
 | `llmQueryExpansion` / `expansionCount` | false / 6 | 检索前用 LLM 扩展查询（默认关闭，节省 token）；扩展变体上限 |
 | `tsPath` / `enableTypeScript` | (自动) / true | 可选：强制指定 `typescript` 安装路径；`enableTypeScript: false` 彻底禁用类型感知层 |
 | `tasklist.enabled` / `tasklist.syncHostOnAdopt` | true / true | TaskBridge 自动同步（由会话 todo 清单与文件读取沉淀任务实体）；绑定任务时把其步骤推给宿主任务清单，使 dsh 镜像该任务 |
@@ -154,7 +155,17 @@ TaskPanel (Container)
 
 根来自工作目录时，模型每个会话收到一条通告，说明根的位置与改法；`autoContext.rootNotice: false` 关闭。因此在 `~/workspace` 这类容器目录里启动 dsh，该目录就是根，记忆覆盖其下所有项目直到扫描上限——想一个项目一个 store，就在项目目录里启动。
 
-**排除名单。** 以下目录不会作为根，精确匹配（子目录不受影响）：文件系统根、家目录、临时目录（`os.tmpdir()` 与共享的 `/tmp`、`/var/tmp`、`%TEMP%`、`%SystemRoot%\Temp`），以及系统/包管理器前缀（POSIX 上的 `/opt/homebrew`，Windows 上的 `%SystemRoot%`、`%ProgramFiles%`、`%ProgramData%`）。这些目录下的会话不启用记忆，stderr 输出一行说明。
+**排除名单。** 以下目录不会作为根，精确匹配（子目录不受影响）：文件系统根、家目录、临时目录（`os.tmpdir()` 与共享的 `/tmp`、`/var/tmp`、`%TEMP%`、`%SystemRoot%\Temp`），以及系统/包管理器前缀（POSIX 上的 `/opt/homebrew`，Windows 上的 `%SystemRoot%`、`%ProgramFiles%`、`%ProgramData%`）。这些目录下的会话默认不启用记忆，stderr 输出一行说明。
+
+**自定义根名单。** 在同一份配置的 `roots` 下可以覆盖上述判定；三项都支持 `~`/`~/...`，非绝对路径会被忽略并在 stderr 告警一次（相对路径按宿主 cwd 解释，不可预测），Windows 下大小写不敏感：
+
+- `roots.allow`：即使命中了内置名单也允许作根，精确匹配；文件系统根不在此列。
+- `roots.deny`：这个目录不能当根，精确匹配；它的子目录仍可各自成根。
+- `roots.exclude`：这棵子树里的文件一律不进索引，按路径边界前缀匹配（含子目录）；也不能在这里推出新的根。父根的完整扫描会跳过它，之前索引过的条目会在下一次完整扫描时清理。
+
+注意 `deny` 只决定这个目录自己能不能当根：父目录已经是根时，`deny` 的子目录仍会被父根索引——要连文件一起排除请用 `exclude`（或 `.gitignore`，git 仓库里的扫描本来就尊重它）。显式 `index_doc` 也服从 `exclude`，被排除的文件会返回 `Not indexed`。
+
+优先级是 `exclude` > `deny` > `allow` > 内置名单。`allowUnsafeRoots: true` 保留为兼容，只放开内置名单，`deny` / `exclude` 仍然优先。生效面是同一套判定：显式工具调用、懒索引、watch、会话审计、任务桥。新增 `deny` / `exclude` 后，已登记在 `watch.json` 里的根会在下次启动自动摘掉。配置写在 `- id: project-memory` 的 `config:` 下（CLI 与 web 都适用）；Web 端暂未提供正式配置页。
 
 **扫描上限。** 单次扫描最多 `maxScanFiles` 个文件（20000）、`maxScanDepth` 层目录（12）。被截断时，`index_repo` 的结果里会说明，watcher 每个根记一行，且不会删除没扫到的条目。**读不到的目录**（如 `EACCES`）同样算一次截断扫描并在结果里点名：读失败不等于被删除。
 
@@ -175,7 +186,11 @@ store 建在被索引的目录树里，并且**自我忽略**：自己目录内�
     maxScanFiles: 20000         # 单次扫描文件上限（截断会报告，且不会误删旧条目）
     maxScanDepth: 12            # 单次扫描目录深度上限
     enableTypeScript: true      # 开启：装了 TS 时启用类型感知增强（默认）
-    # allowUnsafeRoots: false   # 保持 false，除非你确实要显式索引家目录/系统目录
+    # allowUnsafeRoots: false   # 兼容开关：只放开内置名单；优先改用下面的 roots.allow
+    # roots:                     # 自定义根名单（默认全空）
+    #   allow: [/srv/projects/demo]        # 精确放行内置名单里的目录（文件系统根不可放行）
+    #   deny: [/srv/shared]                # 精确拒绝这个目录本身；子目录仍可成根
+    #   exclude: [/srv/monorepo/archive]   # 子树前缀：里面的文件一律不进索引
     # tsPath: /custom/path/to/typescript  # 可选：强制指定 TS 安装路径
     # autoContext:              # 注意：下面两个键在 autoContext 下，不是顶层
     #   budgetLog: once         # 调试用：注入被预算挤掉时在 stderr 留痕（默认 off 静默）
@@ -265,7 +280,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ```bash
 npm install
-npm test                    # 756 项测试
+npm test                    # 810 项测试
 npm run eval:injection      # 合成池 P/R：精确率 0.93 / 召回率 1.00，另有 3 个 hint-only 场景
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）

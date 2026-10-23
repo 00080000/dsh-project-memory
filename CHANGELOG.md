@@ -1,3 +1,23 @@
+## Unreleased
+
+### 新增：可配置的项目根名单（issue #8）
+
+**背景**：哪些目录能当项目根此前是硬编码的——文件系统根、家目录、临时目录与系统/包管理器前缀。唯一的旋钮 `allowUnsafeRoots: true` 是整体开关：既不能只放开一个目录，也不能只多排除一个目录。
+
+**改法**：`Config` 新增 `roots`，三组都支持 `~` / `~/...`；非绝对路径忽略并在 stderr 告警一次（相对路径会按宿主 cwd 解释，不可预测）；Windows 下大小写不敏感。
+
+- `roots.allow`：即使命中内置名单也允许作根，**精确匹配**；文件系统根不在此列。
+- `roots.deny`：这个目录不能当根，**精确匹配**；子目录仍可各自成根。
+- `roots.exclude`：这棵子树里的文件一律不进索引，**路径边界前缀匹配**（含子目录）；也不会在子树里推出新根。
+
+优先级 `exclude` > `deny` > `allow` > 内置名单。`allowUnsafeRoots: true` 保留为兼容，只放开内置名单；`deny` / `exclude` 仍然优先。
+
+**生效面**：判定收敛到 `util/fs.js` 的 `compileRootPolicy()` / `rootRejection()`，以下入口共用同一结论——显式工具调用（`index_repo` / `index_doc` / `remember` / `query_memory` / `stats` / 任务工具）、懒索引、watch 轮询、会话审计、TaskBridge。`listProjectFiles()` 的 walk 与 git 两条分支都应用 `roots.exclude`；父根的完整扫描会跳过被排除子树，并清掉之前索引过的条目。
+
+**自愈**：新增 `deny` / `exclude` 后，已经登记在 `watch.json` 里的根会在下次启动时自动摘掉，不需要手删。拒绝文案会说明命中的规则，并指出要改的字段（`- id: project-memory` 的 `config:` 下）。
+
+**测试**：新增 `test/root-policy.test.mjs`，覆盖精确/前缀语义、优先级、`~` 展开、相对路径告警、Windows 大小写、walk/git 两条扫描分支、watch 自愈与各入口的一致性。
+
 ## 0.6.4 (2026-10-23)
 
 **0.6.3 之后的收口**：11 个提交全部是修复与内部整理，没有新增工具、没有删除配置项。用户能感觉到的变化集中在三处——语料开始跟随 `.gitignore`、几个"设成 0 本该关闭"的旋钮真的关闭了、面板里改一步不再整份回写。**升级前请读第一条与「向量层」那条**。
@@ -126,7 +146,7 @@
 
 ### 整理：示例与文档里的专名中性化
 
-README 双语与 CHANGELOG 里的具体框架名（`Vue`）、硬件与机器信息（`20 vCPU` / `本机` / 具体月份）、内部文件名（`PLAN-*` / `RELEASE-NOTES-*` / `de-TODO`）换成中性写法；测试夹具里的内部文件名改成 `notes.md` 这类占位。零运行时行为变化。
+README 双语与 CHANGELOG 里的具体框架名、硬件与机器信息、内部文件名换成中性写法；测试夹具里的内部文件名改成 `notes.md` 这类占位。零运行时行为变化。
 
 **测试**：`npm test` 720 → **756 项 / 44 个文件**（新增 `gitignore-index` / `store-concurrent` / `tool-schema-size`；`insight-store`、`recall`、`recall-vector-fusion`、`vector-index`、`auto-inject`、`client-toolview`、`client-task-sync` 等在既有 `ok` 块内补断言）；`npm run typecheck` 通过；`npm run build:client` 重建与提交产物零差异。
 
