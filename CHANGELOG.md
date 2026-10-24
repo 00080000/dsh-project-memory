@@ -1,4 +1,6 @@
-## Unreleased
+## 0.6.5 (2026-10-24)
+
+**升级注意**：`allowUnsafeRoots: true` 的作用面比 0.6.4 大。此前它只放开**显式**工具调用与 `autoIndexOnFirstUse`，懒索引、会话审计与 TaskBridge 即使开着也始终不动；现在它放开内置名单的**所有**根判定入口，这三条链路会在放行的目录里建 store、写审计。只想放开某个目录时用 `roots.allow`（精确匹配，不影响 `deny` / `exclude`）；家目录、系统目录如非必要仍建议保持 `false`。
 
 ### 新增：可配置的项目根名单（issue #8）
 
@@ -10,13 +12,13 @@
 - `roots.deny`：这个目录不能当根，**精确匹配**；子目录仍可各自成根。
 - `roots.exclude`：这棵子树里的文件一律不进索引，**路径边界前缀匹配**（含子目录）；也不会在子树里推出新根。
 
-优先级 `exclude` > `deny` > `allow` > 内置名单。`allowUnsafeRoots: true` 保留为兼容，只放开内置名单；`deny` / `exclude` 仍然优先。
+优先级 `exclude` > `deny` > `allow` > 内置名单。`allowUnsafeRoots: true` 保留为兼容开关，只作用于内置名单、`deny` / `exclude` 仍然优先——它的作用面变化见上面的升级注意。
 
 **生效面**：判定收敛到 `util/fs.js` 的 `compileRootPolicy()` / `rootRejection()`，以下入口共用同一结论——显式工具调用（`index_repo` / `index_doc` / `remember` / `query_memory` / `stats` / 任务工具）、懒索引、watch 轮询、会话审计、TaskBridge。`listProjectFiles()` 的 walk 与 git 两条分支都应用 `roots.exclude`；父根的完整扫描会跳过被排除子树，并清掉之前索引过的条目。
 
 **自愈**：新增 `deny` / `exclude` 后，已经登记在 `watch.json` 里的根会在下次启动时自动摘掉，不需要手删。拒绝文案会说明命中的规则，并指出要改的字段（`- id: project-memory` 的 `config:` 下）。
 
-**测试**：新增 `test/root-policy.test.mjs`，覆盖精确/前缀语义、优先级、`~` 展开、相对路径告警、Windows 大小写、walk/git 两条扫描分支、watch 自愈与各入口的一致性。
+**测试**：新增 `test/root-policy.test.mjs`，覆盖精确/前缀语义、优先级、`~` 展开、相对路径告警、Windows 大小写、walk/git 两条扫描分支、watch 自愈与各入口的一致性。`npm test` **810 项 / 45 个文件**全绿；`npm run typecheck` 通过。
 
 ## 0.6.4 (2026-10-23)
 
