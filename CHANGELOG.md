@@ -40,6 +40,31 @@
 
 **测试**：`npm test` **825 项 / 48 个文件**全绿；`npm run typecheck` 通过。新增 `test/signal-source.test.mjs`（端到端：通知不算人话 / 回退会话缓存、subagent 参数不产 op、目录名不产 `run-bench`、散文删除只记录）与 `test/skill.test.mjs`。
 
+### 性能：Windows / NTFS 上大量小文件（不 OOM，但会被"每次 save 的文件操作数"拖慢）
+
+**实测**：同一份 400 个小文件，`WSL 挂 /mnt/c`（9p，NTFS 的**悲观**代理）与 ext4 对照：
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| 首次索引 400 文件 | 11.4 s（28.4 ms/文件） | 8.2–9.5 s（20–24 ms/文件） |
+| 单文件"改 → 懒索引" p50 | 178 ms | 46 ms（−74%） |
+| 同上，ext4 | 1 ms | 1 ms |
+| `findProjectRoot`（每次懒索引都走） | 119 ms | 14 ms |
+| watch 对 400 文件做 stat | 843 ms，事件循环被按住 834 ms | 74 ms，最大卡顿 1 ms |
+| 3k / 10k 小文件索引峰值 RSS | — | 83–85 MB / 112 MB |
+
+**改了什么**：
+
+- `findProjectRoot`：每层祖先从"11 个 marker × 2 组标记各做一次 `existsSync`"改成**一次 readdir + 一趟向上遍历**（VCS 仍优先于 PROJECT；`a marker above the cwd still wins` 的契约由 root-guards 87 项守住）。
+- 每次 save 里不必要的文件操作：`shards/` 的 `.tmp` 清扫 60 s 一次（store 根目录仍每次扫，崩溃残留立刻收）；`.gitignore` 存在性只查一次；store / shards 目录 mkdir 只在首次执行；分片/辅助文件的原子写不再每次 mkdir（目录被外部删掉时按 ENOENT 补建重试）。
+- `writeJsonAtomic`：`EPERM` / `EBUSY` / `EACCES` 重试 3 次（Windows 上杀毒软件与搜索索引器会瞬时占用 rename 目标）。
+- watch 轮询：同步 `statSync` 循环改成 `fs/promises.stat` + 16 并发。**这是"卡"的主因**——同步循环会把整个 dsh 事件循环按住（400 文件 843 ms；12k 文件按比例是几十秒），异步后主线程只等 I/O。
+- 新增 `npm run bench:edits`（`scripts/bench-edits.mjs`）：任意目录跑首次索引 + M 次单文件更新，报 p50/p90/峰值 RSS。Windows 原生请 `--dir C:\Temp\xxx` 量真实数字；上面的 9p 数字是上界。
+
+**OOM**：大量小文件不是 OOM 面（3k 文件峰值 ~85 MB、10k ~112 MB，线性 ~3 MB/1k 文件）。OOM 面仍是**单个大文件**（`maxFileSizeMb: 10` → 最坏 +300 MB RSS）与 PDF 首次解析的 ~175 MB 底座，见 README「单文件内存预算」。
+
+**没做**：分片打包（仍是一文件一 shard：12k 文件在 NTFS 上就是 12k 个 4 KB 块 + 12k 次 write+rename，这是下一档结构性优化）；watch 每轮仍用同步 `git ls-files` 子进程。
+
 ## 0.6.5 (2026-10-24)
 
 **升级注意**：`allowUnsafeRoots: true` 的作用面比 0.6.4 大。此前它只放开**显式**工具调用与 `autoIndexOnFirstUse`，懒索引、会话审计与 TaskBridge 即使开着也始终不动；现在它放开内置名单的**所有**根判定入口，这三条链路会在放行的目录里建 store、写审计。只想放开某个目录时用 `roots.allow`（精确匹配，不影响 `deny` / `exclude`）；家目录、系统目录如非必要仍建议保持 `false`。

@@ -22,19 +22,57 @@ import { sessionWorkingDir } from './session-dir.js'
  * @param {unknown} data - 要序列化的 JSON 值。
  * @throws 序列化失败或写盘/rename 失败时原样抛出（调用方决定回退策略）。
  */
-export function writeJsonAtomic(file, data) {
-  mkdirSync(path.dirname(file), { recursive: true })
+const TRANSIENT_FS_CODES = new Set(['EPERM', 'EBUSY', 'EACCES'])
+
+/**
+ * Windows 上 rename/unlink 会被杀毒软件、搜索索引、备份代理瞬时占用（EPERM/EBUSY），
+ * 同一参数重试一次通常就过。只在**瞬时错误码**上重试；真实失败（EISDIR/ENOSPC/EACCES 持续）
+ * 立即抛出，保持原有"失败要清 .tmp 并抛出去"的契约。
+ */
+function retryTransient(op, attempts = 3) {
+  let last
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return op()
+    } catch (err) {
+      last = err
+      if (!TRANSIENT_FS_CODES.has(err?.code)) throw err
+      if (i + 1 < attempts) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * (i + 1))
+    }
+  }
+  throw last
+}
+
+export function writeJsonAtomic(file, data, { ensureDir = true } = {}) {
+  const dir = path.dirname(file)
+  if (ensureDir) mkdirSync(dir, { recursive: true })
   const tmp = `${file}.${process.pid}.tmp`
+  const payload = JSON.stringify(data)
+  const write = () => {
+    retryTransient(() => writeFileSync(tmp, payload))
+    retryTransient(() => renameSync(tmp, file))
+  }
   try {
-    writeFileSync(tmp, JSON.stringify(data))
-    renameSync(tmp, file)
+    write()
   } catch (err) {
+    let failure = err
+    // 目录可能在两次写之间被外部删掉（测试、用户清理、挂载点抖动）；`ensureDir: false` 的
+    // 快路径因此不能假设目录一定在——补建后重做一次，仍然失败才按原契约抛。
+    if (err?.code === 'ENOENT') {
+      try {
+        mkdirSync(dir, { recursive: true })
+        write()
+        return
+      } catch (retryErr) {
+        failure = retryErr
+      }
+    }
     try {
       unlinkSync(tmp)
     } catch {
       // tmp 已不在（rename 其实成功了）或不可删；两种都无需处理
     }
-    throw err
+    throw failure
   }
 }
 
@@ -135,11 +173,13 @@ function lockIsStale(state, staleMs, hardStaleMs) {
  * @param {{timeoutMs?: number, staleMs?: number, hardStaleMs?: number}} [opts]
  * @returns {null | (() => void)} 释放函数；拿不到锁返回 null
  */
-export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000, hardStaleMs = 0 } = {}) {
-  try {
-    mkdirSync(dir, { recursive: true })
-  } catch {
-    return null
+export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000, hardStaleMs = 0, ensureDir = true } = {}) {
+  if (ensureDir) {
+    try {
+      mkdirSync(dir, { recursive: true })
+    } catch {
+      return null
+    }
   }
   const file = path.join(dir, LOCK_FILE)
   const hardLimit = hardStaleMs > 0 ? hardStaleMs : staleMs * 10
@@ -1211,16 +1251,33 @@ function resolveDir(dir) {
   }
 }
 
-function nearestMarker(absPath, markers, isUnsafe) {
+/**
+ * 自底向上找最近的根标记。**一次遍历同时看 VCS 与 PROJECT**，语义仍是"VCS 优先于 PROJECT"：
+ * 先命中的 VCS 直接返回（它一定是最深的）；没有 VCS 就返回最深的 PROJECT。
+ *
+ * 为什么合并：旧实现对两组标记各走一遍祖先链，每层还要对每个 marker 做一次 existsSync。
+ * 11 个 marker × 7 层 × 2 组在 WSL/NTFS 上实测 ~119ms/次——而每次懒索引都要走一遍。
+ * 现在每层只 readdir 一次（同时拿到所有名字），遍历也只走一趟。
+ */
+function nearestRootByMarkers(absPath, vcsMarkers, projectMarkers, isUnsafe) {
+  let project = null
   let dir = path.dirname(absPath)
   for (;;) {
     // 撞到家目录/系统目录边界就停：既不把边界当根，也不再向上（上面只会更宽）。
-    if (isUnsafe(dir)) return null
-    for (const marker of markers) {
-      if (existsSync(path.join(dir, marker))) return dir
+    // 已经记录的 PROJECT 命中仍然有效——它就在边界下方；丢掉它会退化成"会话根"兜底。
+    if (isUnsafe(dir)) return project
+    let names = null
+    try {
+      names = new Set(readdirSync(dir))
+    } catch {
+      names = null
+    }
+    if (names) {
+      if (vcsMarkers.some((marker) => names.has(marker))) return dir
+      if (!project && projectMarkers.some((marker) => names.has(marker))) project = dir
     }
     const parent = path.dirname(dir)
-    if (parent === dir) return null
+    if (parent === dir) return project
     dir = parent
   }
 }
@@ -1263,7 +1320,8 @@ export function findProjectRoot(filePath, opts = {}) {
   const explicit = longestRootContaining(opts.extraRoots || [], abs)
   if (explicit) return isUnsafe(explicit) ? null : explicit
 
-  const byMarker = nearestMarker(abs, VCS_MARKERS, isUnsafe) || nearestMarker(abs, PROJECT_MARKERS, isUnsafe)
+  // 标记优先于会话根兜底；VCS 优先于 PROJECT（"a marker above the cwd still wins" 是既有契约）。
+  const byMarker = nearestRootByMarkers(abs, VCS_MARKERS, PROJECT_MARKERS, isUnsafe)
   if (byMarker) return byMarker
 
   const session = resolveDir(opts.sessionRoot)

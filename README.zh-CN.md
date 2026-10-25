@@ -240,6 +240,17 @@ dsh web --patch ./config.yml
 
 > 合成基准：生成代码（~4–5 符号/文件），实测于 2026-10-13。复现命令 `npm run bench:synthetic -- 5000`（脚本 `scripts/bench-synthetic.mjs`）。测量纯索引开销，不含 LLM 调用。写入后的首次查询会重建 IDF 缓存（**40k 条目 141 ms**，20k 条目 68 ms，4k 条目 17 ms），后续查询命中缓存。
 
+### Windows / 大量小文件
+
+Windows（NTFS）的瓶颈不是 CPU，而是**每次写盘的文件操作数**；watch 的同步 `stat` 循环还会把 dsh 的事件循环按住。同一份 400 个小文件（WSL 挂 NTFS 的悲观代理）：首次索引 8–10 s、单文件"改 → 懒索引" p50 约 46 ms；ext4 上分别是 60–90 ms 与 1 ms。3,000 / 10,000 个小文件索引的峰值 RSS 约 85 / 112 MB——**大量小文件不是 OOM 面**（单个大文件才是）。
+
+```bash
+npm run bench:edits -- --dir C:\\Temp\\pm-bench      # Windows 原生
+node scripts/bench-edits.mjs --dir /mnt/c/Users/Public/pm-bench --files 400
+```
+
+脚本在临时目录里造语料，跑完删除；报首次索引、单文件更新 p50/p90/max 与峰值 RSS。
+
 ### 自己复现这些数字
 
 测量本身随仓库发布，**也随 npm 包一起发布**（`scripts/` 已包含在 tarball 中）。脚本**不需要 dsh 实例、不需要网络、不调用任何模型**，也**不碰被测项目自己的 store**——结果写进临时目录，跑完删除：

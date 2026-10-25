@@ -1,9 +1,30 @@
-import { existsSync, statSync } from 'node:fs'
+import { existsSync } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import { listProjectFiles, memoryDirName, memoryRootFor, relativePath, rootRejection, scanLimits, storeKey } from './util/fs.js'
 import { OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from './index-pipeline.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileChanged, isTypeScriptFile } from './enhancer.js'
+
+/**
+ * 有界并发 map。watch 轮询要对每个文件 stat；同步 `statSync` 循环在 Windows（尤其 WSL 挂
+ * `/mnt/c`）会把事件循环卡住：400 文件实测 ~0.9s、12k 文件按同一比例是几十秒，期间面板、
+ * 其它会话、工具调用全部停摆。改成 `fs/promises.stat` + 16 并发：总量不变，但主线程在等 I/O
+ * 时可以让出去，Windows 的线程池也能并行吃掉多次元数据查询。
+ */
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length)
+  let next = 0
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const index = next++
+      if (index >= items.length) return
+      out[index] = await fn(items[index], index)
+    }
+  })
+  await Promise.all(workers)
+  return out
+}
 
 export class WatchManager {
   constructor(ctx, config) {
@@ -243,18 +264,23 @@ export class WatchManager {
       )
     }
 
-    for (const filePath of files) {
+    // 先把所有文件的元数据并发取回来；下面的解析仍按顺序（真正的解析量只与"变了的文件"有关）。
+    const statsByIndex = await mapLimit(files, 16, async (filePath) => {
+      try {
+        return await stat(filePath)
+      } catch {
+        return null
+      }
+    })
+    for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+      const filePath = files[fileIndex]
       const rel = storeKey(relativePath(root, filePath))
       seen.add(rel)
       const kind = fileKind(path.extname(filePath).toLowerCase())
       if (!kind) continue
 
-      let stats
-      try {
-        stats = statSync(filePath)
-      } catch {
-        continue
-      }
+      const stats = statsByIndex[fileIndex]
+      if (!stats) continue
       const sig = `${stats.mtimeMs}:${stats.size}`
       if (state.snapshot[rel] === sig) continue
 
