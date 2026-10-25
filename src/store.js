@@ -4,6 +4,7 @@ import path from 'node:path'
 import { tokenizeRaw, makeSearchText } from './util/search.js'
 import { acquireDirLock, writeJsonAtomic } from './util/fs.js'
 import { debugPersistence } from './util/persist.js'
+import { trackDirty, untrackDirty } from './util/flush.js'
 import { backfillDerivedTriggers } from './readiness.js'
 
 const FORMAT_FILE = 'format.json'
@@ -775,7 +776,12 @@ export class ProjectMemoryStore {
       || this._dirtyWatch
   }
 
-  save() {
+  /**
+   * @param {{ timeoutMs?: number }} [options] 等锁上限。默认 15s：写路径的正确性靠**同步等待**，
+   *   不靠后台重试——用户结束对话就会关 dsh，不会等重试。重试只是长驻进程的兜底。
+   * @returns {boolean} 是否真的落盘（无脏数据也算成功）
+   */
+  save(options = {}) {
     // 没有脏数据就不落盘。watch 每轮对每个根都无条件 commit → save；照旧执行的话，
     // 末尾的 ID 缓存失效会打在跨实例共享的 store 上，等于每轮清空一次 IDF 复用（v0.3.4 的 20x）。
     // 待压实队列不算"脏数据"，但它需要有界推进，所以也走这条落盘路径。
@@ -796,13 +802,17 @@ export class ProjectMemoryStore {
     this.ensureSelfIgnore()
     if (!dirty) {
       this.lastSaveOk = true
+      untrackDirty(this)
       return true
     }
-    // 跨进程：整段读改写放进目录锁；拿不到锁就保持脏状态，并**如实返回失败**——调用方
-    // （工具 / watch / taskbridge）不能在不落盘的情况下报成功。
-    const release = acquireDirLock(this.dir)
+    // 跨进程：整段读改写放进目录锁。默认同步等待 15s——写路径的正确性靠"等到锁"，
+    // 不靠后台重试（用户结束对话就关 dsh）。真拿不到时保持脏状态并登记退出 flush；
+    // 默认静默，不向用户/模型抛提示。
+    const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000
+    const release = acquireDirLock(this.dir, { timeoutMs })
     if (!release) {
       this.lastSaveOk = false
+      trackDirty(this)
       if (!this._lockWarned) {
         this._lockWarned = true
         debugPersistence(`[dsh-project-memory] store ${this.dir} is busy (another dsh process is writing); this write is pending.`)
@@ -900,6 +910,7 @@ export class ProjectMemoryStore {
     }
     this._saveRetryAttempts = 0
     this.lastSaveOk = true
+    untrackDirty(this)
     // 落盘成功才推进基线：失败时保持"本进程新建"的标记，下一次 save 仍要补写。
     if (wroteInsights) {
       this._baseInsightIds = new Set(this.insights.items.map((it) => it?.id).filter(Boolean))
@@ -940,6 +951,11 @@ export class ProjectMemoryStore {
     }
   }
 
+  /** 退出/卸载路径的同步兜底（见 util/flush.js）。 */
+  flushPending(timeoutMs = 1500) {
+    return this.save({ timeoutMs })
+  }
+
   /** 锁竞争后的有限次延迟重试；失败仍保持脏状态，下一次写继续尝试。 */
   _scheduleSaveRetry() {
     // 旧实现 3 次 × ~2s ≈ 8.3s，**永远小于** staleMs=10s：一个刚崩溃的跨机锁会让所有重试落空。
@@ -950,7 +966,7 @@ export class ProjectMemoryStore {
     this._saveRetryTimer = setTimeout(() => {
       this._saveRetryTimer = null
       try {
-        this.save()
+        this.save({ timeoutMs: 2000 })
       } catch (err) {
         console.error(`[dsh-project-memory] deferred save failed: ${err?.message || err}`)
       }

@@ -17,6 +17,7 @@ import { installAutoInject } from './auto-inject.js'
 import { rememberRoute } from './llm-route.js'
 import { workflowCommandDefinition } from './commands/workflow.js'
 import { setupSkill } from './skill.js'
+import { flushDirtyStores } from './util/flush.js'
 
 export const name = 'dsh-project-memory'
 export const inject = ['llm', 'tools']
@@ -194,6 +195,10 @@ export function apply(ctx, config) {
     setupLazyIndexing(ctx, config, watchManager)
   }
 
+  // 卸载/退出前把还脏着的 store 同步写一次（后台重试只是兜底，不能当正确性保证）。
+  if (typeof ctx.effect === 'function') {
+    ctx.effect(() => () => flushDirtyStores({ timeoutMs: 1500 }))
+  }
   // TaskBridge：任务实体 + 宿主 todo 同步
   setupTaskbridge(ctx, config)
   // 用法本身也是记忆的一部分：注册成宿主 skill（可选依赖，没有 skills 服务就静默跳过）。
