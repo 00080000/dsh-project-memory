@@ -12,6 +12,7 @@ import os from 'node:os'
 import { normalizedTokenOverlap, findBestOverlapMatch, insightMatchText } from './similarity.js'
 import { acquireDirLock, writeJsonAtomic } from './util/fs.js'
 import { debugPersistence } from './util/persist.js'
+import { trackDirty, untrackDirty } from './util/flush.js'
 import { backfillDerivedTriggers } from './readiness.js'
 import { vectorText } from './vector-index.js'
 import { tokenize } from './util/search.js'
@@ -571,6 +572,11 @@ export class GlobalStore {
     this._dirty = true
   }
 
+  /** 退出/卸载路径的同步兜底（见 util/flush.js）。 */
+  flushPending(timeoutMs = 1500) {
+    return this.commit(undefined, { timeoutMs })
+  }
+
   /** 锁竞争失败后的延迟重试：旧实现完全没有重试，一次竞争就永久丢这次写入。 */
   _scheduleRetry() {
     const delays = [100, 500, 2000, 6000, 12000]
@@ -579,7 +585,7 @@ export class GlobalStore {
     this._retryTimer = setTimeout(() => {
       this._retryTimer = null
       try {
-        this.commit()
+        this.commit(undefined, { timeoutMs: 2000 })
       } catch (err) {
         console.error(`[dsh-project-memory] deferred global save failed: ${err?.message || err}`)
       }
@@ -587,8 +593,12 @@ export class GlobalStore {
     this._retryTimer.unref?.()
   }
 
-  /** 变更提交：fn(this.doc) 后加锁、合并另一进程的磁盘状态、原子落盘。 */
-  commit(fn) {
+  /**
+   * 变更提交：fn(this.doc) 后加锁、合并另一进程的磁盘状态、原子落盘。
+   * @param {(doc: object, store: GlobalStore) => any} [fn]
+   * @param {{ timeoutMs?: number }} [options] 等锁上限（默认 15s：正确性靠同步等待，不靠重试）
+   */
+  commit(fn, options = {}) {
     const res = fn ? fn(this.doc, this) : undefined
     if (!this._dirty && res === undefined) return res
     // 本进程从基线里删掉的 id（removeMemory 直接 splice，没有单独的删除 API）。
@@ -598,9 +608,11 @@ export class GlobalStore {
       this._deletedIds.delete(id)
       if (!this._baseIds.has(id)) this._createdIds.add(id)
     }
-    const release = acquireDirLock(path.dirname(this.file))
+    const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000
+    const release = acquireDirLock(path.dirname(this.file), { timeoutMs })
     if (!release) {
       this.lastCommitOk = false
+      trackDirty(this)
       if (!this._lockWarned) {
         this._lockWarned = true
         debugPersistence(`[dsh-project-memory] global store ${this.file} is busy (another dsh process is writing); this write is pending.`)
@@ -634,6 +646,7 @@ export class GlobalStore {
       this._createdIds.clear()
       this.lastCommitOk = true
       this._retryAttempts = 0
+      untrackDirty(this)
     } finally {
       release()
     }

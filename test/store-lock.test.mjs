@@ -6,7 +6,7 @@
 //   3. 另一进程真删的条目，被本进程下一次 save 当"本地新增"写回（forget 的"真删"承诺失效）。
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -14,6 +14,7 @@ import { pathToFileURL } from 'node:url'
 import { acquireDirLock, inspectDirLock } from '../src/util/fs.js'
 import { ProjectMemoryStore } from '../src/store.js'
 import { GlobalStore } from '../src/insight-store.js'
+import { _pendingDirtyCountForTest, flushDirtyStores } from '../src/util/flush.js'
 
 let passed = 0
 const ok = (name) => {
@@ -100,7 +101,7 @@ async function deadPid() {
   const store = new ProjectMemoryStore(d).load()
   store.replaceInsightItems([{ id: 'pending', kind: 'lesson', scope: 'project', title: 'pending' }])
   writeLock(d, { pid: process.pid, host: hostname(), token: 'held-by-other' })
-  const saved = store.save()
+  const saved = store.save({ timeoutMs: 100 })
   assert.equal(saved, false, '活锁未释放时 save 必须返回 false')
   assert.equal(store.lastSaveOk, false, '内部标志必须能看见失败（但默认不打扰用户）')
   assert.ok(!existsSync(path.join(d, 'insights.json')), '没拿到锁就不能写盘')
@@ -110,10 +111,39 @@ async function deadPid() {
   // 用死 pid 模拟持有者退出（同机判活会立刻回收）
   const dead = await deadPid()
   writeLock(d, { pid: dead, host: hostname(), token: 'held-by-other' })
-  assert.equal(store.save(), true, '锁消失后重试必须成功')
+  assert.equal(store.save({ timeoutMs: 500 }), true, '锁消失后重试必须成功')
   const doc = JSON.parse(readFileSync(path.join(d, 'insights.json'), 'utf8'))
   assert.deepEqual(doc.items.map((it) => it.id), ['pending'])
   ok('活锁时 save 失败且不落盘；锁消失后重试成功')
+}
+
+// --- 4b. 正确性靠同步等待，不靠后台重试：另一个进程持锁 250ms，save 必须等到并写成功 ---
+// 注意：不能用 setTimeout 在这里释放锁——save() 是同步阻塞的（Atomics.wait），同进程的定时器
+// 根本跑不到。必须由**另一个进程**在等待期间释放。
+{
+  const d = dir()
+  const store = new ProjectMemoryStore(d).load()
+  store.replaceInsightItems([{ id: 'waited', kind: 'lesson', scope: 'project', title: 'waited' }])
+  const fsUrl = pathToFileURL(path.join(import.meta.dirname, '..', 'src', 'util', 'fs.js')).href
+  const childScript = `
+import { acquireDirLock } from ${JSON.stringify(fsUrl)}
+const release = acquireDirLock(process.argv[1])
+await new Promise((resolve) => setTimeout(resolve, 250))
+release()
+`
+  const holder = spawn(process.execPath, ['--input-type=module', '-e', childScript, d], { stdio: 'inherit' })
+  // 等子进程真的持上锁（同步忙等，不能用 await——父进程随后要阻塞在 save 里）
+  const sleeper = new Int32Array(new SharedArrayBuffer(4))
+  const deadline = Date.now() + 3000
+  while (!existsSync(lockFile(d)) && Date.now() < deadline) Atomics.wait(sleeper, 0, 0, 5)
+  assert.ok(existsSync(lockFile(d)), '子进程应已持锁')
+
+  const started = Date.now()
+  assert.equal(store.save({ timeoutMs: 3000 }), true, '短时持锁应在一次同步等待里完成')
+  assert.ok(Date.now() - started >= 100, '必须真的等过锁，而不是立刻放弃')
+  await new Promise((resolve) => holder.on('exit', resolve))
+  assert.ok(existsSync(path.join(d, 'insights.json')))
+  ok('同步等待另一个进程释放锁后写入成功（不依赖 20s 重试）')
 }
 
 // --- 5. 跨进程删除不被复活：insights ---
@@ -206,10 +236,31 @@ store.commit()
   writeLock(d, { pid: process.pid, host: hostname(), token: 'held' })
   store.doc.items.push({ id: 'g1', kind: 'lesson', scope: 'global', title: 'x' })
   store.markDirty()
-  store.commit()
+  store.commit(undefined, { timeoutMs: 100 })
   assert.equal(store.lastCommitOk, false, 'global commit 失败必须留下内部状态（默认不打印）')
   assert.ok(!existsSync(file), '没拿到锁就不该写 global 文件')
-  ok('global 写锁失败留下内部状态（默认静默）')
+  // 释放锁后同步补写：退出 flush 走的就是这条
+  unlinkSync(lockFile(d))
+  assert.equal(store.commit(undefined, { timeoutMs: 500 }), undefined)
+  assert.equal(store.lastCommitOk, true)
+  ok('global 写锁失败留下内部状态（默认静默），释放后可补写')
+}
+
+// --- 9. 退出兜底：脏 store 会被 flushDirtyStores 同步写掉 ---
+{
+  const d = dir()
+  const store = new ProjectMemoryStore(d).load()
+  store.replaceInsightItems([{ id: 'on-exit', kind: 'lesson', scope: 'project', title: 'on-exit' }])
+  writeLock(d, { pid: process.pid, host: hostname(), token: 'held' })
+  assert.equal(store.save({ timeoutMs: 50 }), false)
+  assert.ok(_pendingDirtyCountForTest() >= 1, '失败的写必须登记为待 flush')
+  unlinkSync(lockFile(d))
+  const saved = flushDirtyStores({ timeoutMs: 1000 })
+  assert.ok(saved >= 1, '退出 flush 必须真的写掉脏 store')
+  assert.ok(existsSync(path.join(d, 'insights.json')))
+  assert.deepEqual(JSON.parse(readFileSync(path.join(d, 'insights.json'), 'utf8')).items.map((it) => it.id), ['on-exit'])
+  assert.equal(_pendingDirtyCountForTest(), 0, '落盘成功后不再挂起')
+  ok('退出/卸载 flush：脏 store 同步补写')
 }
 
 console.log(`\nstore-lock tests: ${passed} passed`)
