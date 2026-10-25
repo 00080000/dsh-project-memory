@@ -29,12 +29,27 @@ export const ACTION_LEXICON = [
   ['git-commit', [/git\s+commit\b/i, /提交/]],
   ['git-push', [/git\s+push\b/i, /推送/]],
   ['npm-publish', [/npm\s+publish\b/i, /发包/, /发布\s*到\s*npm/i]],
-  ['release', [/git\s+tag\b/i, /\brelease\b/i, /发版/, /发布版本/]],
+  // 英文 `release` 只在带版本号时才算动作：`release notes` 是文档任务，不是发版。
+  ['release', [/git\s+tag\b/i, /发版/, /发布版本/, /\brelease\s+v?\d/i]],
   ['go-public', [/公开/, /开源/, /对外/, /上线/]],
   ['delete', [/rm\s+-rf\b/, /git\s+rm\b/, /删除/, /清理/]],
   ['migrate', [/migrate\b/i, /迁移/]],
   ['deploy', [/\bdeploy\b/i, /部署/]],
 ]
+
+/**
+ * 允许**人类消息里的动作词**触发全文注入的 op 白名单。
+ *
+ * 判据是"这条记忆必须在动作**之前**到达，晚了就没用，且动作不可逆"：
+ * 提交 / 发 npm 包 / 发版 / 推远端 / 部署 / 公开仓库。这几个词在散文里也基本只有一种意思，
+ * 而且都发生在"动作之前才有用"的位置（提交后再说"检查公开面"就晚了）。
+ *
+ * 反过来，`删除 / 清理 / 渲染 / 基准 / 取网页 / 查询记忆` 这些词在人类消息里经常只是
+ * **提及**（"删除后的悬空状态"、"清理一下 README 的措辞"、"这个渲染是错的"），
+ * 用它们做确定性全文注入实测代价是 1200 字符一条的无关 procedure。
+ * 这些动作仍可由**已观察到的工具调用**触发（`rm` 真的执行了、`soffice` 真的跑了）。
+ */
+export const PRE_ACTION_OPS = new Set(['npm-publish', 'release', 'git-commit', 'git-push', 'deploy', 'go-public'])
 
 /**
  * 文本 → 动作 id 列表（确定性、去重、词典序稳定）。
@@ -64,17 +79,27 @@ export function extractPaths(text) {
 
 /**
  * 组装就绪上下文：人类意图 + 已观察动作。三处来源都做动作/路径归一，调用方只需给文本。
+ *
+ * **证据来源决定准入**（2026-10-25）：observed（结构化工具调用）可以触发全文注入；
+ * 人类消息里的动作词只允许 4 个"不可逆外部动作"触发全文（见 {@link PRE_ACTION_OPS}），
+ * 其余只进提示通道。原因见 PRE_ACTION_OPS 的注释。
  * @param {object} input
  * @param {string} [input.humanText] - 本轮人类消息（先发窗口）。
- * @param {string} [input.actionText] - 已观察到的 tool/call 参数（反应窗口）。
+ * @param {string} [input.actionText] - 旧调用方的工具调用文本（测试/老宿主；生产路径不再传）。
+ * @param {string[]} [input.ops] - 结构化工具调用归一出的动作（可信）。
+ * @param {string[]} [input.targets] - 结构化写目标（可信）。
  * @param {string[]} [input.actions] - 调用方已归一化的动作 id（可选，会被并集）。
  * @param {string[]} [input.paths] - 调用方已归一化的路径（可选，会被并集）。
- * @returns {{ humanText: string, actionText: string, actions: string[], paths: string[] }}
+ * @returns {{ humanText: string, actionText: string, actions: string[], paths: string[], humanPaths: string[], ops: string[], opsObserved: string[], intentOps: string[], targets: string[], hosts: string[], intent: string, tags: string[] }}
  */
 export function buildReadinessContext(input = {}) {
   const humanText = String(input.humanText ?? input.query ?? '')
   const actionText = String(input.actionText || '')
-  const actions = new Set([...(input.actions || []), ...detectActions(humanText), ...detectActions(actionText)])
+  // `input.actions` 是调用方**已归一化**的动作（测试/老宿主），当作已观察证据；
+  // 只有从 humanText 里现猜出来的词才受 PRE_ACTION_OPS 约束。
+  const declaredActions = new Set(input.actions || [])
+  const proseActions = detectActions(humanText)
+  const actions = new Set([...declaredActions, ...proseActions])
   // 人类消息里提到的路径 = **动手前的写意图**（"帮我改 src/x.js"）；动作文本里的路径不区分读写，
   // 读一个文件不该算写目标（否则 `read README.md` 会命中 writes:['README.md']）。
   // 两者对外仍合并成 `paths`（兼容既有语义），写通道单看 humanPaths。
@@ -87,11 +112,20 @@ export function buildReadinessContext(input = {}) {
   const paths = new Set([...humanPaths, ...extractPaths(actionText)])
   // 动作平面（S1）：结构化调用优先；没有结构化调用时对 actionText 跑一遍 shell 规则兜底。
   const fromText = activityFromText(actionText)
-  const ops = new Set([...(input.ops || []), ...fromText.ops])
-  for (const a of actions) {
+  const opsObserved = new Set([...(input.ops || []), ...fromText.ops])
+  for (const a of declaredActions) {
     const op = opForLegacyAction(a)
-    if (op) ops.add(op)
+    if (op) opsObserved.add(op)
   }
+  // 人类消息里的动作词：`删除/清理/渲染/基准/取网页` 在散文里太容易是**提及**
+  // （实测 "删除后的悬空状态"、"清理一下 README 的措辞" 都命中过 file-delete，
+  // 后者注入了一条 1200 字符的恢复 procedure）。只有没法等的不可逆外部动作才允许先发。
+  const intentOps = new Set()
+  for (const a of proseActions) {
+    const op = opForLegacyAction(a)
+    if (op) intentOps.add(op)
+  }
+  const ops = new Set([...opsObserved, ...[...intentOps].filter((op) => PRE_ACTION_OPS.has(op))])
   const targets = new Set([...(input.targets || []), ...fromText.targets])
   const hosts = new Set([...(input.hosts || []), ...fromText.hosts])
   return {
@@ -101,6 +135,8 @@ export function buildReadinessContext(input = {}) {
     paths: [...paths],
     humanPaths: [...humanPaths],
     ops: [...ops],
+    opsObserved: [...opsObserved],
+    intentOps: [...intentOps],
     targets: [...targets],
     hosts: [...hosts],
     intent: intentText(humanText),

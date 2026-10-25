@@ -24,7 +24,8 @@ A persistent **project development memory** for [DeepSeek Harness](https://githu
 - **Hybrid recall** — ranked search over documents, symbols, experience notes and insights, with optional LLM query expansion. The experience/insight layers are re-ordered by cosine when `leanvec` is present — installed by default, absent ⇒ pure lexical. Tuned for CJK: phrase boost, a synonym table, and CJK-aware boundaries for doc↔symbol linking.
 - **Experience notes** — problems → solutions, deduplicated by overlap rather than repeated, bounded by project size, and surfaced both by search and by the same injection path as lessons.
 - **Tiered insight memory (lessons / decisions / procedures)** — one entity across task, project and global scope. Near-duplicates merge or reinforce, and promotion moves an entry between scopes instead of copying it. Use is recorded, so decay and capacity rank by activity rather than age alone. The panel exposes a per-scope view for reviewing and editing entries. That list is ordered newest-first and loaded incrementally: 30 entries at a time, with the next page prefetched before the reader reaches the bottom and off-screen rows skipped by the renderer, so a large memory stays responsive.
-- **Triggered injection** — an insight may carry an authored trigger: only `when` triggers, `guard` narrows it, and `prevents` records what breaks without the entry. Corpus text can never trigger an injection; the statistical channel is gated separately and silent by default.
+- **Triggered injection** — an insight may carry an authored trigger: only `when` triggers, `guard` narrows it, and `prevents` records what breaks without the entry. Corpus text can never trigger an injection; the statistical channel is gated separately and silent by default. **Evidence is graded by source**: only host facts (structured tool calls, `fs`/`todo` events) and irreversible actions named by the human (commit / publish / release / push / deploy / go public) can inject full text; prose mentions of delete / clean up / render / benchmark only feed the hint channel, and subagent prompts plus notice-shaped messages never count as actions — in one real session they produced 72% of all injected characters.
+- **Usage is a skill too** — it registers `project-memory` into the host `skills` registry (a directory bundle with `scripts/pm-digest.mjs`, `resourceBase` pointing inside the package). The model loads the query/write workflow on demand instead of carrying it in every prompt; hosts without a `skills` service skip it silently.
 
 ## Installation
 
@@ -281,7 +282,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 810 tests
+npm test                    # 825 tests
 npm run eval:injection      # synthetic pool P/R: precision 0.93 / recall 1.00, + a 3-scenario hint-only group
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)

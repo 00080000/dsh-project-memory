@@ -111,7 +111,13 @@ export function shadowRecordFrom(input) {
     // **实际用于评分**的查询文本（intent + 写目标的拼合）。它和 `query` 不是一回事：
     // 写目标驱动的那些步 `query` 是空的、候选却非空。少了这一栏，判据无法离线重放。
     scoreQuery: typeof input.scoreQuery === 'string' ? input.scoreQuery.slice(0, 300) : '',
+    // query 是从哪来的：本步 delta（delta）/ 会话缓存的最后一条真人消息（session）/ 没有（none）。
+    // 离线复盘必须先分清"这一步本来就没意图"与"意图取错了来源"。
+    querySource: ['delta', 'session'].includes(input.querySource) ? input.querySource : 'none',
     ops: (Array.isArray(input.ops) ? input.ops : []).slice(0, 12),
+    // 人类消息里解析出的**全部**动作词（含被 `PRE_ACTION_OPS` 过滤掉的删除/清理/渲染…）。
+    // 留着才能回答"这条为什么没注入"，以及"把某类散文动作放回准入后会发生什么"。
+    opsIntent: (Array.isArray(input.opsIntent) ? input.opsIntent : []).slice(0, 12),
     writes: (Array.isArray(input.writes) ? input.writes : []).slice(0, 12),
     injected: reasons.map((r) => ({ id: r.id, channel: r.channel, why: r.why })),
     // 查询级支持度：语料能表示查询里多少个词（`terms` 是查询词数）—— 通道级沉默判据用的就是它。

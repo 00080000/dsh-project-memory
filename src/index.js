@@ -16,6 +16,7 @@ import { lessonTool } from './tools/lesson-tools.js'
 import { installAutoInject } from './auto-inject.js'
 import { rememberRoute } from './llm-route.js'
 import { workflowCommandDefinition } from './commands/workflow.js'
+import { setupSkill } from './skill.js'
 
 export const name = 'dsh-project-memory'
 export const inject = ['llm', 'tools']
@@ -195,6 +196,8 @@ export function apply(ctx, config) {
 
   // TaskBridge：任务实体 + 宿主 todo 同步
   setupTaskbridge(ctx, config)
+  // 用法本身也是记忆的一部分：注册成宿主 skill（可选依赖，没有 skills 服务就静默跳过）。
+  setupSkill(ctx)
   // 跟踪会话路由（request/header 事件），为无会话上下文的召回期可选 LLM（查询扩展 / 反思）兜底
   ctx.on('session/event', (session, event) => {
     if (event?.type === 'request/header') rememberRoute(session)

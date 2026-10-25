@@ -23,7 +23,8 @@
 - **混合召回** — 对文档、符号、经验笔记与 insight 排序召回，可选 LLM 查询扩展。`leanvec` 是 optionalDependency：默认装上并按余弦重排经验/洞察两层，没装或 `vectorDir: 'off'` 则退回纯词法。针对 CJK 增强：短语加分、同义词表，以及文档↔符号链接的词边界处理。
 - **经验笔记** — 记录问题 → 方案；相似问题覆盖而不重复，数量随项目规模有界，与教训走同一条注入通道：检索与自动注入都能带出。
 - **分层 insight 记忆（教训 / 决策 / 流程）** — 同一实体贯穿任务、项目、全局三级。近重复合并或强化；提升是更换归属而非复制。被使用会记账，因此衰减与容量按活跃度排序，而不是只按时间。面板提供分级的记忆视图用于审核与编辑；列表按新→旧排列并增量加载——每页 30 条，滚到底前就预取下一页，离屏行不参与渲染，记忆变多也不卡。
-- **触发式注入** — insight 可携带 authored trigger：只有 `when` 能触发，`guard` 只能收窄，`prevents` 记下没有它会坏在哪。语料正文永远不能触发注入；统计通道另有独立门槛，默认沉默。
+- **触发式注入** — insight 可携带 authored trigger：只有 `when` 能触发，`guard` 只能收窄，`prevents` 记下没有它会坏在哪。语料正文永远不能触发注入；统计通道另有独立门槛，默认沉默。**证据来源分级**：只有宿主事实（结构化工具调用、`fs`/`todo` 事件）与真人消息里的不可逆外部动作（提交 / 发布 / 发版 / 推送 / 部署 / 公开）能触发全文注入；散文里的"删除 / 清理 / 渲染 / 基准"只进提示通道，子代理提示词与通知类消息不参与动作判定——它们曾让一个真实会话 72% 的注入字符是噪音。
+- **用法也是一个 skill** — 向宿主 `skills` 注册 `project-memory`（目录 bundle，含 `scripts/pm-digest.mjs`，`resourceBase` 指向包内目录）。模型按需加载查询 / 写入流程，不占常驻提示；没有 `skills` 服务的宿主静默跳过。
 
 ## 安装
 
@@ -280,7 +281,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ```bash
 npm install
-npm test                    # 810 项测试
+npm test                    # 825 项测试
 npm run eval:injection      # 合成池 P/R：精确率 0.93 / 召回率 1.00，另有 3 个 hint-only 场景
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）

@@ -161,23 +161,34 @@ export async function createWriteCosine(config, { storeDir = null, items = [] } 
   }
 }
 
+/**
+ * 从一份消息列表里取"人说的话"。
+ *
+ * 只认 `role=user` **且**（`source.kind === 'user'` 或无 source 的老宿主/测试）。
+ * 其它 user 角色的消息不是人说的：`agent-message`（子代理报告 relay）、`subagent-settled`、
+ * `tool-jobs`（后台任务完成）、`time-context`、`runtime-context` 都会出现在 claimed delta 里。
+ * 实测代价：子代理报告里的"发布/渲染"曾被当成用户意图，触发 `intent:release`（1050 字符）
+ * 与 `intent:渲染`（1200 字符）两条无关 procedure。
+ *
+ * `agent/pre-step` 的 `messages` 是 claimed **delta**，不是完整历史，所以会话中段通常
+ * 根本没有真人消息 —— 调用方应回退到每会话缓存（见 `InjectionSessions.humanText`）。
+ * @param {object[]} messages
+ * @returns {string} 人类消息正文；没有则空串
+ */
 export function lastUserText(messages) {
   if (!Array.isArray(messages)) return ''
-  let fallback = ''
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
     if (!m || m.role !== 'user') continue
     const t = textOf(m)
     if (!t.trim()) continue
-    // 真人消息优先：本插件注入的块也是 role=user，若按"最后一条 user"取，
-    // 上一步的注入块会变成这一步的就绪查询（自激：拿自己注入的内容再检索一遍）。
-    if (m.source && m.source.kind === 'user') return t.trim()
-    // 本插件注入的块同样是 role=user。无 source 的老宿主下若把它当兜底查询，
-    // 就成了"拿自己上一步注入的内容再检索一遍"的自激——正是 isOwnInjection 这道闸要防的。
+    // 本插件注入的块也是 role=user：绝不能再拿它当查询（自激）。
     if (isOwnInjection(m.source)) continue
-    if (!fallback) fallback = t.trim() // 无 source 的消息（老宿主 / 测试）兜底
+    const kind = m.source && m.source.kind
+    if (kind && kind !== 'user') continue
+    return t.trim()
   }
-  return fallback
+  return ''
 }
 
 function fingerprint(text) {
@@ -495,7 +506,14 @@ export function buildInjection(opts) {
   const { query, task, globalStore, cfg } = opts
   const store = opts.store || null
   const tags = opts.projectTagsList || []
-  const ctx = buildReadinessContext({ ...(opts.readiness || { humanText: query || '' }), tags })
+  // 就绪上下文可能**已经构建过**（injectForStep 先构建、再传给这里）。二次构建会把第一遍的
+  // `actions` 输出当成"调用方声明的动作"重新信任一遍 —— 散文里的 file-delete 会因此绕过
+  // PRE_ACTION_OPS 过滤（实测："清理一下 README 的措辞"仍注入 1200 字符恢复 procedure）。
+  // 结构化标记：带 ops + intentOps 的上下文是构建产物，只补 tags，不再重新归一。
+  const built = opts.readiness && Array.isArray(opts.readiness.ops) && Array.isArray(opts.readiness.intentOps)
+  const ctx = built
+    ? { ...opts.readiness, tags: [...new Set([...(opts.readiness.tags || []), ...tags])] }
+    : buildReadinessContext({ ...(opts.readiness || { humanText: query || '' }), tags })
   const labels = []
   const reasons = []
   const dropped = []
@@ -637,6 +655,10 @@ class InjectionSessions {
     // 反应窗口：本会话最近观察到的 tool/call（参数里有 git commit / npm publish / 改动的路径）。
     // 宿主没有"工具执行前拦截"钩子，所以这是 pre-step 之外唯一能拿到的动作事实。
     this.observed = cache(() => [])
+    // 本会话最后一条**真人**消息。`agent/pre-step` 拿到的是 claimed delta，会话中段通常没有
+    // 真人消息，于是"本步的意图"会退化成子代理报告 / job 通知 / 时间快照里的词（实测 386 步里
+    // 只有 31 步有真人 query，其余全是通知）。意图必须是会话状态，不是这一步恰好收到的文本。
+    this.humanText = cache()
     // 本会话是否已通告"记忆根是推定的"（会话工作目录，无项目标记）。状态声明只发一次。
     this.rootNoticed = cache(() => false)
     this._all = Object.values(this)
@@ -647,13 +669,29 @@ class InjectionSessions {
   }
 }
 
-/** 记录会话里的 tool/call：ops.js 从这些参数解析出 op / 写目标 / 主机。 */
+/**
+ * 记录会话里的两类事实：
+ *  - `user/message`（**真人的**）→ 每会话最后一条人类消息。它是会话状态，不是本步增量；
+ *  - `tool/call` → 最近 8 次调用，ops.js 从结构化参数解析 op / 写目标 / 主机。
+ *
+ * 两者都只从**事件**里来，不再把任意工具的参数拼成文本再解析（那会让 subagent 提示词里
+ * 的"删除/迁移"变成父会话的动作，实测存活 8 步）。
+ */
 function installCallObserver(ctx, sessions) {
   ctx.on('session/event', (session, event) => {
     try {
-      if (!event || event.type !== 'tool/call') return
       const sessionId = session && session.id
-      if (!sessionId) return
+      if (!sessionId || !event) return
+      if (event.type === 'user/message') {
+        const data = event.data || {}
+        const kind = data.source && data.source.kind
+        // 通知 / relay / job / 时间快照都不是人说的；无 source 的老宿主按人话处理（与 lastUserText 同口径）。
+        if (kind && kind !== 'user') return
+        const text = textOf({ content: data.content })
+        if (text.trim()) sessions.humanText.set(sessionId, text.trim())
+        return
+      }
+      if (event.type !== 'tool/call') return
       const data = event.data || {}
       const calls = sessions.observed.ensure(sessionId)
       calls.push({ name: String(data.name || ''), arguments: String(data.arguments || '') })
@@ -736,7 +774,13 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   const root = resolveProjectMemoryRoot(cwd, config)
   if (!root) return null
 
-  const query = lastUserText(decision.messages)
+  // 意图是**会话状态**：先看本步 delta 里有没有新的人类消息，没有则回退到本会话最后一条。
+  // `agent/pre-step` 拿到的是 claimed delta（宿主 agent-loop 的 inbox.claim），会话中段通常
+  // 只有 tool result / 子代理报告 / job 通知，拿它们当查询就是"这步在做什么"用错了来源。
+  const deltaHuman = lastUserText(decision.messages)
+  const rememberedHuman = sessions.humanText.peek(sessionId) || ''
+  const query = deltaHuman || rememberedHuman
+  const querySource = deltaHuman ? 'delta' : rememberedHuman ? 'session' : 'none'
   const memoryRoot = memoryRootFor(root, config.memoryDir)
   const store = new ProjectMemoryStore(memoryRoot).load()
   const globalStore = new GlobalStore(cfg.globalFile || defaultGlobalFile()).load()
@@ -744,12 +788,12 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   const task = boundTaskId ? store.getTask(boundTaskId) : null
 
   // 两个窗口合并进同一个就绪上下文：人类消息（先发）+ 已观察动作（反应）。
-  // 动作平面（S1）：把"最近做过什么"解析成 op / 写目标 / 主机——不再把原始参数当文本搜。
+  // 动作平面（S1）：**只**从结构化 tool/call 归一（activityFromCalls），不再把全部参数拼成
+  // actionText —— 那会把 subagent 提示词 / remember 正文 / 任意脚本里的词当成动作（实测 8 步）。
   const observed = sessions.observed.ensure(sessionId)
   const activity = activityFromCalls(observed)
   const readiness = buildReadinessContext({
     humanText: query || '',
-    actionText: observed.map((c) => `${c.name} ${c.arguments}`).join('\n'),
     ops: activity.ops,
     targets: activity.targets,
     hosts: activity.hosts,
@@ -800,7 +844,9 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     root,
     step: stepNo,
     query: query || '',
+    querySource,
     ops: readiness.ops,
+    opsIntent: readiness.intentOps,
     writes: readiness.targets,
     reasons: built.reasons,
     candidates: built.candidates,
