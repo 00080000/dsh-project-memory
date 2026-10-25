@@ -387,8 +387,15 @@ export class ProjectMemoryStore {
      */
     this._createdInsightIds = new Set()
     this._createdTaskIds = new Set()
-    /** 上一次 save 是否真的落到盘上（锁竞争/权限失败时为 false）。工具层据此如实回报。 */
+    /** 上一次 save 是否真的落到盘上（锁竞争/权限失败时为 false）。 */
     this.lastSaveOk = true
+    /** `shards/` 的 `.tmp` 清扫节流：NTFS 上 readdir(数千分片) 不便宜，不能每次 save 都扫。 */
+    this._lastShardTmpSweep = 0
+    /** 自我忽略文件已确认存在：省掉每次 save 的 existsSync（Windows 上每次都要过一次过滤驱动）。 */
+    this._selfIgnoreReady = false
+    /** store 目录 / shards 目录已确认存在：首次写之后不再每次 save 都 mkdir（9p 上每次 ~4ms）。 */
+    this._storeDirReady = false
+    this._shardsDirReady = false
     this._lockWarned = false
     this._conflictWarned = new Set()
     /** 锁竞争跳过落盘后的有限次延迟重试；unref，避免拖住进程退出。 */
@@ -674,7 +681,7 @@ export class ProjectMemoryStore {
       this.insights.migratedAt = now
       try {
         mkdirSync(this.dir, { recursive: true })
-        writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights)
+        writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights, { ensureDir: false })
       } catch (err) {
         // 没写进 insights.json 就**不能**把旧文件收走：那会真的丢数据。
         console.error(`[dsh-project-memory] insights migration write failed, keeping ${EXPERIENCE_FILE}: ${err.message}`)
@@ -722,9 +729,16 @@ export class ProjectMemoryStore {
     this._auxVersion++
   }
 
-  cleanStaleTmp() {
-    const scanDirs = [this.dir, path.join(this.dir, SHARDS_DIR)]
+  cleanStaleTmp({ force = false } = {}) {
+    // store 根目录只有几个文件，每次 save 扫一遍很便宜（崩溃遗留的 aux `.tmp` 立刻收走）。
+    // `shards/` 才是 O(N)：12k 分片时每次单文件更新都 readdir 一遍，在 NTFS 上是实打实的卡顿。
+    // 分片里的 .tmp 只影响体积、不影响正确性，60s 扫一次足够；`force` 给测试/诊断用。
     const now = Date.now()
+    const scanDirs = [this.dir]
+    if (force || now - this._lastShardTmpSweep >= 60_000) {
+      this._lastShardTmpSweep = now
+      scanDirs.push(path.join(this.dir, SHARDS_DIR))
+    }
     for (const dir of scanDirs) {
       let entries
       try {
@@ -755,11 +769,16 @@ export class ProjectMemoryStore {
    * 想把记忆跟着仓库提交：`git add -f .dsh-project-memory`——已跟踪的文件不受忽略规则影响。
    */
   ensureSelfIgnore() {
+    if (this._selfIgnoreReady) return
     if (!existsSafe(this.dir)) return
     const file = path.join(this.dir, GITIGNORE_FILE)
-    if (existsSafe(file)) return
+    if (existsSafe(file)) {
+      this._selfIgnoreReady = true
+      return
+    }
     try {
       writeFileSync(file, '# dsh-project-memory: local by default. `git add -f` to commit it.\n*\n')
+      this._selfIgnoreReady = true
     } catch {
       // 旁路：写不进去不影响存储本身
     }
@@ -795,7 +814,10 @@ export class ProjectMemoryStore {
       this._dirtyBinding ||
       this._dirtyWatch ||
       !this._formatWritten
-    if (dirty) mkdirSync(this.dir, { recursive: true })
+    if (dirty && !this._storeDirReady) {
+      mkdirSync(this.dir, { recursive: true })
+      this._storeDirReady = true
+    }
     // 崩溃遗留的 *.tmp 无论有没有脏数据都顺手清掉（两次 readdir，自带 try/catch）
     this.cleanStaleTmp()
     // 自我忽略也在无脏数据时执行：老版本建出来的 store 会在下一次 save 时补上。
@@ -809,7 +831,7 @@ export class ProjectMemoryStore {
     // 不靠后台重试（用户结束对话就关 dsh）。真拿不到时保持脏状态并登记退出 flush；
     // 默认静默，不向用户/模型抛提示。
     const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000
-    const release = acquireDirLock(this.dir, { timeoutMs })
+    const release = acquireDirLock(this.dir, { timeoutMs, ensureDir: false })
     if (!release) {
       this.lastSaveOk = false
       trackDirty(this)
@@ -826,7 +848,7 @@ export class ProjectMemoryStore {
       // 先合并另一进程已落盘的小文档，再写；分片按“加载时 hash”做冲突检测。
       this._mergeAuxFromDisk()
       if (!this._formatWritten) {
-        writeJsonAtomic(path.join(this.dir, FORMAT_FILE), { version: 2, layout: 'sharded' })
+        writeJsonAtomic(path.join(this.dir, FORMAT_FILE), { version: 2, layout: 'sharded' }, { ensureDir: false })
         this._formatWritten = true
       }
       // 存量压实：≤0.5.10 的分片带着派生字段，而那些字段只在分片被重写时才会从磁盘消失。
@@ -850,7 +872,8 @@ export class ProjectMemoryStore {
             const localAt = Date.parse(this.files[rel].indexedAt || '') || 0
             const diskAt = Date.parse(disk.record?.indexedAt || '') || 0
             if (localAt > diskAt) {
-              writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: this.files[rel], entries: (this.entries[rel] || []).map(withoutPersistedDerived) })
+              this._ensureShardsDir()
+              writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: this.files[rel], entries: (this.entries[rel] || []).map(withoutPersistedDerived) }, { ensureDir: false })
               this._baseFileSha.set(rel, nextSha)
               continue
             }
@@ -858,8 +881,8 @@ export class ProjectMemoryStore {
             this._warnConflict(rel)
             continue
           }
-          // 父目录由 writeJsonAtomic 保证
-          writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: this.files[rel], entries: (this.entries[rel] || []).map(withoutPersistedDerived) })
+          this._ensureShardsDir()
+          writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: this.files[rel], entries: (this.entries[rel] || []).map(withoutPersistedDerived) }, { ensureDir: false })
           this._baseFileSha.set(rel, nextSha)
         } else {
           this._removedShards.add(rel)
@@ -890,19 +913,19 @@ export class ProjectMemoryStore {
         // v2 → v3 是纯语义升级（`kind:'experience'` 从"影子副本"变成一等实体），形状不变；
         // 落盘即把版本推上去，老版本读到 v3 也照样按 v2 的字段解析（它只是排除 experience 影子）。
         if (this.insights && this.insights.version !== 3) this.insights.version = 3
-        writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights)
+        writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights, { ensureDir: false })
         this._dirtyInsights = false
       }
       if (this._dirtyTasks) {
-        writeJsonAtomic(path.join(this.dir, TASKS_FILE), this.tasks)
+        writeJsonAtomic(path.join(this.dir, TASKS_FILE), this.tasks, { ensureDir: false })
         this._dirtyTasks = false
       }
       if (this._dirtyBinding) {
-        writeJsonAtomic(path.join(this.dir, BINDING_FILE), this.binding)
+        writeJsonAtomic(path.join(this.dir, BINDING_FILE), this.binding, { ensureDir: false })
         this._dirtyBinding = false
       }
       if (this._dirtyWatch) {
-        writeJsonAtomic(path.join(this.dir, WATCH_FILE), this.watchlist)
+        writeJsonAtomic(path.join(this.dir, WATCH_FILE), this.watchlist, { ensureDir: false })
         this._dirtyWatch = false
       }
     } finally {
@@ -949,6 +972,13 @@ export class ProjectMemoryStore {
     } catch {
       return { exists: false, sha: null, record: null, entries: [] }
     }
+  }
+
+  /** 首次写分片前建一次 shards/；之后每次 save 都省掉一次 mkdir。 */
+  _ensureShardsDir() {
+    if (this._shardsDirReady) return
+    mkdirSync(path.join(this.dir, SHARDS_DIR), { recursive: true })
+    this._shardsDirReady = true
   }
 
   /** 退出/卸载路径的同步兜底（见 util/flush.js）。 */

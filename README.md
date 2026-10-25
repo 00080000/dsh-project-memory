@@ -241,6 +241,17 @@ Four corpora, one Linux machine (Node 24.19), each run twice with the **second, 
 
 > Generated code (~4–5 symbols/file), measured 2026-10-13. Reproduce with `npm run bench:synthetic -- 5000` (`scripts/bench-synthetic.mjs`). Pure indexing overhead, no LLM calls. The first query after a write rebuilds the IDF cache (**141 ms at 40k entries**, 68 ms at 20k, 17 ms at 4k); later queries hit it.
 
+### Windows / many small files
+
+On Windows (NTFS) the bottleneck is not CPU but the **number of file operations per write**, and watch's synchronous `stat` loop blocks the event loop. For 400 small files (WSL over NTFS, a pessimistic proxy): first index 8–10 s and a single-file edit p50 ≈ 46 ms; on ext4 the same work takes 60–90 ms and 1 ms. Indexing 3,000 / 10,000 small files peaks at ≈ 85 / 112 MB RSS — **many small files are not the OOM surface**; a single large file is.
+
+```bash
+npm run bench:edits -- --dir C:\\Temp\\pm-bench      # native Windows
+node scripts/bench-edits.mjs --dir /mnt/c/Users/Public/pm-bench --files 400
+```
+
+The script builds its corpus in a temporary directory and deletes it afterwards; it reports first-index cost, edit p50/p90/max and peak RSS.
+
 ### Reproduce it on your own project
 
 The measurement ships with the repository **and with the published npm package** (`scripts/` is part of the tarball). It needs **no dsh instance, no network and no model calls**, and never touches your project's own store — results go to a temp directory and are removed afterwards:
