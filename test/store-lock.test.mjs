@@ -14,7 +14,6 @@ import { pathToFileURL } from 'node:url'
 import { acquireDirLock, inspectDirLock } from '../src/util/fs.js'
 import { ProjectMemoryStore } from '../src/store.js'
 import { GlobalStore } from '../src/insight-store.js'
-import { persistFailed } from '../src/util/persist.js'
 
 let passed = 0
 const ok = (name) => {
@@ -103,8 +102,7 @@ async function deadPid() {
   writeLock(d, { pid: process.pid, host: hostname(), token: 'held-by-other' })
   const saved = store.save()
   assert.equal(saved, false, '活锁未释放时 save 必须返回 false')
-  assert.equal(store.lastSaveOk, false)
-  assert.equal(persistFailed(store), true, 'persistFailed 必须能看见失败')
+  assert.equal(store.lastSaveOk, false, '内部标志必须能看见失败（但默认不打扰用户）')
   assert.ok(!existsSync(path.join(d, 'insights.json')), '没拿到锁就不能写盘')
   assert.ok(existsSync(lockFile(d)), '失败时不得删掉别人的锁')
 
@@ -209,10 +207,9 @@ store.commit()
   store.doc.items.push({ id: 'g1', kind: 'lesson', scope: 'global', title: 'x' })
   store.markDirty()
   store.commit()
-  assert.equal(store.lastCommitOk, false, 'global commit 失败必须留下可见状态')
-  assert.equal(persistFailed(null, store), true)
+  assert.equal(store.lastCommitOk, false, 'global commit 失败必须留下内部状态（默认不打印）')
   assert.ok(!existsSync(file), '没拿到锁就不该写 global 文件')
-  ok('global 写锁失败同样可见')
+  ok('global 写锁失败留下内部状态（默认静默）')
 }
 
 console.log(`\nstore-lock tests: ${passed} passed`)

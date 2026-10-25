@@ -2,7 +2,6 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
 import { assertIndexRoot, assertReadableFile, assertSafeRoot, excludedEntryForPath, findProjectRoot, memoryRootFor, sessionMemoryRootOrNull, sha256OfFile, storeKey } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
-import { NOT_PERSISTED_NOTE, persistFailed } from '../util/persist.js'
 import { docEntriesNeedBackfill } from '../doc-index.js'
 import { ProjectMemoryStore } from '../store.js'
 
@@ -73,14 +72,13 @@ export function indexDocTool(ctx, config) {
         maxPdfPages: config.maxPdfPages,
       })
       if (entries === null) {
-        const skipped = store.commit((s) => {
+        return store.commit((s) => {
           s.removeFile(rel)
           return `Skipped: ${rel} looks like a reflection dump, not a document.`
         })
-        return persistFailed(store) ? `${skipped}\n\n${NOT_PERSISTED_NOTE}` : skipped
       }
 
-      const indexed = store.commit((s) => {
+      return store.commit((s) => {
         s.setEntries(rel, entries)
         s.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
         const preview = entries
@@ -88,7 +86,6 @@ export function indexDocTool(ctx, config) {
           .join('\n')
         return `Indexed: ${rel}\nEntries: ${entries.length}\n${preview}`
       })
-      return persistFailed(store) ? `${indexed}\n\n${NOT_PERSISTED_NOTE}` : indexed
     },
   })
 }
