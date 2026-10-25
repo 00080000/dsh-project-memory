@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unl
 import path from 'node:path'
 import { tokenizeRaw, makeSearchText } from './util/search.js'
 import { acquireDirLock, writeJsonAtomic } from './util/fs.js'
+import { debugPersistence } from './util/persist.js'
 import { backfillDerivedTriggers } from './readiness.js'
 
 const FORMAT_FILE = 'format.json'
@@ -804,7 +805,7 @@ export class ProjectMemoryStore {
       this.lastSaveOk = false
       if (!this._lockWarned) {
         this._lockWarned = true
-        console.error(`[dsh-project-memory] store ${this.dir} is busy (another dsh process is writing); this write is pending.`)
+        debugPersistence(`[dsh-project-memory] store ${this.dir} is busy (another dsh process is writing); this write is pending.`)
       }
       this._scheduleSaveRetry()
       return false

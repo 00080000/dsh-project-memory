@@ -5,7 +5,6 @@ import { assertIndexRoot, assertSafeRoot, listProjectFiles, memoryDirName, memor
 import { DROP, OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from '../index-pipeline.js'
 import { ProjectMemoryStore } from '../store.js'
 import { onFileIndexed, isTypeScriptFile, enhanceQueueStats } from '../enhancer.js'
-import { NOT_PERSISTED_NOTE } from '../util/persist.js'
 
 /**
  * 每批提交的文件数。旧实现把整棵树的 updates 攒到最后一次性 commit：一次全量扫描的
@@ -126,7 +125,6 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
       ': their L1 regex symbols are unaffected; they are re-queued on the next index or change.'
   }
 
-  if (store.lastSaveOk === false) report += `\n\n${NOT_PERSISTED_NOTE}`
   return report
 }
 

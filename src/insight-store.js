@@ -11,6 +11,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { normalizedTokenOverlap, findBestOverlapMatch, insightMatchText } from './similarity.js'
 import { acquireDirLock, writeJsonAtomic } from './util/fs.js'
+import { debugPersistence } from './util/persist.js'
 import { backfillDerivedTriggers } from './readiness.js'
 import { vectorText } from './vector-index.js'
 import { tokenize } from './util/search.js'
@@ -602,7 +603,7 @@ export class GlobalStore {
       this.lastCommitOk = false
       if (!this._lockWarned) {
         this._lockWarned = true
-        console.error(`[dsh-project-memory] global store ${this.file} is busy (another dsh process is writing); this write is pending.`)
+        debugPersistence(`[dsh-project-memory] global store ${this.file} is busy (another dsh process is writing); this write is pending.`)
       }
       this._scheduleRetry()
       return res
