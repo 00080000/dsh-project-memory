@@ -4,7 +4,7 @@ import {
 } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { sessionWorkingDir } from './session-dir.js'
@@ -38,50 +38,185 @@ export function writeJsonAtomic(file, data) {
   }
 }
 
+/** 本机标识：锁的存活判定只在同机可信（跨机只能退回 mtime）。 */
+const LOCK_HOST = os.hostname()
+const LOCK_FILE = '.write.lock'
+let lockSeq = 0
+
+/**
+ * 读锁文件（不存在/读失败返回 null）。
+ * 旧版本写的是裸 pid；新版本写 JSON（pid + host + token）。两种都要能读。
+ * @param {string} file
+ * @returns {null | { text: string, meta: { pid?: number, host?: string, token?: string }, ageMs: number }}
+ */
+function readLockState(file) {
+  try {
+    const text = readFileSync(file, 'utf8')
+    const ageMs = Date.now() - statSync(file).mtimeMs
+    let meta = null
+    try {
+      const parsed = JSON.parse(text)
+      if (parsed && typeof parsed === 'object') meta = parsed
+    } catch {
+      // 旧格式：裸 pid
+    }
+    if (!meta) meta = { pid: Number.parseInt(text.trim(), 10) }
+    return { text, meta, ageMs }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 进程启动时刻（Linux：`/proc/<pid>` 的 ctime）。其它平台读不到就返回 null。
+ * 只用于识别 **pid 复用**：一个新进程复用了崩溃进程的 pid 时，它的启动时刻一定晚于
+ * 旧锁的 `at` —— 那是"锁确实死了"的硬证据，不必因为 pid 活着而永久卡住。
+ * @param {number} pid
+ * @returns {number|null}
+ */
+function processStartMs(pid) {
+  try {
+    return statSync(`/proc/${pid}`).ctimeMs
+  } catch {
+    return null
+  }
+}
+
+/** 进程是否还活着。EPERM = 存在但属于别人，按活着算。 */
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return err?.code === 'EPERM'
+  }
+}
+
+/**
+ * 锁是否可以回收（stale）。
+ *
+ * 三条规则，按可信度排序：
+ * 1. 同机 + 锁里有 pid + 进程活着 → **绝不回收**，哪怕 mtime 很老。旧实现只看 mtime，
+ *    一次 > 10s 的大 store 写入就会被第二个进程抢走，而原持有者 release 时还会删掉对方的锁
+ *    （实测三者同时持锁）。
+ * 2. 同机 + pid 明确已死 → 立即回收。不必等 staleMs —— 这正是"崩溃残留锁 + 重试预算 8.3s
+ *    < staleMs 10s"导致 save 静默跳过的原因。
+ * 3. 跨机（或没有 host 字段的旧锁）→ 只能按 mtime：超过 staleMs 回收；超过 hardStaleMs 的
+ *    一律回收，兜住 pid 复用（同机也适用）。
+ * @param {{meta: object, ageMs: number}} state
+ * @param {number} staleMs
+ * @param {number} hardStaleMs
+ * @returns {boolean}
+ */
+function lockIsStale(state, staleMs, hardStaleMs) {
+  if (!state) return true
+  const { meta, ageMs } = state
+  const sameHost = !meta.host || meta.host === LOCK_HOST
+  if (!sameHost || !Number.isInteger(meta.pid)) {
+    // 跨机 / 旧格式没有 pid：只能按 mtime，hardStaleMs 是最后兜底。
+    return ageMs > staleMs || ageMs > hardStaleMs
+  }
+  if (!pidAlive(meta.pid)) return true
+  // 活着：正常情况绝不回收。唯一的例外是 pid 被复用（新进程的启动时刻晚于旧锁）。
+  // 没有 `at` 的旧锁无法做这个判断 → 信任存活，宁可等也不能双写。
+  const started = processStartMs(meta.pid)
+  const at = Date.parse(meta.at || '')
+  if (started !== null && Number.isFinite(at) && started > at + 5000) return true
+  return false
+}
+
 /**
  * 目录级写锁（跨进程）。写入前短暂持有，读改写之间不会交错。
- * 锁文件是 `.write.lock`；崩溃留下的锁超过 staleMs 自动清掉。
+ *
+ * 锁文件是 `.write.lock`，内容 `{pid, host, token, at}`；**释放要校验 token**，绝不 unlink
+ * 别人的锁。拿不到锁返回 null（调用方必须把这一次写当成失败，而不是"等会儿会写"）。
  * @param {string} dir 目标目录（不存在则创建）
- * @param {{timeoutMs?: number, staleMs?: number}} [opts]
+ * @param {{timeoutMs?: number, staleMs?: number, hardStaleMs?: number}} [opts]
  * @returns {null | (() => void)} 释放函数；拿不到锁返回 null
  */
-export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000 } = {}) {
+export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000, hardStaleMs = 0 } = {}) {
   try {
     mkdirSync(dir, { recursive: true })
   } catch {
     return null
   }
-  const file = path.join(dir, '.write.lock')
+  const file = path.join(dir, LOCK_FILE)
+  const hardLimit = hardStaleMs > 0 ? hardStaleMs : staleMs * 10
+  const token = `${process.pid}-${Date.now().toString(36)}-${++lockSeq}-${randomUUID().slice(0, 8)}`
+  const payload = JSON.stringify({ pid: process.pid, host: LOCK_HOST, token, at: new Date().toISOString() })
   const deadline = Date.now() + timeoutMs
   const sleeper = new Int32Array(new SharedArrayBuffer(4))
   for (;;) {
     try {
       const fd = openSync(file, 'wx')
       try {
-        writeFileSync(fd, String(process.pid))
+        writeFileSync(fd, payload)
       } finally {
         closeSync(fd)
       }
-      return () => {
-        try {
-          unlinkSync(file)
-        } catch {
-          // 已被 stale 清理或目录不可写：不影响写入结果
-        }
-      }
+      return () => releaseDirLock(file, token)
     } catch (err) {
       if (err?.code !== 'EEXIST') return null
-      try {
-        if (Date.now() - statSync(file).mtimeMs > staleMs) {
-          unlinkSync(file)
-          continue
+      const state = readLockState(file)
+      if (!state) continue // 刚好被释放：下一轮直接抢
+      if (lockIsStale(state, staleMs, hardLimit)) {
+        // 只删"刚刚读到的那个内容"：两次读之间锁可能已被别人抢到并重写。
+        try {
+          if (readFileSync(file, 'utf8') === state.text) unlinkSync(file)
+        } catch {
+          // 已被别处回收
         }
-      } catch {
-        // 锁刚好被释放：下一轮重试
+        continue
       }
       if (Date.now() >= deadline) return null
       Atomics.wait(sleeper, 0, 0, 10)
     }
+  }
+}
+
+/**
+ * 释放锁：内容还是自己的 token 才删。旧格式（裸 pid）只在自己 pid 匹配时删。
+ * 抢锁逻辑已经保证"别人抢走后原持有者不会删它"——这里是第二道闸。
+ * @param {string} file
+ * @param {string} token
+ */
+function releaseDirLock(file, token) {
+  try {
+    const text = readFileSync(file, 'utf8')
+    let meta = null
+    try {
+      const parsed = JSON.parse(text)
+      if (parsed && typeof parsed === 'object') meta = parsed
+    } catch {
+      // 旧格式
+    }
+    if (meta && typeof meta.token === 'string') {
+      if (meta.token !== token) return
+    } else if (text.trim() !== String(process.pid)) {
+      return
+    }
+    unlinkSync(file)
+  } catch {
+    // 已被回收或目录不可写：不影响调用方
+  }
+}
+
+/**
+ * 读锁状态（诊断/测试用）：谁持有、多久了、是否会被当成 stale。
+ * @param {string} dir
+ * @param {{staleMs?: number, hardStaleMs?: number}} [opts]
+ * @returns {null | { pid: number|undefined, host: string|undefined, token: string|undefined, ageMs: number, stale: boolean }}
+ */
+export function inspectDirLock(dir, { staleMs = 10000, hardStaleMs = 0 } = {}) {
+  const state = readLockState(path.join(dir, LOCK_FILE))
+  if (!state) return null
+  return {
+    pid: state.meta.pid,
+    host: state.meta.host,
+    token: state.meta.token,
+    ageMs: state.ageMs,
+    stale: lockIsStale(state, staleMs, hardStaleMs > 0 ? hardStaleMs : staleMs * 10),
   }
 }
 

@@ -5,6 +5,7 @@ import { cfgInsight, saveInsight, GlobalStore, defaultGlobalFile } from '../insi
 import { ensureGlobalInit } from '../global-seed.js'
 import { vectorItemsFrom } from '../vector-index.js'
 import { createWriteCosine } from '../auto-inject.js'
+import { NOT_PERSISTED_NOTE, persistFailed } from '../util/persist.js'
 
 export function rememberTool(config) {
   return defineTool({
@@ -69,7 +70,8 @@ export function rememberTool(config) {
       const dropped = citation.dropped.length
         ? `\n（${citation.dropped.length} 个 source_file 不是项目内路径，已丢弃）`
         : ''
-      return `${verb} experience note (${result.id}).${result.hint ? ` ${result.hint}` : ''}${dropped}`
+      const body = `${verb} experience note (${result.id}).${result.hint ? ` ${result.hint}` : ''}${dropped}`
+      return persistFailed(store, globalStore) ? `${body}\n\n${NOT_PERSISTED_NOTE}` : body
     },
   })
 }

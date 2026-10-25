@@ -8,6 +8,7 @@ import { INSIGHT_KINDS, INSIGHT_SCOPES } from '../insight-store.js'
 import { sessionIdOf } from '../util/task-view.js'
 import { createVectorRerank, vectorItemsFrom } from '../vector-index.js'
 import { createWriteCosine } from '../auto-inject.js'
+import { NOT_PERSISTED_NOTE, persistFailed } from '../util/persist.js'
 
 export function lessonTool(config) {
   const kindDesc = 'lesson(坑→改法) | decision(选择+理由) | procedure(步骤) | experience(问题→解法)；默认 lesson。'
@@ -133,7 +134,8 @@ export function lessonTool(config) {
       const note = citationFiles.dropped.length
         ? `\n（${citationFiles.dropped.length} 个 files 既不是项目内相对路径也不是项目内绝对路径，已丢弃：${citationFiles.dropped.slice(0, 3).join(', ')}${citationFiles.dropped.length > 3 ? ' …' : ''}）`
         : ''
-      return truncate(body + note, config.maxOutputChars || 8000)
+      const warning = persistFailed(store, globalStore) ? `\n\n${NOT_PERSISTED_NOTE}` : ''
+      return truncate(body + note + warning, config.maxOutputChars || 8000)
     },
   })
 }

@@ -6,6 +6,7 @@ import { sessionIdOf, stepProgress, timeAgo } from '../util/task-view.js'
 import { genTaskId, hash8, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
 import { fireReflect } from '../reflection-pipeline.js'
 import { resolveRoute } from '../llm-route.js'
+import { NOT_PERSISTED_NOTE } from '../util/persist.js'
 import { createHash } from 'node:crypto'
 
 function summaryOf(task) {
@@ -140,6 +141,11 @@ export function selectTaskTool(config, host) {
         insights: task.insights || [], // v0.5：任务级 lessons/decisions/procedures
         hint: hint + '；请据此用 todo_write 重建本会话清单',
       }
+      // 落盘失败必须如实说：否则模型以为"任务已续接"，重启后绑定却不存在。
+      if (store.lastSaveOk === false) {
+        card.persisted = false
+        card.hint += `；${NOT_PERSISTED_NOTE}`
+      }
       return truncate(JSON.stringify(card), config.maxOutputChars)
     },
   })
@@ -186,7 +192,8 @@ export function archiveTaskTool(config, host) {
       store.save()
       // 反思钩子：归档即收割最终教训（默认关）
       fireReflect(config, host, root, args.taskId, 'archive', resolveRoute(exec, config))
-      return truncate(JSON.stringify({ success: true, archived: true, hint: '已归档，select_task 可恢复' }), config.maxOutputChars)
+      const hint = store.lastSaveOk === false ? `已归档；${NOT_PERSISTED_NOTE}` : '已归档，select_task 可恢复'
+      return truncate(JSON.stringify({ success: true, archived: true, persisted: store.lastSaveOk !== false, hint }), config.maxOutputChars)
     },
   })
 }

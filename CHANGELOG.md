@@ -21,6 +21,19 @@
 
 **已知残留**（下一版，单独提交）：legacy trigger 的 `keywords` 被归一成 `when.intents` 后仍会匹配散文（"清理一下 README 的措辞"可能命中一条 `keywords:['清理']` 的条目）。把"legacy 派生词 → hint-only"需要重标 `readiness-eval` 与 `eval:injection` 基线。
 
+### 修复：跨进程写的三条数据安全问题（多开 dsh）
+
+**背景**：审计给出三条可复现缺陷，全部发生在"两个 dsh 实例共用一个 store"这个插件明确支持的场景里。
+
+1. **锁可被抢，release 无所有权校验**。旧锁只有 mtime：持锁超过 10s 就被第二个进程当成死锁抢走；原持有者到点 release 又无条件 unlink，把对方的锁删掉，第三个进程随即进入——实测三者同时"持锁"。
+   现在锁内容带 `{pid, host, token, at}`：同机 pid 活着就绝不回收（Linux 上再用 `/proc/<pid>` 的启动时刻识别 pid 复用）；release 校验 token，不删别人的锁。
+2. **崩溃残留锁 + 重试预算 < staleMs → save 静默跳过，工具仍报成功**。旧逻辑 3 次重试 ≈ 8.3s，永远够不到 staleMs=10s；失败只 `console.error`，工具照样返回 "Saved …"（实测 `insights.json` 根本没生成）。
+   现在同机死 pid 的锁**立即回收**；`save()` / `GlobalStore.commit()` 返回失败并置 `lastSaveOk` / `lastCommitOk`，`remember` / `save_lesson` / `forget` / `index_doc` / `index_repo` / `select_task` 会如实追加"未写入磁盘"的警告；两处都补了打到 12s 的延迟重试。
+3. **跨进程删除被复活**。A 加载后持有旧快照，B `forget` 落盘，A 下一次 save 把"磁盘没有但内存有"当成"本地新增"写回——"真删、无撤销"的承诺失效（任务同形；global 层同形）。
+   现在合并规则是：磁盘缺失的条目只有**本进程新建**的才补写，否则视为对方已删、从内存里丢掉。顺带修掉一个更直接的变体：`tasks` 合并从不清理 `_deletedTaskIds`，删任务会在**同一次 save 里**被自己刚读到的磁盘副本写回来。
+
+**测试**：新增 `test/store-lock.test.mjs`（8 条，含两个真子进程的删除复活回归）。`npm test` **833 项 / 48 个文件**全绿。
+
 ### 新增：把用法做成宿主 skill
 
 `skills/project-memory/`：`SKILL.md`（唯一事实源，frontmatter 提供 name / description，注册时剥掉）+ `scripts/pm-digest.mjs`（零依赖体检：store 大小、insight / 任务计数、trigger 覆盖、绑定数）。`apply()` 用 `ctx.inject(['skills'], …)` 注册，`resourceBase` 指向包内目录；没有 `skills` 服务的宿主静默跳过。`package.json files` 加 `skills`。
