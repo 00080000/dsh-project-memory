@@ -1,3 +1,32 @@
+## Unreleased
+
+**升级注意**：这是一次**行为变更**——注入会变少。没有新增配置键、没有 store 格式变更，老 profile 直接升级。变化只在"什么时候允许全文注入"：子代理提示词、其它工具的参数、后台任务 / 子代理通知，以及人类消息里的删除 / 清理 / 渲染 / 基准类词，不再触发全文注入。
+
+### 修复：注入的"这一步在做什么"取错了来源
+
+**证据**（用插件自己的审计日志复盘一次真实会话——作者在插件仓库里跑 30–40 分钟审计，含 4 个子代理）：17 次注入 / 8,654 字符，可判定与本步任务无关 **6.2k（72%）**。其中：
+
+- `find src client test scripts bench docs -type f` → `run-bench`（只是目录名 `bench`），4 条基准 procedure、1,777 字符；
+- 子代理提示词里的"删除后的悬空状态""版本迁移" → 父会话 `file-delete` / `migrate` 连续 8 步；
+- 子代理报告里的"发布 / 渲染" → `intent:release`（1,050 字符）/ `intent:渲染`（1,200 字符）；
+- 旧一代 shadow 日志 386 行里只有 **31 步（8%）**有非空 query：会话中段根本没有真人消息。
+
+**根因与改法**：
+
+1. `agent/pre-step` 的 `messages` 是宿主的 claimed **delta**，不是完整历史。旧实现把 delta 里最后一条 user 消息当"人的话"，于是 `agent-message`（子代理报告）/ `subagent-settled` / `tool-jobs` / `time-context` 都成了查询。现在 `lastUserText` 只认 `source.kind === 'user'` 或无 source 的老宿主；每会话缓存最后一条真人消息（`session/event` + `user/message`），delta 里没有就回退到它。shadow 新增 `querySource: delta|session|none`。
+2. 动作面只从**结构化工具调用**归一（`activityFromCalls`）；`injectForStep` 不再把全部 observed 调用拼成 `actionText`。`subagent` / `remember` / `save_lesson` 的参数不再变成父会话的动作。
+3. `classifyShellCommand` 改成**分段 + 命令头匹配**：剥 heredoc、跳过 `sudo` / `env` 包装、引号内的 `>` 不算重定向、`bash -c` 递归一层。目录名、grep pattern、`node -e` 正文里的词不再是动作。
+4. 人类消息里的动作词分级：只有不可逆外部动作（`git-commit` / `git-push` / `npm-publish` / `release` / `deploy` / `go-public`）允许先发；`删除 / 清理 / 渲染 / 基准 / 取网页` 只记进 `opsIntent`（shadow 可见），不触发全文。观察到的 `rm` 仍然触发。
+5. `buildReadinessContext` 不再被二次归一：`buildInjection` 收到已构建的上下文时只补 tags，避免第一遍的 `actions` 输出在第二遍被当成"调用方声明的动作"重新信任（否则散文里的 `file-delete` 会绕过过滤）。
+
+**已知残留**（下一版，单独提交）：legacy trigger 的 `keywords` 被归一成 `when.intents` 后仍会匹配散文（"清理一下 README 的措辞"可能命中一条 `keywords:['清理']` 的条目）。把"legacy 派生词 → hint-only"需要重标 `readiness-eval` 与 `eval:injection` 基线。
+
+### 新增：把用法做成宿主 skill
+
+`skills/project-memory/`：`SKILL.md`（唯一事实源，frontmatter 提供 name / description，注册时剥掉）+ `scripts/pm-digest.mjs`（零依赖体检：store 大小、insight / 任务计数、trigger 覆盖、绑定数）。`apply()` 用 `ctx.inject(['skills'], …)` 注册，`resourceBase` 指向包内目录；没有 `skills` 服务的宿主静默跳过。`package.json files` 加 `skills`。
+
+**测试**：`npm test` **825 项 / 48 个文件**全绿；`npm run typecheck` 通过。新增 `test/signal-source.test.mjs`（端到端：通知不算人话 / 回退会话缓存、subagent 参数不产 op、目录名不产 `run-bench`、散文删除只记录）与 `test/skill.test.mjs`。
+
 ## 0.6.5 (2026-10-24)
 
 **升级注意**：`allowUnsafeRoots: true` 的作用面比 0.6.4 大。此前它只放开**显式**工具调用与 `autoIndexOnFirstUse`，懒索引、会话审计与 TaskBridge 即使开着也始终不动；现在它放开内置名单的**所有**根判定入口，这三条链路会在放行的目录里建 store、写审计。只想放开某个目录时用 `roots.allow`（精确匹配，不影响 `deny` / `exclude`）；家目录、系统目录如非必要仍建议保持 `false`。

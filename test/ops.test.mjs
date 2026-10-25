@@ -49,6 +49,32 @@ const ok = (name) => {
   ok('classifyShellCommand：渲染器才算 render-doc，扩展名不算')
 }
 
+// --- 2b. 误命中回归：目录名 / grep pattern / 引号 / heredoc / 脚本正文里的词都不是动作 ---
+// 这一组全部来自 2026-10-25 的真实会话（一个审计任务，含 4 个子代理）：
+// `find … bench …` 命中 run-bench 注入了 4 条基准 procedure、1777 字符；
+// 子代理提示词里的"删除/迁移"让父会话连吃 8 步 file-delete/migrate。
+{
+  assert.deepEqual(
+    classifyShellCommand('find src client test scripts bench docs -type f | head -100').ops,
+    ['shell-run'], '目录名 bench 不是"跑基准"',
+  )
+  assert.deepEqual(classifyShellCommand('grep -rn "migrate" docs | head').ops, ['shell-run'], 'grep pattern 不是"迁移"')
+  assert.deepEqual(classifyShellCommand('grep -rn "bench" src').ops, ['shell-run'], 'grep pattern 不是"跑基准"')
+  assert.deepEqual(
+    classifyShellCommand('node -e "const fs=require(\'fs\');fs.mkdirSync(\'/tmp/x\');fs.readFileSync(\'src/index.js\')"').targets,
+    [], 'node -e 的脚本正文不是写目标',
+  )
+  assert.deepEqual(classifyShellCommand('echo "a > b"').targets, [], '引号里的 > 不是重定向')
+  assert.deepEqual(classifyShellCommand('git commit -m "fix rm and migrate bugs"').ops, ['git-commit'], '提交信息里的词不是动作')
+  assert.deepEqual(classifyShellCommand('bash -c "npm publish"').ops, ['npm-publish'], 'bash -c 要递归一层')
+  assert.deepEqual(classifyShellCommand('cd x && rm -rf build').ops, ['file-delete'], '分段后第二段仍要认 rm')
+  assert.deepEqual(
+    classifyShellCommand('python3 - <<PY\nimport os\nos.system("rm -rf x")\nPY').ops,
+    ['shell-run'], 'heredoc 正文不是 shell 命令',
+  )
+  ok('命令头匹配：路径 / pattern / 引号 / heredoc / 脚本正文里的词不算动作')
+}
+
 // --- 3. 写目标只从会写盘的命令里取；读列目录不产目标 ---
 {
   assert.deepEqual(classifyShellCommand('ls -la notes.md').targets, [])

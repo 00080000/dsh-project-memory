@@ -262,6 +262,61 @@ const PUBLIC_FACE = {
   ok('就绪查询只取真人消息，注入块不参与（防自激）')
 }
 
+// ---- 11b. 通知类 user 消息不是"人说的话"（2026-10-25 修）----
+// `agent/pre-step` 的 messages 是 claimed delta；会话中段没有真人消息，旧实现把
+// `agent-message`（子代理报告）/`subagent-settled`/`tool-jobs`/`time-context` 当成了 query。
+// 实测：子代理报告里的"发布/渲染"触发了 intent:release（1050 字符）与 intent:渲染（1200 字符）。
+{
+  const { lastUserText } = await import('../src/auto-inject.js')
+  const { SOURCE_KIND } = await import('../src/auto-inject.js')
+  const notices = [
+    { kind: 'agent-message' },
+    { kind: 'subagent-settled' },
+    { kind: 'tool-jobs' },
+    { kind: 'time-context' },
+    { kind: 'runtime-context' },
+    { kind: SOURCE_KIND },
+  ]
+  for (const source of notices) {
+    const notice = { role: 'user', source, content: [{ type: 'text', text: '发布到 npm，然后渲染 pptx，再迁移数据库' }] }
+    assert.equal(lastUserText([notice]), '', `${source.kind} 不是人话，不得成为就绪查询`)
+  }
+  // 真人消息 + 通知混排：仍取人话（且不受顺序影响）
+  const human = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '帮我看下 README' }] }
+  const relay = { role: 'user', source: { kind: 'agent-message' }, content: [{ type: 'text', text: '子代理报告：发布流程…' }] }
+  assert.equal(lastUserText([human, relay]), '帮我看下 README')
+  ok('通知 / 子代理 relay / job 通知 / 时间快照都不再冒充人类意图')
+}
+
+// ---- 11c. 散文动作词只有"不可逆外部动作"能进 ops（2026-10-25 修）----
+// 证据来源分级：观察到的工具调用（rm 真的执行了）可以触发；人类消息里的词只有
+// npm-publish / git-push / deploy / go-public 允许先发，其余只记为 intentOps（遥测/提示用）。
+{
+  const purge = {
+    id: 'ins_purge', kind: 'procedure', scope: 'global', title: '误删恢复', steps: ['1'],
+    trigger: { when: { ops: ['file-delete'] } }, confidence: 1, archived: false,
+  }
+  const publish = {
+    id: 'ins_pub', kind: 'procedure', scope: 'global', title: '发布流程', steps: ['1'],
+    trigger: { when: { ops: ['npm-publish'] } }, confidence: 1, archived: false,
+  }
+  const prose = readiness.buildReadinessContext({ humanText: '清理一下 README 的措辞，把过时的段落删掉' })
+  assert.deepEqual(prose.ops, [], '散文里的删除/清理不进 ops（否则注入 1200 字符的恢复 procedure）')
+  assert.ok(prose.intentOps.includes('file-delete'), '但仍要留下 intentOps，供遥测与提示通道用')
+  assert.equal(readiness.matchTrigger(purge.trigger, prose), null, '仅凭散文命中不得触发全文注入')
+
+  const before = readiness.buildReadinessContext({ humanText: '发布到 npm，记得先核对三处版本' })
+  assert.ok(before.ops.includes('npm-publish'), '发布属于不可逆外部动作：允许先发')
+  assert.equal(readiness.matchTrigger(publish.trigger, before), 'op:npm-publish')
+  assert.ok(readiness.buildReadinessContext({ humanText: '发版 0.6.6' }).ops.includes('release'), '发版也算先发动作')
+  assert.deepEqual(readiness.detectActions('帮我写 release notes'), [], 'release notes 是文档任务，不是发版')
+
+  const observed = readiness.buildReadinessContext({ humanText: '', actionText: 'rm -rf build/' })
+  assert.ok(observed.ops.includes('file-delete'), '真的执行了 rm 仍走 file-delete')
+  assert.equal(readiness.matchTrigger(purge.trigger, observed), 'op:file-delete')
+  ok('散文动作词分级：删除/清理只记录不触发，发布/推送仍可先发；观察到的动作不受影响')
+}
+
 // ---- 12. 1–2 字符拉丁缩写不作为提示证据 ----
 {
   assert.ok(readiness, 'src/readiness.js 不存在')
