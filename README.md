@@ -100,7 +100,7 @@ The store is per-project and follows the codebase: changed files are re-extracte
 - **Incremental** — a content hash per file; only changed files are re-extracted.
 - **Cross-linking** — a returned document chunk resolves the symbols it mentions against the **current** symbol table and appends them as `references`, so a doc indexed before its symbols still links correctly.
 - **Query expansion** — when enabled, `query_memory` asks the LLM to rewrite the query into several variants (synonyms, EN/CN, identifier guesses) and merges the scores; when off, queries never touch the LLM. Indexing itself is model-free.
-- **Consistency** — the fact layer follows the codebase (hash re-extract / remove-on-delete); the experience layer is retrieval-only with supersede and `forget`. Writes take a cross-process directory lock (`.write.lock`) around a short read-modify-write, so two dsh instances can share one project store: shards converge by `indexedAt`, and a save that cannot get the lock is deferred and retried.
+- **Consistency** — the fact layer follows the codebase (hash re-extract / remove-on-delete); the experience layer is retrieval-only with supersede and `forget`. Writes take a cross-process directory lock (`.write.lock`) around a short read-modify-write, so two dsh instances can share one project store: shards converge by `indexedAt`, a save that cannot get the lock is deferred and retried (and reported as not persisted), and entries deleted by another process are not resurrected by a stale in-memory snapshot.
 
 ## Architecture (Task Panel)
 
@@ -265,7 +265,7 @@ Pass `--queries your-queries.json` to run the labeled-set method (hit@5 / hit@10
 
 ## Design tradeoffs
 
-- **A short filesystem lock, not an embedded database** — each save holds an exclusive `.write.lock` only for the read-modify-write (parsing stays outside it), waits at most 2 s for a busy peer and then retries. Two dsh instances can share one store. No WAL, no daemon, no native dependency.
+- **A short filesystem lock, not an embedded database** — each save holds an exclusive `.write.lock` only for the read-modify-write (parsing stays outside it), waits at most 2 s for a busy peer and then retries; when the write cannot land, the save **reports failure** instead of claiming success, and tools say the change is still only in memory. The lock carries `pid` / `host` / `token`: a live same-host holder is never preempted, release verifies ownership, and a crashed same-host lock is reclaimed immediately. Two dsh instances can share one store. No WAL, no daemon, no native dependency.
 - **Watch: compute outside, commit inside** — no lock is held during parsing, and polling with mtime + content hash is used instead of `fs.watch`: it behaves identically on network drives, Docker volumes and WSL, without duplicate-trigger or missed-event failure modes.
 - **Corrupt shards are quarantined, not repaired** — a shard that fails to parse is renamed and only that file is re-indexed, so there is no WAL or embedded database adding native dependencies, lock contention and failure modes of their own.
 - **Vectors re-rank, they do not rank** — on a paraphrased-query set, pure vector replacement is worse than BM25 (hit@10 **53% vs 69%**) while weighted fusion helps at small k (hit@3 **53% vs 50%**), so the optional layer only re-orders the experience/insight layers and never gates. Lexical retrieval still answers the queries this plugin targets: on a real project with 29 labelled queries, file-level hit@5 is **96.6%**, and whole-chunk terms raise document term coverage from **27.3% to 100%** with MRR unchanged (**0.958** vs **0.955**).
@@ -282,7 +282,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 825 tests
+npm test                    # 833 tests
 npm run eval:injection      # synthetic pool P/R: precision 0.93 / recall 1.00, + a 3-scenario hint-only group
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)

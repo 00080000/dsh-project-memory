@@ -534,7 +534,14 @@ export class GlobalStore {
     this._dirty = false
     this._baseIds = new Set()
     this._deletedIds = new Set()
+    /** 本进程新建的 id：磁盘缺失时只有它们该补写，否则会把对方删掉的条目复活。 */
+    this._createdIds = new Set()
+    /** 上一次 commit 是否真的落盘（锁竞争时 false）；调用方据此如实回报。 */
+    this.lastCommitOk = true
     this._lockWarned = false
+    /** 锁竞争后的有限次延迟重试（与 ProjectMemoryStore.save 同一套节拍）。 */
+    this._retryTimer = null
+    this._retryAttempts = 0
   }
 
   load() {
@@ -563,6 +570,22 @@ export class GlobalStore {
     this._dirty = true
   }
 
+  /** 锁竞争失败后的延迟重试：旧实现完全没有重试，一次竞争就永久丢这次写入。 */
+  _scheduleRetry() {
+    const delays = [100, 500, 2000, 6000, 12000]
+    if (this._retryTimer || this._retryAttempts >= delays.length) return
+    const delay = delays[this._retryAttempts++]
+    this._retryTimer = setTimeout(() => {
+      this._retryTimer = null
+      try {
+        this.commit()
+      } catch (err) {
+        console.error(`[dsh-project-memory] deferred global save failed: ${err?.message || err}`)
+      }
+    }, delay)
+    this._retryTimer.unref?.()
+  }
+
   /** 变更提交：fn(this.doc) 后加锁、合并另一进程的磁盘状态、原子落盘。 */
   commit(fn) {
     const res = fn ? fn(this.doc, this) : undefined
@@ -570,13 +593,18 @@ export class GlobalStore {
     // 本进程从基线里删掉的 id（removeMemory 直接 splice，没有单独的删除 API）。
     const current = new Set(this.doc.items.map((it) => it?.id).filter(Boolean))
     for (const id of this._baseIds) if (!current.has(id)) this._deletedIds.add(id)
-    for (const id of current) this._deletedIds.delete(id)
+    for (const id of current) {
+      this._deletedIds.delete(id)
+      if (!this._baseIds.has(id)) this._createdIds.add(id)
+    }
     const release = acquireDirLock(path.dirname(this.file))
     if (!release) {
+      this.lastCommitOk = false
       if (!this._lockWarned) {
         this._lockWarned = true
-        console.error(`[dsh-project-memory] global store ${this.file} is busy (another dsh process is writing); this save was skipped and will retry on the next write.`)
+        console.error(`[dsh-project-memory] global store ${this.file} is busy (another dsh process is writing); this write is pending.`)
       }
+      this._scheduleRetry()
       return res
     }
     try {
@@ -590,13 +618,21 @@ export class GlobalStore {
           continue
         }
         const prev = byId.get(it.id)
-        if (!prev || newerIso(it.updatedAt, prev.updatedAt) >= 0) byId.set(it.id, it)
+        if (!prev) {
+          // 磁盘没有：本进程新建的才补写；否则是对方删了，丢掉内存里的旧副本。
+          if (this._createdIds.has(it.id)) byId.set(it.id, it)
+          continue
+        }
+        if (newerIso(it.updatedAt, prev.updatedAt) >= 0) byId.set(it.id, it)
       }
       for (const id of this._deletedIds) byId.delete(id)
       this.doc.items = [...byId.values()]
       writeJsonAtomic(this.file, this.doc)
       this._dirty = false
       this._baseIds = new Set(this.doc.items.map((it) => it?.id).filter(Boolean))
+      this._createdIds.clear()
+      this.lastCommitOk = true
+      this._retryAttempts = 0
     } finally {
       release()
     }

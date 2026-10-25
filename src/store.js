@@ -378,6 +378,15 @@ export class ProjectMemoryStore {
     this._removedWatch = new Set()
     /** 上次落盘/加载时的 insight id 集合：原地 splice 的删除也要能被合并逻辑看见。 */
     this._baseInsightIds = new Set()
+    /**
+     * 本进程**新建**的条目。合并另一进程的磁盘状态时，"磁盘没有但内存有"有两种可能：
+     * 我新建的（要补写）或**对方删了**（不能写回）。没有这个集合，后者就会被复活
+     * （实测：B 真删、A 下一次注入记账触发 save，已删条目重新出现在磁盘上）。
+     */
+    this._createdInsightIds = new Set()
+    this._createdTaskIds = new Set()
+    /** 上一次 save 是否真的落到盘上（锁竞争/权限失败时为 false）。工具层据此如实回报。 */
+    this.lastSaveOk = true
     this._lockWarned = false
     this._conflictWarned = new Set()
     /** 锁竞争跳过落盘后的有限次延迟重试；unref，避免拖住进程退出。 */
@@ -692,7 +701,10 @@ export class ProjectMemoryStore {
     const next = new Set((items || []).map((it) => it?.id).filter(Boolean))
     // 与上次落盘的基线比，而不是与当前数组比：调用方经常先原地 splice 再调用这里。
     for (const id of this._baseInsightIds) if (!next.has(id)) this._deletedInsightIds.add(id)
-    for (const id of next) this._deletedInsightIds.delete(id)
+    for (const id of next) {
+      this._deletedInsightIds.delete(id)
+      if (!this._baseInsightIds.has(id)) this._createdInsightIds.add(id)
+    }
     this.insights.items = items
     this._baseInsightIds = next
     this._dirtyInsights = true
@@ -781,17 +793,24 @@ export class ProjectMemoryStore {
     this.cleanStaleTmp()
     // 自我忽略也在无脏数据时执行：老版本建出来的 store 会在下一次 save 时补上。
     this.ensureSelfIgnore()
-    if (!dirty) return
-    // 跨进程：整段读改写放进目录锁；拿不到锁就保持脏状态，等下一次写重试（不静默丢数据）。
+    if (!dirty) {
+      this.lastSaveOk = true
+      return true
+    }
+    // 跨进程：整段读改写放进目录锁；拿不到锁就保持脏状态，并**如实返回失败**——调用方
+    // （工具 / watch / taskbridge）不能在不落盘的情况下报成功。
     const release = acquireDirLock(this.dir)
     if (!release) {
+      this.lastSaveOk = false
       if (!this._lockWarned) {
         this._lockWarned = true
-        console.error(`[dsh-project-memory] store ${this.dir} is busy (another dsh process is writing); this save was skipped and will retry shortly.`)
+        console.error(`[dsh-project-memory] store ${this.dir} is busy (another dsh process is writing); this write is pending.`)
       }
       this._scheduleSaveRetry()
-      return
+      return false
     }
+    let wroteInsights = false
+    let wroteTasks = false
     try {
       // 先合并另一进程已落盘的小文档，再写；分片按“加载时 hash”做冲突检测。
       this._mergeAuxFromDisk()
@@ -854,7 +873,9 @@ export class ProjectMemoryStore {
         this._baseFileSha.delete(rel)
       }
       this._removedShards.clear()
-      if (this._dirtyInsights) {
+      wroteInsights = this._dirtyInsights
+      wroteTasks = this._dirtyTasks
+      if (wroteInsights) {
         // v2 → v3 是纯语义升级（`kind:'experience'` 从"影子副本"变成一等实体），形状不变；
         // 落盘即把版本推上去，老版本读到 v3 也照样按 v2 的字段解析（它只是排除 experience 影子）。
         if (this.insights && this.insights.version !== 3) this.insights.version = 3
@@ -877,6 +898,14 @@ export class ProjectMemoryStore {
       release()
     }
     this._saveRetryAttempts = 0
+    this.lastSaveOk = true
+    // 落盘成功才推进基线：失败时保持"本进程新建"的标记，下一次 save 仍要补写。
+    if (wroteInsights) {
+      this._baseInsightIds = new Set(this.insights.items.map((it) => it?.id).filter(Boolean))
+      this._createdInsightIds.clear()
+    }
+    if (wroteTasks) this._createdTaskIds.clear()
+    return true
   }
 
   /**
@@ -912,8 +941,11 @@ export class ProjectMemoryStore {
 
   /** 锁竞争后的有限次延迟重试；失败仍保持脏状态，下一次写继续尝试。 */
   _scheduleSaveRetry() {
-    if (this._saveRetryTimer || this._saveRetryAttempts >= 3) return
-    this._saveRetryAttempts++
+    // 旧实现 3 次 × ~2s ≈ 8.3s，**永远小于** staleMs=10s：一个刚崩溃的跨机锁会让所有重试落空。
+    // 同机崩溃锁现在由 pid 判活立即回收（见 util/fs.js），这里的预算只兜跨机 stale 锁。
+    const delays = [100, 500, 2000, 6000, 12000]
+    if (this._saveRetryTimer || this._saveRetryAttempts >= delays.length) return
+    const delay = delays[this._saveRetryAttempts++]
     this._saveRetryTimer = setTimeout(() => {
       this._saveRetryTimer = null
       try {
@@ -921,7 +953,7 @@ export class ProjectMemoryStore {
       } catch (err) {
         console.error(`[dsh-project-memory] deferred save failed: ${err?.message || err}`)
       }
-    }, 100)
+    }, delay)
     this._saveRetryTimer.unref?.()
   }
 
@@ -955,7 +987,12 @@ export class ProjectMemoryStore {
             continue
           }
           const prev = byId.get(it.id)
-          if (!prev || newerIso(it.updatedAt, prev.updatedAt) >= 0) byId.set(it.id, it)
+          if (!prev) {
+            // 磁盘没有：本进程新建的才补写；否则是**对方删了**，丢掉内存里的旧副本。
+            if (this._createdInsightIds.has(it.id)) byId.set(it.id, it)
+            continue
+          }
+          if (newerIso(it.updatedAt, prev.updatedAt) >= 0) byId.set(it.id, it)
         }
         for (const id of this._deletedInsightIds) byId.delete(id)
         this.insights = { ...this.insights, items: [...byId.values()] }
@@ -974,8 +1011,16 @@ export class ProjectMemoryStore {
             continue
           }
           const prev = byId.get(t.id)
-          if (!prev || newerIso(t.updatedAt || t.lastActiveAt, prev.updatedAt || prev.lastActiveAt) >= 0) byId.set(t.id, t)
+          if (!prev) {
+            // 同 insights：磁盘缺失 = 对方删了，只有本进程新建的任务才补写。
+            if (this._createdTaskIds.has(t.id)) byId.set(t.id, t)
+            continue
+          }
+          if (newerIso(t.updatedAt || t.lastActiveAt, prev.updatedAt || prev.lastActiveAt) >= 0) byId.set(t.id, t)
         }
+        // 本地删除必须从磁盘副本里剔除：`removeTask` 已把它从内存数组移除，上面的循环
+        // 根本看不到它；少了这一行，删任务会在**同一次 save 里**被另一份磁盘快照写回来。
+        for (const id of this._deletedTaskIds) byId.delete(id)
         this.tasks = [...byId.values()]
         this._auxVersion++
       }
@@ -1178,7 +1223,10 @@ export class ProjectMemoryStore {
 
   addTask(task) {
     this.tasks.push(task)
-    if (task?.id) this._deletedTaskIds.delete(task.id)
+    if (task?.id) {
+      this._deletedTaskIds.delete(task.id)
+      this._createdTaskIds.add(task.id)
+    }
     this._dirtyTasks = true
     this._auxVersion++
   }

@@ -1,0 +1,218 @@
+// 跨进程数据安全回归：node test/store-lock.test.mjs
+//
+// 三条都来自 2026-10-25 的审计（/tmp 复现脚本 → 这里变成可判定失败的回归）：
+//   1. 锁可被"抢"，且 release 无所有权校验 → 三个进程同时"持锁"；
+//   2. 崩溃残留锁 + 3 次重试(≈8.3s) < staleMs(10s) → save 静默跳过，工具却报成功；
+//   3. 另一进程真删的条目，被本进程下一次 save 当"本地新增"写回（forget 的"真删"承诺失效）。
+import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
+import { hostname, tmpdir } from 'node:os'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+import { acquireDirLock, inspectDirLock } from '../src/util/fs.js'
+import { ProjectMemoryStore } from '../src/store.js'
+import { GlobalStore } from '../src/insight-store.js'
+import { persistFailed } from '../src/util/persist.js'
+
+let passed = 0
+const ok = (name) => {
+  passed++
+  console.log('  ok', name)
+}
+
+const dir = () => mkdtempSync(path.join(tmpdir(), 'lock-'))
+const lockFile = (d) => path.join(d, '.write.lock')
+const writeLock = (d, meta, ageMs = 0) => {
+  mkdirSync(d, { recursive: true })
+  writeFileSync(lockFile(d), JSON.stringify(meta))
+  if (ageMs > 0) {
+    const t = new Date(Date.now() - ageMs)
+    utimesSync(lockFile(d), t, t)
+  }
+}
+const readLock = (d) => JSON.parse(readFileSync(lockFile(d), 'utf8'))
+const storeUrl = pathToFileURL(path.join(import.meta.dirname, '..', 'src', 'store.js')).href
+const insightUrl = pathToFileURL(path.join(import.meta.dirname, '..', 'src', 'insight-store.js')).href
+
+/** 起一个立刻退出的子进程，拿到一个**确定已死**的 pid（用于"崩溃残留锁"）。 */
+async function deadPid() {
+  const child = spawn(process.execPath, ['-e', 'process.exit(0)'])
+  const pid = child.pid
+  await new Promise((resolve) => child.on('exit', resolve))
+  return pid
+}
+
+// --- 1. 所有权：活着的持有者不该被抢；release 不能删别人的锁 ---
+{
+  const d = dir()
+  const release = acquireDirLock(d, { timeoutMs: 100 })
+  assert.ok(release, '空目录应能拿到锁')
+  const mine = inspectDirLock(d)
+  assert.ok(mine.token && mine.pid === process.pid && mine.host === hostname(), '锁内容要有 pid/host/token')
+  assert.equal(mine.stale, false)
+
+  // 模拟"另一个活着的进程"重写了锁（比如它在我们持锁期间接手）：同机 + pid 活着 + mtime 很老
+  writeLock(d, { pid: process.pid, host: hostname(), token: 'foreign', at: new Date().toISOString() }, 3_600_000)
+  const again = acquireDirLock(d, { timeoutMs: 80 })
+  assert.equal(again, null, '同机 pid 活着时，mtime 再老也不能抢')
+  assert.equal(readLock(d).token, 'foreign', '抢锁失败不得删掉对方的锁')
+
+  release() // 我们是旧持有者，token 已不匹配
+  assert.ok(existsSync(lockFile(d)), 'release 必须校验 token：不得 unlink 别人的锁')
+  assert.equal(readLock(d).token, 'foreign')
+  ok('锁所有权：活着的持有者不被抢，release 不删别人的锁')
+}
+
+// --- 2. 崩溃残留锁：同机 pid 已死 → 立即回收（旧实现要等 10s，重试预算永远不够）---
+{
+  const d = dir()
+  const dead = await deadPid()
+  writeLock(d, { pid: dead, host: hostname(), token: 'dead', at: new Date().toISOString() })
+  const started = Date.now()
+  const release = acquireDirLock(d, { timeoutMs: 800 })
+  const elapsed = Date.now() - started
+  assert.ok(release, '已死进程的锁必须能立即回收')
+  assert.ok(elapsed < 400, `回收应当是立即的，实际 ${elapsed}ms`)
+  assert.notEqual(readLock(d).token, 'dead', '抢到后锁内容应换成我们自己的')
+  release()
+  ok(`崩溃残留锁立即回收（${elapsed}ms）`)
+}
+
+// --- 3. 崩溃锁不再让 save 静默跳过：一次写必须真的落盘 ---
+{
+  const d = dir()
+  const dead = await deadPid()
+  writeLock(d, { pid: dead, host: hostname(), token: 'dead' })
+  const store = new ProjectMemoryStore(d).load()
+  store.replaceInsightItems([{ id: 'kept', kind: 'lesson', scope: 'project', title: 'kept' }])
+  const saved = store.save()
+  assert.equal(saved, true, '死锁存在时 save 必须成功（旧实现返回 undefined 且没写盘）')
+  assert.equal(store.lastSaveOk, true)
+  const doc = JSON.parse(readFileSync(path.join(d, 'insights.json'), 'utf8'))
+  assert.deepEqual(doc.items.map((it) => it.id), ['kept'])
+  ok('崩溃残留锁下 save 真的落盘')
+}
+
+// --- 4. 活锁 → save 返回失败、数据不落盘（工具层据此如实回报）---
+{
+  const d = dir()
+  const store = new ProjectMemoryStore(d).load()
+  store.replaceInsightItems([{ id: 'pending', kind: 'lesson', scope: 'project', title: 'pending' }])
+  writeLock(d, { pid: process.pid, host: hostname(), token: 'held-by-other' })
+  const saved = store.save()
+  assert.equal(saved, false, '活锁未释放时 save 必须返回 false')
+  assert.equal(store.lastSaveOk, false)
+  assert.equal(persistFailed(store), true, 'persistFailed 必须能看见失败')
+  assert.ok(!existsSync(path.join(d, 'insights.json')), '没拿到锁就不能写盘')
+  assert.ok(existsSync(lockFile(d)), '失败时不得删掉别人的锁')
+
+  // 锁释放后同一份脏数据仍能写进去（失败不该把脏状态清掉）
+  // 用死 pid 模拟持有者退出（同机判活会立刻回收）
+  const dead = await deadPid()
+  writeLock(d, { pid: dead, host: hostname(), token: 'held-by-other' })
+  assert.equal(store.save(), true, '锁消失后重试必须成功')
+  const doc = JSON.parse(readFileSync(path.join(d, 'insights.json'), 'utf8'))
+  assert.deepEqual(doc.items.map((it) => it.id), ['pending'])
+  ok('活锁时 save 失败且不落盘；锁消失后重试成功')
+}
+
+// --- 5. 跨进程删除不被复活：insights ---
+{
+  const d = dir()
+  const first = new ProjectMemoryStore(d).load()
+  first.replaceInsightItems([
+    { id: 'keep', kind: 'lesson', scope: 'project', title: 'keep', updatedAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'gone', kind: 'lesson', scope: 'project', title: 'gone', updatedAt: '2026-01-01T00:00:00.000Z' },
+  ])
+  assert.equal(first.save(), true)
+
+  const child = `
+import { ProjectMemoryStore } from ${JSON.stringify(storeUrl)}
+const store = new ProjectMemoryStore(process.argv[1]).load()
+store.replaceInsightItems(store.insightItems().filter((it) => it.id !== 'gone'))
+store.save()
+`
+  await new Promise((resolve, reject) => {
+    const p = spawn(process.execPath, ['--input-type=module', '-e', child, d], { stdio: 'inherit' })
+    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`child exited ${code}`))))
+  })
+  assert.deepEqual(JSON.parse(readFileSync(path.join(d, 'insights.json'), 'utf8')).items.map((it) => it.id), ['keep'], '子进程真的删掉了')
+
+  // 父进程还拿着删前的内存快照，下一次 save 不得把 gone 写回
+  first.replaceInsightItems(first.insightItems()) // 只标脏，不改内容
+  assert.equal(first.save(), true)
+  assert.deepEqual(JSON.parse(readFileSync(path.join(d, 'insights.json'), 'utf8')).items.map((it) => it.id), ['keep'], '已删条目不得复活')
+  assert.deepEqual(first.insightItems().map((it) => it.id), ['keep'], '内存里也要丢掉对方已删的条目')
+  ok('跨进程删除不复活（insights）')
+}
+
+// --- 6. 跨进程删除不被复活：tasks ---
+{
+  const d = dir()
+  const first = new ProjectMemoryStore(d).load()
+  first.addTask({ id: 't_keep', title: 'keep', files: [], steps: [] })
+  first.addTask({ id: 't_gone', title: 'gone', files: [], steps: [] })
+  assert.equal(first.save(), true)
+
+  const child = `
+import { ProjectMemoryStore } from ${JSON.stringify(storeUrl)}
+const store = new ProjectMemoryStore(process.argv[1]).load()
+store.removeTask('t_gone')
+store.save()
+`
+  await new Promise((resolve, reject) => {
+    const p = spawn(process.execPath, ['--input-type=module', '-e', child, d], { stdio: 'inherit' })
+    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`child exited ${code}`))))
+  })
+  first.markTasksDirty()
+  assert.equal(first.save(), true)
+  assert.deepEqual(JSON.parse(readFileSync(path.join(d, 'tasks.json'), 'utf8')).map((t) => t.id), ['t_keep'], '已删任务不得复活')
+  assert.deepEqual(first.getTasks().map((t) => t.id), ['t_keep'])
+  ok('跨进程删除不复活（tasks）')
+}
+
+// --- 7. 跨进程删除不被复活：global store ---
+{
+  const file = path.join(dir(), 'global.json')
+  const a = new GlobalStore(file).load()
+  a.doc.items.push({ id: 'g_keep', kind: 'lesson', scope: 'global', title: 'keep', updatedAt: '2026-01-01T00:00:00.000Z' })
+  a.doc.items.push({ id: 'g_gone', kind: 'lesson', scope: 'global', title: 'gone', updatedAt: '2026-01-01T00:00:00.000Z' })
+  a.markDirty()
+  a.commit()
+
+  const child = `
+import { GlobalStore } from ${JSON.stringify(insightUrl)}
+const store = new GlobalStore(process.argv[1]).load()
+store.doc.items = store.doc.items.filter((it) => it.id !== 'g_gone')
+store.markDirty()
+store.commit()
+`
+  await new Promise((resolve, reject) => {
+    const p = spawn(process.execPath, ['--input-type=module', '-e', child, file], { stdio: 'inherit' })
+    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`child exited ${code}`))))
+  })
+  a.markDirty()
+  a.commit()
+  const items = JSON.parse(readFileSync(file, 'utf8')).items.map((it) => it.id)
+  assert.deepEqual(items, ['g_keep'], 'global 层同样不得复活已删条目')
+  ok('跨进程删除不复活（global）')
+}
+
+// --- 8. global 锁失败也要可见（旧实现只 console.error，调用方一无所知）---
+{
+  const d = dir()
+  const file = path.join(d, 'global.json')
+  const store = new GlobalStore(file).load()
+  writeLock(d, { pid: process.pid, host: hostname(), token: 'held' })
+  store.doc.items.push({ id: 'g1', kind: 'lesson', scope: 'global', title: 'x' })
+  store.markDirty()
+  store.commit()
+  assert.equal(store.lastCommitOk, false, 'global commit 失败必须留下可见状态')
+  assert.equal(persistFailed(null, store), true)
+  assert.ok(!existsSync(file), '没拿到锁就不该写 global 文件')
+  ok('global 写锁失败同样可见')
+}
+
+console.log(`\nstore-lock tests: ${passed} passed`)

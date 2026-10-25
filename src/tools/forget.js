@@ -3,6 +3,7 @@ import { assertIndexRoot, memoryRootFor, resolveSafeIndexRoot } from '../util/fs
 import { ProjectMemoryStore } from '../store.js'
 import { cfgInsight, DELETED_KEEP, GlobalStore, defaultGlobalFile, removeMemory } from '../insight-store.js'
 import { forgetVectorRows } from '../vector-index.js'
+import { NOT_PERSISTED_NOTE, persistFailed } from '../util/persist.js'
 
 /** 回报用的一行：`ins_xxx《标题》(project)`。标题已在 removeMemory 里截断。 */
 function line(e) {
@@ -71,9 +72,10 @@ export function forgetTool(config) {
         return `Matched ${res.matches.length} memories (cap ${cfg.maxForgetMatches}), removed none — narrow the query or delete by id:\n` + head.map((l) => `- ${l}`).join('\n') + more
       }
       if (!res || !res.ok || !res.removed.length) return 'No matching memory found.'
-      return `Removed ${res.removed.length} memory entries:\n`
+      const body = `Removed ${res.removed.length} memory entries:\n`
         + res.removed.map((e) => `- ${line(e)}`).join('\n')
         + keptHint(res)
+      return persistFailed(store, globalStore) ? `${body}\n\n${NOT_PERSISTED_NOTE}` : body
     },
   })
 }
