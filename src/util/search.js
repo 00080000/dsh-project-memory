@@ -1,5 +1,15 @@
+import { CYRILLIC_WORD_RE, RU_STOPWORDS, normalizeRuWord, stemRu } from './ru.js'
+
 export const CJK_RANGE =
   /[\u3400-\u9fff\uf900-\ufaff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/
+
+/**
+ * 分词契约的版本号。改 tokenizeRaw 的**输出集合**（新增书写系统、词干、停用词）就要 +1：
+ * 落盘的 doc `terms` 是它的产物，旧版本写的 terms 里没有新词项，必须让
+ * `docEntriesNeedBackfill` 触发一次重抽（见 doc-index.js）。
+ * 1 = 隐式的旧版本（那时条目上没有这个字段），2 = 加入俄语词干/停用词。
+ */
+export const TOKENIZER_VERSION = 2
 
 const SYNONYMS = new Map([
   ['数据库连接池', ['连接池', 'DB pool', 'db pool']],
@@ -53,6 +63,16 @@ export function tokenizeRaw(text) {
   }
   const latin = lower.match(/[a-z0-9_]+/g) || []
   for (const tok of latin) tokens.push(tok)
+  // 西里尔（只做了俄语）：切词 → 去虚词 → Snowball 词干。
+  // 拉丁与 CJK 分支保持原样（老用户的分数/阈值都是在那套输出上标定的，动它们要单独评审）。
+  for (const raw of lower.match(CYRILLIC_WORD_RE) || []) {
+    const word = normalizeRuWord(raw)
+    if (word.length < 2 || RU_STOPWORDS.has(word)) continue
+    // ≤3 字符不词干：俄语缩写（ИИ / БД / ОС）在 Snowball 下会被削成单字母
+    // （`ии` → `и`），那既丢语义又和虚词撞车；这些短词本来也没有可削的格尾。
+    const stem = word.length <= 3 ? word : stemRu(word)
+    if (stem.length >= 2) tokens.push(stem)
+  }
   for (const ch of lower) {
     if (CJK_RANGE.test(ch)) cjkRun += ch
     else flushCjk()

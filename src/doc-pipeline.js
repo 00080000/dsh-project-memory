@@ -6,6 +6,7 @@ import { summarizeText } from './util/text.js'
 import { parsePdf } from './parsers/pdfjs-parser.js'
 import { chunkText } from './chunker.js'
 import { extractKeywords, extractTermText } from './doc-index.js'
+import { TOKENIZER_VERSION } from './util/search.js'
 import { entryIdPrefix } from './util/entry-id.js'
 
 export async function extractTextFromFile(filePath, { maxFileSizeMb = 10, maxPdfPages = 1000 } = {}) {
@@ -49,6 +50,7 @@ export async function buildDocEntries(relPath, filePath, opts = {}) {
     summary: summarizeText(chunk.text),
     keywords: extractKeywords(chunk.title, chunk.text),
     terms: extractTermText(chunk.text),
+    termsVersion: TOKENIZER_VERSION,
     hash,
   }))
 }

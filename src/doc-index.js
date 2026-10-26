@@ -4,8 +4,8 @@
 // 而 summary 为了注入预算被压到 300 字符 —— 一个 3000 字符的 chunk 有九成内容检索不到。
 // 这里把「注入用的短摘要」和「检索用的词项」拆开：summary 仍然短，terms 覆盖整个 chunk。
 //
-// 纯规则、确定性、可重放：tokenizeRaw（拉丁词 + CJK bigram）→ 去停用词/纯数字 → 词频排序 → 截断。
-import { tokenizeRaw } from './util/search.js'
+// 纯规则、确定性、可重放：tokenizeRaw（拉丁词 + CJK bigram + 俄语词干）→ 去停用词/纯数字 → 词频排序 → 截断。
+import { TOKENIZER_VERSION, tokenizeRaw } from './util/search.js'
 
 export const MAX_TERMS = 160
 export const MAX_KEYWORDS = 8
@@ -62,10 +62,12 @@ export function extractKeywords(title, text, { max = MAX_KEYWORDS } = {}) {
 }
 
 /**
- * 旧 store 的 doc 条目没有 `terms`：需要一次定向回填，否则内容哈希未变的文件会被跳过，
- * 新的检索覆盖不会生效。只对 doc 条目判断，code 条目（符号表）不需要 terms。
+ * 旧 store 的 doc 条目没有 `terms`、或 `termsVersion` 落后于当前分词契约：需要一次定向回填，
+ * 否则内容哈希未变的文件会被跳过，新的检索覆盖（新增书写系统 / 词干 / 停用词）不会生效。
+ * 只对 doc 条目判断，code 条目（符号表）不需要 terms。
  */
 export function docEntriesNeedBackfill(entries) {
   if (!Array.isArray(entries) || entries.length === 0) return true
-  return entries.some((e) => e && e.type === 'doc' && typeof e.terms !== 'string')
+  return entries.some((e) => e && e.type === 'doc' &&
+    (typeof e.terms !== 'string' || e.termsVersion !== TOKENIZER_VERSION))
 }
