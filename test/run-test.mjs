@@ -15,7 +15,7 @@ import { watchRepoTool } from '../src/tools/watch-repo.js'
 import { statsTool } from '../src/tools/stats.js'
 import { WatchManager } from '../src/watch.js'
 import { resolveLinkedSymbols } from '../src/link.js'
-import { rankEntriesMergedScored, rankEntriesStreaming, tokenizeRaw } from '../src/util/search.js'
+import { rankEntriesMergedScored, rankEntriesStreaming, tokenizeRaw, TOKENIZER_VERSION } from '../src/util/search.js'
 import { recallItems } from '../src/recall.js'
 import { findProjectRoot, indexFile, setupLazyIndexing, codeFirst } from '../src/lazy.js'
 
@@ -918,6 +918,7 @@ console.log('\n== watch reloads store each poll (external writes preserved) ==')
       {
         id: 'ext-b', type: 'doc', sourcePath: 'docs/b.md', sourceLine: 1,
         title: 'Doc B', summary: 'External beta entry.', keywords: ['beta'], terms: 'beta content',
+        termsVersion: TOKENIZER_VERSION,
       },
     ])
   })

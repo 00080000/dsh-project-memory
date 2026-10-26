@@ -19,6 +19,7 @@
 import { FALLBACK_OPS, WEAK_OPS, activityFromText, opForLegacyAction } from './ops.js'
 import { extractPathTokens } from './util/path-token.js'
 import { CJK_RANGE, tokenize } from './util/search.js'
+import { CYRILLIC_RANGE, RU_STOPWORDS, normalizeRuWord } from './util/ru.js'
 
 /**
  * 动作词典：动作 id → 匹配模式。命令形态与人类意图词都归一成同一套 id，
@@ -268,6 +269,13 @@ export function isIntentWord(word) {
   const s = String(word || '').trim()
   if (!s) return false
   if (CJK_RANGE.test(s)) return s.length >= 2
+  // 俄语：作者写的意图词是**原形**，不经过检索侧的词干；只要 ≥3 字符、不是虚词、
+  // 不含路径/标识符字符即可。不能用拉丁的 ≥5：`мост` / `код` / `файл` 都是 3–4 字母的实义词，
+  // 而俄语的三字母词几乎都是实词（虚词已经被 RU_STOPWORDS 挡掉），没有拉丁那种缩写歧义。
+  if (CYRILLIC_RANGE.test(s)) {
+    const w = normalizeRuWord(s)
+    return w.length >= 3 && !RU_STOPWORDS.has(w) && !/[_./\\*]/.test(w) && !/\s/.test(w)
+  }
   if (s.length < 5) return false
   if (/[_./\\*]/.test(s)) return false
   if (/\s/.test(s)) return s.length >= 8
@@ -294,8 +302,15 @@ export function matchIntent(word, text) {
   const hay = String(text || '')
   if (!w || !hay) return false
   if (CJK_RANGE.test(w)) return w.length >= 2 && hay.includes(w)
-  if (w.length < 4) return false
   const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // 俄语用 Unicode 词边界：`[^A-Za-z0-9_]` 会把"俄文词内部的命中"当成边界
+  // （`город` 命中 `городской`），那正是这条匹配要防的假阳性。
+  // 长度门槛与 isIntentWord 保持一致（≥3），不套用拉丁的 ≥4。
+  if (CYRILLIC_RANGE.test(w)) {
+    if (w.length < 3) return false
+    return new RegExp(`(^|[^\\p{L}\\p{N}_])${esc}(?![\\p{L}\\p{N}_])`, 'iu').test(hay)
+  }
+  if (w.length < 4) return false
   return new RegExp(`(^|[^A-Za-z0-9_])${esc}([^A-Za-z0-9_]|$)`, 'i').test(hay)
 }
 

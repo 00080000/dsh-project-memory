@@ -18,6 +18,7 @@
  * @module dsh-project-memory/recall
  */
 import { rankEntriesMergedScored, rankEntriesStreaming, tokenizeRaw, CJK_RANGE } from './util/search.js'
+import { CYRILLIC_RANGE } from './util/ru.js'
 
 /**
  * 短拉丁片段不算检索证据（只用于经验/洞察两层）。
@@ -28,11 +29,14 @@ import { rankEntriesMergedScored, rankEntriesStreaming, tokenizeRaw, CJK_RANGE }
  *
  * 为什么只在这两层：doc/symbol 层是代码与路径，`js` / `id` 这类短标识符本来就该命中
  * （见上方 `matchedFloor` 的注释）。两种模式（有/无向量）一律适用——闸门不能随向量层开关变形。
+ *
+ * 西里尔（俄语）不吃这条规则：俄语没有"两字母缩写"这种噪声源，且 `ии` / `бд` 这类
+ * 两字母词是实义词；虚词在分词阶段已经由 `RU_STOPWORDS` 去掉了，这里再按长度砍只会误伤。
  */
 const MIN_LATIN_QUERY_TERM = 3
 function gatedQueryText(q) {
   return tokenizeRaw(String(q ?? ''))
-    .filter((t) => CJK_RANGE.test(t) || t.length >= MIN_LATIN_QUERY_TERM)
+    .filter((t) => CJK_RANGE.test(t) || CYRILLIC_RANGE.test(t) || t.length >= MIN_LATIN_QUERY_TERM)
     .join(' ')
 }
 
