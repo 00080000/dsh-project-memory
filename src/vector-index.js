@@ -286,9 +286,13 @@ async function openEngine({ storeDir = null, items = [], vectorDir = null } = {}
     // 否则会用旧模型编码、却把新指纹写进 vectors.json。
     if (!runtimeCache || runtimeCache.dir !== dir || runtimeCache.fingerprint !== fingerprint) {
       const mod = await import(pathToFileURL(join(dir, 'src', 'embed.mjs')).href)
+      // 换模型前先关旧表的 fd：Windows 上开着句柄会让 pnpm 替换 node_modules 报 EBUSY。
+      try { runtimeCache?.lv?.close?.() } catch { /* 老版本没有 close() */ }
       const lv = mod.loadLeanvec({
         table: join(dir, 'dist', 'leanvec.f32'),
         tokenizer: join(dir, 'dist', 'leanvec.tokenizer.json'),
+        // 8 MB ≈ 8,000 行：首次建索引要连续编码上百条，缓存能把随机读摊平成一次。查询侧不靠它。
+        cacheBytes: 8 * 1024 * 1024,
       })
       runtimeCache = { dir, lv, fingerprint }
     }
