@@ -227,9 +227,9 @@ export function hintQueryText(text) {
     .trim()
 }
 
-/** glob（只支持 `*`）→ 正则。 */
+/** glob（只支持 `*`）→ 正则。`?` 不是通配符，必须按字面量转义，否则 `^?` 是非法正则。 */
 function globToRegExp(pattern) {
-  const escaped = String(pattern).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')
+  const escaped = String(pattern).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\?/g, '\\?').replace(/\*/g, '.*')
   return new RegExp(`^${escaped}$`, 'i')
 }
 
@@ -252,7 +252,15 @@ export function intentText(text) {
     // 带扩展名的**非 ASCII 文件名**（`示例调研.pptx` / `docs/示例.md`）：
     // 只挡 ASCII 路径不够——中文文件名整块留下，"调研""演示"这类子串照样触发 when.intents，
     // 正是引号剥离要防的那类假阳性。ASCII 裸名（如 notes.md）保持原语义，不在这里动。
-    .replace(/\S*[^\x00-\x7F]\S*\.[A-Za-z][A-Za-z0-9]{0,7}\b/g, ' ')
+    // 按 token 逐个找 `.ext`，只切掉"token 开头 → 扩展名结尾"（与旧正则同一范围）；
+    // 旧写法的两条 `\S*` 在无空格的长中文串上会指数回溯（4000 字实测 12s）。
+    .replace(/\S+/g, (tok) => {
+      const re = /\.[A-Za-z][A-Za-z0-9]{0,7}\b/g
+      for (let m = re.exec(tok); m; m = re.exec(tok)) {
+        if (/[^\x00-\x7F]/.test(tok.slice(0, m.index))) return tok.slice(m.index + m[0].length)
+      }
+      return tok
+    })
     // 仓库里的裸文件名（README / CHANGELOG …）也是语料，不是意图
     .replace(/\b(?:README|CHANGELOG|LICENSE|AGENTS|CONTRIBUTING|Dockerfile|Makefile)\b/g, ' ')
     .replace(/\s+/g, ' ')
@@ -341,9 +349,10 @@ function matchAnyPath(pattern, targets) {
 }
 
 /** guard 是**收窄**条件：全部满足才放行；它自己不能触发任何东西。 */
-function guardPass(guard, ctx) {
+function guardPass(guard, ctx, writeTargets) {
   if (!guard || typeof guard !== 'object') return true
-  const targets = ctx?.targets || []
+  // 路径面与 `when.writes` 用同一份事实：已观察到的写调用 ∪ 人类消息里的写意图。
+  const targets = writeTargets || ctx?.targets || []
   if (Array.isArray(guard.paths) && guard.paths.length && !guard.paths.some((p) => matchAnyPath(p, targets))) return false
   if (Array.isArray(guard.not_paths) && guard.not_paths.some((p) => matchAnyPath(p, targets))) return false
   if (Array.isArray(guard.hosts) && guard.hosts.length && !guard.hosts.some((h) => (ctx?.hosts || []).includes(String(h)))) return false
@@ -370,14 +379,15 @@ export function matchTrigger(trigger, ctx) {
   if (!trigger || typeof trigger !== 'object') return null
   const when = trigger.when
   if (!when || typeof when !== 'object') return null
-  if (!guardPass(trigger.guard, ctx)) return null
-  for (const op of when.ops || []) {
-    if (op && (ctx?.ops || []).includes(String(op))) return `op:${op}`
-  }
   // 写目标 = 已观察到的结构化写调用 ∪ 人类消息里提到的路径（动手前的写意图）。
   // DSH 没有工具执行前拦截钩子，动手前唯一能拿到的写意图就是人类消息里的路径；
   // 但动作文本里的**读**路径不算（`read README.md` 不是"即将写 README.md"）。
+  // guard 也用这份合集，否则 guard.paths 在"人类先说要改这个文件"的窗口永远不放行。
   const writeTargets = [...(ctx?.targets || []), ...(ctx?.humanPaths || [])]
+  if (!guardPass(trigger.guard, ctx, writeTargets)) return null
+  for (const op of when.ops || []) {
+    if (op && (ctx?.ops || []).includes(String(op))) return `op:${op}`
+  }
   for (const w of when.writes || []) {
     // 扩展名/泛名 glob 在这里被硬性忽略：`*.pptx` 这类条件只能撒谎，不能收窄。
     if (!w || isDroppableGlob(w)) continue

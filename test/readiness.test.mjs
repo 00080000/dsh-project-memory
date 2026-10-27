@@ -107,6 +107,34 @@ const PUBLIC_FACE = {
   ok('matchTrigger：op / write / intent 三类判据；guard 只收窄；旧 trigger 与坏 glob 不再触发')
 }
 
+// ---- 3b. 路径 glob 的 `?` 按字面量；guard.paths 认人类消息里的写意图 ----
+{
+  // `?` 不是通配符。漏转义时 `^?` 是非法正则，会让整个 pre-step 注入抛异常并静默失效。
+  assert.equal(readiness.matchTrigger({ when: { writes: ['?.md'] } }, readiness.buildReadinessContext({ targets: ['a.md'] })), null)
+  assert.match(
+    readiness.matchTrigger({ when: { writes: ['a?.js'] } }, readiness.buildReadinessContext({ targets: ['a?.js'] })) || '',
+    /^write:/,
+    '? 按字面量匹配',
+  )
+  // guard 与 when.writes 用同一份写目标（targets ∪ humanPaths）
+  const human = readiness.buildReadinessContext({ humanText: '重构一下 src/auto-inject.js 的注入逻辑' })
+  assert.match(readiness.matchTrigger({ when: { intents: ['重构'] }, guard: { paths: ['src/auto-inject.js'] } }, human) || '', /^intent:/)
+  assert.equal(readiness.matchTrigger({ when: { intents: ['重构'] }, guard: { not_paths: ['src/auto-inject.js'] } }, human), null)
+  ok('路径 glob：`?` 字面量；guard.paths / not_paths 与 when.writes 同源')
+}
+
+// ---- 3c. 长中文消息不能回溯爆炸：intentText 每步都跑 ----
+{
+  // 没有空格的中文句子里，文件名之后的意图词必须留下（旧正则与新的 token 版都是这个范围）
+  assert.equal(readiness.intentText('把这个示例调研.pptx的时间改一下'), '的时间改一下')
+  assert.equal(readiness.intentText('中文文件.pdf'), '')
+  const started = Date.now()
+  readiness.intentText('中'.repeat(20000))
+  const elapsed = Date.now() - started
+  assert.ok(elapsed < 1000, `2 万字中文消息耗时应是毫秒级，实际 ${elapsed}ms`)
+  ok(`intentText：2 万字中文消息 ${elapsed}ms（无灾难性回溯）`)
+}
+
 // ---- 3b. normalizeTrigger：旧 trigger → 新 schema（幂等、纯函数）----
 {
   const legacy = {

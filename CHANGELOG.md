@@ -2,6 +2,46 @@
 
 **兼容**：无配置键、无 store 格式变更，老 profile 直接升级。
 
+### 修复：`when.writes` 里的 `?` 让整个 pre-step 注入静默失效
+
+glob 只支持 `*`，但 `?` 没转义；模式以 `?` 开头（`?.md`）时 `new RegExp('^?…')` 抛 `SyntaxError`，而它在每步的 `collectTriggered` 里，异常被 pre-step 兜住后 trigger + 提示 + 任务卡全部不注入。现在 `?` 按字面量转义。
+
+### 修复：长中文消息在 `intentText` 里回溯爆炸
+
+非 ASCII 文件名的正则用两条 `\S*` 夹字符类；无空格、无 ASCII 点的长中文串（4000 字实测 12s）会把一步 pre-step 卡住。改成按 token 判断，线性。
+
+### 修复：`guard.paths` / `not_paths` 不认人类消息里的写意图
+
+`when.writes` 用「已观察写调用 ∪ 人类消息路径」，guard 只看前者：人类说"改 `src/x.js`"时，带 `guard.paths: ['src/x.js']` 的条目永远不放行，`not_paths` 也挡不住。两处现在共用同一份写目标。
+
+### 修复：超大文档先整份读入再拒绝
+
+`planFileIndex` 的体积闸门只对代码文件生效，文档的检查在 `extractTextFromFile` 里——那时 `readFileForIndex` 已经把整份文件读进内存（300 MB 实测 +300 MB RSS），watch 每轮重付一次。现在按 size 在读盘前统一判 `OVERSIZE`。
+
+### 修复：显式 `index_doc` 的 .gitignored 文件被下一轮扫描删掉
+
+扫描清单来自 `git ls-files`（不含被忽略的文件），清理把"没扫到"当成"已删除"，于是显式索引的文档活不过下一轮 watch / index_repo。现在 `index_doc` 在记录上打 `explicit`；清理时，显式索引且文件仍在盘上的条目跳过，文件真被删了仍会清。
+
+### 修复：非锁原因的写盘失败没反映到状态与退出 flush
+
+`save()` / `GlobalStore.commit()` 的写事务只有 `finally`：EISDIR / ENOSPC 等异常直接抛出，`lastSaveOk` 仍为 true，脏 store 也不在退出 flush 的登记表里。现在异常路径置失败标志并登记，故障消失后同一份脏数据会补写。
+
+### 修复：锁文件不可读时 `acquireDirLock` 忙等
+
+锁文件存在但读不出来（EACCES、或该路径是个目录）时，抢锁循环既不 sleep 也不看 deadline，会把事件循环按住直到它变得可读。现在按 10ms 间隔重试，到 deadline 返回 `null`（调用方按"这次没拿到锁"处理）。
+
+### 修复：watch 的 mtime 快照不清理已删除的文件
+
+`pollRoot` 只往 `state.snapshot` 里写、从不删，删掉或改名的文件会一直留在里面；文件若以同样的 `mtime:size` 回来，就会被当成"未变"而永远不重建。现在扫全的轮次里同步剪掉本轮没见到的键（截断轮不剪，与 store 的 `unseen` 同一口径）。
+
+### 修复：`npm run bench` 不算 `run-bench`；全局 flag 之后的子命令不识别
+
+只认 `scripts/bench.mjs` 这类带路径的参数，README 里的 `npm run bench` / `npm run bench:peak` 全部漏召（`when.ops: ['run-bench']` 的条目永不触发）。现在 npm script 名本身也算；`pnpm -C x run bench` / `npm --prefix . publish` 这类"全局 flag 在子命令之前"的写法也一样识别。顺带：`bash -lc` / `sh -ec` 的合并短选项也会递归解析。
+
+### 修复：非 Node 项目的 projectTags 缓存永不命中
+
+缓存用 `package.json` 的 mtime 做键，没有这个文件时 `stat` 抛错，于是每次调用都重读 go.mod / Cargo.toml。现在键是三份清单的 mtime（缺失记 `-`），Go / Rust 项目也能命中缓存，清单变化仍会失效。
+
 ### 修复：俄语查询在 insight / experience 层被重复词干
 
 Snowball 词干不幂等（`память → памя → пам`）。`recallItems()` 先把查询 tokenize 成词干、打分器又 tokenize 一次，导致俄语 lesson / decision / experience 的单字/多字查询大量查不到（doc 层不受影响）。现在 `gatedQueryText()` 用 `tokenizeRaw(..., { stem: false })` 只做过滤，真正的打分器词干一次。回归直接走 `recallItems()` 的 insight 与 experience 两个桶。
@@ -34,7 +74,7 @@ Snowball 词干不幂等（`память → памя → пам`）。`recallIt
 
 `GlobalStore.flushPending()` 返回 `commit()` 的 `fn` 返回值（通常 undefined），`flushDirtyStores()` 把已成功落盘的 global store 计成 0。现在显式返回 `lastCommitOk`。
 
-**测试**：`npm test` **866 项 / 49 个文件**全绿；`npm run typecheck` 通过。新增俄语词干固定样例 `test/fixtures/ru-stems.json`（200 个词形，与 snowballstemmer 3.1.1 一致）。
+**测试**：`npm test` **874 项 / 49 个文件**全绿；`npm run typecheck` 通过。新增俄语词干固定样例 `test/fixtures/ru-stems.json`（200 个词形，与 snowballstemmer 3.1.1 一致）。
 
 ## 0.6.6 (2026-10-27)
 

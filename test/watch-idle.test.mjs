@@ -8,6 +8,9 @@
 //
 // 本用例不打真实定时器：替换掉 poll() 计数，直接断言调度决策（确定性、毫秒级）。
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { WatchManager } from '../src/watch.js'
 
 let passed = 0
@@ -150,6 +153,28 @@ const settle = () => new Promise((resolve) => setImmediate(resolve))
     for (const h of pending) origClearTimeout(h)
   }
   ok('异步 poll 期间切活跃/stop：定时器不重复，stop 后不再扫描')
+}
+
+// ---- 真实 pollRoot：删掉的文件要从 mtime 快照里清掉（否则同名同尺寸回来时会被当成未变）----
+{
+  const root = mkdtempSync(path.join(tmpdir(), 'watch-snapshot-'))
+  try {
+    writeFileSync(path.join(root, 'keep.md'), 'k\n')
+    writeFileSync(path.join(root, 'gone.md'), 'g\n')
+    const wm = new WatchManager({}, { memoryDir: '.dsh-project-memory' })
+    wm.addRoot(root)
+    const state = wm.roots.get(root)
+    await wm.pollRoot(root, state)
+    assert.deepEqual(Object.keys(state.snapshot).sort(), ['gone.md', 'keep.md'], '首轮两篇都要进快照')
+
+    rmSync(path.join(root, 'gone.md'))
+    await wm.pollRoot(root, state)
+    assert.deepEqual(Object.keys(state.snapshot), ['keep.md'], '已删除的文件必须从快照里清掉')
+    assert.deepEqual(Object.keys(wm.storeFor(root).files), ['keep.md'], 'store 里也应只剩它')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+  ok('真实 pollRoot：删掉的文件从快照里清掉')
 }
 
 console.log(`\nwatch-idle tests: ${passed} passed`)

@@ -653,6 +653,11 @@ export class GlobalStore {
       this.lastCommitOk = true
       this._retryAttempts = 0
       untrackDirty(this)
+    } catch (err) {
+      // 非锁原因的写失败：状态与锁竞争路径一致（lastCommitOk=false + 进退出 flush）。
+      this.lastCommitOk = false
+      trackDirty(this)
+      throw err
     } finally {
       release()
     }

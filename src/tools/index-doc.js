@@ -62,6 +62,8 @@ export function indexDocTool(ctx, config) {
       // 与 index_repo/watch/lazy 同一条判据：哈希未变但旧条目缺 terms 时仍要重抽一次（一次性回填）。
       // 少了这一步，terms 回填就是"路径相关"的——只有走 index_repo 才生效。
       if (existing && existing.sha256 === hash && !docEntriesNeedBackfill(store.entries[rel])) {
+        // 旧记录没有 explicit 时在这里补上：否则重新 index_doc 一次也救不回被扫描清理掉的文件。
+        if (!existing.explicit) store.commit((s) => s.markFile(rel, { ...existing, explicit: true }))
         return `Skipped (unchanged): ${rel}\nAlready indexed with ${(store.entries[rel] || []).length} entry/entries.`
       }
 
@@ -80,7 +82,9 @@ export function indexDocTool(ctx, config) {
 
       return store.commit((s) => {
         s.setEntries(rel, entries)
-        s.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString() })
+        // explicit：这个文件可能是被 .gitignore 排除的（显式索引不受 gitignore 限制），
+        // 扫描清单里永远不会有它 —— 清理时靠这个标记区分"没扫到"与"被删了"。
+        s.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString(), explicit: true })
         const preview = entries
           .map((e) => `  - ${e.title} @ ${rel}:${e.sourceLine}`)
           .join('\n')

@@ -215,7 +215,12 @@ export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000, hardSta
       }
       if (err?.code !== 'EEXIST') return null
       const state = readLockState(file)
-      if (!state) continue // 刚好被释放：下一轮直接抢
+      if (!state) {
+        // 锁文件在、但读不出来（EACCES / 同名目录）：不能直接 continue 忙等，按 deadline 放弃。
+        if (Date.now() >= deadline) return null
+        Atomics.wait(sleeper, 0, 0, 10)
+        continue
+      }
       if (lockIsStale(state, staleMs, hardLimit)) {
         // 只删"刚刚读到的那个内容"：两次读之间锁可能已被别人抢到并重写。
         try {

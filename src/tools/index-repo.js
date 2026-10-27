@@ -58,7 +58,7 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
         continue
       }
       if (plan.key === OVERSIZE) {
-        // 体积超限的代码文件：旧记录一律清掉，避免检索命中一个已经不索引的文件。
+        // 体积超限的文件：旧记录一律清掉，避免检索命中一个已经不索引的文件。
         batch.push({ rel, drop: true })
         skipped++
         if (batch.length >= COMMIT_BATCH) flushBatch()
@@ -84,6 +84,7 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
   const { removed } = commitFileUpdates(store, {
     updates: batch,
     unseen: truncated ? null : seen,
+    root,
   })
   const stats = store.stats()
   let report =

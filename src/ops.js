@@ -163,12 +163,28 @@ function commandHead(tokens) {
 
 const BENCH_ARG = /(^|\/)bench(mark)?(\/|\.(mjs|js|ts|cjs|mts|json)$)/i
 const RENDER_ARG = /(^|\/)(pptxgenjs|soffice|libreoffice|pandoc|marp|slidev)(\b|\/)/i
+/** npm script 名（`bench` / `bench:peak` / `benchmark`）：`npm run bench` 是文档里的跑法。 */
+const BENCH_SCRIPT = /^(bench|benchmark)(:[\w.-]+)?$/i
+/** 包管理器里带值的全局 flag（`npm --prefix x …`）。 */
+const PM_VALUE_FLAGS = new Set(['-C', '--prefix', '--cwd', '-w', '--workspace', '--filter', '-F', '--dir'])
+
+/** 跳过全局 flag，返回第一个子命令及其后的参数。 */
+function packageSubcommand(args) {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith('-')) {
+      if (PM_VALUE_FLAGS.has(args[i])) i++
+      continue
+    }
+    return { sub: args[i].toLowerCase(), rest: args.slice(i + 1) }
+  }
+  return { sub: '', rest: [] }
+}
 
 /** 包管理器 / npx 之后的参数里识别动作。只有命令头是 runner 时才走这里。 */
 function runnerOps(args) {
   const ops = []
   if (args.some((a) => RENDER_ARG.test(a))) ops.push('render-doc')
-  if (args.some((a) => BENCH_ARG.test(a))) ops.push('run-bench')
+  if (args.some((a) => BENCH_ARG.test(a) || BENCH_SCRIPT.test(a))) ops.push('run-bench')
   if (args[0] === 'migrate' || args.some((a) => /^db:migrate$/.test(a))) ops.push('migrate')
   return ops
 }
@@ -178,9 +194,12 @@ function opsOfHead(head, rest) {
   const sub = String(rest[0] || '').toLowerCase()
   switch (head) {
     case 'npm': case 'pnpm': case 'yarn': case 'bun': {
-      if (sub === 'publish' || sub === 'pack') return ['npm-publish']
-      if (sub === 'version') return ['release']
-      if (sub === 'run' || sub === 'exec' || sub === 'dlx' || sub === 'x') return runnerOps(rest.slice(1))
+      const { sub: name, rest: after } = packageSubcommand(rest)
+      if (name === 'publish' || name === 'pack') return ['npm-publish']
+      if (name === 'version') return ['release']
+      if (name === 'run' || name === 'exec' || name === 'dlx' || name === 'x') return runnerOps(after)
+      // `yarn bench` / `bun bench` 这类"直接按脚本名跑"的形态
+      if (name && BENCH_SCRIPT.test(name)) return ['run-bench']
       return []
     }
     case 'npx': case 'pnpx': case 'bunx':
@@ -311,7 +330,8 @@ function classifyCommand(command, depth) {
   for (const segment of unquotedSegments(stripHeredocBodies(raw))) {
     const { head, rest } = commandHead(tokenizeWords(segment))
     if (SHELLS.has(head) && depth < 2) {
-      const ci = rest.indexOf('-c')
+      // `-lc` / `-ec` 这类合并短选项也带 `-c`。
+      const ci = rest.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a))
       if (ci >= 0 && rest[ci + 1]) {
         const inner = classifyCommand(rest.slice(ci + 1).join(' '), depth + 1)
         for (const op of inner.ops) if (op !== 'shell-run') pushUnique(ops, op)

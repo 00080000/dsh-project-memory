@@ -330,7 +330,13 @@ export class WatchManager {
     const { stale, removed } = commitFileUpdates(store, {
       updates,
       unseen: truncated ? null : seen,
+      root,
     })
+    // 扫全了才剪快照：删掉的文件不能留在这里，否则它以同样的 mtime:size 回来时会被当成未变。
+    if (!truncated) {
+      for (const rel of Object.keys(state.snapshot)) if (!seen.has(rel)) delete state.snapshot[rel]
+      for (const rel of state.failures.keys()) if (!seen.has(rel)) state.failures.delete(rel)
+    }
     const failed = new Set(stale)
     let applied = 0
     for (const update of updates) {

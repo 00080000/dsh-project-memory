@@ -131,6 +131,19 @@ const BASE_CFG = cfgEngine({ insight: {}, autoContext: { maxTokens: 400 } })
   assert.ok(tags.includes('@vue/compiler'.split('/')[1]) || tags.includes('@vue/compiler'))
   assert.equal(projectTags(root).length, tags.length)
   ok('project-profile：package.json tags 解析')
+
+  // 没有 package.json 的项目（Go / Rust）也要能命中缓存。
+  const { utimesSync } = await import('node:fs')
+  const goRoot = mkdtempSync(path.join(tmpdir(), 'profile-go-'))
+  writeFileSync(path.join(goRoot, 'go.mod'), 'module example.com/a\n')
+  const goTags = projectTags(goRoot)
+  assert.ok(goTags.includes('example.com/a'))
+  assert.equal(projectTags(goRoot), goTags, '清单没变时必须命中缓存（返回同一份）')
+  writeFileSync(path.join(goRoot, 'go.mod'), 'module example.com/b\n')
+  const future = new Date(Date.now() + 5000)
+  utimesSync(path.join(goRoot, 'go.mod'), future, future)
+  assert.ok(projectTags(goRoot).includes('example.com/b'), 'go.mod 变了必须重新解析')
+  ok('project-profile：非 package.json 项目也能命中缓存，且清单变化会失效')
 }
 
 // --- 影子记录：rel 必须是**词法**相对分（分母取词法 top，不是融合 top）---
