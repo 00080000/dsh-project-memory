@@ -169,8 +169,12 @@ function lockIsStale(state, staleMs, hardStaleMs) {
  *
  * 锁文件是 `.write.lock`，内容 `{pid, host, token, at}`；**释放要校验 token**，绝不 unlink
  * 别人的锁。拿不到锁返回 null（调用方必须把这一次写当成失败，而不是"等会儿会写"）。
+ * `ensureDir: false` 只跳过**每次 save 的预防性 mkdir**（9p/NTFS 上 ~4ms）；目录被外部
+ * 删掉时仍会在 `ENOENT` 上补建一次再重试。少了这次补建，缓存过的“目录已在”会把一次外部
+ * 删除变成永久写失败（见 store.js 的 `_storeDirReady`）。
+ *
  * @param {string} dir 目标目录（不存在则创建）
- * @param {{timeoutMs?: number, staleMs?: number, hardStaleMs?: number}} [opts]
+ * @param {{timeoutMs?: number, staleMs?: number, hardStaleMs?: number, ensureDir?: boolean}} [opts]
  * @returns {null | (() => void)} 释放函数；拿不到锁返回 null
  */
 export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000, hardStaleMs = 0, ensureDir = true } = {}) {
@@ -187,6 +191,7 @@ export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000, hardSta
   const payload = JSON.stringify({ pid: process.pid, host: LOCK_HOST, token, at: new Date().toISOString() })
   const deadline = Date.now() + timeoutMs
   const sleeper = new Int32Array(new SharedArrayBuffer(4))
+  let recoveredDir = false
   for (;;) {
     try {
       const fd = openSync(file, 'wx')
@@ -197,6 +202,17 @@ export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000, hardSta
       }
       return () => releaseDirLock(file, token)
     } catch (err) {
+      if (err?.code === 'ENOENT' && !recoveredDir) {
+        // 目录在 load 之后被外部删掉（用户清理 / 挂载点抖动 / 测试）。
+        // 只恢复一次，避免目录不可写时在这里死循环。
+        recoveredDir = true
+        try {
+          mkdirSync(dir, { recursive: true })
+        } catch {
+          return null
+        }
+        continue
+      }
       if (err?.code !== 'EEXIST') return null
       const state = readLockState(file)
       if (!state) continue // 刚好被释放：下一轮直接抢

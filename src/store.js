@@ -391,8 +391,6 @@ export class ProjectMemoryStore {
     this.lastSaveOk = true
     /** `shards/` 的 `.tmp` 清扫节流：NTFS 上 readdir(数千分片) 不便宜，不能每次 save 都扫。 */
     this._lastShardTmpSweep = 0
-    /** 自我忽略文件已确认存在：省掉每次 save 的 existsSync（Windows 上每次都要过一次过滤驱动）。 */
-    this._selfIgnoreReady = false
     /** store 目录 / shards 目录已确认存在：首次写之后不再每次 save 都 mkdir（9p 上每次 ~4ms）。 */
     this._storeDirReady = false
     this._shardsDirReady = false
@@ -767,18 +765,17 @@ export class ProjectMemoryStore {
    *
    * 顺带的好处：被忽略的文件不会被 `git clean -fd` 删除（未跟踪且未忽略的会被删）。
    * 想把记忆跟着仓库提交：`git add -f .dsh-project-memory`——已跟踪的文件不受忽略规则影响。
+   *
+   * **不缓存“文件已存在”**：缓存只省一次 stat，却会把外部删除（`git clean -fdx`、用户手工清理）
+   * 变成“本进程剩下的生命周期里都不再自我忽略”，store 可能被下一次 `git add` 带进提交。
+   * save() 本来每轮就要 readdir 一次 store 根目录，这次 stat 的边际成本可以忽略。
    */
   ensureSelfIgnore() {
-    if (this._selfIgnoreReady) return
     if (!existsSafe(this.dir)) return
     const file = path.join(this.dir, GITIGNORE_FILE)
-    if (existsSafe(file)) {
-      this._selfIgnoreReady = true
-      return
-    }
+    if (existsSafe(file)) return
     try {
       writeFileSync(file, '# dsh-project-memory: local by default. `git add -f` to commit it.\n*\n')
-      this._selfIgnoreReady = true
     } catch {
       // 旁路：写不进去不影响存储本身
     }
@@ -814,13 +811,28 @@ export class ProjectMemoryStore {
       this._dirtyBinding ||
       this._dirtyWatch ||
       !this._formatWritten
-    if (dirty && !this._storeDirReady) {
-      mkdirSync(this.dir, { recursive: true })
-      this._storeDirReady = true
+    if (dirty) {
+      // 目录可能在 load 之后被外部删掉。`_storeDirReady` 只能当“上次写过”的快路径，
+      // 不能当“这次还在”的事实：命中缓存时补一次 stat，失配就重建目录并让分片/格式/忽略
+      // 三处的“已就绪”状态一起失效。
+      let dirReady = false
+      if (this._storeDirReady) {
+        try {
+          dirReady = statSync(this.dir).isDirectory()
+        } catch {
+          dirReady = false
+        }
+      }
+      if (!dirReady) {
+        mkdirSync(this.dir, { recursive: true })
+        this._storeDirReady = true
+        this._shardsDirReady = false
+        this._formatWritten = false
+      }
     }
     // 崩溃遗留的 *.tmp 无论有没有脏数据都顺手清掉（两次 readdir，自带 try/catch）
     this.cleanStaleTmp()
-    // 自我忽略也在无脏数据时执行：老版本建出来的 store 会在下一次 save 时补上。
+    // 无脏数据也要补自我忽略：老版本建出来的 store 会在下一次 save 时补上。
     this.ensureSelfIgnore()
     if (!dirty) {
       this.lastSaveOk = true

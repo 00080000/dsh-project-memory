@@ -6,7 +6,7 @@
 //   3. 另一进程真删的条目，被本进程下一次 save 当"本地新增"写回（forget 的"真删"承诺失效）。
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -261,6 +261,31 @@ store.commit()
   assert.deepEqual(JSON.parse(readFileSync(path.join(d, 'insights.json'), 'utf8')).items.map((it) => it.id), ['on-exit'])
   assert.equal(_pendingDirtyCountForTest(), 0, '落盘成功后不再挂起')
   ok('退出/卸载 flush：脏 store 同步补写')
+}
+
+// --- 10. store 目录被外部删掉：下一次 save 自愈目录 / 分片 / format / .gitignore ---
+{
+  const d = dir()
+  const store = new ProjectMemoryStore(d).load()
+  store.replaceInsightItems([{ id: 'recovered', kind: 'lesson', scope: 'project', title: 'recovered' }])
+  assert.equal(store.save({ timeoutMs: 500 }), true)
+  assert.ok(existsSync(path.join(d, '.gitignore')), '首次 save 应写自我忽略')
+  assert.ok(existsSync(path.join(d, 'format.json')), '首次 save 应写格式标记')
+
+  // 模拟用户清理 / git clean -fdx：整个 store 目录消失，进程还活着。
+  rmSync(d, { recursive: true, force: true })
+  assert.equal(existsSync(d), false, '前置条件：目录已不存在')
+
+  store.replaceInsightItems(store.insightItems()) // 标脏，不清空内存
+  assert.equal(store.save({ timeoutMs: 500 }), true, '目录被外部删掉后 save 必须自愈，而不是永久失败')
+  assert.ok(existsSync(path.join(d, 'insights.json')), '目录重建后脏数据要真的落盘')
+  assert.ok(existsSync(path.join(d, '.gitignore')), '重建后必须重新自我忽略，否则 store 可能被误提交')
+  assert.ok(existsSync(path.join(d, 'format.json')), '重建后必须补回格式标记（嵌套根判定要用它）')
+  assert.deepEqual(
+    JSON.parse(readFileSync(path.join(d, 'insights.json'), 'utf8')).items.map((it) => it.id),
+    ['recovered'],
+  )
+  ok('外部删除 store 目录后：目录 / 数据 / format / .gitignore 全部自愈')
 }
 
 console.log(`\nstore-lock tests: ${passed} passed`)
