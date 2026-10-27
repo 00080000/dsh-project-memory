@@ -26,18 +26,17 @@ export const Config = Schema.object({
   memoryDir: Schema.string().default('.dsh-project-memory'),
   chunkChars: Schema.number().default(3000),
   maxChunksPerFile: Schema.number().default(40),
-  // 单文件内存闸门，不是磁盘设置：索引一个文件要先把它整个物化，峰值随文件大小线性走。
-  // 实测边际系数（峰值 RSS / 磁盘 MB，见 bench/file-peak.mjs 与 README「单文件内存预算」）：
-  // 典型源码 ~10×、符号密集代码 ~21×、文本型 PDF ~19×。10 把单文件增量压在 ~+300 MB。
+  // 单文件内存闸门，不是磁盘设置：索引一个文件要先整个物化，峰值随文件大小线性走。
+  // 实测边际系数（峰值 RSS / 磁盘 MB，见 bench/file-peak.mjs）：典型源码 ~10×、符号密集代码
+  // ~21×、文本型 PDF ~19×；10 把单文件增量压在 ~+300 MB。
   maxFileSizeMb: Schema.number().default(10),
   maxOutputChars: Schema.number().default(8000),
   maxPdfPages: Schema.number().default(1000),
   llmQueryExpansion: Schema.boolean().default(false),
   expansionCount: Schema.number().default(6),
-  // 辅助 LLM 调用的路由覆写 —— **索引期零 LLM**，这里的路由只服务于召回期可选项
-  // （llmQueryExpansion 查询扩展）与反思期（reflection.enabled）。
-  // 未设置时：工具调用取当前会话 header 的 provider/model；后台路径取最近一次会话路由（request/header）。
-  // 两者都拿不到时明确走回退并记录 degraded（不静默）。
+  // 辅助 LLM 调用的路由覆写 —— **索引期零 LLM**，只服务召回期查询扩展与反思期。
+  // 未设置时取当前会话 header 的 provider/model，后台路径取最近一次会话路由；都拿不到时
+  // 走回退并记录 degraded（不静默）。
   llm: Schema.object({
     provider: Schema.string(),
     model: Schema.string(),
@@ -46,10 +45,8 @@ export const Config = Schema.object({
   autoIndexOnFirstUse: Schema.boolean().default(false),
   watch: Schema.boolean().default(true),
   watchInterval: Schema.number().default(30),
-  // 危险根护栏（issue #5）：家目录 / 文件系统根 / 系统目录 / 包管理器前缀（/opt/homebrew …）
-  // 整体扫描会吃满内存，默认一律拒绝（懒索引、会话审计、任务桥默认零副作用）。
-  // `roots.*` 是机器/配置档级的例外表（精确匹配的 allow/deny，子树级前缀的 exclude）；
-  // `allowUnsafeRoots` 保留为兼容，只放开内置名单，deny / exclude 仍然优先。
+  // 危险根护栏：家目录 / 文件系统根 / 系统目录 / 包管理器前缀（/opt/homebrew …）整体扫描会吃满
+  // 内存，默认一律拒绝。`roots.*` 是配置档级例外表；`allowUnsafeRoots` 只放开内置名单，deny/exclude 仍优先。
   allowUnsafeRoots: Schema.boolean().default(false),
   roots: Schema.object({
     // 即使在内置名单里也允许作根。精确匹配；文件系统根不在可放行之列。
@@ -70,17 +67,12 @@ export const Config = Schema.object({
     // 任务成为会话绑定（select_task / /task switch）时，把任务步骤推成宿主 todo/write 快照
     syncHostOnAdopt: Schema.boolean().default(true),
   }).default({}),
-  // v0.5 单一 insight 实体：分层去重/强化/提升/容量/归档
+  // insight 实体：分层去重/强化/提升/容量/归档
   insight: Schema.object({
     dedupOverlap: Schema.number().default(0.7),
     reinforceBand: Schema.number().default(0.65),
-    // 向量带（需 leanvec；未装自动退化成上面的纯词法带）。下面四个键自 0.6.x 起就在
-    // cfgInsight（src/insight-store.js）里读取、README 与 types.js 也写了，却一直没进
-    // Schema。与 0.5.8 给 autoContext 补声明是同一类问题：未声明键在 schemastery 层会透传，
-    // 但走 cordis.patch.yml 时能不能活到代码取决于宿主是否按「not a declared property」校验
-    // ——无论哪种，文档里的旋钮与 Schema 已经不一致，等于半真半假。默认值以 cfgInsight 的
-    // 兜底值为权威，这里只负责把键暴露出来。
-    // 向量带的两条阈值；`0` = 关闭对应那条带（不设 ≠ 0，默认值仍是 0.9 / 0.7）。
+    // 向量带（需 leanvec；未装自动退化成上面的纯词法带）。`0` = 关闭对应那条带
+    // （不设 ≠ 0，默认值仍是 0.9 / 0.7）。
     autoMergeCos: Schema.number().default(0.9),
     autoMergeMargin: Schema.number().default(0.05),
     hintCos: Schema.number().default(0.7),
@@ -99,7 +91,7 @@ export const Config = Schema.object({
     maxLessonsPerReflect: Schema.number().default(3),
     maxDecisionsPerReflect: Schema.number().default(2),
   }).default({}),
-  // PR 2：静默注入（entry 常驻块 + relevance 门控）。无项目 root 可解析时零副作用
+  // 静默注入（entry 常驻块 + relevance 门控）；无项目 root 可解析时零副作用。
   autoContext: Schema.object({
     enabled: Schema.boolean().default(true),
     entryOn: Schema.boolean().default(true),
@@ -109,75 +101,59 @@ export const Config = Schema.object({
     signalMinRatio: Schema.number().default(0.5),
     // resident 任务卡最多显示几个「编辑中」文件
     editedMax: Schema.number().default(3),
-    // 记忆根是"推定"的（会话工作目录，且该目录没有项目标记）时，首次注入前通告模型
-    // 根在哪、怎么改。状态声明，只发一次、不占条目额度。
+    // 记忆根是"推定"的（会话工作目录且无项目标记）时，首次注入前通告模型根在哪；只发一次、不占条目额度。
     rootNotice: Schema.boolean().default(true),
     // 模型自己维护清单且之后没有新人类消息时，不把任务卡回声给模型
     skipEchoSelfTodo: Schema.boolean().default(true),
-    // ⚠️ 旧兼容闸门，**刻意不给默认值**：cfgEngine 以「relevanceMin 是否为 number」选分支，
-    // 一旦有默认值就会永远走旧的绝对 overlap 判据——而它对长消息实测只有 0.014~0.057，
-    // 必然过不了，相对阈值 signalMinRatio 就变成死代码。只有用户显式配置才保留旧行为。
+    // ⚠️ 旧兼容闸门，**刻意不给默认值**：cfgEngine 以「是否为 number」选分支，有默认值就永远走
+    // 旧的绝对 overlap 判据（长消息实测只有 0.014~0.057，必然过不了），signalMinRatio 变死代码；
+    // 只有用户显式配置才保留旧行为。
     relevanceMin: Schema.number(),
-    // 预算审计日志（stderr）**默认 off**：终端是用户可见面，而"预算挤掉低优先级条目"是
-    // 正常降级、不是故障——默认打印会让一次 dsh web 启动刷出多行，用户的第一反应是卸载插件。
-    // off（默认，永不打印）/ once（每个会话最多一行，首次出现丢弃时）/ all（丢弃组合每变化一次一行，作者排查）
+    // 预算审计日志（stderr）**默认 off**：预算挤掉低优先级条目是正常降级、不是故障。
+    // off（永不打印）/ once（每个会话最多一行）/ all（丢弃组合每变化一次一行，作者排查）
     budgetLog: Schema.union(['off', 'once', 'all']).default('off'),
-    // 同一条 insight 在本会话里重复注入的冷却（pre-step 步数）。0（默认）= 正文没变就不再注入：
-    // 注入消息留在会话历史里（宿主只追加不压缩），整块重发只是重复占位。>0 用于外部裁剪历史的场景。
+    // 同一条 insight 重复注入的冷却（pre-step 步数）。0（默认）= 正文没变就不再注入（注入消息
+    // 留在会话历史里，重发只是重复占位）；>0 用于外部裁剪历史的场景。
     reinjectItemsAfter: Schema.number().default(0),
-    // --- 准入旋钮（0.5.8 起补声明）---
-    // 下面这些键自 S2/S4 起就在 cfgEngine / cfgAudit 里生效、README 也一直写着，但**从未**在
-    // Schema 里声明过：走 cordis.patch.yml 配它们会被宿主按「not a declared property」拒掉，
-    // 等于文档里的旋钮是假的。默认值以 cfgEngine 的兜底值为准（那里是权威，这里只负责暴露）。
     gateCooldownSteps: Schema.number().default(2),
     // 这两个是**保险丝**不是节流阀：节流由 gateCooldownSteps 与单轮 maxTokens 负责。
-    // 旧默认 12 / 4000 ≈ 11 条，实测真实日志里 11/81 个会话打满、打满后永久静默（1234 步失明）；
-    // 实测最长会话用 35 条 / 8640 字符，故抬到 60 / 24000。显式配小值可复现旧行为。
+    // 实测旧默认 12 / 4000 时 11/81 个会话打满后永久静默；最长会话用 35 条 / 8640 字符，
+    // 故抬到 60 / 24000。显式配小值可复现旧行为。
     maxItemsPerSession: Schema.number().default(60),
     maxItemCharsPerSession: Schema.number().default(24000),
     hintMinCoverage: Schema.number().default(0.45),
     hintMinMatched: Schema.number().default(2),
     hintMinSupport: Schema.number().default(0.15),
-    // 可选向量层（leanvec）：**不装就是纯词法**，装了也只改经验/洞察层的**排序**——
-    // 闸门（覆盖率/共同词数）与返回条数都不变，doc/symbol 层完全不受影响。
-    // `vectorDir` 刻意**不给默认值**（与 relevanceMin 同一套约定：有默认值会让"是否启用"永远为真）。
-    // 解析顺序：本项显式路径 > 环境变量 DSH_LEANVEC_DIR > **可选依赖 `leanvec`**（装上即自动命中）。
-    // 目录里需有 dist/leanvec.f32 与 dist/leanvec.tokenizer.json。
-    // **填 `off` 可强制关闭**（连模型都不加载）：装了可选依赖之后仍有退回纯词法的开关。
+    // 可选向量层（leanvec）：**不装就是纯词法**，装了也只改经验/洞察层的**排序**，闸门与返回
+    // 条数不变，doc/symbol 层不受影响。`vectorDir` 刻意**不给默认值**（否则"是否启用"永远为真）。
+    // 解析顺序：本项显式路径 > DSH_LEANVEC_DIR > 可选依赖 `leanvec`；目录需有 dist/leanvec.f32
+    // 与 tokenizer.json。**填 `off` 可强制关闭**（连模型都不加载）。
     vectorDir: Schema.string(),
-    // 融合权重 (1-α)·BM25归一 + α·余弦。实测**小 k** 上 α=0.5 最优（k=3 64% vs 58%、k=5 69% vs 67%，
-    // α=0.75 时 k=5 到 72%），而 α=1（纯向量）明显更差（hit@10 53% vs 81%）——所以默认 0.5 不是 1。
-    // `0` = 关掉重排（连模型都不加载）。它**只**管重排：写入侧去重看 `vectorDedup`。
+    // 融合权重 (1-α)·BM25归一 + α·余弦。实测小 k 上 α=0.5 最优（k=3 64% vs 58%、k=5 69% vs 67%），
+    // 而 α=1（纯向量）明显更差（hit@10 53% vs 81%）。`0` = 关掉重排（连模型都不加载）；
+    // 它**只**管重排，写入侧去重看 `vectorDedup`。
     vectorAlpha: Schema.number().default(0.5),
-    // 写入侧近重复检测（0.9 自动覆盖 / 0.7 近邻提示）的独立开关。默认开；关掉只影响写入，
-    // 不影响召回排序。与 `vectorAlpha` 分开是因为两者是两件事：一个是排序权重，一个是数据写入行为。
+    // 写入侧近重复检测（0.9 自动覆盖 / 0.7 近邻提示）的独立开关。默认开；关掉只影响写入，不影响召回排序。
     vectorDedup: Schema.boolean().default(true),
     // ⚠ 两个**实验性**旋钮：没有可发布的默认值，所以不设就不启用（不设 ≠ 0）。
-    //   itemMin  —— 提示通道的条目级余弦地板（低于它不进提示通道）
-    //   speakMin —— 通道级"语义救援"阈值（层内最高余弦够高时，本轮免于被 hintMinSupport 静音）
-    // 两者都在真实交付上量过分辨力（结论见 src/auto-inject.js 的 scoreHints 注释：**证据不足**），
-    // 留在这里是为了能在真实数据上复现那组 A/B，而不是当出厂判据。
+    //   itemMin  —— 提示通道的条目级余弦地板；speakMin —— 通道级"语义救援"阈值。
+    // 分辨力结论见 src/auto-inject.js 的 scoreHints 注释（**证据不足**），留作真实数据上复现 A/B。
     vectorItemMin: Schema.number(),
     vectorSpeakMin: Schema.number(),
-    // legacy `trigger.scope` 的处置。默认 **ignore**：它的值由作者手写，几乎不可能落在
-    // 自动派生的项目画像 tag 空间里（实测唯一一条带 scope 的条目因此永远无法命中），
-    // 拿它当收窄条件只会判死条目。`readiness.js` 的注释一直写的是"默认忽略"，这里此前
-    // 是 `'filter'` —— 注释与实现不一致，以注释为准。显式配 'filter' 可恢复旧语义。
+    // legacy `trigger.scope` 的处置。默认 **ignore**：值由作者手写，几乎不可能落在自动派生的
+    // 项目画像 tag 空间里，当收窄条件只会判死条目。显式配 'filter' 可恢复旧语义。
     legacyScope: Schema.union(['filter', 'ignore']).default('ignore'),
     auditLog: Schema.boolean().default(true),
     auditMaxBytes: Schema.number().default(262144),
-    // 影子记录（admission-shadow.jsonl）：**每步**一行，含全部候选的判据特征与场景。
-    // 主审计只在真的注入时写，静默步零痕迹 → 无法离线重放"换个阈值会怎样"，也攒不出样本。
-    // 只写盘、不进 prompt、不花 token，所以默认开。
-    // 512KB 而不是 2MB：轮转只留 `.1` 一代，所以单项目日志的硬上限是
-    // `2 × shadowMaxBytes + 2 × auditMaxBytes`（原 4.6MB）；512KB 下约 1.5MB。
+    // 影子记录（admission-shadow.jsonl）：**每步**一行，含全部候选的判据特征与场景。主审计只在
+    // 真的注入时写，静默步零痕迹 → 无法离线重放"换个阈值会怎样"。只写盘、不进 prompt、不花 token，
+    // 所以默认开。轮转只留 `.1` 一代，单项目日志硬上限是 `2 × shadowMaxBytes + 2 × auditMaxBytes`。
     shadowLog: Schema.boolean().default(true),
     shadowMaxBytes: Schema.number().default(524288),
   }).default({}),
 })
 
 export function apply(ctx, config) {
-  // Initialize TypeScript enhancer if enabled
   if (config.enableTypeScript !== false) {
     initTypeScript(config)
   }
@@ -206,14 +182,12 @@ export function apply(ctx, config) {
   // 跟踪会话路由（request/header 事件），为无会话上下文的召回期可选 LLM（查询扩展 / 反思）兜底
   ctx.on('session/event', (session, event) => {
     if (event?.type === 'request/header') rememberRoute(session)
-    // 会话活跃信号：有人正在跑回合时把 watch 轮询压到最低，回合结束立刻补扫一次（见 watch.js）。
-    // 这是"轮询只在空闲时发生"的落点 —— 交互期间把 I/O 全让给模型，停下那一刻才整理索引。
+    // 会话活跃信号：跑回合时把 watch 轮询压到最低，回合结束立刻补扫一次（见 watch.js）。
     const key = session?.id ?? 'unknown'
     if (event?.type === 'turn/start' || event?.type === 'step/start') watchManager.setSessionActive(key, true)
     else if (event?.type === 'turn/end') watchManager.setSessionActive(key, false)
   })
-  // 会话被销毁时也要摘掉活跃标记：否则一个没有正常 turn/end 的会话会把轮询**永久**压在兜底节拍
-  // （不会卡死，但"空闲时高速刷新"再也不会回来）。
+  // 会话被销毁时也要摘掉活跃标记，否则没有正常 turn/end 的会话会把轮询**永久**压在兜底节拍。
   ctx.on('session/disposed', (session) => {
     watchManager.setSessionActive(session?.id ?? 'unknown', false)
   })
@@ -222,9 +196,8 @@ export function apply(ctx, config) {
   ctx.tools.register(archiveTaskTool(config, { llm: ctx.llm, ctx }))
   ctx.tools.register(showTaskPanelTool(config))
 
-  // /tasks：唯一的用户命令（合并自原 /tasks、/task、/insight —— 宿主命令只要注册就会
-  // 出现在 `/` 菜单的「指令」组里且无法隐藏，三条命令就是三行去不掉的原始行）。
-  // 切换/归档/审核等动作作为子动词，由面板按钮经 remote.commands.execute 驱动。
+  // /tasks：唯一的用户命令（宿主命令注册后必然出现在 `/` 菜单且无法隐藏，所以只留一条）；
+  // 切换/归档/审核等子动词由面板按钮经 remote.commands.execute 驱动。
   try {
     ctx.inject(['commands'], (commandsCtx) => {
       commandsCtx.commands.register(workflowCommandDefinition(config, ctx))
@@ -242,8 +215,7 @@ export function apply(ctx, config) {
   ctx.tools.register(watchRepoTool(watchManager, config))
   ctx.tools.register(statsTool(config))
 
-  // PR 2：注册 agent/pre-step 监听，向每步请求的 enter 决策追加记忆消息（默认开；
-  // 任何异常/无会话 cwd → 交回默认决策，零副作用）
+  // 注册 agent/pre-step 监听，向每步请求追加记忆消息（默认开；异常/无会话 cwd → 交回默认决策）。
   installAutoInject(ctx, config)
 
   if (config.autoIndexOnFirstUse) {
@@ -253,9 +225,7 @@ export function apply(ctx, config) {
       const run = async () => {
         const root = process.cwd()
         // 全量索引 cwd 是显式开启的行为，但"cwd 是家目录"几乎总是误用：拒绝并说明，
-        // 而不是替用户把整棵树扫一遍（旧实现直接 indexRepository(ctx, config, cwd)，
-        // 没有任何护栏——这正是 issue #5 里最直接的 OOM 入口）。
-        // 这里走与工具调用同一个 assertSafeRoot：roots.allow / deny / exclude 全部生效。
+        // 而不是替用户扫全树。这里走与工具调用同一个 assertSafeRoot：allow / deny / exclude 全生效。
         try {
           assertSafeRoot(root, { config })
         } catch (err) {

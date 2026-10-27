@@ -26,24 +26,18 @@ const warnedOverBudget = new Set()
 /** 条目数上限（兜底）。 */
 const STORE_CACHE_MAX = 32
 /**
- * 驻留内存的估算上限。只数"几个 store"是不够的：单个大仓库 store 实测驻留
- * 68MB（`load()` 后）～110MB（物化 `searchText` + 建 IDF/符号索引后），
- * 语料是 deepseek-harness / 70119 条目。32 个就是几 GB。
- * 估算口径见 `_estimateResidentBytes`（对内存里的对象图精确计数，不再用读盘文本量换算）。
+ * 驻留内存的预算上限。单个大仓库 store 实测驻留 68MB（`load()` 后）～110MB（物化
+ * `searchText` + 建索引后），32 个就是几 GB。口径见 `_estimateResidentBytes`。
  */
 let STORE_CACHE_MAX_BYTES = 256 * 1024 * 1024
 /** 每轮 save 最多补写多少个待压实的老分片（有界，避免升级后一次重写整库）。 */
 const COMPACT_BATCH = 200
 
 /**
- * 一个值的驻留字节：形状开销 + 字符串的**编码字节数**。
- *
- * 用 `Buffer.byteLength()` 而不是 `String.length`：CJK 在 UTF-8 里 3 字节/字符，而 V8
- * 双字节串 2 字节/字符——UTF-8 对非 ASCII 是偏高的代理指标，对纯 ASCII 精确。缓存预算
- * 容得下这个误差（实测两端 ±13%，见 `test/store-cache.test.mjs` 与内部设计笔记）。
- *
- * 递归用深度上限而不是 `Set` 去环：store 的对象图来自 `JSON.parse`，本就无环；深度上限
- * 既挡畸形数据，又比逐对象 `Set` 查重快 ~30%（70119 条目实测 36ms vs 52ms）。
+ * 一个值的驻留字节：形状开销 + 字符串的**编码字节数**。用 `Buffer.byteLength()` 而非
+ * `String.length`：UTF-8 对 CJK 偏高（3 字节 vs 内存 2 字节），对 ASCII 精确，实测两端 ±13%。
+ * 递归用深度上限而非 `Set` 去环：对象图来自 `JSON.parse` 本就无环，且快 ~30%
+ * （70119 条目实测 36ms vs 52ms）。
  */
 const RESIDENT_OBJ_BYTES = 60
 const RESIDENT_ARR_BYTES = 40
@@ -52,30 +46,17 @@ const RESIDENT_STR_BYTES = 16
 const RESIDENT_MAX_DEPTH = 8
 
 /**
- * 精确计量的版本戳：entries 的构成 + `searchText` 的物化状态 + 辅助集合的内容各算一维。
- * 三维缺一不可——漏掉哪一维，估算就停在那一维变更前的水位。
+ * 精确计量的版本戳：entries 构成 + `searchText` 物化状态 + 辅助集合内容，三维缺一不可。
  */
 function residentStampOf(store) {
   return `${store._entriesVersion}:${store._materializeVersion}:${store._auxVersion}`
 }
 
 /**
- * 精确计量的**触发上界**（不是估算本身）：内存里文本字符数 × 4 + 骨架常数。
- *
- * 为什么必须有它：精确计量要遍历全库字符串（`Buffer.byteLength` 逐串编码），12.6k 文件 /
- * 80k 条目实测 ~40ms。放在每次冷加载的热路径上，就是白花这笔钱去判断"要不要逐出"——
- * 而绝大多数加载离 256MB 预算差得远，逐出根本不可能发生。
- *
- * 系数取偏保守：宁可多走一次精确计量，也不能把预算算松。ASCII 下 1 字符 ≈ 1 字节驻留
- * 外加键与对象形状开销（符号条目实测 ~4×）；CJK 字符驻留 2 字节，而 UTF-8 文本里 3 字节，
- * 字符数只会更少。精确数一旦算过且版本未变，直接用它，不必再估。
- *
- * 两条腿合成一个数：
- *  - `_textChars`：entries 的文本量，由三条路径维护（读盘分片 / 写条目 / 物化 `searchText`），
- *    按文件**替换式**累计，所以重写同一个文件不会把它算两遍；
- *  - `auxCharsOf()`：辅助集合（experience / insights / tasks / binding / watch）的文本量。
- *    它们不在分片文本里，`load()` 之后还会被写大，单列一条腿才不会漏。
- * 在真实语料上标定的上界 / 精确值比是 1.16~1.74 倍。
+ * 精确计量的**触发上界**：文本字符数 × 4 + 骨架常数。精确计量要遍历全库字符串（80k 条目
+ * 实测 ~40ms），而多数加载离 256MB 预算很远、逐出不可能发生，所以先算上界。
+ * 系数取保守：宁可多走一次精确计量也不能把预算算松（真实语料上界/精确值 1.16~1.74×）。
+ * 两条腿：`_textChars`（entries，替换式累计）与 `auxCharsOf()`（辅助集合，`load()` 后还会写大）。
  */
 const RESIDENT_BOUND_PER_CHAR = 4
 const RESIDENT_SKELETON_BYTES = 1024
@@ -87,8 +68,8 @@ function residentBoundBytes(store) {
 }
 
 /**
- * 写路径的文本量估计（只用于上界）：`searchText` + 不在它里面的字段 + 每条的键/JSON 开销。
- * 不重复计 title / keywords / summary / terms / sourcePath —— 它们都已经在 `searchText` 里。
+ * 写路径的文本量估计（只用于上界）：`searchText` + 不在其内的字段 + 每条的键/JSON 开销；
+ * 已在 `searchText` 里的字段不重复计。
  */
 function entryTextChars(entries) {
   let sum = 0
@@ -107,11 +88,9 @@ export function _residentBoundBytesForTest(store) {
 }
 
 /**
- * 驻留量的对象图遍历。精确口径与上界口径**共用这一份**——抄成两份迟早会漂。
- *
- * `charsOnly` 决定字符串怎么记：精确口径走 `Buffer.byteLength`（真字节数）；上界口径只取
- * `length` 字符数，省掉编码这一步。它是安全的上界：`RESIDENT_BOUND_PER_CHAR = 4` 保证 ×4 后
- * 仍 ≥ 真字节数（UTF-8 里一个 UTF-16 码元最多 3 字节，代理对 2 码元 / 4 字节）。
+ * 驻留量的对象图遍历。精确口径与上界口径**共用这一份**，避免两份实现漂移。
+ * `charsOnly` 为真时只取 `length` 字符数，是安全的上界：×4 后仍 ≥ UTF-8 真字节数
+ * （一个 UTF-16 码元最多 3 字节，代理对 2 码元 / 4 字节）。
  */
 function residentSizeOf(value, charsOnly, depth = 0) {
   if (depth > RESIDENT_MAX_DEPTH) return 0
@@ -138,19 +117,18 @@ function residentBytesOf(value) {
 }
 
 /**
- * 上界口径：只数字符（`auxCharsOf` 用）。给辅助集合单开这条路是因为它们条目数小（经验 / 任务
- * 都有上限），逐节点求和的代价可以忽略；entries 有几万条，那条路继续走增量记账的 `_textChars`。
+ * 上界口径：只数字符（`auxCharsOf` 用）。辅助集合条目数小，逐节点求和的代价可忽略；
+ * entries 有几万条，仍走增量记账的 `_textChars`。
  */
 function residentCharsOf(value) {
   return residentSizeOf(value, true, 0)
 }
 
 /**
- * 辅助集合的文本量（上界口径），按 `_auxVersion` 记忆化。
- *
- * 为什么单列：`_textChars` 只跟 entries；这几个集合在 `load()` 之后还会被写大，不进上界就会在
- * 缓存其实已超预算时跳过精确计量与逐出（实测单 store 上界 1024 B、实际 19.08 MB）。
- * 记忆化是必须的——`evictStoreCache` 对整个缓存逐 store 求和，不记忆化就是每次冷加载重算一遍。
+ * 辅助集合的文本量（上界口径），按 `_auxVersion` 记忆化。`_textChars` 只跟 entries，
+ * 而辅助集合在 `load()` 之后还会被写大，不进上界就会在已超预算时跳过计量与逐出
+ * （实测单 store 上界 1024 B、实际 19.08 MB）。`evictStoreCache` 对整个缓存逐 store
+ * 求和，不记忆化等于每次冷加载重算一遍。
  */
 function auxCharsOf(store) {
   if (store._auxStamp === store._auxVersion) return store._auxChars
@@ -164,20 +142,10 @@ function auxCharsOf(store) {
 }
 
 /**
- * 单个 store 的驻留估算：数**内存里留下的对象图**，按版本记忆化。
- *
- * 为什么不是"读盘文本量换算"（旧实现）：那个口径有两个错。
- *  1. 时序错位——它量的是 `load()` 读进来的 JSON 文本，而 `searchText` 要到
- *     `allEntries()` 才物化，同一份数据在物化前后估出两个数（实测 76MB → 107MB）。
- *  2. 账不对物——旧分片里还带着 `searchText` / `linkedSymbols`，`load()` 会
- *     `stripPersistedDerived` 把它们删掉，可文本量已经把被删的字节算进去了。
- *     实测一个 12.6k 文件的父目录 store：读盘 212.6MB，真实驻留 101.7MB。
- *
- * 两个版本键都参与失效：`_entriesVersion`（`setEntries` / `removeFile` / `_loadSharded`）
- * 与 `_materializeVersion`（`allEntries()` 物化 `searchText`）。漏掉后者就是旧实现的错。
- *
- * 代价：版本变化后的**一次**全量遍历（70119 条目 ~40ms）。必须记忆化——`evictStoreCache`
- * 是对**整个缓存**逐 store 求和的，不记忆化等于每次冷加载都把缓存里所有 store 重数一遍。
+ * 单个 store 的驻留估算：数**内存里留下的对象图**，按版本记忆化。不用读盘文本量换算——
+ * `searchText` 要到 `allEntries()` 才物化，前后估出两个数（实测 76MB → 107MB），且被
+ * `stripPersistedDerived` 删掉的字段也会被算进去。`_entriesVersion` 与 `_materializeVersion`
+ * 都参与失效；一次全量遍历 70119 条目 ~40ms，逐出又会遍历整个缓存，所以必须记忆化。
  */
 export function _estimateResidentBytes(store) {
   const stamp = residentStampOf(store)
@@ -196,8 +164,7 @@ export function _estimateResidentBytes(store) {
 
 /** 按 LRU 逐出，直到同时满足条数与字节预算；刚加入的 keepKey 即使超预算也保留。 */
 function evictStoreCache(keepKey) {
-  // 只在**真有可能逐出**时才付精确计量的钱：条数超上限，或保守上界就已超字节预算。
-  // 宽裕时（单项目常态）一次对象图遍历都不做——冷加载因此不背那次全库扫描。
+  // 条数超上限或上界已超字节预算才做精确计量；宽裕时一次对象图遍历都不做。
   let exact = storeCache.size > STORE_CACHE_MAX
   if (!exact) {
     let bound = 0
@@ -210,8 +177,7 @@ function evictStoreCache(keepKey) {
     const oldest = storeCache.keys().next().value
     if (oldest === undefined || oldest === keepKey) break
     if (exact) total -= _estimateResidentBytes(storeCache.get(oldest))
-    // 逐出前先落盘：任务热点/人类消息是延迟写的（turn/end 才 flush），
-    // 若这里直接丢实例，还没到回合结束的变更就再也回不来了。save() 无脏数据时自己早退。
+    // 逐出前先落盘：任务热点/人类消息延迟到回合结束才 flush，直接丢实例会丢未落盘的变更。
     const evicted = storeCache.get(oldest)
     if (evicted && evicted.hasDirty()) {
       try {
@@ -222,11 +188,10 @@ function evictStoreCache(keepKey) {
     }
     storeCache.delete(oldest)
   }
-  // 没做过精确计量就不报"单实例超预算"：算都没算，报出来的数是估的。真超预算时
-  // （多一个 store 就会触发上界）下一次加载会走到这里并如实告警。
+  // 没做精确计量就不报单实例超预算：真超预算时下一次加载会走到这里并如实告警。
   if (!exact) return
-  // keepKey 豁免是**有意**的：刚加载的 store 必须立刻可用。但它的代价是"单实例超预算时
-  // 预算不再是上界"——这个代价不能是隐式的，所以每个这样的 store 告警一次（每 root 一次）。
+  // keepKey 豁免是有意的（刚加载的 store 必须立刻可用）；代价是单实例超预算时预算不再是
+  // 上界，所以每个这样的 store 每 root 告警一次。
   const kept = _estimateResidentBytes(storeCache.get(keepKey))
   if (kept > STORE_CACHE_MAX_BYTES && !warnedOverBudget.has(keepKey)) {
     warnedOverBudget.add(keepKey)
@@ -268,17 +233,9 @@ function newerIso(a, b) {
 }
 
 /**
- * 合并同一任务在两份快照里的 `insights`。
- *
- * 任务级条目没有自己的删除墓碑（`_deletedTaskIds` 只管整条任务），所以用**上次成功落盘时
- * 的 id 基线**做三方判断：
- *  - 基线没有、本地有 → 本地新增，补写；
- *  - 基线有、本地没有 → 本地删除，从磁盘副本剔除（不复活）；
- *  - 两边都有 → `updatedAt` 新者胜；
- *  - 基线没有、本地没有 → 磁盘新增，保留。
- *
- * 仅按整条任务的 `updatedAt` 选一侧会把另一边的新增整段覆盖掉；而任务条目的写入
- * （`saveInsight` / `removeFromTask`）并不 bump 任务时间戳，时间戳相同是常态。
+ * 合并同一任务在两份快照里的 `insights`：以**上次落盘的 id 基线**做三方判断，基线没有、
+ * 本地有 → 本地新增；基线有、本地没有 → 本地删除（不复活）；两边都有 → `updatedAt` 新者胜。
+ * 不能只按任务 `updatedAt` 选一侧：任务条目写入不 bump 任务时间戳，会整段覆盖另一边。
  * @param {object} local
  * @param {object} disk
  * @param {Set<string>} base
@@ -306,11 +263,9 @@ function mergeTaskInsights(local, disk, base) {
 }
 
 /**
- * 落盘的 entry 只保留**不可推导的事实**。两个派生字段永远不写盘：
- *  - `linkedSymbols`：跨实体派生（取决于符号表当前状态），读取期由 src/link.js 解算；
- *  - `searchText`：自派生（只依赖本 entry），由 `allEntries()` 在内存里物化。
- * 旧 store 里的这两个字段在加载时剥掉，于是下一次写盘自然压实。
- * 实测两者在一个真实大仓库 store 里合计约 245MB（链接 222.8MB + searchText 22.7MB）。
+ * 落盘的 entry 只保留**不可推导的事实**，两个派生字段永不写盘：`linkedSymbols` 是跨实体
+ * 派生（取决于符号表当前状态，读取期由 src/link.js 解算），`searchText` 是自派生（只依赖
+ * 本 entry，由 `allEntries()` 在内存里物化）。旧 store 的这两个字段加载时剥掉，下次写盘自然压实。
  */
 const PERSISTED_DERIVED = ['linkedSymbols', 'searchText', 'typeSig']
 const PERSISTED_DERIVED_SET = new Set(PERSISTED_DERIVED)
@@ -322,14 +277,10 @@ function hasPersistedDerived(entry) {
 }
 
 /**
- * 按**非派生键重建**一个对象。
- *
- * 不用 `delete`：删除属性会把 entry 推进 V8 的字典模式，之后每个属性都变成哈希表项。
- * 本仓库真实条目形状实测 —— `delete` 后 **1196 B/条**，重建后 **436 B/条**（20k 条 / --expose-gc）。
- * 加载路径上这是常驻内存（`storeCache` 里所有 store 都算），写盘路径上同款浪费。
- *
- * `undefined` 值的键也不复制：`typeSig: undefined` 是 enhancer 的实现细节（见 src/enhancer.js），
- * JSON 里本来就不存在，留在内存对象里只会占一个属性槽。
+ * 按**非派生键重建**一个对象。不用 `delete`：删除属性会把 entry 推进 V8 字典模式，
+ * 之后每个属性都变成哈希表项。本仓库真实条目形状实测 `delete` 后 1196 B/条、重建后
+ * 436 B/条（20k 条 / --expose-gc）。`undefined` 值的键也不复制（`typeSig` 是 enhancer
+ * 的实现细节，JSON 里本就不存在）。
  */
 function rebuildWithoutDerived(entry) {
   const out = {}
@@ -337,7 +288,7 @@ function rebuildWithoutDerived(entry) {
     if (PERSISTED_DERIVED_SET.has(key)) continue
     const value = entry[key]
     if (value === undefined) continue
-    // JSON.parse 可以把 `__proto__` 变成自有属性，而 `out[key] = value` 会走去改原型 —— 显式定义。
+    // JSON.parse 可以把 `__proto__` 变成自有属性，而赋值会去改原型 —— 显式定义。
     if (key === '__proto__') Object.defineProperty(out, key, { value, enumerable: true, writable: true, configurable: true })
     else out[key] = value
   }
@@ -354,10 +305,7 @@ function stripPersistedDerived(entry) {
   return rebuildWithoutDerived(entry)
 }
 
-/**
- * 返回不含派生字段的条目（写盘路径用，不能动内存里的对象）。
- * 同样重建而不是 spread+delete —— 两个路径的字典模式代价是一样的。
- */
+/** 返回不含派生字段的条目（写盘路径用，不能动内存里的对象）。 */
 function withoutPersistedDerived(entry) {
   if (!entry || typeof entry !== 'object') return entry
   if (!hasPersistedDerived(entry)) return entry
@@ -376,8 +324,7 @@ function loadJson(filePath, fallback, counter) {
   } catch {
     return fallback
   }
-  // 可选：累计读盘文本的字符数。只用于 `residentBoundBytes`（要不要做精确计量的上界），
-  // 不参与精确估算本身——后者数的是内存里的对象图。
+  // 累计读盘文本字符数，只供 `residentBoundBytes` 判断要不要精确计量。
   if (counter) counter.chars += raw.length
   try {
     return JSON.parse(raw)
@@ -421,9 +368,8 @@ export class ProjectMemoryStore {
     /** task.id → 上次落盘/加载时该任务的 insight id 集合（任务级条目的合并基线，见 mergeTaskInsights）。 */
     this._baseTaskInsightIds = new Map()
     /**
-     * 本进程**新建**的条目。合并另一进程的磁盘状态时，"磁盘没有但内存有"有两种可能：
-     * 我新建的（要补写）或**对方删了**（不能写回）。没有这个集合，后者就会被复活
-     * （实测：B 真删、A 下一次注入记账触发 save，已删条目重新出现在磁盘上）。
+     * 本进程**新建**的条目。"磁盘没有但内存有"可能是新建（要补写）也可能是**对方删了**
+     * （不能写回）；没有这个集合，后者会被复活。
      */
     this._createdInsightIds = new Set()
     this._createdTaskIds = new Set()
@@ -453,20 +399,20 @@ export class ProjectMemoryStore {
     this._residentBytes = 0
     this._residentStamp = ''
     /**
-     * entries 的文本字符数累计（读盘分片 + 写条目 + 物化 `searchText`），按文件**替换式**记。
-     * **只**用于 `residentBoundBytes` 判断"要不要做精确计量"；精确估算数的是对象图，不碰它。
+     * entries 的文本字符数累计（读盘 + 写条目 + 物化 `searchText`），按文件**替换式**记。
+     * **只**供 `residentBoundBytes` 判断要不要精确计量；精确估算数的是对象图。
      */
     this._textChars = 0
     /** 每个文件当前的文本字符数，写入时按文件替换，避免重写同一文件被算两遍。 */
     this._fileTextChars = new Map()
     /**
-     * `searchText` 的物化计数。它和 `_entriesVersion` 一起构成驻留估算的失效键：
-     * 物化只改 entry 对象本身，不改 entries 的构成，所以不会 bump `_entriesVersion`。
+     * `searchText` 的物化计数：物化只改 entry 对象、不改 entries 构成，不 bump
+     * `_entriesVersion`，所以驻留估算的失效键要单独带上它。
      */
     this._materializeVersion = 0
     /**
      * 辅助集合（experience / insights / tasks / binding / watch）的内容版本：它们不在 entries
-     * 的记账面里，靠它让精确估算失效、并让 `auxCharsOf` 重算。每个改到它们的写口都要 bump。
+     * 的记账面里，靠它让精确估算失效、`auxCharsOf` 重算。每个改到它们的写口都要 bump。
      */
     this._auxVersion = 0
     this._auxChars = 0
@@ -476,8 +422,7 @@ export class ProjectMemoryStore {
   load() {
     const key = path.resolve(this.dir)
     const hot = storeCache.get(key)
-    // 缓存命中即返回：`hot === this` 时再读一遍盘会静默丢弃本实例尚未 save() 的变更
-    // （_loadSharded/_loadInsights 会重新赋值 experience/tasks/insights…）。
+    // 缓存命中即返回：`hot === this` 时再读一遍盘会静默丢弃本实例尚未 save 的变更。
     if (hot) {
       // LRU：命中挪到队尾，避免"热的先被逐出、冷的常驻"。
       storeCache.delete(key)
@@ -490,8 +435,7 @@ export class ProjectMemoryStore {
     this._pruneBindings()
     this._resetTaskInsightBases()
     this._removeLegacyTypeCache()
-    // 有些路径只读不写（审计 jsonl 直接写在 store 目录里），所以这里也补一次自我忽略，
-    // 让老版本建出来的 store 在第一次 load 就补上。
+    // 有些路径只读不写（审计 jsonl 直接写在 store 目录里），这里补一次自我忽略兜底。
     this.ensureSelfIgnore()
     storeCache.set(key, this)
     evictStoreCache(key)
@@ -534,9 +478,8 @@ export class ProjectMemoryStore {
         }
         return
       }
-      // index.json 是 entries.json → rel 的唯一映射。它缺失或损坏时继续迁移，会写出 0 个
-      // shard、打上 v2 标记、再把**完好的** entries.json 删掉——等于一次静默的数据清空。
-      // 保留现场，不写 format 标记，等 index.json 修好后再迁（每次进程只提示一次）。
+      // index.json 是 entries.json → rel 的唯一映射；它缺失时继续迁移会写出 0 个 shard 再删掉
+      // 完好的 entries.json，等于静默清空。保留现场，不写 format 标记，等修好后再迁。
       if (!migrationWarned.has(this.dir)) {
         migrationWarned.add(this.dir)
         console.error(`[dsh-project-memory] legacy store at ${this.dir} has ${ENTRIES_FILE} but no readable ${INDEX_FILE}; migration skipped to protect it`)
@@ -566,10 +509,8 @@ export class ProjectMemoryStore {
   }
 
   /**
-   * 读一个辅助集合文件（experience / tasks / insights / binding / watch）。
-   *
-   * 它们的文本量**不进** `_textChars`：那份账只跟 entries（按文件替换），辅助集合交给
-   * `auxCharsOf` 按对象图直接算——同一个集合由两个口径各记一半，迟早会漂。
+   * 读一个辅助集合文件（experience / tasks / insights / binding / watch）。它们的文本量
+   * **不进** `_textChars`（那份账只跟 entries），交给 `auxCharsOf` 按对象图直接算。
    */
   _loadJson(filePath, fallback) {
     return loadJson(filePath, fallback)
@@ -584,9 +525,8 @@ export class ProjectMemoryStore {
   }
 
   /**
-   * 绑定只对“还能续做”的任务有意义：任务已删除或已归档时清掉对应会话绑定。
-   * 否则 binding.json 会永久留着指向归档任务的条目，下一次 todo 写入又会建新任务。
-   * 只标脏、不立刻落盘——读路径不应为了清理额外写一次盘。
+   * 清掉指向已删除/已归档任务的会话绑定，否则 binding.json 会永久留着条目（下一次 todo
+   * 写入又会建新任务）。只标脏、不立刻落盘——读路径不应为清理额外写一次盘。
    */
   _pruneBindings() {
     // 旧 store/手工损坏的 JSON 可能不是期望形状；读路径不能因此抛错。
@@ -622,8 +562,7 @@ export class ProjectMemoryStore {
       this._setFileTextChars(shard.relPath, counter.chars)
       this.files[shard.relPath] = shard.record
       this._baseFileSha.set(shard.relPath, shard.record.sha256 ?? null)
-      // 畸形 shard（entries 被写成对象/null）不能让 allEntries() 在 `for…of` 上抛错，
-      // 否则一个坏文件会拖垮整个进程的每一次读取。
+      // 畸形 shard（entries 不是数组）不能让 `for…of` 抛错，否则一个坏文件会拖垮每次读取。
       const list = Array.isArray(shard.entries) ? shard.entries.filter(isRecord) : []
       // 老分片带着派生字段：内存里立刻剥掉，并排队等 save() 把磁盘上也压实。
       if (list.some((e) => PERSISTED_DERIVED.some((k) => k in e))) this._compactQueue.add(shard.relPath)
@@ -640,12 +579,8 @@ export class ProjectMemoryStore {
   }
 
   /**
-   * 清掉 ≤0.5.10 留下的 `type-cache/` 目录。
-   *
-   * 它按内容哈希缓存 TS 增强结果，但三个增强入口（lazy 的 `fs/observed`、watch 轮询、
-   * `index_repo`）**都只在"文件已变更并重新索引"之后**才触发，此时内容哈希必然是新值——
-   * 这个缓存永远命中不了。实测本仓库残留 9827 个文件（`du` 41MB，内容其实 9.2MB，约 31MB
-   * 是 4KB 块开销）。这里做一次自愈清理；删的是纯缓存，不丢任何事实。
+   * 清掉 ≤0.5.10 留下的 `type-cache/`：三个增强入口都只在文件重新索引后触发，内容哈希
+   * 必然是新值，缓存永远命中不了。实测本仓库残留 9827 个文件、`du` 41MB。
    */
   _removeLegacyTypeCache() {
     const dir = path.join(this.dir, LEGACY_TYPE_CACHE_DIR)
@@ -658,13 +593,9 @@ export class ProjectMemoryStore {
   }
 
   // ---- v0.5 insights：project 级 insight 文档（任务级在 task.insights[]） ----
-  // 统一语义（本版起）：insight 是**唯一**的记忆实体，`kind:'experience'` 就是 v0.4 的经验笔记。
-  // 旧版 store 的兼容策略：把 experience.json 的内容**导入** insights.json 一次，随后把旧文件改名成
-  // `experience.json.migrated` 只读归档——不删（升级后想人工比对还有原文），但不再读写它。
-  //
-  // 归档那一步必须与"导入"分开判：0.5.x/0.6.x 用户的 store 里 `migratedAt` 早就写上了（那时导入的是
-  // 影子副本），可旧文件还留在磁盘上。只看 migratedAt 的话，老用户永远收不走它，
-  // `store.experience` 也永远留着第二份内容——正是"散"的来源。
+  // insight 是**唯一**的记忆实体，`kind:'experience'` 就是 v0.4 的经验笔记。旧 store 的
+  // experience.json 只导入一次，随后改名成 `experience.json.migrated` 只读归档（不删）。
+  // 归档与导入必须分开判：老用户的 `migratedAt` 早已写上，只看它会让旧文件永远收不走。
   _loadInsights() {
     const doc = this._loadJson(path.join(this.dir, INSIGHTS_FILE), null)
     this.insights = isRecord(doc) && Array.isArray(doc.items)
@@ -672,7 +603,7 @@ export class ProjectMemoryStore {
       ? { ...doc, items: doc.items.filter(isRecord) }
       : { version: 1, migratedAt: null, items: [] }
     this._migrateExperienceToInsights()
-    // PR3：v1 → v2 懒回填派生 trigger（纯确定性、幂等；不调用模型，不改写已有字段）
+    // 懒回填派生 trigger（纯确定性、幂等；不调用模型，不改写已有字段）
     if (backfillDerivedTriggers(this.insights)) this._dirtyInsights = true
     // 迁移与回填都会改 items；换掉整个文档后让 auxCharsOf/精确估算重算。
     this._baseInsightIds = new Set(this.insights.items.map((it) => it?.id).filter(Boolean))
@@ -688,11 +619,8 @@ export class ProjectMemoryStore {
       return
     }
     let imported = 0
-    // 导入 + 落盘这条支路必须有"值得写"的输入才走：`migratedAt` 为空 + 旧文件不在 + 内存里也没有
-    // 旧条目（全新根）时直接跳过。否则 `load()` 会在一个从没被索引过的空目录里 mkdir + 写
-    // insights.json —— 那会让 `audit.js` 的 auditDirReady（"目录已存在"）与 auto-inject 的
-    // `if (store.hasContent) store.save()` 双双失效，容器目录被当成项目根（issue #5 同类）。
-    // 归档旧文件是**另一支**（下面单独判 legacyOnDisk），所以跳过这里不影响真升级。
+    // 只有值得写的输入（`migratedAt` 为空 + 旧文件在或有旧条目）才导入：否则 `load()` 会在空目录里
+    // mkdir + 写 insights.json，让调用方"目录已存在/有内容"的判断失真（容器目录被当成项目根）。
     if (!this.insights.migratedAt && (legacyOnDisk || legacy.length > 0)) {
       const now = new Date().toISOString()
       const known = new Set(this.insights.items.map((it) => it.id))
@@ -760,8 +688,8 @@ export class ProjectMemoryStore {
   }
 
   /**
-   * 调用方**直接改过** task 内容（包括 task 内的条目）后的标脏入口。任务树不在 `addTask` /
-   * `updateTask` 那几条写口里，所以这里也要 bump 内容版本，否则精确估算停在前一水位。
+   * 调用方**直接改过** task 内容（含 task 内条目）后的标脏入口：任务树不走 `addTask` /
+   * `updateTask`，这里不 bump 内容版本的话精确估算会停在前一水位。
    */
   markTasksDirty() {
     this._dirtyTasks = true
@@ -769,9 +697,8 @@ export class ProjectMemoryStore {
   }
 
   cleanStaleTmp({ force = false } = {}) {
-    // store 根目录只有几个文件，每次 save 扫一遍很便宜（崩溃遗留的 aux `.tmp` 立刻收走）。
-    // `shards/` 才是 O(N)：12k 分片时每次单文件更新都 readdir 一遍，在 NTFS 上是实打实的卡顿。
-    // 分片里的 .tmp 只影响体积、不影响正确性，60s 扫一次足够；`force` 给测试/诊断用。
+    // store 根目录只有几个文件，每次扫很便宜；`shards/` 是 O(N)（12k 分片时在 NTFS 上会卡），
+    // 60s 扫一次足够，`force` 给测试/诊断用。
     const now = Date.now()
     const scanDirs = [this.dir]
     if (force || now - this._lastShardTmpSweep >= 60_000) {
@@ -797,19 +724,12 @@ export class ProjectMemoryStore {
   }
 
   /**
-   * store 目录**自我忽略**：在目录里放一个内容为 `*` 的 `.gitignore`。
+   * store 目录**自我忽略**：放一个内容为 `*` 的 `.gitignore`。不改用户的 `.gitignore`
+   * （那是用户的文件，且"忘了加"的代价是误提交）；git 会读取任意子目录下的 `.gitignore`，
+   * `*` 连它自己一起命中，整棵树不会进 `git status`。要随仓库提交用 `git add -f`。
    *
-   * 为什么不写进用户的 `.gitignore`：那是用户的文件，插件不该改；而且"忘了加"的代价
-   * 是一次误提交。为什么这样就够：git 会读取工作区里**任意**目录下的 `.gitignore`，
-   * 而 `*` 连这个 `.gitignore` 自己一起命中，于是 `git status` / `git add -A` 里整棵树
-   * 都不出现，用户一个字都不用写（`git check-ignore -v` 可复核）。
-   *
-   * 顺带的好处：被忽略的文件不会被 `git clean -fd` 删除（未跟踪且未忽略的会被删）。
-   * 想把记忆跟着仓库提交：`git add -f .dsh-project-memory`——已跟踪的文件不受忽略规则影响。
-   *
-   * **不缓存“文件已存在”**：缓存只省一次 stat，却会把外部删除（`git clean -fdx`、用户手工清理）
-   * 变成“本进程剩下的生命周期里都不再自我忽略”，store 可能被下一次 `git add` 带进提交。
-   * save() 本来每轮就要 readdir 一次 store 根目录，这次 stat 的边际成本可以忽略。
+   * **不缓存"文件已存在"**：只省一次 stat，却会把外部删除（`git clean -fdx`）变成
+   * 本进程剩余生命周期都不再自我忽略，store 可能被下一次 `git add` 带进提交。
    */
   ensureSelfIgnore() {
     if (!existsSafe(this.dir)) return
@@ -844,14 +764,13 @@ export class ProjectMemoryStore {
   }
 
   /**
-   * @param {{ timeoutMs?: number }} [options] 等锁上限。默认 15s：写路径的正确性靠**同步等待**，
-   *   不靠后台重试——用户结束对话就会关 dsh，不会等重试。重试只是长驻进程的兜底。
+   * @param {{ timeoutMs?: number }} [options] 等锁上限，默认 15s：写路径的正确性靠**同步等待**，
+   *   用户结束对话就会关 dsh，不等后台重试；重试只是长驻进程的兜底。
    * @returns {boolean} 是否真的落盘（无脏数据也算成功）
    */
   save(options = {}) {
-    // 没有脏数据就不落盘。watch 每轮对每个根都无条件 commit → save；照旧执行的话，
-    // 末尾的 ID 缓存失效会打在跨实例共享的 store 上，等于每轮清空一次 IDF 复用（v0.3.4 的 20x）。
-    // 待压实队列不算"脏数据"，但它需要有界推进，所以也走这条落盘路径。
+    // 没有脏数据就不落盘：watch 每轮对每个根都无条件 commit → save，否则末尾的 IDF 缓存失效
+    // 会打在跨实例共享的 store 上，等于每轮清空一次复用。待压实队列不算脏，但也要有界推进。
     const compacting = this._compactQueue.size > 0
     const dirty =
       compacting ||
@@ -863,16 +782,14 @@ export class ProjectMemoryStore {
       this._dirtyWatch ||
       !this._formatWritten
     if (dirty) {
-      // 目录可能在 load 之后被外部删掉。`_storeDirReady` 只能当“上次写过”的快路径，
-      // 不能当“这次还在”的事实：命中缓存时补一次 stat，失配就重建目录并让分片/格式/忽略
-      // 三处的“已就绪”状态一起失效。
+      // 目录可能在 load 之后被外部删掉：`_storeDirReady` 只当"上次写过"的快路径，命中时补一次
+      // stat；失配就重建目录，并让分片/格式/忽略三处的已就绪状态一起失效。
       let dirReady = this._storeDirReady
       if (dirReady) {
         try {
           statSync(this.dir)
         } catch (err) {
-          // 只有“确实不存在”才重建；EACCES / ENOTDIR 等交给锁去走原来的静默失败路径，
-          // 不要在这里把一次可重试的落盘失败升级成抛给工具。
+          // 只有 ENOENT 才重建；EACCES / ENOTDIR 交给锁走原来的静默失败路径，不升级成抛错。
           if (err?.code === 'ENOENT') dirReady = false
         }
       }
@@ -899,8 +816,7 @@ export class ProjectMemoryStore {
       untrackDirty(this)
       return true
     }
-    // 跨进程：整段读改写放进目录锁。默认同步等待 15s——写路径的正确性靠"等到锁"，
-    // 不靠后台重试（用户结束对话就关 dsh）。真拿不到时保持脏状态并登记退出 flush；
+    // 跨进程：整段读改写放进目录锁，默认同步等 15s。拿不到锁就保持脏状态并登记退出 flush，
     // 默认静默，不向用户/模型抛提示。
     const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000
     const release = acquireDirLock(this.dir, { timeoutMs, ensureDir: false })
@@ -923,9 +839,8 @@ export class ProjectMemoryStore {
         writeJsonAtomic(path.join(this.dir, FORMAT_FILE), { version: 2, layout: 'sharded' }, { ensureDir: false })
         this._formatWritten = true
       }
-      // 存量压实：≤0.5.10 的分片带着派生字段，而那些字段只在分片被重写时才会从磁盘消失。
-      // 每轮最多补写 COMPACT_BATCH 个，让升级后的 store 在后续任意一次 save（watch 轮询、
-      // 索引、写入）里自动收敛，而不是永远停在旧体积。
+      // 存量压实：≤0.5.10 的分片带派生字段，只有重写才消失。每轮最多 COMPACT_BATCH 个，
+      // 让升级后的 store 在后续任意一次 save 里自动收敛。
       let compactBudget = COMPACT_BATCH
       for (const rel of this._compactQueue) {
         if (compactBudget <= 0) break
@@ -938,8 +853,7 @@ export class ProjectMemoryStore {
           const nextSha = this.files[rel].sha256 ?? null
           const base = this._baseFileSha.get(rel) ?? null
           const disk = this._shardDiskRecord(rel)
-          // 磁盘分片在加载后被别的进程改过，且不是我们这一版：按 indexedAt 收敛，
-          // 本地更新则覆盖（否则显式 index 的结果会静默丢掉），对方更新则把对方读回内存。
+          // 磁盘分片加载后被别的进程改过：按 indexedAt 收敛，本地更新则覆盖，对方更新则读回内存。
           if (disk.exists && disk.sha !== base && disk.sha !== nextSha) {
             const localAt = Date.parse(this.files[rel].indexedAt || '') || 0
             const diskAt = Date.parse(disk.record?.indexedAt || '') || 0
@@ -965,8 +879,7 @@ export class ProjectMemoryStore {
         const base = this._baseFileSha.get(rel) ?? null
         const disk = this._shardDiskRecord(rel)
         if (disk.exists && disk.sha !== base) {
-          // 删除与另一进程的更新撞车：没有删除时间戳可比，保守采用对方版本，
-          // 至少让内存与磁盘一致（旧实现只跳过写，内存仍认为已删）。
+          // 删除与另一进程的更新撞车：没有删除时间戳可比，保守采用对方版本，让内存与磁盘一致。
           this._adoptDiskShard(rel, disk)
           this._warnConflict(rel)
           continue
@@ -982,8 +895,7 @@ export class ProjectMemoryStore {
       wroteInsights = this._dirtyInsights
       wroteTasks = this._dirtyTasks
       if (wroteInsights) {
-        // v2 → v3 是纯语义升级（`kind:'experience'` 从"影子副本"变成一等实体），形状不变；
-        // 落盘即把版本推上去，老版本读到 v3 也照样按 v2 的字段解析（它只是排除 experience 影子）。
+        // v2 → v3 是纯语义升级，形状不变；老版本读到 v3 仍按 v2 字段解析。
         if (this.insights && this.insights.version !== 3) this.insights.version = 3
         writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights, { ensureDir: false })
         this._dirtyInsights = false
@@ -1001,8 +913,7 @@ export class ProjectMemoryStore {
         this._dirtyWatch = false
       }
     } catch (err) {
-      // 非锁原因的写失败（ENOSPC / EISDIR / 只读挂载）：状态要与锁竞争路径一致，
-      // 否则 lastSaveOk 还是 true，脏 store 也不会进退出 flush。
+      // 非锁原因的写失败（ENOSPC / EISDIR / 只读挂载）也要置 lastSaveOk=false 并登记 flush。
       this.lastSaveOk = false
       trackDirty(this)
       throw err
@@ -1026,8 +937,8 @@ export class ProjectMemoryStore {
   }
 
   /**
-   * 冲突时采用另一进程的分片：内存里的 record/entries 与磁盘对齐，并让 IDF/驻留账失效。
-   * 磁盘 entries 可能来自旧版本或损坏文件，和 `_loadSharded` 一样只收 record。
+   * 冲突时采用另一进程的分片：内存 record/entries 与磁盘对齐，并让 IDF/驻留账失效。
+   * 磁盘 entries 可能损坏或来自旧版本，和 `_loadSharded` 一样只收合法项。
    */
   _adoptDiskShard(rel, disk) {
     const entries = (disk.entries || []).filter(isRecord).map(stripPersistedDerived)
@@ -1070,8 +981,7 @@ export class ProjectMemoryStore {
 
   /** 锁竞争后的有限次延迟重试；失败仍保持脏状态，下一次写继续尝试。 */
   _scheduleSaveRetry() {
-    // 旧实现 3 次 × ~2s ≈ 8.3s，**永远小于** staleMs=10s：一个刚崩溃的跨机锁会让所有重试落空。
-    // 同机崩溃锁现在由 pid 判活立即回收（见 util/fs.js），这里的预算只兜跨机 stale 锁。
+    // 重试总时长必须超过 staleMs=10s（同机崩溃锁由 pid 判活立即回收，这里只兜跨机 stale 锁）。
     const delays = [100, 500, 2000, 6000, 12000]
     if (this._saveRetryTimer || this._saveRetryAttempts >= delays.length) return
     const delay = delays[this._saveRetryAttempts++]
@@ -1094,10 +1004,8 @@ export class ProjectMemoryStore {
   }
 
   /**
-   * 写盘前把另一进程已落盘的小文档合并进来。
-   *
-   * 只合并不覆盖：同 id 取 `updatedAt` 更新的一侧；本进程删掉的 id 用墓碑挡住，
-   * 避免“删了又被对方的旧副本复活”。分片不走这里（按 hash 冲突检测）。
+   * 写盘前把另一进程已落盘的小文档合并进来：同 id 取 `updatedAt` 新的一侧，本进程删掉的 id
+   * 用墓碑挡住，避免"删了又被对方的旧副本复活"。分片不走这里（按 hash 冲突检测）。
    */
   _mergeAuxFromDisk() {
     if (this._dirtyInsights) {
@@ -1152,8 +1060,7 @@ export class ProjectMemoryStore {
           winner.insights = mergedInsights
           byId.set(t.id, winner)
         }
-        // 本地删除必须从磁盘副本里剔除：`removeTask` 已把它从内存数组移除，上面的循环
-        // 根本看不到它；少了这一行，删任务会在**同一次 save 里**被另一份磁盘快照写回来。
+        // `removeTask` 已把它从内存数组移除，上面循环看不到；不在这里剔除会在同一次 save 里被写回。
         for (const id of this._deletedTaskIds) byId.delete(id)
         this.tasks = [...byId.values()]
         this._auxVersion++
@@ -1181,8 +1088,7 @@ export class ProjectMemoryStore {
   }
 
   getIdfCache() {
-    // IDF 只依赖 entries（title/keywords/summary），所以按 entries 的变更计数失效：
-    // 只写经验/insight 或只做存量压实的 save 不会再无谓地重建 IDF。
+    // IDF 只依赖 entries，按 entries 变更计数失效：只写经验/insight 或只做压实不会重建 IDF。
     if (this._idfCache && this._idfCache.version === this._entriesVersion) {
       return this._idfCache.idf
     }
@@ -1197,10 +1103,8 @@ export class ProjectMemoryStore {
     if (N === 0) return {}
     const df = {}
     for (const entry of entries) {
-      // 语料必须与**检索**同源：检索走 search.js 的 weightedFieldText = title×5 + keywords
-      // + summary + **terms** + sourcePath。此前这里手抄了一份少了 `terms`/`sourcePath` 的
-      // 副本，于是只出现在 `terms` 里的词 df=0 → 被当成极稀有词拿虚高 IDF（而 `terms` 正是
-      // 0.5.x 为修"只有前 300 字符可检索"加的主检索面）。直接调 makeSearchText，权重自动对齐。
+      // 语料必须与**检索**同源（search.js 的 weightedFieldText 含 title×5、keywords、summary、
+      // terms、sourcePath）；手抄副本曾漏掉 terms/sourcePath，让只出现在 terms 里的词拿到虚高 IDF。
       const terms = tokenizeRaw(makeSearchText(entry))
       const seen = new Set(terms)
       for (const t of seen) {
@@ -1282,10 +1186,8 @@ export class ProjectMemoryStore {
   }
 
   /**
-   * 这个 store 里有没有任何"事实"。
-   *
-   * 用于判断"值不值得为一条记账把它落盘"：一个从没被索引过、也没写过任何东西的根，
-   * 不该因为一次**全局** insight 命中就被建出一个 store 目录（审计侧同理，见 audit.js）。
+   * 这个 store 里有没有任何"事实"。用于判断"值不值得为一条记账把它落盘"：从没被索引过、
+   * 也没写过任何东西的根，不该因一次**全局** insight 命中就被建出目录（审计侧同理）。
    * 刻意不调 `stats()`——那个会 `allEntries()` 物化 `searchText`。
    */
   get hasContent() {
@@ -1318,20 +1220,16 @@ export class ProjectMemoryStore {
         }
         out.push(entry)
       }
-      // 物化是实打实的内存增量（70119 条目实测 +34MB），必须进上界——按文件替换，
-      // 与写路径同一套语义：之后重写 / 删掉这个文件时会连这笔一起替换掉。
+      // 物化是实打实的内存增量（70119 条目实测 +34MB），必须进上界——按文件替换，与写路径同语义。
       if (addedChars) this._setFileTextChars(relPath, (this._fileTextChars.get(relPath) || 0) + addedChars)
     }
-    // 物化只改 entry 对象、不改 entries 的构成，所以 `_entriesVersion` 不会动；但驻留会实打实
-    // 增加。这里是它的第二个失效键——漏了它，估算就停在物化前的水位。
+    // 物化只改 entry 对象、不改 entries 构成，`_entriesVersion` 不动，所以要单独的失效键。
     if (materialized) this._materializeVersion++
     return out
   }
 
-  // v0.4 的 experience 读写入口（addExperience / pruneExperience / findSupersede / removeExperience）
-  // 已随统一存储删除：经验笔记现在是 `kind:'experience'` 的 insight，写入走 `src/tools/remember.js`
-  // → `saveInsight`，删除走 `removeMemory`，容量归 insight 层的 maxProject。
-  // `experience.json` 只剩一个角色：`_migrateExperienceToInsights` 的导入源。
+  // v0.4 的 experience 读写入口已随统一存储删除：经验笔记现在是 `kind:'experience'` 的 insight，
+  // `experience.json` 只剩 `_migrateExperienceToInsights` 的导入源这一个角色。
 
   stats() {
     return {
@@ -1386,8 +1284,8 @@ export class ProjectMemoryStore {
   }
 
   /**
-   * 清掉所有指向该任务的会话绑定。归档/删除任务时调用：任务已停用，绑定再留着
-   * 只会在下一次 todo 写入时被当成"没有任务"再建一条新任务，旧条目却永远占着 binding.json。
+   * 清掉所有指向该任务的会话绑定。任务已停用时绑定再留着，只会在下一次 todo 写入时被
+   * 当成"没有任务"再建一条，旧条目却永远占着 binding.json。
    * @param {string} taskId
    * @returns {boolean} 是否真的删掉了绑定
    */
@@ -1429,14 +1327,10 @@ export class ProjectMemoryStore {
 
   /**
    * 每项目任务数上限随项目体积自适应；超限按 lastActiveAt 归档最旧（只统计非归档）。
-   *
-   * **仍被会话绑定的任务不参与裁剪**（这条是修 bug，不是放宽上限）：
-   * 绑定 = "这个任务还没结束，某个会话随时会回来接着干"。旧实现按 `lastActiveAt` 一刀切，
-   * 一个长期挂着的绑定任务会被更新的任务挤到最旧、被静默归档；会话回来写 todo 时，
-   * `taskbridge` 把"归档"按"停止同步"处理（那是归档的文档语义），于是**另建一条新任务**——
-   * 同一个会话的历史被静默拆成两条记录，原条目变成归档孤儿。
-   * 代价是活跃列表可能比上限多出"绑定任务数"条；这是刻意取舍：上限只是启发式，
-   * 而"别把用户正在做的任务从脚底下抽走"是正确性。想真正停掉一个任务，先解绑或显式归档。
+   * **仍被会话绑定的任务不参与裁剪**：绑定意味着"任务还没结束，某个会话随时会回来接着干"。
+   * 一刀切会把长期挂着的绑定任务静默归档，会话回来写 todo 时会另建一条新任务，历史被拆成
+   * 两条、原条目成归档孤儿。代价是活跃列表可能多出绑定任务数条——这是刻意取舍；想真正
+   * 停掉一个任务，先解绑或显式归档。
    * @returns {number} 本轮归档的条数
    */
   pruneTasks() {
@@ -1458,8 +1352,8 @@ export class ProjectMemoryStore {
 
   /**
    * @param {(store: ProjectMemoryStore) => any} fn 变更函数
-   * @param {{save?: boolean}} [options] save=false 时只标脏，由调用方在回合结束统一 flush。
-   *   文件工具每读一次都会更新任务热点，逐次落盘会把 tasks.json 写成每工具调用一次。
+   * @param {{save?: boolean}} [options] save=false 时只标脏，由调用方在回合结束统一 flush
+   *   （文件工具每读一次都会更新任务热点，逐次落盘会把 tasks.json 写成每工具调用一次）。
    */
   commit(fn, options = {}) {
     const result = fn(this)

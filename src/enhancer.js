@@ -97,12 +97,9 @@ const PRIORITY = {
 }
 
 /**
- * TS 增强队列的上界。
- *
- * 为什么需要它（0.5.15 加固）：`index_repo` 对**全部** TS/JS 一次性入队，而队列此前
- * 没有任何 cap。配合下面的"出队才解析"，队列里每条只剩元数据（≈ 几百字节），默认
- * `maxScanFiles`（20000）量级下上限约几 MB —— 这个数取成与扫描上限同量级，正常仓库够不到，
- * 它只是防御"被抬高的 maxScanFiles / 异常调用方"的兜底阀。
+ * TS 增强队列的上界：`index_repo` 会对全部 TS/JS 一次性入队，队列里每条只剩元数据
+ * （≈ 几百字节）。取成与 `maxScanFiles`（20000）同量级：正常仓库够不到，它只是
+ * 防御"被抬高的 maxScanFiles / 异常调用方"的兜底阀。
  */
 const ENHANCE_QUEUE_MAX = 20000
 
@@ -125,16 +122,10 @@ export function isTypeScriptFile(filePath) {
 }
 
 /**
- * 路径归一化。
- *
- * 旧实现在 host 里用 `fileName === filePath` 认自己的文件。TypeScript 内部一律走
- * `normalizePath`（`\`→`/`、消解 `.`/`..`、绝对化），而 `path.join` 给出的是平台原生形态 ——
- * Windows 上是反斜杠。两边字符串不同 → `getSourceFile` 返回 undefined → `deepParseWithTS`
- * 静默返回 `[]`：增强整层失效且无日志。2026-09-26 的 Windows CI 就是这样挂的
- * （`test/enhancer.test.mjs` 的「增强结果落进了 store」），同一份代码在 POSIX 上从不现形。
- *
- * 用 TS 自己的 `normalizePath` 而不是自己拼：它才是权威口径。**该函数只在运行时导出、
- * `typescript.d.ts` 里没有声明**，peer 范围覆盖 TS 5/6/7，所以必须做 `typeof` 兜底。
+ * 路径归一化：TS 内部一律走 `normalizePath`（`\`→`/`、消解 `.`/`..`、绝对化），
+ * 而 `path.join` 给的是平台原生形态（Windows 反斜杠），字符串不同会让 `getSourceFile`
+ * 返回 undefined、`deepParseWithTS` 静默返回 `[]`（2026-09-26 Windows CI 就是这样挂的）。
+ * 用 TS 自己的 `normalizePath` 才是权威口径；它只在运行时导出、d.ts 无声明，必须 `typeof` 兜底。
  */
 function canonicalTsPath(fileName) {
   const s = String(fileName)
@@ -158,11 +149,9 @@ export function deepParseWithTS(filePath, content) {
     const a = canonicalTsPath(fileName)
     return (caseSensitive ? a : a.toLowerCase()) === target
   }
-  // 预建唯一的 SourceFile：它就是"这个文件"的真身，host 只需把它交出去。
-  // 后面按**对象身份**确认 TS 真的收下了它，不依赖 TS 内部怎么命名。
+  // 预建唯一的 SourceFile：它就是"这个文件"的真身，host 只负责交出去；后面按对象身份确认 TS 收下了它。
   const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true)
 
-  // Create a compiler host that provides the source file from memory
   const host = {
     getSourceFile: (fileName, languageVersion, onError) => (isTarget(fileName) ? sourceFile : undefined),
     getDefaultLibFileName: (options) => ts.getDefaultLibFileName(options),
@@ -176,24 +165,16 @@ export function deepParseWithTS(filePath, content) {
     getDirectories: () => [],
   }
 
-  // 刻意不加载默认 lib（`noLib: true`）：host 手里只有这一个文件的内容，加载 lib 需要把
-  // lib.d.ts 及其引用的 6 个文件（lib.es5 / lib.decorators / lib.decorators.legacy / lib.dom /
-  // lib.webworker.importscripts / lib.scripthost，共 ~2.1MB 文本）一并读盘并重解析。
-  // 实测：每个 program 重解析 p50=102ms/文件；把解析好的 SourceFile 缓存跨 program 复用
-  // （或走 ts.DocumentRegistry）是一次性 ~100ms + 每文件 ~1ms。本版不做，代价是全局类型
-  // （Promise/Array/DOM）在 typeSig 里塌成 any/unknown —— 见 CHANGELOG「已知限制（本版未做）」。
-  // 旧实现在这里留的是 `getDefaultLibLocation: () => ts.getDefaultLibFilePath({})`，返回的是
-  // **文件**路径而不是目录，于是这层加载既没生效、也没人把它写下来。现在把"不载"写成声明。
+  // 刻意不加载默认 lib（`noLib: true`）：host 手里只有这一个文件，加载 lib 需要读盘并重解析
+  // lib.d.ts 及引用的 6 个文件（~2.1MB）；实测每 program 重解析 p50=102ms/文件。
+  // 代价是全局类型（Promise/Array/DOM）在 typeSig 里塌成 any/unknown（见 CHANGELOG 已知限制）。
   const program = ts.createProgram([filePath], { allowJs: true, noLib: true }, host)
-  // 按**对象身份**确认 TS 收下了这个 SourceFile。`program.getSourceFile(filePath)` 也能问，
-  // 但它内部用 `toPath(name, cwd, getCanonicalFileName)` 拼 key，对相对路径还会拼上 cwd ——
-  // 正是上面那条脆弱路径。`sourceFile.parent` 恒为 undefined，不能用它判断。
+  // 按对象身份确认 TS 收下了这个 SourceFile：`program.getSourceFile(filePath)` 内部用
+  // `toPath(name, cwd, ...)` 拼 key，正是上面那条脆弱路径；`sourceFile.parent` 恒为 undefined。
   if (program.getSourceFileByPath(sourceFile.path) !== sourceFile) {
-    // 走到这里 = host 没认出 root path（本该有结果却没有）。**刻意不写终端**：
-    //   · 代价：watch 每 15s 一轮、每个不受支持的 root 都会撞上它，"逐轮一条"去重后仍会变成
-    //     "每个文件一条"，在真实终端里就是刷屏；
-    //   · 收益为 0：返回 [] 只是"这轮没有增强结果"，不会产出错误结果，调用方本来就按空处理。
-    // 这个不变量的看护在 test/enhancer.test.mjs（「路径形态」那组 + 末尾的静默契约），不靠日志。
+    // host 没认出 root path。刻意不写终端：watch 每 15s 一轮会把"每个文件一条"刷成刷屏，
+    // 而返回 [] 不会产出错误结果，调用方本来就按空处理。
+    // 不变量由 test/enhancer.test.mjs（「路径形态」+ 末尾静默契约）看护。
     return []
   }
   const checker = program.getTypeChecker()
@@ -233,23 +214,17 @@ export function deepParseWithTS(filePath, content) {
   }
 
   /**
-   * 参数列表的渲染：用**源码文本**，不是 checker 的类型串。
-   *
-   * 旧实现拼 `${p.name.getText()}: ${type}`，两个副作用都被「L2 会就地重写 L1 文本」放大：
-   *   · 无注解的参数一律写成 `: any`（本仓库 51 个 .js/.mjs 实测：86% 的参数如此），把 L1 正则
-   *     已经提取到的 `chunkChars = 3000` 换成纯噪音；
-   *   · `= 默认值` / `?` / `...rest` / 解构模式全被丢掉（实测 52 个带默认值的条目里丢了 36 个）。
-   * 源码文本两者都保得住，还省掉每个参数一次 checker 调用。单参数限长 80，整行仍由
-   * oneLineDeclaration 收到 200 字符。
+   * 参数列表的渲染：用源码文本，不是 checker 的类型串。旧实现拼 `name: type` 把无注解
+   * 参数一律写成 `: any`，还丢掉 `= 默认值` / `?` / `...rest` / 解构模式；源码文本都保得住，
+   * 还省掉每参数一次 checker 调用。单参数限长 80，整行仍由 oneLineDeclaration 收到 200。
    */
   function renderParams(node) {
     return node.parameters.map((p) => oneLineDeclaration(p.getText(), 80)).join(', ')
   }
 
   /**
-   * 返回类型只在**有信息量**时落进文本：`any`（无注解 JS 的常态）、`unknown`（未载 lib 时 async
-   * 的推导结果）、`{}`（"任意非空值"）都只会把一行声明撑长，旧实现无条件写 `): any`。
-   * `void` 保留 —— 它至少说明"没有返回值"。
+   * 返回类型只在有信息量时落进文本：`any`（无注解 JS 的常态）、`unknown`（未载 lib 时的
+   * async 推导）、`{}` 只会把一行声明撑长；`void` 保留——它至少说明"没有返回值"。
    */
   function renderReturn(type) {
     const s = getTypeStr(type)
@@ -257,9 +232,8 @@ export function deepParseWithTS(filePath, content) {
   }
 
   /**
-   * 函数表达式/箭头函数的名字。旧白名单只有 `const x = fn` / `{ m: fn }` / `class { m = fn }`，
-   * 于是 CJS 最常见的 `module.exports.foo = function () {}` 产不出符号（它的父节点是
-   * BinaryExpression）—— 而 isTypeScriptFile() 明确把 `.cjs` 列为可增强对象，等于承诺了拿不到。
+   * 函数表达式/箭头函数的名字。白名单必须覆盖 `module.exports.foo = function () {}`：
+   * 它的父节点是 BinaryExpression，漏了它 `.cjs`（isTypeScriptFile 明确支持）就产不出符号。
    */
   function callableName(node) {
     const parent = node.parent
@@ -270,8 +244,7 @@ export function deepParseWithTS(filePath, content) {
     if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
       const left = parent.left
       if (ts.isPropertyAccessExpression(left)) {
-        // `module.exports = function () {}`（CJS 的默认导出）：只取最后一段会得到名字
-        // "exports"，既看不出它是默认导出，也容易与 `exports.foo` 混淆。保留全名。
+        // `module.exports = function () {}`（CJS 默认导出）：只取 "exports" 既看不出是默认导出，也易与 exports.foo 混淆，保留全名。
         if (ts.isIdentifier(left.expression) && left.expression.text === 'module' && left.name.text === 'exports') {
           return 'module.exports'
         }
@@ -322,8 +295,7 @@ export function deepParseWithTS(filePath, content) {
         const type = m.type ? getTypeStr(checker.getTypeAtLocation(m.type)) : 'any'
         return `${m.name.getText()}: ${type}`
       }).filter(Boolean)
-      // 成员列表必须有界：一个大 interface 的全部成员拼起来能到几 KB，而它整条只作为
-      // "一行声明"存在。只留前 6 个，其余记数量。
+      // 成员列表必须有界：一个大 interface 全拼能到几 KB；只留前 6 个，其余记数量。
       const shown = members.slice(0, 6)
       symbols.push({
         name: node.name.getText(),
@@ -332,8 +304,7 @@ export function deepParseWithTS(filePath, content) {
         line: getLine(node)
       })
     } else if (ts.isTypeAliasDeclaration(node)) {
-      // checker.getTypeAtLocation(node.type) 对别名返回的是**别名自身**，于是
-      // `type X = { a: string }` 变成 `X= X -- f:1`。直接用类型节点的源码文本。
+      // checker.getTypeAtLocation 对别名返回别名自身（`type X = {...}` → `X = X`），直接用类型节点的源码文本。
       const typeStr = node.type ? node.type.getText().replace(/\s+/g, ' ').slice(0, 200) : 'any'
       symbols.push({
         name: node.name.getText(),
@@ -346,25 +317,18 @@ export function deepParseWithTS(filePath, content) {
     }
   }
 
-  // 用预建的那个（上面已按对象身份确认它进了 program），不再按名字回查——
-  // 回查依赖 TS 内部的命名，正是 Windows 上出问题的那一步。
+  // 用预建的那个（已按对象身份确认进了 program），不再按名字回查——回查依赖 TS 内部命名。
   visit(sourceFile)
   return symbols
 }
 
 /**
- * 入队一个 TS 增强任务。两条不变式（0.5.15 加固）：
- *
- * 1. **任务体在出队时才跑**。入队只读一次文件算 `cacheKey`（16 字节哈希），正文与解析结果
- *    都不留在队列里；真正读正文 + `deepParseWithTS` + 提交发生在 `runEnhance()`。
- *    旧实现在入队时就同步跑到第一个 `await`，于是 `index_repo` 对整棵 TS 树一次性入队 =
- *    同时持有**所有**文件的正文与符号数组 —— 长驻 `dsh web` 的 RSS 单调爬升就是这个形状。
- * 2. **有界**。队列长度不超过 `enhanceQueueMax`，超了先挤队尾（最不紧急的），挤不动就丢新
- *    来的那条；被丢的任务 promise 立刻 resolve（调用方都是 fire-and-forget），丢弃计数由
- *    `enhanceQueueStats()` 暴露、并由 `index_repo` 写进报告 —— 不静默。
- *
- * 去重语义与旧实现一致（同 relPath 同内容复用，内容变了换掉）。已经开始跑的任务不在队列里，
- * 因此不受替换/挤掉影响。
+ * 入队一个 TS 增强任务。两条不变式：
+ * 1. 任务体在出队时才跑：入队只读一次文件算 cacheKey，正文与解析结果不留在队列里；
+ *    否则 `index_repo` 对整棵 TS 树入队 = 同时持有所有正文与符号数组（RSS 单调爬升）。
+ * 2. 有界：超了先挤队尾（最不紧急），挤不动就丢新来的；被丢的 promise 立刻 resolve，
+ *    丢弃计数由 `enhanceQueueStats()` 暴露、`index_repo` 写进报告——不静默。
+ * 去重：同 relPath 同内容复用，内容变了换掉；已开始跑的任务不在队列里，不受影响。
  */
 export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BATCH, config, root) {
   if (!ts) return Promise.resolve()
@@ -373,15 +337,13 @@ export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BAT
   try {
     content = readFileSync(filePath, 'utf8')
   } catch {
-    // 文件在"检测到变化"和"入队"之间消失了（编辑器原子保存 = 写临时文件 + rename，正好落在
-    // 这个窗口）。**刻意不写终端**：这不是故障而是常态，watch 每 15s 一轮还会反复重试同一个
-    // 文件 —— 即使按文件去重也仍会刷屏，而"这轮不增强"不会产出任何错误结果（返回 resolved，
-    // 与成功路径对调用方无差别）。诊断靠断言，不靠日志。
+    // 文件在"检测到变化"和"入队"之间消失（原子保存 = 写临时文件 + rename）。刻意不写终端：
+    // 这是常态，watch 每 15s 一轮会反复重试，而这轮不增强不产出错误结果（返回 resolved）。
     return Promise.resolve()
   }
   const cacheKey = getCacheKey(content)
 
-  // 去重语义与旧实现一致：同 relPath 同内容 → 复用队列里那条 promise；内容变了 → 换掉它。
+  // 去重：同 relPath 同内容 → 复用队列里那条 promise。
   const existingIdx = enhanceQueue.findIndex(q => q.relPath === relPath)
   if (existingIdx >= 0) {
     const existing = enhanceQueue[existingIdx]
@@ -392,8 +354,7 @@ export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BAT
       }
       return existing.promise
     }
-    // 内容变了：那条还没开始跑（跑起来的早已出队）→ 换掉，并让它的 promise 立刻 resolve，
-    // 否则调用方 await 的那个 promise 永远悬着。
+    // 内容变了：那条还没开始跑 → 换掉并让它 promise 立刻 resolve，否则调用方永远悬着。
     existing.resolve()
     enhanceQueue.splice(existingIdx, 1)
   }
@@ -402,8 +363,8 @@ export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BAT
   task.promise = new Promise((resolve) => { task.resolve = resolve })
 
   if (enhanceQueue.length >= enhanceQueueMax) {
-    // 满了：优先挤掉队尾（`priority` 数字最大 = 最不紧急）的那条；挤不动（对方更紧急）
-    // 就丢掉新来的这条。两条路都计数 + 一次告警，绝不静默。
+    // 满：优先挤掉队尾（priority 数字最大 = 最不紧急）；挤不动（对方更紧急）就丢新来的。
+    // 两条路都计数 + 一次告警，绝不静默。
     const last = enhanceQueue[enhanceQueue.length - 1]
     if (last && last.priority > priority) {
       enhanceQueue.pop()
@@ -422,7 +383,7 @@ export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BAT
   return task.promise
 }
 
-/** 只打一次：这是**降级说明**（有些文件这轮没有 L2 增强），不是每轮都刷屏的故障。 */
+/** 只打一次：这是降级说明（有些文件这轮没有 L2 增强），不是每轮刷屏的故障。 */
 function warnDropped() {
   enhanceStats.dropped++
   if (droppedWarned) return
@@ -494,29 +455,24 @@ function scheduleProcess() {
 function applyEnhancedSymbols(fn, relPath, enhanced) {
   // Store entries in fn.entries[relPath], not fn.files[relPath].entries
   const existingEntries = fn.entries[relPath] || []
-  // L1 entries carry title "name (kind)" + sourceLine but no name/line fields
   const nameOf = e => (e.title || '').replace(/\s*\([^)]*\)\s*$/, '')
   const enhancedByLine = new Map(enhanced.map(s => [s.line, s]))
   const existingKeys = new Set(existingEntries.map(e => `${nameOf(e)}#${e.sourceLine}`))
 
-  // Upgrade L1 entries in place only when TS found the same symbol on the same line
   const mergedEntries = existingEntries.map(e => {
     const enh = enhancedByLine.get(e.sourceLine)
     if (!enh || nameOf(e) !== enh.name) return e
     return {
       ...e,
-      // 一行声明（限长）。typeSig 只是构建期的中间量，不落进 entry：它没有读取方，
-      // 且 interface 的 typeSig 就是整个类型体，是符号条目变胖的主因。
-      // 分隔符与 L1 的 buildSymbol 保持一致（` — `）：L2 是**就地重写** L1 文本，
-      // 用不同的分隔符会让同一个文件里的条目混排两种格式。
+      // 一行声明（限长）。typeSig 只是构建期中间量，不落进 entry（无读取方，且 interface 的 typeSig
+      // 就是整个类型体）。分隔符与 L1 的 buildSymbol 一致（` — `）：L2 就地重写 L1 文本，混用会混排格式。
       text: oneLineDeclaration(`${enh.name}${enh.typeSig} — ${relPath}:${enh.line}`),
       typeSig: undefined,
       enhanced: true
     }
   })
 
-  // Add enhanced symbols that L1 missed; keep ids unique even when several
-  // symbols share one line (e.g. one-line class + method)
+  // 补上 L1 漏掉的符号；同一行有多个符号时 id 仍要唯一（如单行 class + method）
   const usedIds = new Set(existingEntries.map(e => e.id))
   const newEntries = []
   for (const s of enhanced) {
@@ -538,20 +494,17 @@ function applyEnhancedSymbols(fn, relPath, enhanced) {
     })
   }
 
-  // Write to store.entries via setEntries so the shard is marked dirty and persisted
   fn.setEntries(relPath, [...mergedEntries, ...newEntries])
 
   // doc<->symbol 链接不在这里维护：它是读取期解算的派生关系（见 src/link.js）
 
-  // Also update fn.files metadata
   if (fn.files[relPath]) {
     fn.files[relPath].enhanced = true
   }
 }
 
-// 三个入口都不 await 任务，所以必须各自挂一个 catch：任务体内部已经兜底，但
-// **未处理的 rejection 会把整个宿主打成 `dsh: fatal load failure`**（2026-09-26 的事故就是
-// 这个形状：一个 TDZ 从 watch 路径逃出去，dsh web 起不来）。这条路径不该有任何机会向上抛。
+// 三个入口都不 await 任务，所以必须各自挂 catch：任务体内部已兜底，但**未处理的 rejection
+// 会把整个宿主打成 `dsh: fatal load failure`**（2026-09-26 的事故就是这个形状）。这条路径不该向上抛。
 const fireAndForget = (p) => {
   if (p && typeof p.catch === 'function') p.catch(() => {})
 }

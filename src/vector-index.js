@@ -1,14 +1,8 @@
-// 经验/洞察层的**可选**向量索引（leanvec）：持久化 + 逐条失效 + 优雅降级。
-//
-// 为什么持久化：实测 103 条 × 256 维 = **105 KB**，全量编码要 ~0.4s；读盘 + base64 解码 ~20ms。
-// 为什么只覆盖这两层：它们的池子小（实测真实 store ≤103 条）；doc/symbol 是 10⁴ 量级
-// （某真实 TS 仓库 15.6k 条目），每查询全量编码要 60s，所以那一层继续纯词法。
-//
-// 失效分两级：
-//   ① **模型指纹**（词表内容哈希 + 表字节数）变了 → 整个文件作废，全量重建；
-//   ② **条目文本哈希**变了 → 只重算那一行（其余复用）。
-// 降级：leanvec 不可用、文件损坏、embed 抛异常 —— 一律返回 null / 空 Map，
-// 调用方不传 rerank，行为逐字段退回纯词法。
+// 经验/洞察层的可选向量索引（leanvec）：持久化 + 逐条失效 + 优雅降级。
+// 只在两层做：池子小（实测真实 store ≤103 条）；doc/symbol 是 10⁴ 量级
+// （某真实 TS 仓库 15.6k 条目），每查询全量编码要 60s，继续纯词法。
+// 失效两级：模型指纹（词表哈希 + 表字节数）变了全量重建；条目文本哈希变了只重算一行。
+// 降级：leanvec 不可用 / 文件损坏 / embed 抛异常 → 返回 null 或空 Map，调用方退回纯词法。
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -20,15 +14,11 @@ const VERSION = 1
 const DIM = 256
 
 /**
- * 条目用于编码的文本：**只取标题**（经验条目取 problem）。
- *
- * 为什么不用完整的评分文本：实测（36 条刻意无词重叠的查询 / 103 条池）标题变体的并集
- * hit@10 是 94%，而把 300 字摘要一起喂进去只有 89%——长文本在均值池化下会被稀释向语料均值。
- *
- * ⚠ 兜底链必须与 `normalizeInsight` 的标题推导**逐项相同**（含 `choice` 与否决 `topic`），
- * 且同样截到 200：写入路径拿的是**归一化之前**的 raw（`save_lesson` 允许只给
- * pattern / choice），只认 title 会让这类写入的查询文本变成空串 → 整条向量带去重静默失效
- * （`vectorNear` 见空文本直接返回 null）。索引侧编码的是落盘后的 title，两边同源才可比。
+ * 条目用于编码的文本：只取标题（经验条目取 problem）。实测标题变体并集 hit@10 94%，
+ * 加上 300 字摘要只有 89%——长文本在均值池化下被稀释向语料均值。
+ * ⚠ 兜底链必须与 `normalizeInsight` 的标题推导逐项相同（含 `choice`、否决 `topic`），
+ * 且同样截到 200：写入路径拿的是归一化之前的 raw，只认 title 会让查询文本变成空串，
+ * 整条向量去重静默失效。索引侧编码的是落盘后的 title，两边同源才可比。
  */
 export function vectorText(it) {
   const t = it?.title || it?.pattern || it?.problem || it?.choice || it?.topic || it?.body
@@ -39,11 +29,9 @@ const hashOf = (text) => createHash('sha256').update(String(text)).digest('hex')
 const keyOf = (it) => (it?.insightId ?? it?.id ?? null)
 
 /**
- * leanvec 的模型指纹：词表内容 sha256 + 向量表字节数。
- *
- * 词表决定 token id、向量表按同一 id 排布，任一变化都必须让旧向量作废。
- * 表全文哈希要 ~0.2s，与省下的 0.4s 相抵，所以用"内容哈希 + 字节数"近似——
- * 只有"表内容变了但字节数恰好相同且词表没变"这种极罕见情形会漏判，日后再加密实指纹。
+ * leanvec 的模型指纹：词表内容 sha256 + 向量表字节数。词表决定 token id、向量表按同一
+ * id 排布，任一变化都必须让旧向量作废。表全文哈希要 ~0.2s，与省下的 0.4s 相抵，
+ * 所以用"内容哈希 + 字节数"近似；极罕见的漏判日后再加密实指纹。
  * @returns {string|null} null = 这个目录不是一份可用的 leanvec
  */
 export function leanvecFingerprint(modelDir) {
@@ -61,8 +49,7 @@ function readSaved(file) {
     const doc = JSON.parse(readFileSync(file, 'utf8'))
     if (doc?.version !== VERSION || typeof doc.blob !== 'string' || !Array.isArray(doc.ids) || !Array.isArray(doc.hashes)) return null
     const buf = Buffer.from(doc.blob, 'base64')
-    // 复制一次拿到 byteOffset=0 且对齐的新缓冲——Buffer.from(base64) 的下层 ArrayBuffer
-    // 可能不是 4 字节对齐，直接 new Float32Array(buf.buffer, buf.byteOffset) 会抛。
+    // 复制一次拿到 byteOffset=0 且对齐的新缓冲：Buffer.from(base64) 的下层 ArrayBuffer 可能不是 4 字节对齐，直接 new Float32Array 会抛。
     const u8 = new Uint8Array(buf)
     const all = new Float32Array(u8.buffer, 0, Math.floor(u8.byteLength / 4))
     const map = new Map()
@@ -80,10 +67,10 @@ function readSaved(file) {
 /**
  * 打开（或新建）向量索引。
  * @param {object} o
- * @param {string|null} o.dir - 持久化目录（通常是项目 store 目录）；null → 只在内存里
- * @param {object[]} o.items - 要建索引的条目（经验 + 洞察两层合一份，id 互不冲突）
- * @param {(text: string) => Float32Array|null} o.embed - leanvec 的编码函数
- * @param {string} o.model - 模型指纹（见 {@link leanvecFingerprint}）
+ * @param {string|null} o.dir 持久化目录（通常是项目 store 目录）；null → 只在内存里
+ * @param {object[]} o.items 要建索引的条目（经验 + 洞察两层合一份，id 互不冲突）
+ * @param {(text: string) => Float32Array|null} o.embed leanvec 的编码函数
+ * @param {string} o.model 模型指纹（见 {@link leanvecFingerprint}）
  * @returns {{score: Function, flush: Function, stats: object}|null} null = 不可用 → 调用方退回纯词法
  */
 export function openVectorIndex({ dir = null, items = [], embed, model, dim = DIM } = {}) {
@@ -96,8 +83,8 @@ export function openVectorIndex({ dir = null, items = [], embed, model, dim = DI
   let computed = 0
   let dirty = false
   /**
-   * 本进程内被删掉的 id：`forget()` 之后即使调用方还拿着旧的条目列表，也不能把它重新编码
-   * 写回去（长驻进程里 store 对象可能仍持有已删条目的引用；"删了又活过来"比不删更难排查）。
+   * 本进程内被删掉的 id：`forget()` 之后即使调用方还拿着旧条目列表，也不能重新编码写回
+   * （长驻进程里 store 可能仍持有已删条目的引用；"删了又活过来"比不删更难排查）。
    */
   const dropped = new Set()
 
@@ -123,11 +110,9 @@ export function openVectorIndex({ dir = null, items = [], embed, model, dim = DI
   }
 
   /**
-   * 持久化（仅在有变化时写；失败不影响本次运行）。
-   * ⚠ **不建目录**：这是缓存写入，`score()` 会在读路径上调它，`writeJsonAtomic` 的
-   * `mkdirSync(recursive)` 会在"传错 root"时于任意可写位置造出 `<root>/.dsh-project-memory`
-   * ——那正是 query_memory / memory_stats 不得不加"根存在性"护栏的原因。目录在写入侧
-   * 早就存在（条目的来源），所以这条只会挡住"从零造目录"。
+   * 持久化（仅在有变化时写；失败不影响本次运行）。⚠ 不建目录：这是缓存写入，`score()`
+   * 在读路径上调它，`mkdirSync(recursive)` 会在"传错 root"时于任意可写位置造出
+   * `<root>/.dsh-project-memory`，正是需要"根存在性"护栏的原因；目录在写入侧早已存在。
    */
   const flush = () => {
     if (!dirty || !file) return false
@@ -149,8 +134,8 @@ export function openVectorIndex({ dir = null, items = [], embed, model, dim = DI
   }
 
   /**
-   * 从索引里移除若干行（`forget` 之后调用）。**不需要加载模型**，也立即落盘：
-   * 删除承诺是"真删"，而向量行是标题的 256 维均值池化——留着就不是真删。
+   * 从索引里移除若干行（`forget` 之后调用）。不需要加载模型，也立即落盘：删除承诺是
+   * "真删"，而向量行是标题的 256 维均值池化，留着就不是真删。
    * @param {string[]} ids
    * @returns {number} 实际移除的行数
    */
@@ -158,8 +143,7 @@ export function openVectorIndex({ dir = null, items = [], embed, model, dim = DI
     let n = 0
     for (const id of ids || []) {
       if (!id) continue
-      // 两处都要删：`usable` 是打开时读回来的快照，`ensure()` 会从它那里复用旧行 ——
-      // 只删 entryMap 的话，下一次 score 会把被删的那一行原样复活。
+      // 两处都要删：`usable` 是打开时的快照，`ensure()` 从它复用旧行；只删 entryMap 的话下次 score 会复活。
       let hit = false
       if (usable?.map?.delete(id)) hit = true
       if (entryMap.delete(id)) hit = true
@@ -171,8 +155,8 @@ export function openVectorIndex({ dir = null, items = [], embed, model, dim = DI
 
   /**
    * 与 auto-inject / recall 两个接缝约定的同一签名：返回 Map<id, cos>。
-   * 查询无法编码、或某条目无文本/无向量 → 该条不进 Map（调用方据此降级，不当 0 分罚它）。
-   * 同时用 `insightId` 与 `id` 两个键登记，兼容两层各自的 id 约定。
+   * 查询无法编码、或条目无文本/无向量 → 该条不进 Map（调用方据此降级，不当 0 分罚它）；
+   * 同时用 `insightId` 与 `id` 登记，兼容两层各自的 id 约定。
    */  const score = (q, cands) => {
     const out = new Map()
     let qv = null
@@ -191,9 +175,8 @@ export function openVectorIndex({ dir = null, items = [], embed, model, dim = DI
     return out
   }
 
-  // 首次打开时把给定条目全部对齐（复用旧行 / 补算缺失行），并**立即落盘**——
-  // 那 0.4s 的构建成本必须在本次会话就存下来，而不是等第一次查询才写。
-  // （必须放在 flush 定义之后：flush 是 const 箭头函数，提前调用会 TDZ。）
+  // 首次打开时把给定条目全部对齐（复用旧行 / 补算缺失行）并立即落盘：0.4s 的构建成本
+  // 必须在本次会话存下来。（必须放在 flush 定义之后：const 箭头函数提前调用会 TDZ。）
   for (const it of items) ensure(it)
   flush()
 
@@ -212,10 +195,8 @@ export function openVectorIndex({ dir = null, items = [], embed, model, dim = DI
 }
 
 /**
- * 从两个 store 收集**要建索引的条目**：洞察层（项目 + 全局）。
- * 与提示通道/召回看到的池子同源；归档条目不进（它们不会被召回）。
- * v0.4 的经验笔记也在里面——统一存储后它们是 `kind:'experience'` 的 insight，
- * 加载时已从 experience.json 导入，不再有第二个池子。
+ * 从两个 store 收集要建索引的条目：洞察层（项目 + 全局）。与提示通道/召回看到的池子同源；
+ * 归档条目不进（不会被召回）。`kind:'experience'` 的 insight 也在里面，统一存储后不再有第二个池子。
  */
 export function vectorItemsFrom(store, globalStore) {
   const out = []
@@ -227,26 +208,22 @@ export function vectorItemsFrom(store, globalStore) {
 /** leanvec 运行时只在进程内加载一次（77 MB 表 + 词表索引 Map，加载 ~90ms、常驻 ~120MB）。 */
 let runtimeCache = null
 /**
- * 同一 `(dir, fingerprint)` 的并发首次加载只做一次。
- *
- * 没有它时，两个调用会各自 `loadLeanvec()`，后完成的一个把前一个 `close()` 掉；而前一个
- * 已经把索引（`embed` 闭包引用旧 `lv`）放进 `indexCache`，于是之后的向量分永远是空 Map，
- * 直到进程重启。冷启动的 injection 与写入去重并发就会撞上。
+ * 同一 `(dir, fingerprint)` 的并发首次加载只做一次：没有它时两个调用各 load 一次，
+ * 后完成的把前一个 `close()`，而前一个已把闭包旧 `lv` 的索引放进 `indexCache`，
+ * 于是之后的向量分永远是空 Map 直到进程重启。冷启动的 injection 与写入去重会撞上。
  */
 const runtimeLoading = new Map()
 /** 向量索引按 (storeDir, 运行时 key) 缓存；条目增删改由 `score()` 里的逐条对齐懒处理。 */
 const indexCache = new Map()
 /**
- * "解析目录 + 模型指纹"的进程内记忆。
- *
- * 为什么必须缓存：`leanvecFingerprint()` 要 sha256 一份 1.94MB 的词表（~10ms），而
- * `createVectorRerank` 在**每一步注入**上都会被调用——不缓存就是每步白付 10ms。
+ * "解析目录 + 模型指纹"的进程内记忆：`leanvecFingerprint()` 要 sha256 一份 1.94MB 词表（~10ms），
+ * 而 `createVectorRerank` 每一步注入都会调用——不缓存就是每步白付 10ms。
  * 键取"显式配置 + 环境变量"的组合：两者都没变就不必重算。
  */
 const resolveCache = new Map()
 
 /**
- * 解析 leanvec 目录。顺序：显式配置 > 环境变量 `DSH_LEANVEC_DIR` > **作为可选依赖**。
+ * 解析 leanvec 目录：显式配置 > 环境变量 `DSH_LEANVEC_DIR` > 作为可选依赖。
  * 三者都拿不到 → null（调用方退回纯词法，这是正常路径不是错误）。
  */
 async function resolveLeanvecDir(explicit) {
@@ -265,9 +242,8 @@ async function resolveLeanvecDir(explicit) {
 }
 
 /**
- * 解析当前可用的 leanvec 目录（**不加载模型**，只做 memo 过的解析 + 指纹）。
+ * 解析当前可用的 leanvec 目录（不加载模型，只做 memo 过的解析 + 指纹）。
  * 给 `memory_stats` 这类"只想知道开没开"的调用方用。
- * @param {string|null} [vectorDir]
  * @returns {Promise<{dir: string|null, fingerprint: string|null}>}
  */
 export async function resolveVectorLayer(vectorDir = null) {
@@ -282,8 +258,8 @@ export async function resolveVectorLayer(vectorDir = null) {
 }
 
 /**
- * 解析目录 + 加载运行时 + 打开（或复用）索引。**不含 alpha**——重排与写入侧去重
- * 共用这一层，`alpha` 只属于前者（它是个排序权重，不该控制去重是否工作）。
+ * 解析目录 + 加载运行时 + 打开（或复用）索引。不含 alpha——重排与写入侧去重共用这一层，
+ * `alpha` 只属于前者（排序权重不该控制去重是否工作）。
  * @returns {Promise<{index: object, fingerprint: string, dir: string}|null>}
  */
 async function openEngine({ storeDir = null, items = [], vectorDir = null } = {}) {
@@ -316,19 +292,16 @@ async function openEngine({ storeDir = null, items = [], vectorDir = null } = {}
         const previous = runtimeCache
         runtimeCache = runtime
         if (previous && previous !== runtime) {
-          // 旧运行时上的索引一律作废：它们闭包里的 `lv` 马上会被 close()，留着只会在下一次
-          // `openEngine` 时被复用并静默返回空向量分。先清缓存，再关 fd（Windows 上 pnpm
-          // 替换 node_modules 需要这个 close）。
+          // 旧运行时上的索引一律作废：闭包里的 `lv` 马上会被 close()，留着只会静默返回空向量分。
+          // 先清缓存，再关 fd（Windows 上 pnpm 替换 node_modules 需要这个 close）。
           for (const [ck, entry] of indexCache) if (entry.runtime === previous) indexCache.delete(ck)
           try { previous.lv.close?.() } catch { /* 老版本没有 close() */ }
         }
       }
     }
-    // key 里带运行时目录：同一模型内容从两个路径加载时，不能用一份 index 的 embed 闭包去
-    // 服务另一个运行时（否则切换目录会把先前的索引一起带坏）。
+    // key 里带运行时目录：同一模型从两个路径加载时，不能拿一份 index 的 embed 闭包服务另一个运行时。
     const ck = `${storeDir ?? ''}\u0000${runtimeKey}`
-    // 索引按 (storeDir, 运行时) 缓存；之后新增/改写的条目由 `score()` 里的逐条对齐懒处理
-    // （内容变了就重算那一行并落盘），所以这里不需要按 items 签名判断是否重建。
+    // 索引按 (storeDir, 运行时) 缓存；条目增删改由 score() 里的逐条对齐懒处理，不需要按 items 签名重建。
     let entry = indexCache.get(ck)
     if (!entry) {
       const index = openVectorIndex({ dir: storeDir, items, embed: (t) => runtime.lv.embed(t), model: fingerprint })
@@ -343,29 +316,24 @@ async function openEngine({ storeDir = null, items = [], vectorDir = null } = {}
 }
 
 /**
- * 构造给 `recallItems` / `buildInjection` 用的 rerank。leanvec 不可用 → **null**。
- *
- * 装了就有向量、没装就纯词法，两条路的差别只在排序：闸门（覆盖率/共同词数）与返回条数都不变。
- * @param {object} o
- * @param {string|null} [o.storeDir] - 持久化位置（通常是项目 store 目录）；null → 只在内存里
- * @param {object[]} [o.items] - 建索引的条目（见 {@link vectorItemsFrom}）
- * @param {string|null} [o.vectorDir] - leanvec 目录（显式配置优先）
- * @param {number} [o.alpha] - 融合权重；实测 0.5 在小 k 上最优（见 recall.js 的注释）
- * @param {number} [o.itemMin] - 条目的余弦下限（**实验性**，不设则不过滤；见 auto-inject 注释）
- * @param {number} [o.speakMin] - 通道级语义救援阈值（**实验性**，不设则不启用）
+ * 构造给 `recallItems` / `buildInjection` 用的 rerank。leanvec 不可用 → null；
+ * 装了就有向量、没装就纯词法，差别只在排序：闸门与返回条数都不变。
+ * @param {string|null} [o.storeDir] 持久化位置（通常是项目 store 目录）；null → 只在内存里
+ * @param {object[]} [o.items] 建索引的条目（见 {@link vectorItemsFrom}）
+ * @param {string|null} [o.vectorDir] leanvec 目录（显式配置优先）
+ * @param {number} [o.alpha] 融合权重；实测 0.5 在小 k 上最优
+ * @param {number} [o.itemMin] 余弦下限（实验性）；[o.speakMin] 通道级语义救援阈值（实验性，不设则不启用）
  * @returns {Promise<{score: Function, alpha: number, itemMin?: number, speakMin?: number, stats: object}|null>}
  */
 export async function createVectorRerank({ storeDir = null, items = [], vectorDir = null, alpha = 0.5, itemMin, speakMin } = {}) {
-  // 强制关闭：`vectorDir: 'off'`（或 alpha=0）一律返回 null，连模型都不加载。
-  // 为什么需要：装了可选依赖之后，没有这个开关就无法退回纯词法——测试固定基线、
-  // 线上排查"是不是向量层导致的"都会用得上。
+  // 强制关闭：`vectorDir: 'off'`（或 alpha=0）一律返回 null，连模型都不加载——测试固定基线、
+  // 线上排查"是不是向量层导致的"都要靠它。
   if (typeof vectorDir === 'string' && vectorDir.trim().toLowerCase() === 'off') return null
   if (alpha === 0) return null
   const eng = await openEngine({ storeDir, items, vectorDir })
   if (!eng) return null
   const a = typeof alpha === 'number' && alpha >= 0 && alpha <= 1 ? alpha : 0.5
-  // `itemMin` / `speakMin` 只有**显式配置**时才进返回值：没有可发布的默认值（见 auto-inject
-  // 的证据），不设即整段逻辑不执行，默认路径与旧版逐字段一致。
+  // `itemMin` / `speakMin` 只有显式配置时才进返回值：没有可发布的默认值，不设即整段逻辑不执行。
   const out = { score: eng.index.score, alpha: a, stats: eng.index.stats }
   if (typeof itemMin === 'number' && Number.isFinite(itemMin)) out.itemMin = itemMin
   if (typeof speakMin === 'number' && Number.isFinite(speakMin)) out.speakMin = speakMin
@@ -373,11 +341,9 @@ export async function createVectorRerank({ storeDir = null, items = [], vectorDi
 }
 
 /**
- * 写入侧（近重复检测）用的余弦打分器。leanvec 不可用 / 显式关掉 → **null**。
- *
- * 与 `createVectorRerank` **刻意分开**：`autoContext.vectorAlpha` 是排序权重，把它设成 0
- * 是"关掉重排"，不该连带关掉写入去重（旧实现复用同一个函数，于是 `vectorAlpha: 0` 静默
- * 停掉了 0.9 自动覆盖 / 0.7 近邻提示）。开关是独立的 `vectorDedup`。
+ * 写入侧（近重复检测）用的余弦打分器。leanvec 不可用 / 显式关掉 → null。
+ * 与 `createVectorRerank` 刻意分开：`vectorAlpha` 是排序权重，设成 0 不该连带关掉写入去重
+ * （旧实现复用同一个函数，把 0.9 自动覆盖 / 0.7 近邻提示一起静默停掉）。开关是 `vectorDedup`。
  * @returns {Promise<((text: string, items: object[]) => Map<string, number>)|null>}
  */
 export async function createVectorCosine({ storeDir = null, items = [], vectorDir = null, dedup = true } = {}) {
@@ -389,7 +355,7 @@ export async function createVectorCosine({ storeDir = null, items = [], vectorDi
 }
 
 /**
- * 删除若干条目的向量行（`forget` 之后调用）。**不加载模型**：只读文件、过滤 id、原子重写，
+ * 删除若干条目的向量行（`forget` 之后调用）。不加载模型：只读文件、过滤 id、原子重写，
  * 并同步清掉进程内缓存索引里的同名行（否则下次 flush 会把它写回去）。
  * @param {{dir: string|null, ids: string[]}} o
  * @returns {number} 移除的行数（尽力而为，绝不抛）
@@ -432,8 +398,8 @@ export function forgetVectorRows({ dir = null, ids = [] } = {}) {
 }
 
 /**
- * 索引状态摘要（**不加载模型**）：给 `memory_stats` 用的可观测量。
- * 报告行数、陈旧行（文件里有、store 里已没有）、体积、模型指纹与落盘时间。
+ * 索引状态摘要（不加载模型）：给 `memory_stats` 用的可观测量——行数、陈旧行
+ * （文件里有、store 里已没有）、体积、模型指纹与落盘时间。
  */
 export function vectorIndexSummary({ dir = null, items = [] } = {}) {
   const live = new Set((items || []).map((it) => (it?.insightId ?? it?.id)).filter(Boolean))
