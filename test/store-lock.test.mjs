@@ -288,4 +288,59 @@ store.commit()
   ok('外部删除 store 目录后：目录 / 数据 / format / .gitignore 全部自愈')
 }
 
+// --- 11. 跨进程任务条目：两边新增都保留，本地删除不复活 ---
+{
+  const d = dir()
+  const seed = new ProjectMemoryStore(d).load()
+  seed.addTask({
+    id: 't_merge',
+    title: 'merge test',
+    files: [],
+    steps: [],
+    insights: [{ id: 'ins_x', title: 'X', updatedAt: '2026-01-01T00:00:00.000Z' }],
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    lastActiveAt: '2026-01-01T00:00:00.000Z',
+  })
+  assert.equal(seed.save(), true)
+
+  const ready = path.join(d, 'child-ready')
+  const go = path.join(d, 'child-go')
+  const childScript = `
+import { existsSync, writeFileSync } from 'node:fs'
+import { ProjectMemoryStore } from ${JSON.stringify(storeUrl)}
+const [dir, ready, go] = process.argv.slice(1)
+const store = new ProjectMemoryStore(dir).load()
+const task = store.getTask('t_merge')
+task.insights = (task.insights || []).filter((it) => it.id !== 'ins_x')
+task.insights.push({ id: 'ins_b', title: 'B', updatedAt: '2026-01-02T00:00:00.000Z' })
+store.markTasksDirty()
+writeFileSync(ready, '')
+const sleeper = new Int32Array(new SharedArrayBuffer(4))
+while (!existsSync(go)) Atomics.wait(sleeper, 0, 0, 5)
+if (!store.save()) process.exitCode = 1
+`
+  const child = spawn(process.execPath, ['--input-type=module', '-e', childScript, d, ready, go], { stdio: 'inherit' })
+  const sleeper = new Int32Array(new SharedArrayBuffer(4))
+  const deadline = Date.now() + 3000
+  while (!existsSync(ready) && Date.now() < deadline) Atomics.wait(sleeper, 0, 0, 5)
+  assert.ok(existsSync(ready), '子进程应先完成加载（拿到旧快照）再等信号')
+
+  // 父进程仍持有旧快照（含 ins_x），在子进程等待期间新增 ins_a 并落盘。
+  const parentTask = seed.getTask('t_merge')
+  parentTask.insights.push({ id: 'ins_a', title: 'A', updatedAt: '2026-01-03T00:00:00.000Z' })
+  seed.markTasksDirty()
+  assert.equal(seed.save(), true)
+  writeFileSync(go, '')
+
+  const code = await new Promise((resolve) => child.on('exit', resolve))
+  assert.equal(code, 0, '子进程保存应成功')
+  const diskTask = JSON.parse(readFileSync(path.join(d, 'tasks.json'), 'utf8')).find((t) => t.id === 't_merge')
+  assert.deepEqual(
+    diskTask.insights.map((it) => it.id).sort(),
+    ['ins_a', 'ins_b'],
+    '两边新增都应保留；子进程本地删除的 ins_x 不得被父进程的旧副本复活',
+  )
+  ok('跨进程任务条目合并：新增不丢、删除不复活')
+}
+
 console.log(`\nstore-lock tests: ${passed} passed`)
