@@ -6,7 +6,7 @@
 
 [![ci](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![npm](https://img.shields.io/npm/v/@yolk_vat-y/dsh-project-memory)](https://www.npmjs.com/package/@yolk_vat-y/dsh-project-memory) [![npm downloads](https://img.shields.io/npm/dm/%40yolk_vat-y%2Fdsh-project-memory?style=flat-square&color=orange)](https://www.npmjs.com/package/@yolk_vat-y/dsh-project-memory) [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/00080000/dsh-project-memory) [![Awesome](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
-为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）agent 提供持久化的 **项目开发记忆**。专门针对项目开发，原生融合 dsh 任务系统，会话内任务清单与读过的文件自动沉淀为跨会话任务记录，任务↔文件自动关联——开发工作流可切换、可续接，无需重复梳理整个项目，解决上下文失效；文档（PDF/Markdown/txt）与代码符号写入工作区独立存储，文档自动交叉链接至所提及的代码符号；经验笔记（问题 → 方案）自动去重，避免重复踩坑。所有数据按项目落盘，跨会话压缩与交接保留，召回附带 `路径:行号` 可回源核实。无原生构建、无向量数据库。79 MB 的本地嵌入表 `leanvec` 随安装默认启用；它不在时自动退回纯词法。
+为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）agent 提供持久化的 **项目开发记忆**。专门针对项目开发，原生融合 dsh 任务系统，会话内任务清单与读过的文件自动沉淀为跨会话任务记录，任务↔文件自动关联——开发工作流可切换、可续接，无需重复梳理整个项目，解决上下文失效；文档（PDF/Markdown/txt）与代码符号写入工作区独立存储，文档自动交叉链接至所提及的代码符号；经验笔记（问题 → 方案）自动去重，避免重复踩坑。项目级与任务级数据按项目落盘；global 级条目放在一个全局文件里（默认 `~/.config/dsh-project-memory/global.json`）。数据跨会话压缩与交接保留，召回附带 `路径:行号` 可回源核实。无原生构建、无向量数据库。约 85 MB 的本地嵌入表 `leanvec` 随安装默认启用（约 +45 MB 常驻）；它不在时自动退回纯词法。
 
 
 > 插件在磁盘上维护一份精简的项目**记忆**，每条记录指向具体的文件与行号；agent 需要快速了解项目时先查**记忆**，无需重读整个项目。
@@ -14,16 +14,16 @@
 
 ## 特性
 
-- **TaskBridge：跨会话开发任务** — 会话内的任务清单与触碰过的文件持久化为项目任务实体，工作流可以随时切走再续接，不必重新界定项目范围。关联文件按最近活跃排序（读取永远不越过写过的文件），续接时一眼看到该先看哪些。新会话通过 `list_tasks` → `select_task` 续接。委派给子代理的工作不会建档。旧宿主下降级为纯记录。
+- **TaskBridge：跨会话开发任务** — 会话内的任务清单与触碰过的文件持久化为项目任务实体，工作流可以随时切走再续接，不必重新界定项目范围。关联文件按最近活跃排序（读取永远不越过写过的文件），续接时一眼看到该先看哪些。新会话通过 `list_tasks` → `select_task` 续接。委派给子代理的工作不会建档。宿主不提供会话事件时，任务工具仍可作为普通记录列表使用。
 - **任务面板与编辑** — 卡片可拖拽，展示任务步骤与涉及文件，可折叠为迷你条或彻底隐藏；标题、步骤与状态支持行内编辑，与模型更新走同一条写回路径；四档外观风格只改材质、几何、字型与密度，颜色跟随宿主。面板默认隐藏，仅在显式唤起后出现；会话切换只后台同步，刷新页面不会自行打开；渲染错误有边界兜底，面板崩溃不会拖垮宿主。
 - **文档记忆** — PDF、Markdown 与纯文本按块切分并生成摘要，索引期不调用模型。每条保留一段简短摘要供注入、一个有界的检索词集合，以及回源引用。
-- **代码符号记忆** — 零依赖扫描器提取函数、类、方法、接口与类型别名及其完整签名，覆盖 8 种语言。项目装了 `typescript` 时，可选第二层补推导返回类型、泛型与接口，后台执行、不阻塞索引。
-- **读到即记忆、变更即刷新** — 文件在模型实际读取的瞬间被记忆，记忆是正常工作的副产品，而不是额外的一次全量扫描；从未读过的文件不会被记忆。后台轮询只重记变更过的文件。
+- **代码符号记忆** — 零依赖扫描器提取函数、类、方法、接口与类型别名及其签名，覆盖 JavaScript/TypeScript、Python、Go、Rust、C/C++/C#、Java 与 shell。项目装了 `typescript` 时，可选第二层补推导返回类型、泛型与接口，后台执行、不阻塞索引。
+- **读到即记忆、变更即刷新** — 默认开启懒索引：文件在模型实际读取的瞬间被记忆，记忆是正常工作的副产品，而不是额外的一次全量扫描。`index_repo` 或监听根目录可以覆盖其余文件；后台轮询只重记变更过的文件。
 - **文档 ↔ 代码交叉链接** — 文档提及的符号，在查询该符号时一并带出。链接按**当前**符号表解算，不会过期。
 - **混合召回** — 对文档、符号、经验笔记与 insight 排序召回，可选 LLM 查询扩展。`leanvec` 是 optionalDependency：默认装上并按余弦重排经验/洞察两层，没装或 `vectorDir: 'off'` 则退回纯词法。针对 CJK 增强：短语加分、同义词表，以及文档↔符号链接的词边界处理。俄语（西里尔）同样支持：切词 + 虚词表 + Snowball 词干，俄文查询能命中俄文条目，也参与去重。
 - **经验笔记** — 记录问题 → 方案；相似问题覆盖而不重复，数量随项目规模有界，与教训走同一条注入通道：检索与自动注入都能带出。
 - **分层 insight 记忆（教训 / 决策 / 流程）** — 同一实体贯穿任务、项目、全局三级。近重复合并或强化；提升是更换归属而非复制。被使用会记账，因此衰减与容量按活跃度排序，而不是只按时间。面板提供分级的记忆视图用于审核与编辑；列表按新→旧排列并增量加载——每页 30 条，滚到底前就预取下一页，离屏行不参与渲染，记忆变多也不卡。
-- **触发式注入** — insight 可携带 authored trigger：只有 `when` 能触发，`guard` 只能收窄，`prevents` 记下没有它会坏在哪。语料正文永远不能触发注入；统计通道另有独立门槛，默认沉默。**证据来源分级**：只有宿主事实（结构化工具调用、`fs`/`todo` 事件）与真人消息里的不可逆外部动作（提交 / 发布 / 发版 / 推送 / 部署 / 公开）能触发全文注入；散文里的"删除 / 清理 / 渲染 / 基准"只进提示通道，子代理提示词与通知类消息不参与动作判定——它们曾让一个真实会话 72% 的注入字符是噪音。
+- **触发式注入** — insight 可携带 authored trigger：只有 `when` 能触发，`guard` 只能收窄，`prevents` 记下没有它会坏在哪。语料正文永远不能触发注入；统计通道另有独立门槛，默认沉默。**证据来源分级**：只有宿主事实（结构化工具调用、`fs`/`todo` 事件）与真人消息里的不可逆外部动作（提交 / 发布 / 发版 / 推送 / 部署 / 公开）能触发全文注入；散文里的"删除 / 清理 / 渲染 / 基准"只进提示通道，子代理提示词与通知类消息不参与动作判定。
 - **用法也是一个 skill** — 向宿主 `skills` 注册 `project-memory`（目录 bundle，含 `scripts/pm-digest.mjs`，`resourceBase` 指向包内目录）。模型按需加载查询 / 写入流程，不占常驻提示；没有 `skills` 服务的宿主静默跳过。
 
 ## 安装
@@ -42,19 +42,19 @@ cd dsh-project-memory && dsh plugin --profile web add . -w
 dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 ```
 
-每个被索引的项目在 `<root>/.dsh-project-memory/` 下有独立存储；它默认就把自己排除在 git 之外，`.gitignore` 无需任何添加。
+每个被索引的项目在 `<root>/.dsh-project-memory/` 下有独立存储；它默认就把自己排除在 git 之外，`.gitignore` 无需任何添加。global 级条目单独存放于 `~/.config/dsh-project-memory/global.json`；可用 `insight.globalFile` 改到别处。
 
 ## 用法
 
 以下工具由 **agent 自动调用**，无需用户手动输入。在对话中直接说自然语言即可——例如「给这个项目建个索引」或「auth 模块是干嘛的」，或者正常开发即可——agent 会自动调用对应工具。默认开启「读到即索引」：模型读哪个文件，就顺便索引哪个文件，记忆在你干活的过程中自然积累。`watch_repo` 让显式监听的根目录在后台保持新鲜；`index_repo` 强制对项目做一次全量回填（未变更文件自动跳过）。
 
-在 git 工作树里，语料就是 `git ls-files --cached --others --exclude-standard` 的清单——已跟踪文件，加上未被忽略的未跟踪文件——因此 `.gitignore`（含嵌套规则）决定什么会被记忆。不是 git 工作树的目录退回普通遍历（不套忽略规则）。「读到即索引」对单个文件套用同一判据；显式 `index_doc` 则总是索引你指定的文件。
+在 git 工作树里，语料就是 `git ls-files --cached --others --exclude-standard` 的清单——已跟踪文件，加上未被忽略的未跟踪文件——因此 `.gitignore`（含嵌套规则）决定什么会被记忆。不是 git 工作树的目录退回普通遍历（不套忽略规则）。「读到即索引」对单个文件套用同一判据；显式 `index_doc` 不受 `.gitignore` 限制，但仍服从 `roots.exclude`、可读性与体积上限。
 
 | 工具 | 用途 |
 |---|---|
 | `index_doc file_path` | 索引单个文档（PDF/MD/txt）：分块、确定性摘要，带 `路径:行号` 入库。未变更文件自动跳过。 |
 | `index_repo root` | 索引整个项目：文档生成确定性摘要，代码文件生成零 token 符号表。增量更新，store 跟随文件清单：已删除、被忽略或移走的文件会被清理；文档与符号交叉链接。根目录不存在或在排除名单上时，会在写入任何内容前拒绝。 |
-| `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件，仅重抽这些文件。监听的项目在插件重启后自动恢复；不存在或在排除名单上的根目录会被拒绝，已消失的根目录会被丢弃而不是被重新创建。 |
+| `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件，仅重抽这些文件。监听根会记在该项目的 store 里，在该项目下启动 dsh 时恢复监听；不存在或在排除名单上的根目录会被拒绝，已消失的根目录会被丢弃而不是被重新创建。 |
 | `memory_stats root` | 查看记忆库内容：总量、最近索引时间，以及按时间排序的逐文件清单。 |
 | `query_memory query` | 对文档、符号、经验与 insight 执行排序检索，可选 LLM 查询扩展。`type` 选择层（`all` / `doc` / `symbol` / `experience` / `insight` / `task`）。返回带相对分数、引用或 insight id、以及文档→符号链接的结果。 |
 | `list_tasks` | 列出本项目任务记录（含归档，带标记）。新会话/续接前先调用。 |
@@ -74,12 +74,12 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 
 - **易失性** — 上下文是临时的，会话压缩即丢失。
 - **持久性** — **记忆**存于磁盘，跨压缩与会话保留。
-- **紧凑性** — 代码层每个符号只存一行有界声明，文档层每个 chunk 保留 ≤300 字符的摘要与有界词项。**派生数据一律不落盘**：doc→symbol 链接在读取期计算。最终体积取决于符号密度与 chunk 长度，下面是特定语料的实测值（2026-10-13），不是承诺：纯代码的前端应用（289 文件）实测 **325 bytes/条目 ≈ 源码 21%**；符号密集的 TypeScript monorepo（12,634 文件 / 代码 107 MB + 文档 14 MB）实测代码层 **占源码 22%**（整库 549 bytes/条目）、文档层 **占其源码 127%**；文档占比高的语料单条目最大，一个文档为主的工作区（Markdown + PDF）实测 **1,401 bytes/条目**。
+- **紧凑性** — 代码层每个符号只存一行有界声明，文档层每个 chunk 保留 ≤300 字符的摘要与有界词项。doc→symbol 链接不落盘，读取期计算。最终体积取决于符号密度与 chunk 长度，下面是特定语料的实测值（2026-10-13），不是承诺：纯代码的前端应用（289 文件）实测 **325 bytes/条目 ≈ 源码 21%**；符号密集的 TypeScript monorepo（12,634 文件 / 代码 107 MB + 文档 14 MB）实测代码层 **占源码 22%**（整库 549 bytes/条目）、文档层 **占其源码 127%**；文档占比高的语料单条目最大，一个文档为主的工作区（Markdown + PDF）实测 **1,401 bytes/条目**。
 - **可核验性** — **召回**在适用时携带 `路径:行号` 引用，agent 可对照源文件核实。
 
-构建**记忆**无需预先全量扫描：文件在模型读取时被记忆，**记忆**恰好覆盖实际处理过的内容。未变更的文件重读是空操作，因此持续维护开销很低。
+默认开启懒索引时，构建**记忆**无需预先全量扫描：文件在模型读取时被记忆，**记忆**恰好覆盖实际处理过的内容；`index_repo` 或监听根可以覆盖其余文件。未变更的文件重读是空操作，因此持续维护开销很低。
 
-存储按项目独立存放，并跟随代码库变化：文件变更按内容哈希重新抽取，文件删除则同步移除。经验笔记是 `insights.json` 里 `kind: 'experience'` 的条目，仅检索、累积不影响上下文。
+项目级与任务级记忆按项目保存，并跟随代码库变化：文件变更按内容哈希重新抽取，文件删除则同步移除。经验笔记是 `insights.json` 里普通的 `kind: 'experience'` 条目：可检索、参与去重，也能进入与教训相同的受门槛约束的提示通道。
 
 ## 设计
 
@@ -96,10 +96,12 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
   admission-shadow.jsonl  每步一行，全部被评分的候选 + 特征（离线重放）
 ```
 
+global 级条目不放在项目里：它们在 `insight.globalFile`（默认 `~/.config/dsh-project-memory/global.json`），所有项目共享。
+
 - **增量** — 按文件内容哈希，仅重新抽取变更文件。
 - **交叉链接** — `query_memory` 返回文档 chunk 时，按**当前**符号表解算它提到的符号，以 `references` 带出。文档先索引、符号后到也能链上。
 - **查询扩展** — `llmQueryExpansion` 开启时，把查询改写为多个变体（同义词、中英、符号名猜测）再合并分数；关闭时查询完全不碰 LLM。索引本身不调用模型。
-- **一致性** — 事实层跟随代码库（哈希重抽 / 删除即移除）；经验层仅检索，配合覆盖与 `forget` 机制。写入在跨进程的目录锁（`.write.lock`）内做一次短暂的读改写，因此两个 dsh 实例可以共用一个项目存储：分片按 `indexedAt` 收敛，拿不到锁的那次保存会延后重试。
+- **一致性** — 事实层跟随代码库（哈希重抽 / 删除即移除）；经验条目与其他 insight 走同一套覆盖与 `forget` 机制。写入在跨进程的目录锁（`.write.lock`）内做一次短暂的读改写，因此两个 dsh 实例可以共用一个项目存储：分片按 `indexedAt` 收敛，拿不到锁的保存会延后重试，仍失败则在退出时同步 flush；默认静默（`DSH_PROJECT_MEMORY_DEBUG=1` 才打印一行诊断）。
 
 ## 架构（任务面板）
 
@@ -128,7 +130,7 @@ TaskPanel (Container)
 | `autoIndexOnFirstUse` | false | 插件加载时对当前工作目录做全量扫描（可选） |
 | `watch` / `watchInterval` | true / 30 | 后台刷新；基础轮询间隔（秒）；回合进行中静默（5 分钟兜底，外部改动仍会自愈），回合结束立刻合并扫一次；空闲时逐步退避到最长 2 分钟，一有变化立即回到该值 |
 | `maxScanFiles` / `maxScanDepth` | 20000 / 12 | 单次扫描的文件数与目录深度硬上限；被截断时会在报告里说明，且不会删除没扫到的条目。**无法取消**：`0` 或任何非法值都回落到默认值 |
-| `allowUnsafeRoots` | false | 兼容开关：放开**内置**排除名单，所有根判定入口（含懒索引、会话审计、任务桥）都生效。它只作用于内置名单——`roots.deny` / `roots.exclude` 仍然优先；只想放开一个目录时用 `roots.allow` |
+| `allowUnsafeRoots` | false | 放开**内置**排除名单，所有根判定入口（含懒索引、会话审计、任务桥）都生效。它只作用于内置名单——`roots.deny` / `roots.exclude` 仍然优先；只想放开一个目录时用 `roots.allow` |
 | `roots.allow` / `roots.deny` / `roots.exclude` | `[]` / `[]` / `[]` | 自定义根名单（机器/配置档级，CLI 与 web 通用）。`allow` / `deny` 精确匹配目录本身；`exclude` 按路径边界前缀匹配整棵子树（其中的文件一律不进索引）。优先级 `exclude` > `deny` > `allow` > 内置名单，文件系统根永远不能当根。支持 `~`/`~/...`；非绝对路径忽略并在 stderr 告警一次；Windows 下大小写不敏感 |
 | `llmQueryExpansion` / `expansionCount` | false / 6 | 检索前用 LLM 扩展查询（默认关闭，节省 token）；扩展变体上限 |
 | `tsPath` / `enableTypeScript` | (自动) / true | 可选：强制指定 `typescript` 安装路径；`enableTypeScript: false` 彻底禁用类型感知层 |
@@ -140,11 +142,10 @@ TaskPanel (Container)
 | `autoContext.maxItemsPerSession` / `autoContext.maxItemCharsPerSession` | 60 / 24000 | **runaway 保险丝，不是节流阀** —— 按条数与字符计的每会话硬上限：一旦触顶，本会话余下部分条目通道持续沉默 |
 | `autoContext.hintMinCoverage` | 0.45 | 提示通道的**绝对**下限：条目覆盖了查询多少 IDF 加权信息量。只用相对阈值分不出"有信号"和"矮子里拔将军" |
 | `autoContext.hintMinMatched` / `autoContext.hintMinSupport` | 2 / 0.15 | 提示还必须至少共享这么多个词；且查询里能在语料中找到对应的词占比不低于该值时，通道才出声——否则本轮整体沉默 |
-| `autoContext.vectorDir` | 未设 | **可选**语义层，只作用于经验/洞察两层；随 `leanvec`（optionalDependency）默认装上并启用（79 MB、约 +130 MB RSS）。填 `off` 强制纯词法；填路径或用 `DSH_LEANVEC_DIR` 可覆盖。只改排序、返回条数不变；启用时只有**没拿到余弦**的条目才继续按词法命中数筛 |
+| `autoContext.vectorDir` | 未设 | **可选**语义层，只作用于经验/洞察两层；随 `leanvec`（optionalDependency）默认装上并启用（约 85 MB 表、约 +45 MB RSS）。填 `off` 强制纯词法；填路径或用 `DSH_LEANVEC_DIR` 可覆盖。只改排序、返回条数不变；启用时只有**没拿到余弦**的条目才继续按词法命中数筛 |
 | `autoContext.vectorAlpha` | 0.5 | 这两层内 `(1-α)·词法分 + α·余弦` 的权重；`0` 只关闭重排（写入侧去重仍在），`1`（纯向量）实测更差 |
 | `autoContext.vectorDedup` | true | 写入侧近重复检测（余弦 ≥0.9 自动覆盖、≥0.7 近邻提示）。与 `vectorAlpha` 独立；设 `false` 不影响召回排序 |
 | `autoContext.vectorItemMin` / `autoContext.vectorSpeakMin` | 未设 | **实验性**：提示通道的绝对余弦地板（条目级）与通道级语义救援。未标定——不设即关闭，开启前先看 `src/auto-inject.js` 里的实测证据 |
-| `autoContext.legacyScope` | `ignore` | 旧 `trigger.scope` 的处理：默认 `ignore`，不拿它当过滤条件；`filter` 拿它当过滤条件。`npm run selfcheck:triggers` 会列出仍带 scope 的条目 |
 | `autoContext.auditLog` | true | 每次**真实**注入往 `injection-audit.jsonl` 追加一行（注入了什么、为什么命中、丢了什么、会话额度）；超过 `auditMaxBytes`（`262144`）轮转 `.1`。任何 IO 失败都静默 |
 | `autoContext.shadowLog` / `autoContext.shadowMaxBytes` | true / 524288 | **每步**（含什么都没注入的步）往 `admission-shadow.jsonl` 追加一行：被评分候选及其特征，以及每条候选卡在哪一关 —— 它让"换个阈值会怎样"可以离线回答。只写盘、不进 prompt；超过上限轮转，只保留一代 `.1` |
 
@@ -162,11 +163,11 @@ TaskPanel (Container)
 
 - `roots.allow`：即使命中了内置名单也允许作根，精确匹配；文件系统根不在此列。
 - `roots.deny`：这个目录不能当根，精确匹配；它的子目录仍可各自成根。
-- `roots.exclude`：这棵子树里的文件一律不进索引，按路径边界前缀匹配（含子目录）；也不能在这里推出新的根。父根的完整扫描会跳过它，之前索引过的条目会在下一次完整扫描时清理。
+- `roots.exclude`：这棵子树里的文件一律不进索引，按路径边界前缀匹配（含子目录）；也不能在这里推出新的根。父根的完整扫描会跳过它，并清理该子树里已索引的条目。
 
 注意 `deny` 只决定这个目录自己能不能当根：父目录已经是根时，`deny` 的子目录仍会被父根索引——要连文件一起排除请用 `exclude`（或 `.gitignore`，git 仓库里的扫描本来就尊重它）。显式 `index_doc` 也服从 `exclude`，被排除的文件会返回 `Not indexed`。
 
-优先级是 `exclude` > `deny` > `allow` > 内置名单。`allowUnsafeRoots: true` 保留为兼容，只放开内置名单，`deny` / `exclude` 仍然优先。生效面是同一套判定：显式工具调用、懒索引、watch、会话审计、任务桥。新增 `deny` / `exclude` 后，已登记在 `watch.json` 里的根会在下次启动自动摘掉。配置写在 `- id: project-memory` 的 `config:` 下（CLI 与 web 都适用）；Web 端暂未提供正式配置页。
+优先级是 `exclude` > `deny` > `allow` > 内置名单。`allowUnsafeRoots: true` 只放开内置名单，`deny` / `exclude` 仍然优先。生效面是同一套判定：显式工具调用、懒索引、watch、会话审计、任务桥。被当前策略拒绝的根会在下次启动时从 `watch.json` 摘掉。配置写在 `- id: project-memory` 的 `config:` 下（CLI 与 web 都适用）；Web 端没有独立配置页，直接改 profile。
 
 **扫描上限。** 单次扫描最多 `maxScanFiles` 个文件（20000）、`maxScanDepth` 层目录（12）。被截断时，`index_repo` 的结果里会说明，watcher 每个根记一行，且不会删除没扫到的条目。**读不到的目录**（如 `EACCES`）同样算一次截断扫描并在结果里点名：读失败不等于被删除。
 
@@ -187,7 +188,7 @@ store 建在被索引的目录树里，并且**自我忽略**：自己目录内�
     maxScanFiles: 20000         # 单次扫描文件上限（截断会报告，且不会误删旧条目）
     maxScanDepth: 12            # 单次扫描目录深度上限
     enableTypeScript: true      # 开启：装了 TS 时启用类型感知增强（默认）
-    # allowUnsafeRoots: false   # 兼容开关：只放开内置名单；优先改用下面的 roots.allow
+    # allowUnsafeRoots: false   # 放开内置名单；优先改用下面的 roots.allow
     # roots:                     # 自定义根名单（默认全空）
     #   allow: [/srv/projects/demo]        # 精确放行内置名单里的目录（文件系统根不可放行）
     #   deny: [/srv/shared]                # 精确拒绝这个目录本身；子目录仍可成根
@@ -242,7 +243,7 @@ dsh web --patch ./config.yml
 
 ### Windows / 大量小文件
 
-Windows（NTFS）的瓶颈不是 CPU，而是**每次写盘的文件操作数**；watch 的同步 `stat` 循环还会把 dsh 的事件循环按住。同一份 400 个小文件（WSL 挂 NTFS 的悲观代理）：首次索引 8–10 s、单文件"改 → 懒索引" p50 约 46 ms；ext4 上分别是 60–90 ms 与 1 ms。3,000 / 10,000 个小文件索引的峰值 RSS 约 85 / 112 MB——**大量小文件不是 OOM 面**（单个大文件才是）。
+Windows（NTFS）的瓶颈不是 CPU，而是**每次写盘的文件操作数**。watch 以有界并发异步 `stat`，元数据 I/O 不会再按住事件循环。同一份 400 个小文件（WSL 挂 NTFS 的悲观代理）：首次索引 8–10 s、单文件"改 → 懒索引" p50 约 46 ms；ext4 上分别是 60–90 ms 与 1 ms。3,000 / 10,000 个小文件索引的峰值 RSS 约 85 / 112 MB——**大量小文件不是 OOM 面**（单个大文件才是）。
 
 ```bash
 npm run bench:edits -- --dir C:\\Temp\\pm-bench      # Windows 原生
@@ -275,14 +276,14 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ## 设计取舍
 
-- **短时文件锁，而不是嵌入式数据库** — 每次保存只在读改写期间持有排他的 `.write.lock`（解析在锁外完成），最多等 2 秒；对方忙时最多**同步等 15s**（写路径的正确性靠等到锁，不靠后台重试）；仍失败会登记进退出 flush，关 dsh / 卸载插件时再同步写一次。全程**默认不打扰用户**——记忆写入幂等、失败成本低；需要排查时设 `DSH_PROJECT_MEMORY_DEBUG=1` 才会打印一行。锁内容带 `pid` / `host` / `token`：同机持有者活着就绝不抢，release 校验所有权、不删别人的锁；崩溃残留的同机死锁按 pid 立即回收。两个 dsh 实例因此可以共用一个存储。没有 WAL、没有常驻进程、没有原生依赖。
+- **短时文件锁，而不是嵌入式数据库** — 每次保存只在读改写期间持有排他的 `.write.lock`（解析在锁外完成），对方忙时最多**同步等 15s**（写路径的正确性靠等到锁，不靠后台重试）；仍失败会登记进退出 flush，关 dsh / 卸载插件时再同步写一次。全程**默认不打扰用户**——记忆写入幂等、失败成本低；需要排查时设 `DSH_PROJECT_MEMORY_DEBUG=1` 才会打印一行。锁内容带 `pid` / `host` / `token`：同机持有者活着就绝不抢，release 校验所有权、不删别人的锁；崩溃残留的同机死锁按 pid 立即回收。两个 dsh 实例因此可以共用一个存储。没有 WAL、没有常驻进程、没有原生依赖。
 - **Watch：事务外计算，事务内提交** — 不持锁解析，也不用 `fs.watch`：轮询 + mtime/内容哈希在网络盘、Docker 卷、WSL 上行为一致，没有 `fs.watch` 的重复触发/漏事件问题。
 - **损坏分片隔离，不自动修复** — 解析失败的分片改名、只重索引该文件；不引入 WAL 或嵌入式数据库，那会带来原生依赖、锁竞争与它们自己的新故障模式。
 - **向量只重排，不做排序主力** — 在**改写成不含原词**的查询集上，纯向量替换差于 BM25（hit@10 **53% vs 69%**），加权融合只在**小 k** 上更好（hit@3 **53% vs 50%**），所以可选层只重排经验/洞察两层、绝不参与闸门。词法检索在本插件针对的查询上依然够用：真实项目 29 条标注查询的文件级 hit@5 为 **96.6%**，整 chunk 词项把文档词项覆盖从 **27.3% 提到 100%** 且 MRR 不变（**0.958** vs **0.955**）。
 - **索引确定且不调用模型** — 索引期不调模型、查询期也不翻译：前者会让同一份文档两次索引结果不同，后者有一个硬失败模式（译错 = 零召回）；规则 + 符号链接已经覆盖常见情况，且离线可用。
 - **面向模型的记忆：agent 自己写，不把人放进回路** — 记忆的消费方是 agent，而 agent 通常是无头的，只在有人点卡片时才升级的记忆等于永远不会升级。`draft` 是「来源标记 + 佐证门槛」而不是审批队列。
 - **直接返回完整条目** — 条目本就紧凑，完整返回更可核验，也少一轮往返。
-- **`forget` 按关键词激进；精确请用 ID** — 经验笔记低风险、高量、仅用于检索，陈旧噪音比误删更伤。精确删用 `query_memory` 输出里的 ID。
+- **`forget` 按关键词激进；精确请用 ID** — 经验笔记低风险、高量，陈旧噪音比误删更伤。精确删用 `query_memory` 输出里的 ID。
 - **TS 增强可选、异步、缓存** — 后台执行、不阻塞索引，没有 TS 时回退正则扫描；队列有上界，被丢弃的文件会在报告里给出条数。**默认 lib 不加载**：依赖全局类型（`Promise`/`Array`/DOM）的推导会退化成 `any`/`unknown`，显式标注的类型不受影响。
 - **子代理会话暂不纳入（以后可能做）**
 
