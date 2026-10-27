@@ -133,7 +133,9 @@ export class WatchManager {
   }
 
   start(intervalMs = 30000) {
-    if (this.timer) return
+    // 轮询进行中 `timer` 会短暂为 null；此时再 start 会排第二个定时器（asynchronous poll
+    // 之前不可能出现，因为同步循环占着事件循环）。等这一轮结束由 `_tick()` 自己续。
+    if (this.timer || this._polling) return
     // NaN/undefined 会让定时器退化成 1ms 轮询（Node 只发一条 TimeoutNaNWarning），
     // 足以打满事件循环让 agent 无法响应；非法值回退到默认 30s。
     const raw = Number(intervalMs)
@@ -179,12 +181,15 @@ export class WatchManager {
   }
 
   _schedule(interval = this._interval) {
+    if (this._stopped || this.timer) return
     this.timer = setTimeout(() => this._tick(), interval)
     if (this.timer.unref) this.timer.unref()
   }
 
   async _tick() {
     this.timer = null
+    // stop() 之后若还有定时器已经触发，不能再扫一轮（旧实现只在 poll 之后检查）。
+    if (this._stopped) return
     let changed = false
     try {
       changed = await this.poll()
@@ -195,7 +200,9 @@ export class WatchManager {
     this._interval = this._active
       ? this._activeInterval
       : changed ? this._baseInterval : Math.min(this._interval * 2, this._maxInterval)
-    this._schedule()
+    // poll 期间 setSessionActive()/并发的 _tick() 可能已经排过下一轮；有就不再覆盖它的句柄
+    // （覆盖会让旧句柄变成没人 clearTimeout 的泄漏，轮询频率也会翻倍）。
+    if (!this.timer) this._schedule()
   }
 
   stop() {
