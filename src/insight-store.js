@@ -572,9 +572,15 @@ export class GlobalStore {
     this._dirty = true
   }
 
-  /** 退出/卸载路径的同步兜底（见 util/flush.js）。 */
+  /**
+   * 退出/卸载路径的同步兜底（见 util/flush.js）。
+   * `commit()` 返回的是 `fn` 的返回值（通常是 undefined），不能拿它当成功信号；
+   * 这里显式收敛成 boolean，否则 flushDirtyStores() 会把已写成功的 global store 计成 0。
+   */
   flushPending(timeoutMs = 1500) {
-    return this.commit(undefined, { timeoutMs })
+    if (!this._dirty) return true
+    this.commit(undefined, { timeoutMs })
+    return this.lastCommitOk === true
   }
 
   /** 锁竞争失败后的延迟重试：旧实现完全没有重试，一次竞争就永久丢这次写入。 */
