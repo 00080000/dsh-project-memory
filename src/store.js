@@ -268,6 +268,44 @@ function newerIso(a, b) {
 }
 
 /**
+ * 合并同一任务在两份快照里的 `insights`。
+ *
+ * 任务级条目没有自己的删除墓碑（`_deletedTaskIds` 只管整条任务），所以用**上次成功落盘时
+ * 的 id 基线**做三方判断：
+ *  - 基线没有、本地有 → 本地新增，补写；
+ *  - 基线有、本地没有 → 本地删除，从磁盘副本剔除（不复活）；
+ *  - 两边都有 → `updatedAt` 新者胜；
+ *  - 基线没有、本地没有 → 磁盘新增，保留。
+ *
+ * 仅按整条任务的 `updatedAt` 选一侧会把另一边的新增整段覆盖掉；而任务条目的写入
+ * （`saveInsight` / `removeFromTask`）并不 bump 任务时间戳，时间戳相同是常态。
+ * @param {object} local
+ * @param {object} disk
+ * @param {Set<string>} base
+ * @returns {object[]}
+ */
+function mergeTaskInsights(local, disk, base) {
+  const merged = new Map()
+  for (const ins of Array.isArray(disk?.insights) ? disk.insights : []) {
+    if (ins?.id) merged.set(ins.id, ins)
+  }
+  const localById = new Map()
+  for (const ins of Array.isArray(local?.insights) ? local.insights : []) {
+    if (ins?.id) localById.set(ins.id, ins)
+  }
+  for (const id of base) if (!localById.has(id)) merged.delete(id)
+  for (const [id, ins] of localById) {
+    const prev = merged.get(id)
+    if (!prev) {
+      if (!base.has(id)) merged.set(id, ins)
+      continue
+    }
+    if (newerIso(ins.updatedAt, prev.updatedAt) >= 0) merged.set(id, ins)
+  }
+  return [...merged.values()]
+}
+
+/**
  * 落盘的 entry 只保留**不可推导的事实**。两个派生字段永远不写盘：
  *  - `linkedSymbols`：跨实体派生（取决于符号表当前状态），读取期由 src/link.js 解算；
  *  - `searchText`：自派生（只依赖本 entry），由 `allEntries()` 在内存里物化。
@@ -380,6 +418,8 @@ export class ProjectMemoryStore {
     this._removedWatch = new Set()
     /** 上次落盘/加载时的 insight id 集合：原地 splice 的删除也要能被合并逻辑看见。 */
     this._baseInsightIds = new Set()
+    /** task.id → 上次落盘/加载时该任务的 insight id 集合（任务级条目的合并基线，见 mergeTaskInsights）。 */
+    this._baseTaskInsightIds = new Map()
     /**
      * 本进程**新建**的条目。合并另一进程的磁盘状态时，"磁盘没有但内存有"有两种可能：
      * 我新建的（要补写）或**对方删了**（不能写回）。没有这个集合，后者就会被复活
@@ -448,6 +488,7 @@ export class ProjectMemoryStore {
     this._loadSharded()
     this._loadInsights()
     this._pruneBindings()
+    this._resetTaskInsightBases()
     this._removeLegacyTypeCache()
     // 有些路径只读不写（审计 jsonl 直接写在 store 目录里），所以这里也补一次自我忽略，
     // 让老版本建出来的 store 在第一次 load 就补上。
@@ -781,6 +822,16 @@ export class ProjectMemoryStore {
     }
   }
 
+  /** 重新记下每个任务当前可见的 insight id：只在加载成功 / 整份 tasks 落盘成功后调用。 */
+  _resetTaskInsightBases() {
+    this._baseTaskInsightIds = new Map()
+    for (const task of Array.isArray(this.tasks) ? this.tasks : []) {
+      if (!task?.id) continue
+      const ids = Array.isArray(task.insights) ? task.insights.map((it) => it?.id).filter(Boolean) : []
+      this._baseTaskInsightIds.set(task.id, new Set(ids))
+    }
+  }
+
   /** 是否有待落盘的变更；逐出缓存前用它避免为干净 store 触发 save 的旁路副作用。 */
   hasDirty() {
     return this._compactQueue.size > 0
@@ -951,7 +1002,11 @@ export class ProjectMemoryStore {
       this._baseInsightIds = new Set(this.insights.items.map((it) => it?.id).filter(Boolean))
       this._createdInsightIds.clear()
     }
-    if (wroteTasks) this._createdTaskIds.clear()
+    if (wroteTasks) {
+      // 只有真的落盘成功才推进任务条目的合并基线；失败时保留旧基线，重试仍能识别本地新增/删除。
+      this._createdTaskIds.clear()
+      this._resetTaskInsightBases()
+    }
     return true
   }
 
@@ -1075,7 +1130,12 @@ export class ProjectMemoryStore {
             if (this._createdTaskIds.has(t.id)) byId.set(t.id, t)
             continue
           }
-          if (newerIso(t.updatedAt || t.lastActiveAt, prev.updatedAt || prev.lastActiveAt) >= 0) byId.set(t.id, t)
+          // 任务级条目单独合并：两边都可能新增/删除，按整条任务的时间戳选一侧会静默丢一边。
+          const base = this._baseTaskInsightIds.get(t.id) || new Set()
+          const mergedInsights = mergeTaskInsights(t, prev, base)
+          const winner = newerIso(t.updatedAt || t.lastActiveAt, prev.updatedAt || prev.lastActiveAt) >= 0 ? t : prev
+          winner.insights = mergedInsights
+          byId.set(t.id, winner)
         }
         // 本地删除必须从磁盘副本里剔除：`removeTask` 已把它从内存数组移除，上面的循环
         // 根本看不到它；少了这一行，删任务会在**同一次 save 里**被另一份磁盘快照写回来。
