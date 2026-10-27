@@ -99,6 +99,15 @@ console.log('\n== 闸门：短西里尔词与意图词 ==')
   ok('不做词内命中：город 不命中 городской')
   assert.equal(matchIntent('пуш', 'сделай git push'), false)
   ok('界限没有放宽到拉丁：俄文意图词不误配英文子串')
+
+  assert.equal(matchIntent('ёлка', 'купи елку'), true)
+  assert.equal(matchIntent('елка', 'ёлка'), true)
+  ok('ё / е 两侧归一后命中')
+  assert.equal(matchIntent('миграция', 'сделай миграции'), true)
+  assert.equal(matchIntent('мост', 'мостом'), true)
+  ok('词形归一：原形意图词命中文中的变格/变位')
+  assert.equal(matchIntent('город', 'городской'), false)
+  ok('词干匹配没有放宽到非同源词（город vs городской）')
 }
 
 // ---- 4. 去重：俄文条目之间开始有相似度 ----
