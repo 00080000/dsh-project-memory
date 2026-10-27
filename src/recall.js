@@ -34,8 +34,15 @@ import { CYRILLIC_RANGE } from './util/ru.js'
  * 两字母词是实义词；虚词在分词阶段已经由 `RU_STOPWORDS` 去掉了，这里再按长度砍只会误伤。
  */
 const MIN_LATIN_QUERY_TERM = 3
+/**
+ * 给 experience/insight 两层的查询做**过滤**，但不能提前词干。
+ *
+ * 返回值随后会被 `rankEntriesMergedScored()` 再 tokenize 一次；Snowball 词干不是幂等的
+ * （`память → памя → пам`），所以这里必须保留原词（`tokenizeRaw(..., { stem: false })`），
+ * 让真正的打分器只词干一次。CJK bigram / 拉丁 token 的输出不变（它们重切是稳定的）。
+ */
 function gatedQueryText(q) {
-  return tokenizeRaw(String(q ?? ''))
+  return tokenizeRaw(String(q ?? ''), { stem: false })
     .filter((t) => CJK_RANGE.test(t) || CYRILLIC_RANGE.test(t) || t.length >= MIN_LATIN_QUERY_TERM)
     .join(' ')
 }
