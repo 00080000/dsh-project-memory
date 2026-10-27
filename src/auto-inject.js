@@ -684,7 +684,11 @@ function installCallObserver(ctx, sessions) {
       if (!sessionId || !event) return
       if (event.type === 'user/message') {
         const data = event.data || {}
-        const kind = data.source && data.source.kind
+        const source = data.source
+        // 自注入块（包括迁移前的 `{ plugin: 'dsh-project-memory' }` 旧形状）不是人话：
+        // 放进 humanText 会让下一步拿注入正文再检索一遍（自激）。与 lastUserText 共用同一判据。
+        if (isOwnInjection(source)) return
+        const kind = source && source.kind
         // 通知 / relay / job / 时间快照都不是人说的；无 source 的老宿主按人话处理（与 lastUserText 同口径）。
         if (kind && kind !== 'user') return
         const text = textOf({ content: data.content })

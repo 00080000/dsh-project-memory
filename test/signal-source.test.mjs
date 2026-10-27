@@ -135,4 +135,28 @@ const notice = (kind, text) => ({ type: 'user/message', data: { content: [{ type
   ok('散文动作词分级：记录但不触发')
 }
 
+// --- 5. 迁移前 `{ plugin }` 形状的自注入不得被当成人类消息 ---
+// `isOwnInjection()` 认这个旧形状（没有 kind）；observer 只判 kind 会把它塞进 humanText，
+// 下一步就拿注入正文当 query 再检索（自激）。
+{
+  const h = harness({
+    items: [
+      { id: 'ins_commit', kind: 'lesson', scope: 'global', title: '提交前先跑测试', fix: 'npm test', trigger: { when: { ops: ['git-commit'] } }, confidence: 1, archived: false },
+    ],
+  })
+  h.onEvent(h.session, {
+    type: 'user/message',
+    data: {
+      content: [{ type: 'text', text: 'git commit 之前要小心' }],
+      source: { plugin: 'dsh-project-memory' }, // 迁移前内存里的旧形状：没有 kind
+    },
+  })
+  const { text, shadow } = await h.step([{ role: 'user', source: { kind: 'tool-jobs' }, content: [{ type: 'text', text: 'job finished' }] }])
+
+  assert.equal(shadow.querySource, 'none', '自注入不得成为会话意图')
+  assert.equal(shadow.query, '', `自注入正文不得被当成 query：${JSON.stringify(shadow.query)}`)
+  assert.ok(!text.includes('提交前先跑测试'), '不得因为自己的注入块触发全文注入')
+  ok('旧 source 形状的自注入不进入 humanText')
+}
+
 console.log(`\nsignal-source tests: ${passed} passed`)
