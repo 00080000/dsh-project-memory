@@ -866,16 +866,25 @@ export class ProjectMemoryStore {
       // 目录可能在 load 之后被外部删掉。`_storeDirReady` 只能当“上次写过”的快路径，
       // 不能当“这次还在”的事实：命中缓存时补一次 stat，失配就重建目录并让分片/格式/忽略
       // 三处的“已就绪”状态一起失效。
-      let dirReady = false
-      if (this._storeDirReady) {
+      let dirReady = this._storeDirReady
+      if (dirReady) {
         try {
-          dirReady = statSync(this.dir).isDirectory()
-        } catch {
-          dirReady = false
+          statSync(this.dir)
+        } catch (err) {
+          // 只有“确实不存在”才重建；EACCES / ENOTDIR 等交给锁去走原来的静默失败路径，
+          // 不要在这里把一次可重试的落盘失败升级成抛给工具。
+          if (err?.code === 'ENOENT') dirReady = false
         }
       }
       if (!dirReady) {
-        mkdirSync(this.dir, { recursive: true })
+        try {
+          mkdirSync(this.dir, { recursive: true })
+        } catch {
+          this.lastSaveOk = false
+          trackDirty(this)
+          this._scheduleSaveRetry()
+          return false
+        }
         this._storeDirReady = true
         this._shardsDirReady = false
         this._formatWritten = false
