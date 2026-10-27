@@ -1,10 +1,7 @@
-// v0.5 insight 存储与策略（服务端 .js，纯本地零依赖）
-// - 单一 insight 实体，scope 分层：task(tasks.json 内 task.insights[]) / project(insights.json) / global(global.json)
-// - 去重：双向 token overlap（src/similarity.js）≥ dedupOverlap 合并；reinforceBand~dedupOverlap 强化（不加内容）
-// - 提升 = 字段变更（不跨文件复制）：task 池内同一 insight 命中 ≥2 个任务且 confidence 达标 → project；
-//   project 条目 sourceTaskIds ≥ globalPromoteTasks → global
-// - 归档 = 软删（archived:true，不进召回/注入）；物理删除只发生在容量溢出
-// - 写盘前密文过滤：命中密钥/token/私钥形态 → 拒绝写入
+// insight 存储与策略：单一 insight 实体，scope 分层 task(task.insights[]) / project(insights.json) /
+// global(global.json)。去重靠双向 token overlap：≥ dedupOverlap 合并，reinforceBand 起只强化（不改正文）；
+// 提升 = 字段变更（不跨文件复制）；归档 = 软删（archived:true，不进召回/注入），物理删除只在容量溢出；
+// 写盘前过滤密钥/token/私钥形态，命中即拒绝写入。
 import { randomUUID } from 'node:crypto'
 import { readFileSync, renameSync } from 'node:fs'
 import path from 'node:path'
@@ -59,20 +56,15 @@ export function cfgInsight(config) {
   const cfg = {
     dedupOverlap: num(c.dedupOverlap, 0.7),
     reinforceBand: num(c.reinforceBand, 0.65),
-    // 向量带（需要 leanvec；没装就自动退化成上面的纯词法带）。阈值由真实 store 标定：
-    // 47 条 live 条目、1081 对的余弦 max=0.655 / p99=0.531；一个本地小模型把同一条知识改写后与
-    // 原文的余弦 min=0.688 / p50=0.809。所以：
-    //   · 0.90 自动覆盖 —— 落在负样本之上 0.245，只会命中逐字级再记录（"非常非常相似"）；
-    //   · 0.70 提示 —— 在全部 1081 对真实条目上零噪声，而改写后的再记录有 78% 落进来。
-    // 0.65 会开始误伤真实条目（1/1081），别往下调：提示是往上下文里加字的。
-    // **0 = 关闭**那条带（与仓库其它旋钮一致）：`top1 >= 0` 恒真，旧写法把 0 当"总是合并/
-    // 总是提示"，而用户关掉它的最自然写法恰好就是 0。
+    // 向量带（需 leanvec；没装就退化成纯词法带）。阈值由真实 store 标定：47 条 live 条目、1081 对
+    // 余弦 max=0.655 / p99=0.531；改写后 min=0.688 / p50=0.809。0.90 自动覆盖（逐字级再记录）、
+    // 0.70 提示（真实条目零噪声，改写后 78% 落进来）、0.65 起误伤（1/1081）。**0 = 关闭**这条带。
     autoMergeCos: num(c.autoMergeCos, 0.9),
-    // 自动覆盖还要求"第一名明显领先第二名"，否则同一话题撞两条时不知道该覆盖谁。
+    // 自动覆盖还要求"第一名明显领先第二名"，否则同话题撞两条时不知道该覆盖谁。
     autoMergeMargin: num(c.autoMergeMargin, 0.05),
     hintCos: num(c.hintCos, 0.7),
-    // `forget` 用关键词删除时的上限：超了不删、只列出来，逼调用方给更具体的词或逐个 id。
-    // 关键词删除是**真删**且没有撤销——一次 `forget 'pnpm'` 扫掉十几条精选记忆是不可接受的。
+    // `forget` 关键词删除的上限：超了不删、只列候选。真删且无撤销——一次 `forget 'pnpm'`
+    // 扫掉十几条精选记忆不可接受。
     maxForgetMatches: num(c.maxForgetMatches, 10),
     maxProject: num(c.maxProject, 100),
     maxGlobalProcedures: num(c.maxGlobalProcedures, 200),
@@ -108,10 +100,8 @@ export function normalizeInsight(raw, extra = {}) {
     id: extra.id || makeInsightId(),
     kind,
     scope: extra.scope || 'project',
-    // 标题推导必须覆盖 `save_lesson` 允许的三种最小输入（title / pattern / choice）：少了
-    // `choice`，只给 choice 的 decision 会落成 `(untitled)` —— 面板、召回、向量索引三处看到的
-    // 都是这个占位符，而唯一能认出它的字段反而不在标题里。顺序与 `vectorText` 的兜底链一致：
-    // 写入侧的向量比对文本也走这里（raw → 落盘 title），两边不同源就会在写路径上静默失效。
+    // 标题推导必须覆盖 `save_lesson` 的三种最小输入（title / pattern / choice），否则只给 choice 的
+    // decision 会落成 `(untitled)`；顺序与 `vectorText` 兜底链一致（写入侧向量文本也走这里）。
     title: String(raw.title || raw.pattern || raw.problem || raw.choice || raw.topic || '(untitled)').slice(0, 200),
     source: extra.source || raw.source || 'agent',
     draft: raw.draft === true || extra.draft === true,
@@ -130,8 +120,8 @@ export function normalizeInsight(raw, extra = {}) {
     if (Array.isArray(raw[f]) && raw[f].length) ins[f] = [...new Set(raw[f].map((x) => String(x)))]
   }
   if (raw.trigger && typeof raw.trigger === 'object') {
-    // 所有 kind 通用。准入化 schema：when（唯一触发面）/ guard（只收窄）/ prevents（准入条件）；
-    // 旧字段 keywords / symbols / actions / paths / scope 继续接受（readiness 会内存内迁移）。
+    // 所有 kind 通用：when 是唯一触发面 / guard 只收窄 / prevents 是准入条件；
+    // 旧字段 keywords / symbols / actions / paths / scope 继续接受（readiness 在内存内迁移）。
     const tr = {}
     for (const f of ['keywords', 'symbols', 'actions', 'paths', 'scope']) {
       if (Array.isArray(raw.trigger[f]) && raw.trigger[f].length) tr[f] = raw.trigger[f].map(String)
@@ -167,11 +157,9 @@ export function unionStrings(base = [], add = []) {
 }
 
 /**
- * 跨 scope 移动（promote/demote）时保留"使用痕迹"。
- *
- * 提升/降级只改 scope，不该清零命中数、创建时间，也不该丢掉 `triggerDerived`
- * （提示通道拿它当检索词）。这些字段不在 {@link normalizeInsight} 的白名单里，
- * 必须显式带回——否则每次移动都会让条目"看起来从没被用过"，global 层更是每次都丢派生词。
+ * 跨 scope 移动（promote/demote）时保留"使用痕迹"：命中数、创建时间、`triggerDerived`
+ * （提示通道拿它当检索词）。这些字段不在 {@link normalizeInsight} 白名单里，必须显式带回，
+ * 否则每次移动都会让条目"看起来从没被用过"。
  * @param {object} copy - 已归一化到新 scope 的副本
  * @param {object} src - 原条目
  */
@@ -180,22 +168,16 @@ export function carryUsageFields(copy, src) {
   if (src.lastHitAt) copy.lastHitAt = src.lastHitAt
   if (src.createdAt) copy.createdAt = src.createdAt
   if (src.triggerDerived) copy.triggerDerived = src.triggerDerived
-  // `prev` 是被自动覆盖/就地更新挤掉的那一版。它必须跟着条目走：promote/demote 走的是
-  // normalizeInsight 白名单，不带这一步的话，一次提升就把"还能还原"这件事丢掉了。
+  // `prev` 是被覆盖挤掉的那一版，必须跟着条目走：promote/demote 走白名单，漏了它就丢了"还能还原"。
   if (src.prev && typeof src.prev === 'object') copy.prev = src.prev
   return copy
 }
 
 /**
- * 写一个字段，并把被挤掉的旧值留在 `prev` 单槽。
- *
- * 为什么是"单槽"而不是历史：历史要折叠、要压实、要每个读者都懂两个真相源（已经判过不做）。
- * 这里只保留**上一个**值——刚好够"误覆盖后写回去"，O(1)、无需压实、不构成第二个真相源。
- * 空值不算旧值（`''`/undefined 不写 prev），所以首次填充不会产生噪声。
- * @param {object} item - 条目（原地修改）
- * @param {string} key - 字段名
- * @param {unknown} next - 新值
- * @param {string[]} replaced - 被真正改动过的字段名，调用方据此回报
+ * 写一个字段，并把被挤掉的旧值留在 `prev` 单槽：只留**上一个**值，刚好够"误覆盖后写回"，
+ * O(1)、无需压实，也不构成第二个真相源。空值不算旧值（`''`/undefined 不写 prev）。
+ * @param {object} item 条目（原地修改）；@param {string} key 字段名；@param {unknown} next 新值
+ * @param {string[]} replaced 被真正改动过的字段名，调用方据此回报
  */
 function putField(item, key, next, replaced) {
   const old = item[key]
@@ -213,10 +195,7 @@ const MERGE_FIELDS = ['title', 'pattern', 'fix', 'choice', 'reason', 'problem', 
 
 /**
  * 把 base 合并进既有条目：**正文取新值**（旧值进 `prev`），成员/文件/符号并集，置信取高，记命中。
- *
- * 与旧实现的区别就是那一个 `if (b && !existing[f])`：以前字段已有值就**静默丢掉新文本**，
- * 于是"我记错了，改成正确的"永远落不进去（只加 hitCount）。现在反过来——新值落地、旧值可还原。
- * 提升路径只传成员/文件/符号/置信，不传正文字段，所以它们的语义一字未变。
+ * 提升路径只传成员/文件/符号/置信，不传正文字段，语义未变。
  * @returns {{item: object, replaced: string[]}} 被改动的字段名（供调用方回报）
  */
 export function mergeInto(existing, base, cfg, nowIso) {
@@ -274,21 +253,14 @@ export function applyUpdate(item, raw, nowIso) {
   }
   item.updatedAt = now
   if (item.archived) item.archived = false
-  // 显式编辑一条草稿 = 作者确认：不再要求先开面板点“确认”。reflection 产出的 draft
-  // 因此可以被 save_lesson 带 id 直接改正文并转正；没有字段变化时也至少完成确认。
+  // 显式编辑一条草稿 = 作者确认：reflection 产出的 draft 可被 save_lesson 带 id 直接改正文并转正。
   if (item.draft === true) item.draft = false
   return replaced
 }
 
 /**
- * 向量近邻：拿 base 的标题去问可选向量层，返回池内最像的一条与第二名。
- *
- * 判据用**余弦**而不是词法重叠，是因为词法在这份 store 上根本够不到阈值：实测 1081 对里
- * `insightMatchText` 的最大值只有 0.256，而 `cfgInsight` 的合并带是 0.70——那条自动通道
- * 实际上只在"逐字重写"时才可能触发。余弦（标题编码）同一份池子上 max=0.655 / p99=0.531，
- * 配 0.90 自动覆盖 / 0.70 提示两条带才有分辨力（标定见 cfgInsight 注释）。
- *
- * 没有向量（leanvec 未装/未配）→ 返回 null，调用方逐字段退回原来的纯词法行为。
+ * 向量近邻：拿 base 的标题问可选向量层，返回池内最像的一条与第二名。判据用**余弦**而非词法：实测
+ * 1081 对里 `insightMatchText` 最大 0.256，够不到 0.70；余弦同一池子 max=0.655 / p99=0.531，无向量 → null。
  * @param {string} text - 本次要写入的文本（用 {@link vectorText} 的口径）
  * @param {object[]} items - 候选池
  * @param {(text: string, items: object[]) => Map<string, number>} [cosine] - 向量打分（同步）
@@ -302,7 +274,7 @@ export function vectorNear(text, items, cosine) {
   let top1 = -1
   let top2 = -1
   let item = null
-  // 池内分布：给"绝对阈值"做本语料的陈规定标（见 autoMergeTarget）。n ≤ 300，顺路算完。
+  // 池内分布：给"绝对阈值"做本语料的定标（见 autoMergeTarget）。n ≤ 300，顺路算完。
   let n = 0
   let sum = 0
   let sumSq = 0
@@ -320,9 +292,8 @@ export function vectorNear(text, items, cosine) {
     } else if (v > top2) top2 = v
   }
   if (!item) return null
-  // 分布必须**排除候选自己**：top1 本身就是待检验的那个值，把它算进 μ/σ 会把自己的极端值
-  // 摊进方差里（稀疏池里一条 0.92 + 三条 0.2 会把 σ 抬到 0.33，阈值冲上 1 以上，于是永远不合并）。
-  // 排除之后 μ/σ 描述的是"池子里随机一条与这段文本有多像"——那才是零假设。
+  // 分布必须**排除候选自己**：top1 是待检验的值，算进 μ/σ 会把自己的极端值摊进方差
+  // （一条 0.92 + 三条 0.2 会把 σ 抬到 0.33）。排除后 μ/σ 描述"随机一条有多像"，那才是零假设。
   const restN = n - 1
   const restSum = sum - top1
   const restSumSq = sumSq - top1 * top1
@@ -338,24 +309,17 @@ function hintOf(near, cfg) {
 }
 
 /**
- * 自动覆盖的"池内相对"系数：题面余弦要同时高于 `μ + k·σ`。
- *
- * 为什么需要：0.9 这个绝对阈值只在**当前语料 + 当前模型**下安全。两种漂移会把它推过界，
- * 而这条带是**破坏性写入**（改写既有条目的正文）：
- *   · 语料模板化——同一句式的大量条目（"修复 X 页脚"）会把"最近邻余弦"整体抬到 0.9 附近；
- *   · 换模型/换表——同一对文本的余弦尺度整体平移。
- * 取 `max(autoMergeCos, μ + k·σ)` 只可能**收紧**、绝不会放宽：当前真实 store（122 条、
- * 7381 对）的余弦 mean=0.281 / sd=0.104 → μ+3σ ≈ 0.59 < 0.9，行为逐字段不变。
- *
- * k 不是调参项而是零假设的分位数：池子 ≤300 时，"随机撞上"的最大余弦 ≈ μ + 2.9σ
- * （n 次抽样的极值分布），取 3 即"显著高于随机"的边界。k 再大就会在密集语料上退化成
- * "永不自动覆盖"（μ+5σ 在 μ≥0.5 时就已越过 1），k 再小则会开始命中噪声。
+ * 自动覆盖的"池内相对"系数：题面余弦要同时高于 `μ + k·σ`。0.9 绝对阈值只在**当前语料 +
+ * 当前模型**下安全，而这条带是**破坏性写入**：语料模板化会把最近邻余弦整体抬高，换模型/换表
+ * 会让余弦尺度整体平移。取 `max(autoMergeCos, μ + k·σ)` 只可能**收紧**：当前 store（122 条、
+ * 7381 对）mean=0.281 / sd=0.104 → μ+3σ ≈ 0.59 < 0.9，行为不变。k=3 是零假设分位数
+ * （池子 ≤300 时随机撞上的最大余弦 ≈ μ+2.9σ）；再大会退化成"永不自动覆盖"，再小会命中噪声。
  */
 const AUTO_MERGE_SIGMA = 3
 
 /**
- * 自动覆盖判定：够高**且**第一名明显领先第二名（否则不知道该覆盖谁）；`autoMergeCos <= 0` = 关闭。
- * 高度门槛取"绝对下限"与"池内 μ+k·σ"的较大者（只收紧不放宽，见 {@link AUTO_MERGE_SIGMA}）。
+ * 自动覆盖判定：够高**且**第一名明显领先第二名；`autoMergeCos <= 0` = 关闭。
+ * 门槛取"绝对下限"与"池内 μ+k·σ"的较大者（只收紧不放宽，见 {@link AUTO_MERGE_SIGMA}）。
  */
 function autoMergeTarget(near, cfg) {
   if (!near || !(cfg.autoMergeCos > 0)) return null
@@ -367,15 +331,10 @@ function autoMergeTarget(near, cfg) {
 
 /**
  * 使用记账：条目被**真正用到**时更新活跃度——注入进了上下文，或被 `query_memory` 命中。
- *
- * 为什么必须有：`applyDecay` / `pruneItems` 判活跃度只看 `lastHitAt || updatedAt || createdAt`，
- * 而 `lastHitAt` 此前只由 merge/reinforce 写（= 模型又写了一条相近的知识）。于是一条天天被注入、
- * 但从没人重写它的教训，`decayDays`（默认 90）之后会被自动归档、再也不会被推送——**用得最多的
- * 反而等于没人用过**。这是行为缺陷，不是调优问题。
- *
- * 记账**不参与任何注入判据**：它只影响活跃度/衰减，以及离线训练样本的标签。
- * 语义是"曝光次数"而非"被采纳次数"——更强的信号（模型是否真的照着做了）需要另外的回路。
- * 只记非归档条目（归档件本来就召回不到）。返回实际加一的条数，调用方据此决定是否落盘。
+ * `applyDecay` / `pruneItems` 判活跃度看 `lastHitAt || updatedAt || createdAt`，而 `lastHitAt`
+ * 只由 merge/reinforce 写；不记账的话，天天被注入但没人重写的教训会在 decayDays 后被归档。
+ * 记账**不参与任何注入判据**，只影响活跃度/衰减与离线样本标签；语义是"曝光次数"而非"被采纳次数"。
+ * 只记非归档条目。返回实际加一的条数，调用方据此决定是否落盘。
  * @returns {number} 被加一的条目数
  */
 export function recordHit({ store, globalStore, ids, nowIso } = {}) {
@@ -453,9 +412,8 @@ export function applyDecay(items, cfg, nowIso) {
   let archived = 0
   for (const it of items) {
     if (!it || it.archived) continue
-    // 用"最近活动"而不是 lastHitAt：lastHitAt 只由 merge/reinforce 写，而那两处同时把
-    // hitCount 加一。旧实现先 `hitCount > 0 → continue`，于是 lastHitAt 分支永远不可达，
-    // decayDays 实际是个死开关。activityOf 退到 updatedAt/createdAt，没命中过的条目也能衰减。
+    // 用"最近活动"而不是 lastHitAt：后者只由 merge/reinforce 写（同时加 hitCount），
+    // 先判 `hitCount > 0 → continue` 会让 lastHitAt 分支永远不可达，decayDays 成了死开关。
     const last = activityOf(it)
     if (last && last <= limit) {
       it.archived = true
@@ -467,9 +425,9 @@ export function applyDecay(items, cfg, nowIso) {
 }
 
 /**
- * 超限按"最不活跃"物理删除，直到回落到上限。已有 archived 条目优先被删。
+ * 超限按"最不活跃"物理删除，直到回落到上限，已有 archived 条目优先。
  * 注意：没有归档可删时，本轮归档的条目会在同一次调用的后续循环里被删掉——
- * `archived` 计数表示"先归档、随即被删"，不是"留下了软删副本"。
+ * `archived` 计数是"先归档、随即被删"，不是"留下了软删副本"。
  */
 export function pruneItems(items, max, nowIso) {
   const now = nowIso || new Date().toISOString()
@@ -548,7 +506,7 @@ export class GlobalStore {
 
   load() {
     // 整份文档读改写：同一路径必须共用实例，否则两个工具/会话交错时后写覆盖先写。
-    // 与 ProjectMemoryStore 的 storeCache 同语义；这里只按路径缓存（global 文件只有一个）。
+    // 与 ProjectMemoryStore 的 storeCache 同语义，这里只按路径缓存。
     const key = path.resolve(this.file)
     const hot = globalStoreCache.get(key)
     if (hot) {
@@ -573,9 +531,8 @@ export class GlobalStore {
   }
 
   /**
-   * 退出/卸载路径的同步兜底（见 util/flush.js）。
-   * `commit()` 返回的是 `fn` 的返回值（通常是 undefined），不能拿它当成功信号；
-   * 这里显式收敛成 boolean，否则 flushDirtyStores() 会把已写成功的 global store 计成 0。
+   * 退出/卸载路径的同步兜底（见 util/flush.js）。`commit()` 返回的是 `fn` 的返回值，
+   * 不能当成功信号；这里收敛成 boolean，否则 flushDirtyStores() 会把写成功的 store 计成 0。
    */
   flushPending(timeoutMs = 1500) {
     if (!this._dirty) return true
@@ -583,7 +540,7 @@ export class GlobalStore {
     return this.lastCommitOk === true
   }
 
-  /** 锁竞争失败后的延迟重试：旧实现完全没有重试，一次竞争就永久丢这次写入。 */
+  /** 锁竞争失败后的有限次延迟重试：没有重试就会永久丢这次写入。 */
   _scheduleRetry() {
     const delays = [100, 500, 2000, 6000, 12000]
     if (this._retryTimer || this._retryAttempts >= delays.length) return
@@ -668,10 +625,8 @@ export class GlobalStore {
 // ---- 单条保存：scope 路由 ----
 
 /**
- * 按 id 在三个 home 里找一条（global → project → 各任务的 task.insights[]）。
- *
- * 为什么要有它：`id` 是全局键，模型不该为了改一条记忆先搞清它在哪一层——那正是"散"。
- * 找到后 scope 用条目自己声明的，调用方据此决定往哪个文件落盘。
+ * 按 id 在三个 home 里找一条（global → project → 各任务的 task.insights[]）。`id` 是全局键，
+ * 模型不该为了改一条记忆先搞清它在哪一层；scope 用条目自己声明的。
  * @returns {{scope: string, item: object, taskId?: string}|null}
  */
 export function findInsightAnywhere({ store, globalStore } = {}, id) {
@@ -702,10 +657,8 @@ function memoryText(it) {
 
 /**
  * 关键词匹配度：**查询侧覆盖率**（命中词 / 查询词数），沿用旧经验层 `removeExperience` 的口径。
- *
- * 为什么不是 `normalizedTokenOverlap`（两侧取大）：删除查询通常很短（一个词），
- * 用两侧取大算出来的分会被长正文稀释到接近 0，"删掉 pnpm 那条"就永远删不掉。
- * 这也与旧行为一致——旧层的删除一直是这个公式，换层不该顺带改判据。
+ * 不用 `normalizedTokenOverlap`（两侧取大）：删除查询通常只有一个词，取大会被长正文稀释到接近 0，
+ * "删掉 pnpm 那条"就永远删不掉。
  */
 function queryCoverage(query, text) {
   const q = tokenize(query)
@@ -718,14 +671,9 @@ function queryCoverage(query, text) {
 }
 
 /**
- * 最近删除的保留条数。
- *
- * 删除仍然是**真删**（工具描述里的 "no undo" 不变）：这里只是把刚被删掉的条目按层
- * 追加进同目录的 {@link DELETED_FILE}，滚动保留最近 5 条，供人/模型事后自己找回来。
- *
- * 为什么是 5：够覆盖"刚删错一条/一批"的窗口，又不足以在盘上长期留一份正文副本；
- * 为什么按层分文件：project/task 条目落在项目 store 目录、global 落在 global 文件目录，
- * 与各自真相源同源，删库/搬家时不会对不上。
+ * 最近删除的保留条数。删除仍是**真删**（"no undo" 不变）：这里只把刚删掉的条目按层追加进
+ * 同目录的 {@link DELETED_FILE}，滚动保留 5 条。5 够覆盖"刚删错一条/一批"的窗口，又不足以在盘上
+ * 长期留正文副本；按层分文件是为了与各自真相源同源，删库/搬家时不会对不上。
  */
 export const DELETED_KEEP = 5
 
@@ -739,10 +687,9 @@ export function deletedFilePath(dir) {
 
 /**
  * 把即将被删的条目写进各自层的留痕文件（滚动保留最近 {@link DELETED_KEEP} 条）。
- *
- * 契约：**永不抛、永不挡删除**。留痕是旁路，写失败只丢留痕，不允许因此让删除失败或半途而废。
+ * 契约：**永不抛、永不挡删除**，留痕是旁路，写失败只丢留痕。
  * @param {{store?: object, globalStore?: object}} stores - 两个 store；按条目的 `home` 选目录
- * @param {Array<object>} entries - 完整条目副本，须带 `home`（`global` 走 global 目录，其余走 store 目录）与可选 `taskId`
+ * @param {Array<object>} entries - 完整条目副本，须带 `home` 与可选 `taskId`
  * @returns {string[]} 实际写入的留痕文件路径（去重）
  */
 export function recordDeleted({ store, globalStore } = {}, entries = []) {
@@ -779,9 +726,7 @@ export function recordDeleted({ store, globalStore } = {}, entries = []) {
 }
 
 /**
- * 全层删除：task 内嵌 / project / global。一套判据、一次调用。
- *
- * 为什么是"全层一套"而不是给 insight 再开一条通道：对模型来说这本来就是一件事——
+ * 全层删除：task 内嵌 / project / global，一套判据、一次调用。对模型来说这本来就是一件事——
  * "把那条记错的删掉"，它不该先搞清自己在哪个层。
  * @param {object} o
  * @param {string} o.idOrQuery - 精确 id，或用于匹配的关键词
@@ -836,8 +781,8 @@ export function removeMemory({ store, globalStore, idOrQuery, maxMatches = 10 } 
 
 /** 按 home 把条目从各自真相源里移除；删除前先把**完整条目**写进留痕文件。 */
 function removeEntries({ store, globalStore }, entries) {
-  // 传进来的 entries 是 at() 的摘要（只有 id/home/title），留痕要的是正文，
-  // 所以这里按 id 回真相源取完整对象——顺序在 splice 之前，取不到就跳过留痕（不挡删除）。
+  // entries 是 at() 的摘要（只有 id/home/title），留痕要正文：按 id 回真相源取完整对象，
+  // 顺序在 splice 之前，取不到就跳过留痕（不挡删除）。
   const full = []
   for (const e of entries) {
     if (e.home === 'project') {
@@ -878,13 +823,11 @@ function removeEntries({ store, globalStore }, entries) {
 }
 
 /**
- * 统一入口。scope: task 需要 taskId（store 内须存在该任务）；project 走 store 的 insights 文档；
- * global 走 globalStore。
- *
- * `raw.id` 给定时走**就地更新**（忽略 scope 路由：条目留在它原来的 home，只覆盖显式给的字段，
- * 旧值进 `prev`）。`cosine` 给定时启用向量带：≥ autoMergeCos 且领先第二名 ≥ autoMergeMargin
- * → 自动覆盖；≥ hintCos → 新建但回报近邻 id。两者都不给就是原来的纯词法行为。
- * 返回 { ok, action: 'created'|'merged'|'auto-merged'|'reinforced'|'updated'|'linked-project'|…, id, replaced, near, hint }
+ * 统一入口。scope: task 需要 taskId（store 内须存在）；project 走 store 的 insights 文档；
+ * global 走 globalStore。`raw.id` 给定时走**就地更新**（忽略 scope 路由：条目留在原 home，
+ * 只覆盖显式给的字段，旧值进 `prev`）。`cosine` 给定时启用向量带：≥ autoMergeCos 且领先第二名
+ * ≥ autoMergeMargin → 自动覆盖；≥ hintCos → 新建但回报近邻 id；都不给就是纯词法行为。
+ * 返回 { ok, action, id, replaced, near, hint }。
  */
 export function saveInsight({ store, globalStore, raw, scope, taskId, cfg, source = 'agent', nowIso, cosine = null }) {
   const cfg2 = cfg || cfgInsight({})
@@ -932,7 +875,7 @@ export function saveInsight({ store, globalStore, raw, scope, taskId, cfg, sourc
 }
 
 /**
- * 在 items 池内 upsert：向量带（自动覆盖/提示）优先，其次原来的词法带（合并/强化/新建）。
+ * 在 items 池内 upsert：向量带（自动覆盖/提示）优先，其次词法带（合并/强化/新建）。
  * raw 需已过密文检查。
  */
 function upsertIntoPool(items, raw, cfg, nowIso, extra = {}) {
@@ -992,8 +935,7 @@ function buildHint(res, pruned, promoted) {
 
 function saveTaskInsight(store, globalStore, task, raw, cfg, now, source, cosine) {
   // 反思产出是**待确认草稿**：只落在当前任务，绝不参与 project/global/跨任务的自动合并或
-  // 自动提升。否则一条 LLM 生成的 draft 可以覆盖作者手写的 project 级知识，草稿审核也就
-  // 失去意义。确认走显式编辑（applyUpdate 会清 draft）或面板的 confirm。
+  // 自动提升，否则一条 LLM 生成的 draft 可以覆盖作者手写的 project 级知识。
   const draftOnly = raw.draft === true || source === 'reflect'
   const base = { ...raw, source, sourceTaskIds: [task.id] }
   const text = insightMatchText(base)
@@ -1035,8 +977,8 @@ function saveTaskInsight(store, globalStore, task, raw, cfg, now, source, cosine
         return { ok: true, action: 'linked-global', id: glHit.item.id, scope: 'global', replaced, hint: `该知识已在 global 级，累计第 ${(glHit.item.sourceTaskIds || []).length} 个任务命中` }
       }
     }
-    // 3) 跨任务池去重合并（同一坑只留一份，sourceTaskIds 累积）。
-    // 草稿不是已确认知识：非草稿写入不得把正文并进一条 draft（那会让新知识永远停在待审状态）。
+    // 3) 跨任务池去重（同一坑只留一份，sourceTaskIds 累积）。非草稿写入不得把正文并进 draft，
+    // 否则新知识永远停在待审状态。
     const pool = allTaskInsights(store).filter((it) => it.draft !== true)
     const poolNear = vectorNear(vectorText(base), pool, cosine)
     const poolTarget = autoMergeTarget(poolNear, cfg)

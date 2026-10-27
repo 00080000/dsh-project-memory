@@ -1,10 +1,7 @@
-// PR 2 静默注入引擎（entry 常驻块 + relevance 门控）
-// 安全约定：
-//  - 纯函数 buildInjection 可单测；
-//  - 唯一接线点是宿主 agent/pre-step 瀑布事件；任何异常/无会话 cwd → 交回合法决策，
-//    绝不让宿主请求受影响（宿主直接读 decision.kind，返回 undefined 会崩掉整步）。
-//  - “静默注入”文本带 [Memory Inject] 前缀，作为一条 plugin source 的 user 消息追加；
-//    按会话指纹去重，内容未变不重复追加。
+// 静默注入引擎（entry 常驻块 + relevance 门控）。
+// 安全约定：buildInjection 是纯函数可单测；唯一接线点是宿主 agent/pre-step 瀑布事件；
+// 任何异常/无会话 cwd 都交回合法决策，绝不返回 undefined（宿主直接读 decision.kind）。
+// 注入文本带 [Memory Inject] 前缀，作为一条 plugin source 的 user 消息追加，按会话指纹去重。
 import { createHash } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { ProjectMemoryStore } from './store.js'
@@ -27,35 +24,24 @@ export const INJECT_MARK = '[Memory Inject]'
 
 /**
  * 注入块抬头里的插件名。
- *
- * 消息的 `source.kind`（= {@link SOURCE_KIND}）只有宿主看得到：请求序列化只取 `role` 与
- * `content`（provider 侧对 `.source` 零引用），所以模型从元数据里读不到"这是谁注入的"。
- * 抬头是**唯一**能让模型（和 GUI 里的用户）看见生产者的地方。抬头不是行为契约：
- * 客户端不解析它，判据也不读它。
+ * 消息的 `source.kind` 只有宿主看得到（请求序列化只取 `role` 与 `content`），抬头是模型与 GUI 用户
+ * 唯一能看见生产者的地方。抬头不是行为契约：客户端不解析它，判据也不读它。
  */
 export const PLUGIN_NAME = 'dsh-project-memory'
 
 /**
  * 本插件在 `message.source` 上声明的生产者 kind。
- *
- * 会话格式 v4 起 `MessageSourceMap` 是「每个生产者声明自己的 kind」的可合并联合类型，
- * **没有** `plugin` 这个兜底 kind：宿主的 `assertV4MessageSources` / `assertV4SourceRowAdmission`
- * 会直接拒绝 `kind === 'plugin'` 的消息（`session-format-v3-to-v4/src/message-sources.ts`），
- * 而拒绝发生在编码落盘那一刻 —— 于是整轮运行失败。
- *
- * 值选 `plugin:<包名>` 是因为这正是宿主自己的 v3→v4 迁移对本插件历史消息的改写结果
- * （`rewritePluginSource`：第三方插件 → `plugin:${plugin}`，并丢弃 `plugin` 字段）。
- * 新写的消息与迁移后的旧消息因此是**同一个生产者身份**，自激闸门（见 isOwnInjection）不需要按新旧分叉。
+ * 会话格式 v4 没有 `plugin` 兜底 kind：宿主会直接拒绝 `kind === 'plugin'` 的消息，
+ * 且拒绝发生在编码落盘那一刻——整轮运行失败。
+ * 值取 `plugin:<包名>`：这正是宿主 v3→v4 迁移改写本插件历史消息的结果，新写与迁移后是同一个
+ * 生产者身份，自激闸门（isOwnInjection）不必按新旧分叉。
  */
 export const SOURCE_KIND = 'plugin:dsh-project-memory'
 
 /**
- * 这条消息是不是本插件自己注入的？
- *
- * 三种写法都要认，因为同一条历史消息在不同阶段形状不同：
- *   - `plugin:dsh-project-memory` —— 现在写的，也是 v3→v4 迁移改写老消息的结果；
- *   - `project-memory` —— 保留的别名：将来若再换 kind，自激闸门不会因此失效；
- *   - `plugin: 'dsh-project-memory'` —— 迁移前内存里尚未落盘的旧形状（老宿主 / 测试夹具）。
+ * 这条消息是不是本插件自己注入的？三种写法都要认，因为同一条历史消息在不同阶段形状不同：
+ * `plugin:dsh-project-memory`（现在写的，也是迁移结果）、`project-memory`（保留的别名，将来换 kind
+ * 时自激闸门不失效）、`plugin: 'dsh-project-memory'`（迁移前尚未落盘的旧形状）。
  * @param {object|undefined|null} source - message.source
  * @returns {boolean}
  */
@@ -66,10 +52,7 @@ export function isOwnInjection(source) {
     || source.plugin === 'dsh-project-memory'
 }
 
-/**
- * 注入正文的最小可用长度：预算塞不下这么多就宁可不注入（记 dropped）。
- * 与其输出 `- [ins_xxx] procedure ` 这种 stub，不如保持沉默——stub 只消耗 token 不传递信息。
- */
+/** 注入正文的最小可用长度：预算塞不下就宁可不注入（记 dropped）——stub 只消耗 token 不传递信息。 */
 const MIN_BODY_CHARS = { trigger: 48, hint: 120 }
 
 /** 注入引擎配置：insight 默认之上叠加 autoContext 预算/门控参数。 */
@@ -80,8 +63,7 @@ export function cfgEngine(config) {
     ...base,
     maxTokens: typeof c.maxTokens === 'number' ? c.maxTokens : 400,
     entryMaxInsights: typeof c.entryMaxInsights === 'number' ? c.entryMaxInsights : 6,
-    // 提示通道的相对阈值（层内最高分的比例）：尺度无关，取代旧的"绝对 overlap"常量。
-    // 旧判据 normalizedTokenOverlap = |交集| / max(|A|,|B|) 对长消息必然趋零（实测 0.014–0.057）。
+    // 提示通道的相对阈值（层内最高分比例）：尺度无关；旧 overlap 判据对长消息必然趋零（实测 0.014–0.057）。
     signalMinRatio: typeof c.signalMinRatio === 'number' ? c.signalMinRatio : 0.5,
     // 兼容闸门：显式配置 relevanceMin 时仍走旧的绝对 overlap 判据；不配置则为 null（走相对阈值）。
     relevanceMin: typeof c.relevanceMin === 'number' ? c.relevanceMin : null,
@@ -91,52 +73,39 @@ export function cfgEngine(config) {
     entryOn: c.entryOn !== false,
     // 模型自己写/维护任务清单后、尚无新人类消息时，不把任务卡再回声给模型（省 token）
     skipEchoSelfTodo: c.skipEchoSelfTodo !== false,
-    // 预算审计日志级别（stderr）。默认 off：预算挤掉低优先级条目是正常降级，不是故障，
-    // 而终端是用户可见面——默认打印会让一次启动刷出多行，代价远大于那点可观测性收益。
-    //   off  : 永不打印（默认）
-    //   once : 每个会话最多一行（首次出现预算丢弃时），够定位又不刷屏
-    //   all  : 丢弃组合每变化一次打一行（作者排查用）
+    // 预算审计日志级别（stderr）。默认 off：预算挤掉低优先级条目是正常降级、不是故障，而终端
+    // 是用户可见面，默认打印会让一次启动刷出多行（off / once / all 三档）。
     budgetLog: ['off', 'once', 'all'].includes(c.budgetLog) ? c.budgetLog : 'off',
-    // 同一条 insight 在本会话里重复注入的冷却（单位：pre-step 步数）。
-    // 0（默认）= 内容没变就不再注入：注入消息会留在会话历史里（宿主不压缩历史），
-    // 整块重发同一条 1200 字 procedure 只是重复占位。>0 用于历史可能被外部裁剪的场景。
+    // 同一条 insight 在本会话重复注入的冷却（pre-step 步数）。0（默认）= 内容没变就不再注入
+    // （宿主不压缩历史）；>0 用于历史可能被外部裁剪的场景。
     reinjectItemsAfter: typeof c.reinjectItemsAfter === 'number' && c.reinjectItemsAfter >= 0 ? c.reinjectItemsAfter : 0,
-    // ---- S2/S3/S4 新增（准入化改造） ----
-    // 旧 `scope` 的处理：默认 **ignore**（保留历史数据、不静默改用户数据）；
-    // legacy `trigger.scope` 的值由作者手写，落不进自动派生的画像 tag 空间 → 当收窄条件用等于判死条目。
-    // 显式配 'filter' 才恢复旧的收窄语义。
+    // legacy `trigger.scope` 默认 **ignore**（保留历史数据、不静默改用户数据）：作者手写的值
+    // 落不进自动派生的画像 tag 空间，当收窄条件等于判死条目；显式配 'filter' 才恢复旧语义。
     legacyScope: c.legacyScope === 'filter' ? 'filter' : 'ignore',
-    // 条目通道的步间隔：两次"条目注入"之间至少隔这么多步（常驻任务卡不受限——它是状态快照，
-    // 内容变了就该更新）。这是"不频繁"的主要旋钮。
+    // 条目通道的步间隔：两次条目注入至少隔这么多步（常驻任务卡不受限——它是状态快照）。
     gateCooldownSteps: typeof c.gateCooldownSteps === 'number' && c.gateCooldownSteps >= 0 ? c.gateCooldownSteps : 2,
-    // 每会话条目注入的上限（条数 / 字符）：这是**保险丝**，不是节流阀。
-    // 节流由单轮 maxTokens 与 gateCooldownSteps 负责；这两个数的唯一职责是兜住病态的
-    // runaway，所以默认值必须远高于任何真实会话的用量。旧默认 12 条 / 4000 字符 ≈ 11 条，
-    // 实测真实日志里 11/81 个会话打满，打满之后是**永久**静默（实测 1234 步失明），
-    // 而"会话后段"恰是关键时刻概率最高的地方。实测最长会话用 35 条 / 8640 字符，故取
-    // 60 / 24000（≈1.7× 与 ≈2.8× 余量）。想复现旧行为显式配小值即可。
+    // 每会话条目注入上限（条数 / 字符）：这是**保险丝**，不是节流阀——节流由 maxTokens 与 gateCooldownSteps
+    // 负责，这两个数只兜住病态 runaway。旧默认 12 条 / 4000 字符实测 11/81 个会话打满后永久静默
+    // （1234 步失明），最长会话用 35 条 / 8640 字符，故取 60 / 24000。
     maxItemsPerSession: typeof c.maxItemsPerSession === 'number' && c.maxItemsPerSession >= 0 ? c.maxItemsPerSession : 60,
     maxItemCharsPerSession: typeof c.maxItemCharsPerSession === 'number' && c.maxItemCharsPerSession >= 0 ? c.maxItemCharsPerSession : 24000,
-    // 提示通道的**绝对**覆盖底线（IDF 加权覆盖率）：相对阈值分不出"有信号"和"矮子里拔将军"，
-    // 只有归一在 [0,1]、有真零点才谈得上下限。0.30 时的实测反例：真实 store（43 条同源洞察）上，
-    // 对照组场景「改 pptx 时间戳」以 cov 0.32~0.35 注入了 3 条无关条目——语料同源时共享词多、
-    // IDF 分辨力被拉平，"最不坏的一条"就能过 0.30。0.45 落在实测分布的空隙里（假阳性 ≤0.35、
-    // 下一个真命中 ≥0.49），合成标注集在 0.6 以前 precision/recall 也仍是 1.00。
-    // 用 `--hint-cov` 在真实 store 上重放可复核（见 test/injection-scenarios.test.mjs）。
+    // 提示通道的**绝对**覆盖底线（IDF 加权覆盖率）：只有归一在 [0,1]、有真零点才谈得上下限。
+    // 0.30 的实测反例：真实 store（43 条同源洞察）上对照场景以 cov 0.32~0.35 注入 3 条无关条目
+    // （同源语料共享词多、IDF 分辨力被拉平）。0.45 落在实测空隙里（假阳性 ≤0.35、下一个真命中
+    // ≥0.49）；合成标注集在 0.6 以前 precision/recall 仍是 1.00。
     hintMinCoverage: typeof c.hintMinCoverage === 'number' && c.hintMinCoverage >= 0 ? c.hintMinCoverage : 0.45,
     // 提示通道还要求至少这么多个共同词：单个通用词（"插件"）也能拿到 coverage=1.00。
     hintMinMatched: typeof c.hintMinMatched === 'number' && c.hintMinMatched >= 0 ? c.hintMinMatched : 2,
-    // 通道级沉默：查询里能在语料中找到对应的词占比低于这个值时，整条提示通道本轮不出声。
-    // 长句子里只有一两个词碰巧命中，coverage 会虚高到 1.00——这条门就是为它设的。
+    // 通道级沉默：查询里能在语料中找到对应的词占比低于它时，整条提示通道本轮不出声
+    // （长句里只有一两个词碰巧命中时，coverage 会虚高到 1.00）。
     hintMinSupport: typeof c.hintMinSupport === 'number' && c.hintMinSupport >= 0 ? c.hintMinSupport : 0.15,
-    // 可选向量层（leanvec）。`vectorDir` 无默认值 = 默认不用向量（纯词法）；
-    // 只有配置了目录（或环境变量、或装上可选依赖）才构造 rerank，见 src/vector-index.js。
+    // 可选向量层（leanvec）：`vectorDir` 无默认值 = 默认纯词法；配了目录/环境变量/可选依赖才构造 rerank。
     vectorDir: typeof c.vectorDir === 'string' && c.vectorDir ? c.vectorDir : null,
     vectorAlpha: typeof c.vectorAlpha === 'number' && c.vectorAlpha >= 0 && c.vectorAlpha <= 1 ? c.vectorAlpha : 0.5,
-    // 写入侧近重复检测的独立开关（默认开）。**不跟随 vectorAlpha**：那条是排序权重，
-    // 设成 0 只该关掉重排，不该连带停掉 0.9 自动覆盖 / 0.7 近邻提示。
+    // 写入侧近重复检测的独立开关（默认开）。**不跟随 vectorAlpha**：后者是排序权重，设 0 只该关重排，
+    // 不该连带停掉 0.9 自动覆盖 / 0.7 近邻提示。
     vectorDedup: c.vectorDedup !== false,
-    // 两个**实验性**旋钮：没有可发布的默认值（证据见 scoreHints 的注释），所以不设就不启用。
+    // 两个**实验性**旋钮：没有可发布的默认值（见 scoreHints 的注释），所以不设就不启用。
     vectorItemMin: typeof c.vectorItemMin === 'number' && Number.isFinite(c.vectorItemMin) ? c.vectorItemMin : undefined,
     vectorSpeakMin: typeof c.vectorSpeakMin === 'number' && Number.isFinite(c.vectorSpeakMin) ? c.vectorSpeakMin : undefined,
   }
@@ -144,10 +113,9 @@ export function cfgEngine(config) {
 
 /**
  * 给写入路径（`save_lesson` / `remember`）用的向量打分器：**没装/没配就是 null**。
- *
- * 与注入路径共用一个解析入口（`openEngine`），但**不共用开关**：写入去重由
- * `autoContext.vectorDedup` 控制，不受 `vectorAlpha`（排序权重）影响。返回的函数是同步的，
- * 供 `saveInsight` 在写事务里直接调用；任何异常都降级成 null，绝不因为可选的向量层挡住写入。
+ * 与注入路径共用解析入口（`openEngine`），但**不共用开关**：写入去重由 `autoContext.vectorDedup`
+ * 控制，不受 `vectorAlpha`（排序权重）影响。返回的函数是同步的，供 `saveInsight` 在写事务里直接调用；
+ * 任何异常都降级成 null，绝不因为可选的向量层挡住写入。
  * @param {object} config - 插件配置
  * @param {{storeDir: string|null, items: object[]}} o - 持久化位置与候选池（见 vectorItemsFrom）
  * @returns {Promise<((text: string, items: object[]) => Map<string, number>)|null>}
@@ -163,15 +131,11 @@ export async function createWriteCosine(config, { storeDir = null, items = [] } 
 
 /**
  * 从一份消息列表里取"人说的话"。
- *
- * 只认 `role=user` **且**（`source.kind === 'user'` 或无 source 的老宿主/测试）。
- * 其它 user 角色的消息不是人说的：`agent-message`（子代理报告 relay）、`subagent-settled`、
- * `tool-jobs`（后台任务完成）、`time-context`、`runtime-context` 都会出现在 claimed delta 里。
- * 实测代价：子代理报告里的"发布/渲染"曾被当成用户意图，触发 `intent:release`（1050 字符）
- * 与 `intent:渲染`（1200 字符）两条无关 procedure。
- *
- * `agent/pre-step` 的 `messages` 是 claimed **delta**，不是完整历史，所以会话中段通常
- * 根本没有真人消息 —— 调用方应回退到每会话缓存（见 `InjectionSessions.humanText`）。
+ * 只认 `role=user` **且**（`source.kind === 'user'` 或无 source 的老宿主/测试）：`agent-message`、
+ * `subagent-settled`、`tool-jobs`、`time-context`、`runtime-context` 都不是人说的。实测子代理报告里的
+ * "发布/渲染"曾被当成用户意图，触发 `intent:release` 与 `intent:渲染` 两条无关 procedure。
+ * `agent/pre-step` 的 `messages` 是 claimed **delta**，会话中段通常没有真人消息——调用方应回退到
+ * 每会话缓存（见 `InjectionSessions.humanText`）。
  * @param {object[]} messages
  * @returns {string} 人类消息正文；没有则空串
  */
@@ -214,8 +178,8 @@ export function editedFiles(task, max) {
 }
 
 /**
- * 是否回声 resident 任务卡：最近一次推进是模型自己 todo 写步骤、且之后没有新人类消息时，
- * 不回声（模型刚写的东西再喂回去 = 噪音/浪费 token）。保留相关 insights 注入不变。
+ * 是否回声 resident 任务卡：最近一次推进是模型自己 todo 写步骤、且之后没有新人类消息时不回声
+ * （刚写的东西再喂回去 = 噪音/浪费 token）。保留相关 insights 注入不变。
  */
 export function shouldEchoTaskCard(task, cfg) {
   if (!task) return false
@@ -228,8 +192,7 @@ export function shouldEchoTaskCard(task, cfg) {
 }
 
 /** 任务卡 + 非草稿任务级 insights 摘要（常驻块主体）。
- * withEdited=false 只留给需要稳定正文的调用方；去重指纹现在**包含**“编辑中”行：
- * 否则常驻卡会永远停在第一次注入时的文件列表（写文件不会改变指纹）。 */
+ * 去重指纹**包含**“编辑中”行：否则常驻卡会停在第一次注入时的文件列表（写文件不改变指纹）。 */
 export function buildEntryContent(task, cfg, { withEdited = true } = {}) {
   if (!task) return ''
   const c = cfg || {}
@@ -290,7 +253,7 @@ export function fitBody(body, remaining, min = MIN_BODY_CHARS.hint) {
 
 /**
  * 通道 1：authored trigger 命中（确定性、全文、优先级 1）。procedure 先于其它 kind（步骤更完整）。
- * 准入化（S2）：只有 `when`（op / 写目标 / 意图词）能触发，guard 只能收窄；
+ * 准入化：只有 `when`（op / 写目标 / 意图词）能触发，guard 只能收窄；
  * **没有 `when` 的条目在这里永远不命中**（降级为可发现 + 按需拉取）。
  */
 function collectTriggered(cands, ctx) {
@@ -308,39 +271,20 @@ function collectTriggered(cands, ctx) {
 
 /**
  * 通道 2：统计信号（提示态、优先级 2）。**双门槛**：层内相对阈值 + IDF 加权覆盖率（绝对下限）。
- * 查询只用「人类消息的意图文字 + 本次写目标」：原始工具参数不是查询文本，它们正是
- * `dcterms→rm`、`*.pptx→论文笔记` 那类假阳性的来源。被门槛拦下的记进 dropped，不静默。
- *
- * 可选的第三层：`rerank`（向量重排，默认关闭）。**职责严格分离**——闸门（支持度/覆盖率/共同词数）
- * 仍由词法决定，`rerank` 只改层内排序与 `relative` 那一关。理由见下方融合处注释。
+ * 查询只用人类消息意图 + 本次写目标：原始工具参数正是 `dcterms→rm`、`*.pptx→论文笔记` 类假阳性的来源。
+ * 可选的 `rerank` 只改层内排序与 `relative` 那一关，闸门（支持度/覆盖率/共同词数）仍由词法决定。
  * @param {{ score: (q: string, cands: object[]) => Map<string, number>, alpha?: number, itemMin?: number, speakMin?: number }} [rerank]
- *   `itemMin` 给定且条目的余弦低于它时，该条目**不进提示通道**（只作用于提示通道，不碰 trigger）。
- *   `speakMin` 给定时，若层内最高余弦 ≥ 它，则本轮免于被通道级 `hintMinSupport` 静音（见下方救援处）。
- *
- *   ⚠ 两个旋钮的实测边界（**都还没有可发布的默认值，别拍一个数字上去**）：
- *   · `itemMin`：**真实交付上分辨力为零 → 不要开**。合成池上它看着很灵（假阳性 cos 0.351 vs
- *     真命中 0.530），但真实 store 双重否定：① **绝对常量不可移植**——交付的 45 条余弦
- *     p50=0.206，同一个 0.42 会剪掉 45/45 = 100%（根因是文本变体：真实条目走 insightScoringText
- *     的长文本，均值池化被稀释向语料均值）；② **换成尺度无关量也不行**——在人工标注的 30 条真实
- *     交付上（对 10 / 错 20，基线精度 0.33），cos 与 cos/步内最高的高半/低半精度**完全相同**
- *     （0.33 vs 0.33），"对"与"错"的 cosRel 分布重叠（p50 0.793 vs 0.782）。唯一有信号的是
- *     **步内名次 ≤4**（精度 0.46 vs 0.24），但拿它当门要误杀 4/10 个真命中 → 不划算。
- *     ③ **标签本身不稳**：同一个 30 条样本，agent 判 10 条有用、本地 4B 模型判 7 条，
- *     逐条一致率只有 57%、Cohen kappa = **-0.05（等于随机）**。两次独立估计的水平接近
- *     （33% vs 23.8%，126 条上是 23.8%），所以"真实交付精度约 1/4~1/3"这个**水平**可信，
- *     但**逐条标签不可信** → 任何在它上面标定的阈值都不可用。
- *   · `speakMin`：**证据仍不足 → 别开**。5 个自然语言对照的最高余弦
- *     0.356 / 0.341 / **0.467** / 0.343 / 0.398，最低目标 0.483 → 间隔只有 0.016，且全靠一个
- *     边界样本撑着；再补一个对照就可能翻转。
+ *   `itemMin` 低于则不进提示通道（只作用于提示，不碰 trigger）；`speakMin` 达到则免于被通道级 `hintMinSupport` 静音。
+ *   ⚠ 两个旋钮**都没有可发布的默认值**：itemMin 在真实交付上分辨力为零（绝对常量不可移植、尺度无关量也不行、
+ *   逐条标签不稳，kappa −0.05）；speakMin 的对照与真命中只隔 0.016。
  */
 function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped, rerank = null }) {
   const hints = []
   // 影子记录用：本步**全部**被评过分的候选 + 特征 + 判据结果。与 hints/dropped 分开算——
-  // 现有两类记录都只覆盖"过得了相对阈值的那部分"，恰恰缺了"因为没到阈值而从未被考虑"的候选，
-  // 而那正是离线重放阈值时需要的那批。这里只做加法，不动任何现有判据。
+  // 那两类只覆盖"过得了相对阈值"的部分，缺的正是离线重放阈值时要的那批。
   const candidates = []
   // 真正用于评分的查询文本。影子记录必须留下它：`query`（人类消息原文）与它不是一回事，
-  // 写目标驱动的那些步 `query` 为空、候选却非空。少了它，判据无法离线重放。
+  // 写目标驱动的步 `query` 为空、候选却非空。
   const q = hintQueryText(hintQuery)
   if (!cands.length) return { hints, candidates, scoreQuery: q }
   if (typeof cfg.relevanceMin === 'number') {
@@ -350,25 +294,19 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped, rerank =
       if (score >= cfg.relevanceMin) hints.push({ it, score, why: `overlap:${score.toFixed(3)}` })
     }
     hints.sort((a, b) => b.score - a.score)
-    return { hints, candidates, scoreQuery: q } // 旧判据路径不产出影子候选（已废弃，无重放价值）
+    return { hints, candidates, scoreQuery: q } // 旧判据路径不产出影子候选
   }
   if (!q) return { hints, candidates, scoreQuery: q }
   const byId = new Map(cands.map((it) => [it.id, it]))
-  // 覆盖率语料必须与 BM25 排序同源（insightScoringText）：否则"只在 fix/solution 里有匹配"
-  // 的查询词 df=0 → supportRatio=0 → 整条提示通道沉默，而排序明明给了它高分。
+  // 覆盖率语料必须与 BM25 排序同源（insightScoringText），否则只在 fix/solution 匹配的词
+  // df=0 → supportRatio=0 → 整条提示通道沉默，而排序明明给了高分。
   const corpus = cands.map((it) => insightScoringText(it))
-  // 查询与被测覆盖率的文本用**同一个**过滤后的查询：否则缩写（wsl/npm）会在 BM25 里被剔除、
-  // 却仍在覆盖率里计分，"至少两个共同词"就被它们凑够了。
+  // 查询与覆盖率文本用**同一个**过滤后的查询：否则缩写会在 BM25 里被剔除、却仍计入覆盖率。
   const scored = rankEntriesMergedScored(cands.map(insightToEntry), [q], cands.length)
   // ---- 向量重排（可选、默认关闭）：只改**排序**与 `relative` 那一关，绝不碰 support/coverage/thin ----
-  // 为什么不做成"向量分当绝对闸门"：实测在带标注的 8 场景/24 条池上，expect 为空的对照场景
-  // 纯向量 top-1 = 0.38，而多条**真命中**只有 0.20~0.38（余弦与真值区间重叠）→ 任何绝对余弦
-  // 阈值要么放过对照、要么杀掉真命中。所以闸门继续由词法/支持度决定（它们不随嵌入模型变），
-  // 向量只在 BM25 的 top-k 内决定"先说哪条"。换模型/改词表只影响这一层，不必重标绝对阈值。
-  //
-  // `rerank.score(q, cands)` 由调用方提供（插件运行时装了 leanvec 才给；没装就不传，行为不变）：
-  //   返回 Map<insightId, cos∈[0,1]>；**查询无法编码时应返回空 Map**——那样所有条目都没有
-  //   向量分，排序退化回纯词法，不会被压平成一个平台。
+  // 实测（8 场景/24 条池）expect 为空的对照场景纯向量 top-1 = 0.38，多条真命中只有 0.20~0.38，
+  // 余弦与真值区间重叠 → 任何绝对余弦阈值要么放过对照、要么杀掉真命中；所以闸门继续由词法决定。
+  // `rerank.score` 返回 Map<insightId, cos∈[0,1]>；**查询无法编码时应返回空 Map**——排序退化回纯词法。
   if (rerank && typeof rerank.score === 'function') {
     const alpha = Math.max(0, Math.min(1, typeof rerank.alpha === 'number' ? rerank.alpha : 0.5))
     let cos = null
@@ -377,31 +315,24 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped, rerank =
     for (const r of scored) {
       const v = cos instanceof Map ? cos.get(r.entry.insightId) : undefined
       const has = typeof v === 'number' && Number.isFinite(v)
-      // 先留一份**未融合**的 BM25 原分：影子记录的 `rel` 必须继续是词法相对分，
-      // 否则离线重放（tools/vector-eval.mjs）拿到的"BM25 臂"会被融合分污染。
+      // 先留一份**未融合**的 BM25 原分：影子记录的 `rel` 必须继续是词法相对分，否则离线重放会被融合分污染。
       r.bm25 = r.score
       r.vector = has ? v : null
-      // 有向量分的：归一后的词法分与余弦按 α 混合；没有的：只保留归一后的词法分
-      // （不拿 0 分去罚它——缺向量不等于不相关）。
+      // 有向量分的：归一后词法分与余弦按 α 混合；没有的只保留归一后词法分（缺向量不等于不相关）。
       r.score = has ? (1 - alpha) * (r.score / top0) + alpha * v : r.score / top0
     }
     scored.sort((a, b) => b.score - a.score)
   } else {
     for (const r of scored) r.vector = null
   }
-  // 语料词集合建**一次**再逐条算覆盖率。逐条调用 `idfCoverage` 会让它每次重建整个语料，
-  // 即 O(C²) 次 tokenize（实测真实 store 单步 147ms → 1.3ms，109×，结果逐字段一致）。
+  // 语料词集合建**一次**再逐条算覆盖率：逐条 idfCoverage 是 O(C²) tokenize（实测单步 147ms → 1.3ms，109×，结果一致）。
   const corpusSets = corpusTermSets(corpus)
   const coverage = new Map(cands.map((it, i) => [it.id, idfCoveragePrepared(q, corpus[i], corpusSets)]))
   const qStats = coverage.get(cands[0].id) || { supported: 0, terms: 0 }
   const supportRatio = qStats.terms > 0 ? qStats.supported / qStats.terms : 0
-  // 通道级沉默：查询里绝大多数词在语料里根本没有对应 → "覆盖率 1.00"只是假象。
-  //
-  // ⚠ 它是**比率**（supported / 查询去重词数），所以长句在**小语料**上必然低：自然语言消息实测
-  // 只有 0.11~0.13——目标条目本身 rel=1.00 / coverage=1.00 / matched=2 也会被整条静音。
-  // 因此加一条**可选**的语义救援：仅当调用方提供了向量层、且层内最高余弦达到 `speakMin` 时，
-  // 才允许本轮不沉默（含义是"词法视角太稀，但语义视角很有把握"）。它**不放松任何逐条闸门**
-  // （coverage / matched / relative 照旧），没有向量时的行为也一字不改。
+  // 通道级沉默：查询里绝大多数词在语料里没有对应 → "覆盖率 1.00"只是假象。它是**比率**，长句在小语料上
+  // 必然低（自然语言实测只有 0.11~0.13）。因此加一条**可选**语义救援：提供了向量层且层内最高余弦达到
+  // `speakMin` 时本轮不沉默。它**不放松任何逐条闸门**（coverage/matched/relative 照旧），没有向量时行为不变。
   let vectorRescue = false
   if (rerank && typeof rerank.speakMin === 'number') {
     let topCos = 0
@@ -422,17 +353,14 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped, rerank =
       dropped.push({ id: it.id, channel: 'hint', reason: `coverage:${ev.coverage.toFixed(2)}` })
       continue
     }
-    // 共同词数下限按**查询本身的词数**收敛（查询很短时不强求两个），而不是按"语料能表示的词数"：
-    // 后者在长而杂的查询上会退化成 1，一个碰巧命中的通用词就能过闸。
+    // 共同词数下限按**查询本身的词数**收敛（查询很短时不强求两个）：按"语料能表示的词数"会在长杂查询上退化成 1。
     const needMatched = Math.min(typeof cfg.hintMinMatched === 'number' ? cfg.hintMinMatched : 2, ev.terms)
     if (ev.matched < needMatched) {
       dropped.push({ id: it.id, channel: 'hint', reason: `thin:${ev.matched}` })
       continue
     }
-    // item 级余弦地板（可选）：语义上根本不相关的条目，无论词法多像都不进提示通道。
-    // 这是**只作用于提示通道**的额外一关：authored trigger 是确定性全文注入契约，绝不能被向量拦。
-    // 实测（24 条池）分辨力真实：词法巧合的假阳性 `l_curated`（查询"把列表按日期倒序排"）余弦
-    // 0.351，而真命中 `l_changelog` 0.530，间隔 0.179。取不到向量时不设限——缺向量不等于不相关。
+    // item 级余弦地板（可选）：**只作用于提示通道**——authored trigger 是确定性全文注入契约，绝不能被向量拦。
+    // 实测（24 条池）：假阳性 0.351 vs 真命中 0.530，间隔 0.179；取不到向量时不设限。
     if (rerank && typeof rerank.itemMin === 'number' && typeof r.vector === 'number' && r.vector < rerank.itemMin) {
       dropped.push({ id: it.id, channel: 'hint', reason: `vector:${r.vector.toFixed(2)}` })
       continue
@@ -440,13 +368,11 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped, rerank =
     hints.push({ it, score: r.score, why: `relative:${(r.score / (scored[0].score || 1)).toFixed(2)} cov:${ev.coverage.toFixed(2)}/${ev.matched}` })
   }
 
-  // ---- 影子候选（只读、无副作用）：重放一遍**全部**被评分的条目，标出它卡在哪一关 ----
-  // 顺序与真实判据一致（support → coverage → thin → relative），最后 'cand' = 过了全部门槛
-  // （注意 'cand' 不等于"真的注入了"：还要过去重/预算/冷却，那些写在同一行的 injected/silence）。
+  // ---- 影子候选（只读、无副作用）：重放全部被评分的条目，标出它卡在哪一关 ----
+  // 顺序与真实判据一致（support → coverage → thin → relative）；'cand' 不等于"真的注入了"（还要过去重/预算/冷却）。
   {
-    // 两个分母必须分开：真实判据（`relative`）用的是**融合后**的分，而影子记录的 `rel`
-    // 承诺的是**词法**相对分。此前两者共用 `scored[0].score`，于是 `rel` 的分子是 BM25 原分、
-    // 分母是融合 top —— 实测同一行里 `rel` 能到 5.925（应当 ≤1），离线拿它重放阈值会全歪。
+    // 两个分母必须分开：真实判据（`relative`）用**融合后**的分，而影子记录的 `rel` 承诺**词法**相对分；
+    // 共用会让 `rel` 到 5.925（应当 ≤1），离线拿它重放阈值全歪。
     const top = scored[0]?.score || 0
     let lexTop = 0
     for (const r of scored) {
@@ -468,8 +394,7 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped, rerank =
       const cand = {
         id: it.id,
         channel: 'hint',
-        // `rel` 恒为**词法**相对分（未融合，分母是词法 top），供离线重放对照；
-        // 融合后的分另记 fused，`decision: 'relative'` 用的仍是融合分（与真实判据一致）。
+        // `rel` 恒为**词法**相对分（分母是词法 top）；融合后的分另记 fused，`decision: 'relative'` 仍用融合分。
         rel: Number(((r.bm25 ?? r.score) / (lexTop || 1)).toFixed(3)),
         coverage: Number(ev.coverage.toFixed(3)),
         matched: ev.matched,
@@ -481,8 +406,7 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped, rerank =
       if (rerank) {
         cand.fused = Number(r.score.toFixed(3))
         cand.vector = r.vector == null ? null : Number(r.vector.toFixed(3))
-        // 本轮是否靠语义救援才免于被 `support` 整条静音（0=没救、1=救了）。离线重放要靠它
-        // 区分"support 门拦的"与"coverage 门拦的"。
+        // 本轮是否靠语义救援才免于被 `support` 整条静音（0/1），离线重放靠它区分两条门。
         cand.rescue = vectorRescue ? 1 : 0
       }
       candidates.push(cand)
@@ -493,10 +417,9 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped, rerank =
 
 /**
  * 构建注入内容（不写盘、无副作用）。
- *
- * 交付契约：**authored trigger（所有 kind）= 确定性全文注入，优先级 1；统计信号 = 截断提示，
- * 优先级 2**。预算排程为：常驻任务卡 → trigger 命中 → 提示。每一步都记 `reasons`（为什么注入）
- * 与 `dropped`（为什么没注入），让"注入/未注入"可审计——而不是只有静默的门槛。
+ * 交付契约：**authored trigger（所有 kind）= 确定性全文注入，优先级 1；统计信号 = 截断提示，优先级 2**。
+ * 预算排程：常驻任务卡 → trigger 命中 → 提示；每一步都记 `reasons`（为什么注入）与 `dropped`
+ * （为什么没注入），让"注入/未注入"可审计。
  * @param {object} opts { query, readiness, task, store, globalStore, projectTagsList, cfg, skipItem? }
  * @param {(it: object) => boolean} [opts.skipItem] 条目级去重：返回 true 的条目直接退出排程
  *   （本会话已注入过且正文未变）。在排程前过滤，省下的预算留给新条目。
@@ -507,8 +430,7 @@ export function buildInjection(opts) {
   const store = opts.store || null
   const tags = opts.projectTagsList || []
   // 就绪上下文可能**已经构建过**（injectForStep 先构建、再传给这里）。二次构建会把第一遍的
-  // `actions` 输出当成"调用方声明的动作"重新信任一遍 —— 散文里的 file-delete 会因此绕过
-  // PRE_ACTION_OPS 过滤（实测："清理一下 README 的措辞"仍注入 1200 字符恢复 procedure）。
+  // `actions` 当成"调用方声明的动作"重新信任——散文里的 file-delete 会绕过 PRE_ACTION_OPS 过滤。
   // 结构化标记：带 ops + intentOps 的上下文是构建产物，只补 tags，不再重新归一。
   const built = opts.readiness && Array.isArray(opts.readiness.ops) && Array.isArray(opts.readiness.intentOps)
   const ctx = built
@@ -518,10 +440,8 @@ export function buildInjection(opts) {
   const reasons = []
   const dropped = []
   const parts = []
-  // 预算只能是上限，不是目标。两条额度分开：
-  //   stepBudget —— 单轮（常驻块 + 条目）共享的 maxTokens；
-  //   itemBudget —— 条目还受会话字符额度约束；**常驻块不占这条**（它是状态快照，文档明说不受限）。
-  // 旧实现把两者取小成同一个 budgetChars，会话额度用尽后连任务卡都被截成 `…(截断)`。
+  // 预算只能是上限，不是目标。两条额度分开：stepBudget 是单轮（常驻块 + 条目）共享的 maxTokens；
+  // itemBudget 是条目还受的会话字符额度，**常驻块不占这条**（它是状态快照，文档明说不受限）。
   const quotaChars = typeof opts.maxChars === 'number' ? opts.maxChars : Infinity
   const maxItems = typeof opts.maxItems === 'number' ? opts.maxItems : Infinity
   const skipItems = opts.skipItems === true
@@ -539,9 +459,8 @@ export function buildInjection(opts) {
   }
   // procedure 不进提示通道：它要过 trigger.scope（见 scoreHints 注释）。
   const consumed = new Set(triggered.map((t) => t.it.id))
-  // 限流命中时**照旧评分**（只算不注入，`place()` 仍按 skipItems 跳过）：影子记录要能回答
-  // "这一步如果不限流会注入什么"——那正是限流期间最需要回答的问题。此前这里直接置空，
-  // 实测 1420 个静默步一个候选都没留下。
+  // 限流命中时**照旧评分**（只算不注入，`place()` 仍按 skipItems 跳过）：影子记录要能回答"这一步
+  // 如果不限流会注入什么"——那正是限流期间最需要回答的问题。
   const hintCands = cands.filter((it) => !consumed.has(it.id) && it.kind !== 'procedure')
   const { hints, candidates, scoreQuery } = scoreHints({
     cands: hintCands,
@@ -554,8 +473,7 @@ export function buildInjection(opts) {
   })
 
   // 常驻块文本。去重指纹包含“编辑中”行：否则这条常驻状态只会在别的条目变化时顺带更新，
-  // 模型会一直看到旧文件列表。editedFiles 只返回文件名（不含时间戳），所以同一个文件
-  // 反复写不会改变指纹；只有热点文件集合/顺序变化时才重发整块。
+  // 模型会一直看到旧文件列表；只有热点文件集合/顺序变化时才重发整块。
   const echo = cfg.entryOn !== false && shouldEchoTaskCard(task, cfg)
   const entry = echo ? buildEntryContent(task, cfg) : ''
   const entryStable = entry
@@ -574,8 +492,7 @@ export function buildInjection(opts) {
       const remaining = Math.min(stepBudget - used, itemBudget - itemUsed)
       const body = fitBody(insightBody(it), remaining, minChars)
       if (body === null) {
-        // 带出数字：旧的 `budget` 没有量纲，"还剩 38 字符、这条最少要 120" 与"根本没预算"
-        // 在日志里长得一样 —— 配额逼近上限时那条永久静默的细缝因此完全不可诊断。
+        // 带出数字：`budget` 没有量纲，"还剩 38 字符、这条最少要 120" 与"根本没预算"在日志里长得一样。
         dropped.push({ id: it.id, channel, reason: 'budget', remaining, need: minChars })
         continue
       }
@@ -593,9 +510,8 @@ export function buildInjection(opts) {
     place('hint', hints, MIN_BODY_CHARS.hint, () => 'hint')
   }
 
-  // 预算层结局写回候选。`decision` 是**门槛层**的结论（support/coverage/thin/relative/cand），
-  // `outcome` 是**预算层**的结论——两者正交。"过了全部门槛却没注入"必须能归因，
-  // 否则日志只能证明门槛做了什么，证明不了预算拿走了什么。
+  // 预算层结局写回候选。`decision` 是**门槛层**结论，`outcome` 是**预算层**结论，两者正交：
+  // "过了全部门槛却没注入"必须能归因。
   {
     const outcomeById = new Map()
     for (const r of reasons) outcomeById.set(`${r.channel}\u0000${r.id}`, 'injected')
@@ -611,8 +527,7 @@ export function buildInjection(opts) {
   }
 
   const total = [entry, ...parts].filter(Boolean)
-  // 早退也必须带上 candidates/scoreQuery：空块不等于"没有候选"（无任务卡 + 全部被预算挤掉
-  // 就是这种形状），此前这里把两者一起丢了。
+  // 早退也必须带上 candidates/scoreQuery：空块不等于"没有候选"（无任务卡 + 全部被预算挤掉就是这种形状）。
   if (!total.length) {
     return { text: '', entry, labels, reasons, dropped, candidates, scoreQuery, itemChars: itemUsed }
   }
@@ -622,7 +537,7 @@ export function buildInjection(opts) {
   return { text: clamp(total.join('\n')), entry, entryStable, labels, reasons, dropped, candidates, scoreQuery, dedupeText, itemChars: itemUsed }
 }
 
-// 每会话状态的会话数上限：六张表共用（旧实现把同一个 200 在五处各写一遍）。
+// 每会话状态的会话数上限：六张表共用。
 const SESSION_STATE_MAX = 200
 // 单会话已注入条目表的条数上限。
 const INJECTED_ITEMS_MAX = 600
@@ -631,10 +546,7 @@ const OBSERVED_CALLS_MAX = 8
 
 /**
  * 注入引擎的「每会话一份」状态。
- *
- * 之前六张表散在 installAutoInject 里、各自 hand-roll 淘汰循环，同一个
- * `while (map.size > CAP) map.delete(map.keys().next().value)` 抄了五遍：容量上限写在五处，
- * 抄漏一处就是无界增长，dispose 时也漏清两张表。容量只在这里定义一次。
+ * 六张表都由 SessionCache 管容量，容量只在这里定义一次。
  */
 class InjectionSessions {
   constructor() {
@@ -643,21 +555,20 @@ class InjectionSessions {
     this.lastText = cache()
     // 上次预算丢弃签名：预算把条目挤出去时必须留痕一次，而不是静默（degraded 可见性）。
     this.lastDropped = cache()
-    // 条目级去重记忆：insightId → { hash, step }。注入的消息留在 append-only 的会话历史里，
-    // 所以"整块指纹变了"不等于"内容都是新的"：滑动工具窗口 / 任务卡更新 / 预算截断边界都会
-    // 让同一份 procedure 被整块重发（实测 66 步注入 20 次，同一份 1732 字重发 3 次）。
+    // 条目级去重记忆：insightId → { hash, step }。注入的消息留在 append-only 的历史里，所以
+    // "整块指纹变了"不等于"内容都是新的"：滑动窗口 / 任务卡更新都会让同一份 procedure 被重发
+    // （实测 66 步注入 20 次，同一份 1732 字重发 3 次）。
     this.items = cache(() => new BoundedMap(INJECTED_ITEMS_MAX))
     // 会话步数：为 reinjectItemsAfter 提供时间轴。
     this.step = cache(() => 0)
-    // 会话级条目额度（S3）：条数 / 字符 / 上次"条目注入"的步号。常驻任务卡不占额度——
-    // 它是状态快照，内容变了就该更新；被限流的是记忆条目的推送。
+    // 会话级条目额度：条数 / 字符 / 上次"条目注入"的步号。常驻任务卡不占额度——
+    // 它是状态快照，被限流的是记忆条目的推送。
     this.quota = cache(() => ({ items: 0, chars: 0, lastStep: -Infinity }))
     // 反应窗口：本会话最近观察到的 tool/call（参数里有 git commit / npm publish / 改动的路径）。
     // 宿主没有"工具执行前拦截"钩子，所以这是 pre-step 之外唯一能拿到的动作事实。
     this.observed = cache(() => [])
-    // 本会话最后一条**真人**消息。`agent/pre-step` 拿到的是 claimed delta，会话中段通常没有
-    // 真人消息，于是"本步的意图"会退化成子代理报告 / job 通知 / 时间快照里的词（实测 386 步里
-    // 只有 31 步有真人 query，其余全是通知）。意图必须是会话状态，不是这一步恰好收到的文本。
+    // 本会话最后一条**真人**消息。`agent/pre-step` 拿到的是 claimed delta，会话中段通常是子代理报告 /
+    // job 通知 / 时间快照（实测 386 步里只有 31 步有真人 query）。意图是会话状态，不是这一步恰好收到的文本。
     this.humanText = cache()
     // 本会话是否已通告"记忆根是推定的"（会话工作目录，无项目标记）。状态声明只发一次。
     this.rootNoticed = cache(() => false)
@@ -673,9 +584,8 @@ class InjectionSessions {
  * 记录会话里的两类事实：
  *  - `user/message`（**真人的**）→ 每会话最后一条人类消息。它是会话状态，不是本步增量；
  *  - `tool/call` → 最近 8 次调用，ops.js 从结构化参数解析 op / 写目标 / 主机。
- *
- * 两者都只从**事件**里来，不再把任意工具的参数拼成文本再解析（那会让 subagent 提示词里
- * 的"删除/迁移"变成父会话的动作，实测存活 8 步）。
+ * 两者都只从**事件**里来，不再把任意工具的参数拼成文本再解析（那会让 subagent 提示词里的
+ * "删除/迁移"变成父会话的动作）。
  */
 function installCallObserver(ctx, sessions) {
   ctx.on('session/event', (session, event) => {
@@ -685,8 +595,8 @@ function installCallObserver(ctx, sessions) {
       if (event.type === 'user/message') {
         const data = event.data || {}
         const source = data.source
-        // 自注入块（包括迁移前的 `{ plugin: 'dsh-project-memory' }` 旧形状）不是人话：
-        // 放进 humanText 会让下一步拿注入正文再检索一遍（自激）。与 lastUserText 共用同一判据。
+        // 自注入块（包括迁移前的旧形状）不是人话：放进 humanText 会让下一步拿注入正文再检索（自激）。
+        // 与 lastUserText 共用同一判据。
         if (isOwnInjection(source)) return
         const kind = source && source.kind
         // 通知 / relay / job / 时间快照都不是人说的；无 source 的老宿主按人话处理（与 lastUserText 同口径）。
@@ -707,9 +617,8 @@ function installCallObserver(ctx, sessions) {
 }
 
 /** 注册 agent/pre-step 监听，向每步请求的 enter 决策追加记忆消息（默认开）。
- * 宿主瀑布事件签名为 (payload, next)：payload.agent.session 提供会话（header.cwd=项目根）。
- * 任何异常/无会话 cwd → 原样返回默认决策，零副作用，绝不让宿主请求受影响。
- */
+ * 宿主瀑布事件签名是 (payload, next)：payload.agent.session 提供会话（header.cwd=项目根）。
+ * 任何异常/无会话 cwd → 原样返回默认决策，零副作用，绝不让宿主请求受影响。 */
 export function installAutoInject(ctx, config) {
   const auto = (config && config.autoContext) || {}
   if (auto.enabled === false) return
@@ -724,10 +633,9 @@ export function installAutoInject(ctx, config) {
     ctx.effect(() => () => sessions.clear())
   }
   ctx.on('agent/pre-step', async (payload, next) => {
-    // 宿主契约是 waterfall(payload, next)，next 一定存在；但一旦宿主版本漂移、或事件被当
-    // 普通事件调用，next 缺失会让本监听器 reject（历史事故正是 `next is not a function`）。
-    // 更致命的是返回 undefined：宿主 agent.ts 直接读 `decision.kind`，会崩掉整步 → 无法回复。
-    // 因此两种情况都退化为一个合法的 enter 决策，绝不让宿主请求受影响。
+    // 宿主契约是 waterfall(payload, next)，next 一定存在；但宿主版本漂移或事件被当普通事件调用时，
+    // next 缺失会让本监听器 reject。更致命的是返回 undefined：宿主 agent.ts 直接读 `decision.kind`，
+    // 会崩掉整步 → 无法回复。因此两种情况都退化为一个合法的 enter 决策。
     const fallback = () => ({ kind: 'enter', messages: (payload && payload.messages) || [] })
     const decision = typeof next === 'function' ? await next() : fallback()
     if (!decision) return fallback()
@@ -760,14 +668,14 @@ function warnUnsafeSessionRoot(root, rejection) {
  */
 async function injectForStep({ payload, decision, config, cfg, audit, shadow, sessions }) {
   const session = payload && payload.agent && payload.agent.session
-  // 与工具侧同一口径的「当前工作目录」：0.2.1+ 走 workingDirectory 投影（cd 后会变），
-  // 老宿主回退 header.cwd。少了这一步，cd 之后审计与懒索引会落在两个不同的 store 里。
+  // 与工具侧同一口径的「当前工作目录」：0.2.1+ 走 workingDirectory 投影（cd 后会变），老宿主回退
+  // header.cwd。少了这一步，cd 之后审计与懒索引会落在两个不同的 store 里。
   const cwd = sessionWorkingDir(session, { agent: payload?.agent })
   const sessionId = session && session.id
   if (!cwd || !sessionId) return null
-  // 会话 cwd 命中内置名单 / roots.deny / roots.exclude 时整条链路停在这里：不读 store
-  // （历史遗留的超大 store 光是 load() 就能 OOM），也不写审计——`appendShadowAudit` 里的
-  // mkdirSync 正是把 `.dsh-project-memory` 造进家目录、进而触发"目录自标记 → 家目录被锁成项目"的那一步。
+  // 会话 cwd 命中内置名单 / roots.deny / roots.exclude 时整条链路停在这里：不读 store（历史遗留的
+  // 超大 store 光是 load() 就能 OOM），也不写审计——`appendShadowAudit` 里的 mkdirSync 正是把
+  // `.dsh-project-memory` 造进家目录、进而触发"目录自标记 → 家目录被锁成项目"的那一步。
   const rejection = rootRejection(cwd, config)
   if (rejection) {
     warnUnsafeSessionRoot(cwd, rejection)
@@ -778,9 +686,8 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   const root = resolveProjectMemoryRoot(cwd, config)
   if (!root) return null
 
-  // 意图是**会话状态**：先看本步 delta 里有没有新的人类消息，没有则回退到本会话最后一条。
-  // `agent/pre-step` 拿到的是 claimed delta（宿主 agent-loop 的 inbox.claim），会话中段通常
-  // 只有 tool result / 子代理报告 / job 通知，拿它们当查询就是"这步在做什么"用错了来源。
+  // 意图是**会话状态**：先看本步 delta 有没有新人类消息，没有则回退本会话最后一条。claimed delta
+  // 中段通常只有 tool result / 子代理报告 / job 通知，拿它们当查询就是"这步在做什么"用错了来源。
   const deltaHuman = lastUserText(decision.messages)
   const rememberedHuman = sessions.humanText.peek(sessionId) || ''
   const query = deltaHuman || rememberedHuman
@@ -791,9 +698,8 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   const boundTaskId = store.getBoundTaskId(sessionId)
   const task = boundTaskId ? store.getTask(boundTaskId) : null
 
-  // 两个窗口合并进同一个就绪上下文：人类消息（先发）+ 已观察动作（反应）。
-  // 动作平面（S1）：**只**从结构化 tool/call 归一（activityFromCalls），不再把全部参数拼成
-  // actionText —— 那会把 subagent 提示词 / remember 正文 / 任意脚本里的词当成动作（实测 8 步）。
+  // 两个窗口合并进同一个就绪上下文：人类消息（先发）+ 已观察动作（反应）。动作平面**只**从结构化
+  // tool/call 归一，不再把全部参数拼成 actionText（那会把 subagent 提示词/remember 正文当成动作）。
   const observed = sessions.observed.ensure(sessionId)
   const activity = activityFromCalls(observed)
   const readiness = buildReadinessContext({
@@ -823,8 +729,8 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     silenceReason: silence.reason || 'cooldown',
     maxItems: silence.itemsLeft,
     maxChars: silence.charsLeft,
-    // 可选向量层：没装/没配就是 null → 提示通道与纯词法逐字段一致（闸门、注入条数都不变，
-    // 只有层内排序会用到余弦）。构造失败也在 createVectorRerank 内部吞掉并返回 null。
+    // 可选向量层：没装/没配就是 null → 提示通道与纯词法逐字段一致（闸门、注入条数都不变，只有层内排序
+    // 用到余弦）。构造失败也在 createVectorRerank 内部吞掉并返回 null。
     rerank: await createVectorRerank({
       storeDir: memoryRoot,
       items: vectorItemsFrom(store, globalStore),
@@ -840,9 +746,8 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   // 留痕仍然记账（去重 + 上限），只是默认不外泄到用户的终端。
   recordDropped({ sessions, sessionId, dropped: built.dropped, budgetLog: cfg.budgetLog })
 
-  // 影子记录：**每步**都写一行（含零注入的静默步与对照组），带全部候选的判据特征。
-  // 主审计只在真的注入时写，静默步零痕迹 → 日志无法离线重放"换个阈值会怎样"，
-  // 也攒不出训练样本。只写盘、不进 prompt、不花 token。
+  // 影子记录：**每步**都写一行（含零注入的静默步与对照组），带全部候选的判据特征。主审计只在真的
+  // 注入时写，静默步零痕迹 → 日志无法离线重放"换个阈值会怎样"。只写盘、不进 prompt、不花 token。
   appendShadowAudit(memoryRoot, shadowRecordFrom({
     sessionId,
     root,
@@ -859,9 +764,8 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     silence: silence.reason,
   }), shadow, root)
 
-  // 记忆根通告：根是**推定**的（会话工作目录，且该目录没有任何项目标记）时，
-  // 第一次注入前告诉模型"记忆现在存在哪、怎么改"。它是状态声明（与常驻任务卡同类），
-  // 只发一次、不占条目额度；否则模型只看到一条来自某处的记忆，却不知道那个根是怎么来的。
+  // 记忆根通告：根是**推定**的（会话工作目录且无任何项目标记）时，第一次注入前告诉模型"记忆存在哪、
+  // 怎么改"。它是状态声明（与常驻任务卡同类），只发一次、不占条目额度。
   const notice = rootNotice({ root, sessionId, sessions, config })
 
   const fp = built.text ? fingerprint(built.dedupeText ?? built.text) : fingerprint(notice || '')
@@ -885,8 +789,8 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     quota.lastStep = stepNo
   }
 
-  // 使用记账：注入进上下文 = 这条记忆被用到了。必须在这里显式落盘——注入路径不会走到
-  // 任何其它 save()，只标脏等于进程退出就丢。记账失败绝不影响注入（与审计同约定）。
+  // 使用记账：注入进上下文 = 这条记忆被用到了。必须在这里显式落盘——注入路径不会走到任何其它
+  // save()，只标脏等于进程退出就丢。记账失败绝不影响注入（与审计同约定）。
   if (built.reasons.length) {
     try {
       if (recordHit({ store, globalStore, ids: built.reasons.map((r) => r.id) })) {
@@ -919,11 +823,9 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
 /**
  * 「记忆根是推定的」一次性通告。
  *
- * 触发条件：根是**安全目录但自身没有任何项目标记**（即根来自会话工作目录，而不是
- * `.git`/`package.json` 这类声明）。此时插件会按 cwd 建 `.dsh-project-memory`——必须
- * 让模型知道这件事，否则它只会看到记忆来自一个自己没指定过的位置，而纠正的成本随
- * 会话推进快速上升。通告只发一次，且与常驻任务卡同类：是状态声明，不占条目额度。
- *
+ * 触发条件：根是**安全目录但自身没有任何项目标记**（来自会话工作目录，而不是 `.git`/`package.json`
+ * 这类声明）。此时插件会按 cwd 建 `.dsh-project-memory`——必须让模型知道，否则它只看得到记忆来自
+ * 一个自己没指定过的位置。通告只发一次，且与常驻任务卡同类：是状态声明，不占条目额度。
  * 关掉它：`autoContext.rootNotice: false`。
  */
 function rootNotice({ root, sessionId, sessions, config }) {
@@ -939,7 +841,7 @@ function rootNotice({ root, sessionId, sessions, config }) {
 }
 
 /**
- * 会话级限流（S3）：冷却步数 / 条目条数 / 条目字符。三个任一触顶 → 条目通道整体沉默，
+ * 会话级限流：冷却步数 / 条目条数 / 条目字符。三个任一触顶 → 条目通道整体沉默，
  * 但本轮"本该注入什么"仍会进 dropped（不做静默降级）。
  */
 function sessionSilence({ cfg, quota, stepNo }) {
@@ -980,9 +882,8 @@ function recordDropped({ sessions, sessionId, dropped, budgetLog }) {
 function injectionMessage(text, summary) {
   return createUserMessage({
     content: [{ type: 'text', text: `\n\n${INJECT_MARK} ${PLUGIN_NAME} · auto-context\n${text}` }],
-    // 宿主对第三方生产者的 `snapshot` 只做追加，不会用后一条替换前一条（只有它自己的
-    // runtime-context 走 surfaceOp replace）。所以这里声明 `notice`：它如实表示“这一步注入了
-    // 什么”，不会让 UI 打出“取代先前快照”的空头承诺。summary 是 UI 收起时的一行说明。
+    // 宿主对第三方生产者的 `snapshot` 只做追加，不会用后一条替换前一条（只有它自己的 runtime-context
+    // 走 replace）。所以这里声明 `notice`：如实表示“这一步注入了什么”，不让 UI 承诺取代先前快照。
     source: {
       kind: SOURCE_KIND,
       form: 'notice',

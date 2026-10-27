@@ -1,18 +1,8 @@
 /**
- * 就绪引擎（push 侧）。
- *
- * recall 回答"记忆里有什么和这件事有关"；readiness 回答"动手之前必须知道什么"。
- * 交付契约（设计核心）：
- *   - **authored trigger = 确定性注入**：作者写下的 keywords / symbols / actions / paths 命中即在
- *     动手前全文注入，优先级 1。可审计（返回 `why`），不参与任何相似度打分。
- *   - **统计信号 = 提示态**：没有 trigger 的条目只能作为截断提示进入，优先级 2，且判据是
- *     **层内相对阈值**（相对最高分），不是长度敏感的魔法常量。
- *
- * 两个窗口（忠于宿主契约：DSH 没有"工具执行前拦截"钩子，唯一能加上下文的缝是 agent/pre-step）：
- *   - 先发窗口：人类消息里的意图词（"提交/发布/公开"）→ 动作 id 在模型规划动作之前就命中；
- *   - 反应窗口：已观察到的 tool/call 参数（`git commit`、`npm publish`、改动的路径）走同一个匹配器。
- *
- * 纯函数、零依赖、不调用模型。
+ * 就绪引擎（push 侧）：recall 回答"记忆里有什么相关"，readiness 回答"动手之前必须知道什么"。
+ * 交付契约：authored trigger = 确定性全文注入（优先级 1，可审计 `why`）；统计信号 = 截断提示
+ * （优先级 2，层内相对阈值）。两个窗口靠 agent/pre-step（DSH 没有工具执行前钩子）：人类意图词先发，
+ * 已观察到的 tool/call 走同一匹配器。纯函数、零依赖、不调用模型。
  * @module dsh-project-memory/readiness
  */
 
@@ -40,15 +30,10 @@ export const ACTION_LEXICON = [
 
 /**
  * 允许**人类消息里的动作词**触发全文注入的 op 白名单。
- *
- * 判据是"这条记忆必须在动作**之前**到达，晚了就没用，且动作不可逆"：
- * 提交 / 发 npm 包 / 发版 / 推远端 / 部署 / 公开仓库。这几个词在散文里也基本只有一种意思，
- * 而且都发生在"动作之前才有用"的位置（提交后再说"检查公开面"就晚了）。
- *
- * 反过来，`删除 / 清理 / 渲染 / 基准 / 取网页 / 查询记忆` 这些词在人类消息里经常只是
- * **提及**（"删除后的悬空状态"、"清理一下 README 的措辞"、"这个渲染是错的"），
- * 用它们做确定性全文注入实测代价是 1200 字符一条的无关 procedure。
- * 这些动作仍可由**已观察到的工具调用**触发（`rm` 真的执行了、`soffice` 真的跑了）。
+ * 判据是"这条记忆必须在动作**之前**到达，晚了就没用，且动作不可逆"：提交 / 发 npm 包 / 发版 /
+ * 推远端 / 部署 / 公开仓库。
+ * 反过来，`删除 / 清理 / 渲染 / 基准 / 取网页 / 查询记忆` 在人类消息里经常只是**提及**，用它们做
+ * 全文注入实测代价是 1200 字符一条的无关 procedure；这些动作仍可由**已观察到的工具调用**触发。
  */
 export const PRE_ACTION_OPS = new Set(['npm-publish', 'release', 'git-commit', 'git-push', 'deploy', 'go-public'])
 
@@ -69,8 +54,7 @@ export function detectActions(text) {
 
 /**
  * 文本 → 路径 token（用于 trigger 的 `writes` / `guard.paths` 匹配）。
- * 规则收在 `util/path-token.js`：与 ops 抽写目标是**同一份实现**
- * （原先这里与 ops.js 各抄一份，ops 那份漏了点开头文件名且已漂移）。
+ * 规则收在 `util/path-token.js`，与 ops 抽写目标是**同一份实现**。
  * @param {string} text - 工具调用参数或人类消息。
  * @returns {string[]} 去重后的路径 token。
  */
@@ -80,17 +64,11 @@ export function extractPaths(text) {
 
 /**
  * 组装就绪上下文：人类意图 + 已观察动作。三处来源都做动作/路径归一，调用方只需给文本。
- *
- * **证据来源决定准入**（2026-10-25）：observed（结构化工具调用）可以触发全文注入；
- * 人类消息里的动作词只允许 4 个"不可逆外部动作"触发全文（见 {@link PRE_ACTION_OPS}），
- * 其余只进提示通道。原因见 PRE_ACTION_OPS 的注释。
- * @param {object} input
- * @param {string} [input.humanText] - 本轮人类消息（先发窗口）。
- * @param {string} [input.actionText] - 旧调用方的工具调用文本（测试/老宿主；生产路径不再传）。
- * @param {string[]} [input.ops] - 结构化工具调用归一出的动作（可信）。
- * @param {string[]} [input.targets] - 结构化写目标（可信）。
- * @param {string[]} [input.actions] - 调用方已归一化的动作 id（可选，会被并集）。
- * @param {string[]} [input.paths] - 调用方已归一化的路径（可选，会被并集）。
+ * **证据来源决定准入**：observed（结构化工具调用）可以触发全文注入；人类消息里的动作词只允许
+ * 4 个"不可逆外部动作"触发全文（见 {@link PRE_ACTION_OPS}），其余只进提示通道。
+ * @param {object} input `humanText` 本轮人类消息；`actionText` 旧调用方的工具调用文本（测试/老宿主，
+ *   生产路径不再传）；`ops`/`targets` 结构化工具调用归一出的动作与写目标（可信）；
+ *   `actions`/`paths` 调用方已归一化的动作 id 与路径（可选，会被并集）。
  * @returns {{ humanText: string, actionText: string, actions: string[], paths: string[], humanPaths: string[], ops: string[], opsObserved: string[], intentOps: string[], targets: string[], hosts: string[], intent: string, tags: string[] }}
  */
 export function buildReadinessContext(input = {}) {
@@ -163,7 +141,7 @@ const DERIVED_MAX_PATHS = 6
 
 /**
  * 从一条 insight 的正文确定性派生触发信号（零模型、可重放）。
- * 结果只写进 `triggerDerived`，供提示通道（检索文本）使用；是否强制注入只由 authored `trigger` 决定。
+ * 结果只写进 `triggerDerived`，供提示通道使用；是否强制注入只由 authored `trigger` 决定。
  * @param {object} ins - 归一化后的 insight 条目。
  * @returns {{ keywords: string[], actions: string[], paths: string[] }}
  */
@@ -208,19 +186,16 @@ export function backfillDerivedTriggers(doc) {
 
 /**
  * 提示通道的查询文本：剔除 1–3 个字符的拉丁 token。
- *
- * 为什么：`PR` / `CI` / `OS` / `WSL` / `npm` 这类缩写太短、歧义太大，一个巧合命中就能当上
- * 该层最高分，于是以 `relative:1.00` 混进上下文（实测：人类消息里的 "PR" 把一条 task-tools
- * 越权 lesson 顶到了提示位；"wsl" 又把一条 pnpm lesson 顶到了"改文件时间戳"的任务里）。
- * 内容词（≥4 字符的拉丁标识符、CJK 词）不受影响；authored trigger 通道完全不走这里。
+ * `PR` / `CI` / `OS` / `WSL` / `npm` 这类缩写太短、歧义太大，一个巧合命中就能当上该层最高分
+ * （实测：人类消息里的 "PR" 把一条越权 lesson 顶到提示位，"wsl" 把 pnpm lesson 顶进改时间戳的任务）。
+ * 内容词不受影响；authored trigger 通道完全不走这里。
  * @param {string} text - 人类消息或工具参数。
  * @returns {string} 过滤后的查询文本。
  */
 export function hintQueryText(text) {
   return String(text || '')
     .split(/\s+/)
-    // 路径形态的 token 原样保留（src/util/fs.js 里的 fs / js 是有效证据），
-    // 只对独立词做缩写剔除。
+    // 路径形态的 token 原样保留（src/util/fs.js 里的 fs / js 是有效证据），只对独立词做缩写剔除。
     .map((w) => (/[/.]/.test(w) ? w : w.replace(/\b[A-Za-z0-9_]{1,3}\b/g, ' ')))
     .join(' ')
     .replace(/\s+/g, ' ')
@@ -235,9 +210,8 @@ function globToRegExp(pattern) {
 
 /**
  * 剥离**引用内容**：代码块、行内代码、引号内的路径/文件名、裸路径。
- *
- * 为什么必须剥：人类消息里的文件名是**数据**，不是意图。实测中"示例调研.pptx"
- * 这个文件名让一条"做调研要先扫 curated 列表"的经验在改文件时间戳的任务里被注入。
+ * 人类消息里的文件名是**数据**，不是意图：实测"示例调研.pptx"这个文件名让一条调研经验在改文件
+ * 时间戳的任务里被注入。
  * @param {string} text - 人类消息原文
  * @returns {string} 只保留意图文字的版本
  */
@@ -249,11 +223,8 @@ export function intentText(text) {
     .replace(/“[^”\n]*”/g, ' ')
     .replace(/[A-Za-z]:\\[^\s"']*/g, ' ')
     .replace(/(?:[A-Za-z0-9_.@-]+\/)+[A-Za-z0-9_.@-]+/g, ' ')
-    // 带扩展名的**非 ASCII 文件名**（`示例调研.pptx` / `docs/示例.md`）：
-    // 只挡 ASCII 路径不够——中文文件名整块留下，"调研""演示"这类子串照样触发 when.intents，
-    // 正是引号剥离要防的那类假阳性。ASCII 裸名（如 notes.md）保持原语义，不在这里动。
-    // 按 token 逐个找 `.ext`，只切掉"token 开头 → 扩展名结尾"（与旧正则同一范围）；
-    // 旧写法的两条 `\S*` 在无空格的长中文串上会指数回溯（4000 字实测 12s）。
+    // 带扩展名的**非 ASCII 文件名**（`示例调研.pptx`）也要剥：ASCII 裸名（notes.md）保持原语义不动。
+    // 按 token 逐个找 `.ext`，只切"token 开头 → 扩展名结尾"；`\S*` 两段匹配在长中文串上指数回溯（4000 字 12s）。
     .replace(/\S+/g, (tok) => {
       const re = /\.[A-Za-z][A-Za-z0-9]{0,7}\b/g
       for (let m = re.exec(tok); m; m = re.exec(tok)) {
@@ -268,18 +239,15 @@ export function intentText(text) {
 }
 
 /**
- * 意图词是否值得作为触发信号（S2 的准入过滤）。
- *
- * 规则来自实测：`rm` 命中 `dcterms`、`ppt` 命中 `pptx`、`ms` 命中任何含 ms 的词——短拉丁词
+ * 意图词是否值得作为触发信号（准入过滤）：`rm` 命中 `dcterms`、`ppt` 命中 `pptx` 这类短拉丁词
  * 是假阳性制造机；含 `_`/`.`/`/` 的是标识符或路径，属于语料平面，不是意图。
  */
 export function isIntentWord(word) {
   const s = String(word || '').trim()
   if (!s) return false
   if (CJK_RANGE.test(s)) return s.length >= 2
-  // 俄语：作者写**原形**（匹配时按 Snowball 词干比对词形，见 matchIntent）；只要 ≥3 字符、
-  // 不是虚词、不含路径/标识符字符即可。不能用拉丁的 ≥5：`мост` / `код` / `файл` 都是 3–4
-  // 字母的实义词，而俄语的三字母词几乎都是实词（虚词已经被 RU_STOPWORDS 挡掉），没有拉丁那种缩写歧义。
+  // 俄语：作者写**原形**，匹配时按 Snowball 词干比对（见 matchIntent）；只要 ≥3 字符、不是虚词、
+  // 不含路径/标识符字符即可。三字母俄语词几乎都是实词，没有拉丁那种缩写歧义。
   if (CYRILLIC_RANGE.test(s)) {
     const w = normalizeRuWord(s)
     return w.length >= 3 && !RU_STOPWORDS.has(w) && !/[_./\\*]/.test(w) && !/\s/.test(w)
@@ -301,12 +269,10 @@ export function isDroppableGlob(pattern) {
 }
 
 /**
- * 意图词命中：CJK 用包含，拉丁用词边界（避免 `ppt` 命中 `pptx`），
- * 俄语先做 ё/е 归一 + 词边界精确匹配，未命中再按 Snowball 词干比对词形。
- *
- * 为什么俄语要词干：作者写的是原形（`миграция`），人类消息里几乎总是变格/变位
- * （`миграции`）；只做字面匹配会让俄语触发面基本失效。词干与检索侧同一把尺子，
- * `город` 仍然不会命中 `городской`（`город` vs `городск`）。
+ * 意图词命中：CJK 用包含，拉丁用词边界（避免 `ppt` 命中 `pptx`），俄语先做 ё/е 归一 + 词边界
+ * 精确匹配，未命中再按 Snowball 词干比对词形。为什么俄语要词干：作者写原形（`миграция`），
+ * 人类消息里几乎总是变格（`миграции`），只做字面匹配会让俄语触发面基本失效；词干与检索侧同一
+ * 把尺子，`город` 不会命中 `городской`。
  * @param {string} word
  * @param {string} text - 已经是 {@link intentText} 处理过的意图文本
  */
@@ -321,8 +287,7 @@ export function matchIntent(word, text) {
     if (w.length < 3) return false
     const normalizedHay = normalizeRuWord(hay)
     const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    // Unicode 词边界：`[^A-Za-z0-9_]` 会把俄文词内部的命中当成边界（`город`/`городской`）。
-    // 归一后已全小写，不需要 i 标志。
+    // Unicode 词边界：`[^A-Za-z0-9_]` 会把俄文词内部的命中当成边界（`город`/`городской`）；归一后已全小写。
     if (new RegExp(`(^|[^\\p{L}\\p{N}_])${esc}(?![\\p{L}\\p{N}_])`, 'u').test(normalizedHay)) return true
     const stem = stemRu(w)
     if (stem.length < 2) return false
@@ -366,11 +331,8 @@ function guardPass(guard, ctx, writeTargets) {
 
 /**
  * trigger 命中判定（确定性，无打分）——**准入化后的语义**。
- *
- * `when` 是唯一的触发面，三个成员按 OR：`ops`（动作）／`writes`（本次要写的文件）／
- * `intents`（人类消息里剥离引用后的意图词）。`guard` 只能收窄。
- * **没有 `when` 的条目不再触发任何东西**（降级为可发现 + 按需拉取）。
- *
+ * `when` 是唯一触发面，三个成员按 OR：`ops` / `writes` / `intents`（人类消息剥离引用后的意图词）；
+ * `guard` 只能收窄。**没有 `when` 的条目不再触发任何东西**（降级为可发现 + 按需拉取）。
  * @param {object|null} trigger
  * @param {object} ctx - {@link buildReadinessContext} 的结果
  * @returns {string|null} 命中原因（`op:…` / `write:…` / `intent:…`），未命中为 null
@@ -379,10 +341,8 @@ export function matchTrigger(trigger, ctx) {
   if (!trigger || typeof trigger !== 'object') return null
   const when = trigger.when
   if (!when || typeof when !== 'object') return null
-  // 写目标 = 已观察到的结构化写调用 ∪ 人类消息里提到的路径（动手前的写意图）。
-  // DSH 没有工具执行前拦截钩子，动手前唯一能拿到的写意图就是人类消息里的路径；
-  // 但动作文本里的**读**路径不算（`read README.md` 不是"即将写 README.md"）。
-  // guard 也用这份合集，否则 guard.paths 在"人类先说要改这个文件"的窗口永远不放行。
+  // 写目标 = 已观察到的结构化写调用 ∪ 人类消息里提到的路径（动手前的写意图）。动作文本里的**读**
+  // 路径不算（`read README.md` 不是"即将写 README.md"）；guard 用同一份合集，否则窗口里永不放行。
   const writeTargets = [...(ctx?.targets || []), ...(ctx?.humanPaths || [])]
   if (!guardPass(trigger.guard, ctx, writeTargets)) return null
   for (const op of when.ops || []) {
@@ -403,12 +363,9 @@ export function matchTrigger(trigger, ctx) {
 /**
  * 旧 trigger → 新 schema（纯函数、幂等、不改原对象）。
  *
- * 迁移规则（都在实测里有据）：
- *   - `actions` → `when.ops`（经 {@link opForLegacyAction} 映射；死值记录进 `triggerNormalized.dropped`）
- *   - 具体的 `paths` → `when.writes`（"我要改这个文件"）；扩展名/泛名 glob 直接丢弃
- *   - `keywords` → `when.intents`，只留通过 {@link isIntentWord} 的
- *   - `scope` → 默认忽略（它的值不在项目画像 tag 空间里，实测把最相关的一条 procedure 判了死刑）
- *
+ * 迁移：`actions` → `when.ops`（经 {@link opForLegacyAction}，死值记进 `triggerNormalized.dropped`）；
+ * 具体 `paths` → `when.writes`（扩展名/泛名 glob 丢弃）；`keywords` → `when.intents`（只留通过
+ * {@link isIntentWord} 的）；`scope` → 默认忽略（它的值不在项目画像 tag 空间里）。
  * @param {object} it
  * @param {{legacyScope?: 'ignore'|'filter'}} [opts]
  */
@@ -437,13 +394,11 @@ export function normalizeTrigger(it, opts = {}) {
     }
     ops.add(op)
   }
-  // 具体路径只写进 `when.writes`，**不要**再补一个 `file-write` 到 ops：
-  // when 的成员是取或的，补进去等于让"写了任何文件"就命中，把路径条件短路掉
-  // （实测：那样会让 D 场景一次多出 6 条假阳性）。
+  // 具体路径只写进 `when.writes`，**不要**再补 `file-write` 到 ops：when 成员取或，补进去等于让
+  // "写了任何文件"就命中，把路径条件短路掉（实测那样一次多出 6 条假阳性）。
   const intents = []
   for (const k of t.keywords || []) if (isIntentWord(k)) intents.push(String(k))
-  // 旧 `symbols` 也走文本平面：不归一就等于静默丢掉一个作者写下的触发面
-  // （README 承诺 keywords/symbols/actions/paths/scope 都会迁移）。与 keywords 同一把准入尺子。
+  // 旧 `symbols` 也走文本平面，与 keywords 同一把准入尺子（不归一等于静默丢掉作者写下的触发面）。
   for (const s of t.symbols || []) if (isIntentWord(s)) intents.push(String(s))
   const when = {}
   if (ops.size) when.ops = [...ops].sort()
@@ -451,9 +406,8 @@ export function normalizeTrigger(it, opts = {}) {
   if (intents.length) when.intents = [...new Set(intents)]
   const out = { ...t, when }
   const scopeIgnored = Array.isArray(t.scope) && t.scope.length > 0
-  // legacy `scope` → guard.tags **只在显式要求 filter 时**才做：它的值由作者手写，
-  // 几乎落不进自动派生的项目画像 tag 空间，当收窄条件用等于判死条目（实测唯一一条带
-  // scope 的条目因此永远不命中）。默认 ignore —— 与 `src/index.js` 的 schema 默认一致。
+  // legacy `scope` → guard.tags **只在显式要求 filter 时**才做：作者手写的值几乎落不进自动派生的
+  // 画像 tag 空间，当收窄条件用等于判死条目。默认 ignore——与 `src/index.js` 的 schema 默认一致。
   if (scopeIgnored && opts.legacyScope === 'filter') out.guard = { ...(t.guard || {}), tags: t.scope }
   return { ...it, trigger: out, triggerNormalized: { dropped, scopeIgnored } }
 }
@@ -504,18 +458,12 @@ export function auditTriggers(items, opts = {}) {
 }
 
 /**
- * IDF 加权覆盖率（S4 的**绝对**门槛）：条目覆盖了查询里多少**信息量**，而不是多少个 token。
- *
- * 为什么需要它：`relativeHits` 只看"层内最高分的比例"，而最高分本身可能就是噪声——
- * 实测 `relative:1.00` 出现在和查询毫无关系的条目上。归一在 [0,1]、有真零点，才能设下限。
- *
- * 返回四个量，调用方要一起看：
- *   - `coverage`：在**语料能表示**的词里，条目覆盖了多少信息量（分母不含 df=0 的词——
- *     自然语言查询总有语料没有的词，把它们算成未命中会让任何正常查询都趋零）。
- *   - `matched`：命中的词数。单个通用词（"插件"）也能拿到 coverage=1.00。
- *   - `supported` / `terms`：语料里有对应词的比例。长句子里只有一两个词能在语料中找到对应时，
- *     "覆盖率 1.00"是假象（实测：一句 19 个词的改时间戳请求，只与 WSL 笔记共享一个"文件"，
- *     却拿到 cov=1.00），调用方据此让**整条通道沉默**。
+ * IDF 加权覆盖率（**绝对**门槛）：条目覆盖了查询里多少**信息量**，而不是多少个 token。
+ * 为什么需要它：`relativeHits` 只看层内最高分的比例，而最高分本身可能就是噪声（实测
+ * `relative:1.00` 出现在和查询毫无关系的条目上）；归一在 [0,1]、有真零点才能设下限。
+ * 返回四个量要一起看：`coverage` 在语料能表示的词里覆盖的信息量（df=0 的词不进分母）；
+ * `matched` 命中词数（单个通用词也能拿 coverage=1.00）；`supported`/`terms` 语料有对应词的比例，
+ * 长句只有一两个词命中时 cov=1.00 是假象，调用方据此让**整条通道沉默**。
  * @returns {{coverage: number, matched: number, supported: number, terms: number}}
  */
 export function idfCoverage(query, itemText, corpusTexts) {
@@ -524,11 +472,8 @@ export function idfCoverage(query, itemText, corpusTexts) {
 
 /**
  * 语料 → 词集合数组。**对一批候选循环评分时必须只建一次**。
- *
- * `idfCoverage(query, item, corpusTexts)` 每次都把整个语料重新 tokenize 一遍；调用方对 C 个
- * 候选各调一次，就是 C×C 次 tokenize —— 实测真实 store（72 条）单步 147 ms，提出循环外
- * 降到 1.3 ms（109×），且 coverage 结果逐字段一致。热路径上每个 pre-step 都要跑一次，所以
- * 这个差别是"每条模型消息"级别的。
+ * `idfCoverage` 每次都会重建整个语料；对 C 个候选各调一次就是 C×C 次 tokenize——实测真实 store
+ * 单步 147 ms，提出循环外降到 1.3 ms（109×），coverage 结果逐字段一致。
  * @param {string[]} texts - 语料正文
  * @returns {Set<string>[]} 与输入同序的词集合
  */
@@ -556,8 +501,8 @@ export function idfCoveragePrepared(query, itemText, corpusSets) {
   for (const term of q) {
     let df = 0
     for (const doc of corpus) if (doc.has(term)) df++
-    // df=0 的词不计入分母：它对"选哪一条"没有分辨力。但 supported 会记下有多少词是
-    // 语料根本无法表示的——那是"这条查询整体上离语料太远"的证据，交给调用方决定沉默。
+    // df=0 的词不计入分母（对"选哪一条"没有分辨力）；但 supported 记下多少词是语料无法表示的，
+    // 那是"这条查询整体离语料太远"的证据，交给调用方决定沉默。
     if (df === 0) continue
     supported++
     const w = Math.log(1 + n / (1 + df))
@@ -582,7 +527,7 @@ export function relativeHits(scored, { ratioMin = 0.5 } = {}) {
   if (!list.length) return []
   const top = list[0].score
   // 显式的 0 表示"关掉相对门槛"（只剩 score>0）；未给/非法值才回退 0.5。
-  // 旧写法 `ratioMin > 0 ? ratioMin : 0.5` 把 0 当成"没配"，配置上无法关闭。
+
   const ratio = typeof ratioMin === 'number' && Number.isFinite(ratioMin) ? ratioMin : 0.5
   const floor = top * Math.max(0, Math.min(1, ratio))
   return list.filter((r) => r.score >= floor)

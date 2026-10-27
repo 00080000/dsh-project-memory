@@ -7,10 +7,9 @@ import { ProjectMemoryStore } from './store.js'
 import { onFileChanged, isTypeScriptFile } from './enhancer.js'
 
 /**
- * 有界并发 map。watch 轮询要对每个文件 stat；同步 `statSync` 循环在 Windows（尤其 WSL 挂
- * `/mnt/c`）会把事件循环卡住：400 文件实测 ~0.9s、12k 文件按同一比例是几十秒，期间面板、
- * 其它会话、工具调用全部停摆。改成 `fs/promises.stat` + 16 并发：总量不变，但主线程在等 I/O
- * 时可以让出去，Windows 的线程池也能并行吃掉多次元数据查询。
+ * 有界并发 map。同步 `statSync` 循环在 Windows（尤其 WSL 挂 `/mnt/c`）会把事件循环卡住：
+ * 400 文件实测 ~0.9s、12k 文件按同一比例是几十秒，期间面板与工具调用全部停摆。
+ * 改用 `fs/promises.stat` + 16 并发：总量不变，主线程等 I/O 时可以让出去。
  */
 async function mapLimit(items, limit, fn) {
   const out = new Array(items.length)
@@ -34,15 +33,13 @@ export class WatchManager {
     this.timer = null
     this._polling = false
     this._truncationWarned = new Set()
-    /** 已就「读不到的目录」告警过的根：同上，只提示一次。 */
+    /** 已就「读不到的目录」告警过的根，只提示一次。 */
     this._unreadableWarned = new Set()
-    /** 已就「跳过了嵌套项目根」告警过的根：同上，只提示一次。 */
+    /** 已就「跳过了嵌套项目根」告警过的根，只提示一次。 */
     this._nestedStoreWarned = new Set()
     /** 正在跑回合的会话 id 集合：**多会话**下任一在跑就算活跃（见 setSessionActive）。 */
     this._activeSessions = new Set()
-    /** 当前是否处于"有人正在用"的活跃态。 */
     this._active = false
-    /** 活跃态下的兜底间隔（见 start）：活跃 ≠ 永不扫描，只是把节拍压到最低。 */
     this._activeInterval = undefined
   }
 
@@ -57,29 +54,23 @@ export class WatchManager {
     return best
   }
 
-  /**
-   * 危险根是否被显式放行（兼容旧调用点；真正的判定统一走 rootRejection）。
-   * 注意：这个开关只放开内置名单，`roots.deny` / `roots.exclude` 仍然优先。
-   */
+  /** 危险根是否被显式放行（兼容旧调用点；判定统一走 rootRejection，deny/exclude 仍优先）。 */
   unsafeAllowed() {
     return this.config?.allowUnsafeRoots === true
   }
 
   restorePersisted() {
     const cwd = process.cwd()
-    // cwd 是家目录/系统目录时直接跳过：旧顺序是「先 load 再判断」，而历史遗留的超大 store
-    // 光读盘就能 OOM —— 那恰恰是 issue #5 的报告者重启后会撞上的场景。
+    // cwd 是家目录/系统目录时直接跳过：必须「先判断再 load」，否则遗留的超大 store 光读盘就能 OOM。
     if (rootRejection(cwd, this.config)) return
-    // 用 load() 的返回值：storeCache 命中时 load() 返回的是缓存实例，忽略返回值会拿到空 store
+    // 用 load() 的返回值：storeCache 命中时返回的是缓存实例，忽略它会拿到空 store。
     const store = new ProjectMemoryStore(memoryRootFor(cwd, this.config.memoryDir)).load()
     if (existsSync(store.dir)) {
       let dropped = 0
       for (const root of [...store.watchlist]) {
         if (typeof root !== 'string' || !root) continue
         // 自愈剔除两类条目：已不存在的根（每轮白跑，还会把目录重新 mkdir 出来），
-        // 以及按当前配置不能整体监听的根（内置名单 / roots.deny / roots.exclude）。
-        // 后者同时**修复历史遗留**与"新增 deny 后 watch.json 仍留着旧根"：下一次启动
-        // 就会自动摘掉，不需要用户手删 watch.json。
+        // 以及按当前配置不能整体监听的根。下一次启动自动摘掉，不需要用户手删 watch.json。
         if (!existsSync(root) || rootRejection(root, this.config)) {
           store.removeWatch(root)
           dropped++
@@ -92,20 +83,17 @@ export class WatchManager {
   }
 
   addRoot(root) {
-    // 根目录不存在就拒绝：否则每轮 poll 都会 commit → save → mkdirSync，
-    // 把一条历史遗留、已被删除的 watchlist 条目重新「创建」出来。
+    // 根目录不存在就拒绝：否则每轮 poll 的 commit → save → mkdirSync 会把它重新「创建」出来。
     if (!existsSync(root)) return false
-    // 文件系统根 / 家目录 / 系统前缀 / roots.deny 不整体监听（它们的子目录允许），
-    // roots.exclude 下的目录同样不监听；除非配置显式放行（仅内置名单可放行）。
+    // 文件系统根 / 家目录 / 系统前缀 / roots.deny / roots.exclude 不整体监听（子目录允许），
+    // 除非配置显式放行（仅内置名单可放行）。
     if (rootRejection(root, this.config)) return false
     if (!this.roots.has(root)) {
-      // **不在这里 load()**：`restorePersisted()` 会对 cwd store 的整条 watchlist 逐个 addRoot，
-      // 急切读盘等于「watch 过多少个根，启动就同步读多少个 store 的全部 shard」——一个万文件
-      // 的 store 就是秒级，几十个根就是启动卡死 + 内存无上界。这里只登记，store 到第一次
-      // pollRoot 真正需要时才取（见 `storeFor`）。
+      // **不在这里 load()**：`restorePersisted()` 会对整条 watchlist 逐个 addRoot，急切读盘等于
+      // 「watch 过多少个根，启动就同步读多少个 store 的全部 shard」。store 到 pollRoot 需要时才取。
       this.roots.set(root, {
         snapshot: {},
-        // rel → 上次已上报的错误信息。坏文件每轮都会重试，逐轮打印会刷屏。
+        // rel → 上次已上报的错误。坏文件每轮都会重试，逐轮打印会刷屏。
         failures: new Map(),
       })
       return true
@@ -114,15 +102,9 @@ export class WatchManager {
   }
 
   /**
-   * 每个根**按需**取 store：命中 `storeCache` 时是 O(1)（一次 Map 查找 + LRU 挪位）。
-   *
-   * 刻意不让本类长期持有实例。旧实现把 `store` 塞进 `this.roots` 里，等于给每个 watch 根
-   * 加了一个**进程级强引用**，于是：
-   *   - 逐出对 watch 根完全不省内存（`storeCache` 丢了 key，watcher 还攥着）；
-   *   - 一旦真被逐出，下一次 `load()` 会从盘上**再建一份**，同一个 root 在同一进程里出现两份
-   *     互不可见的内存状态，两份各自 `save()` 脏分片 → 最后写者赢，存在丢更新的窗口。
-   * 现在唯一的活实例就是缓存里那一个：逐出即真正释放，下一轮 poll 重新读盘（缓存该有的语义），
-   * 而内存上界回到 `STORE_CACHE_MAX_BYTES`，不再由「watch 了多少个根」决定。
+   * 每个根**按需**取 store（命中 `storeCache` 即 O(1)）。本类不长期持有实例：否则逐出对 watch
+   * 根不省内存，真被逐出后 `load()` 还会再建一份，同一 root 出现两份互不可见的状态。内存上界
+   * 因此回到 `STORE_CACHE_MAX_BYTES`，不由「watch 了多少个根」决定。
    */
   storeFor(root) {
     return new ProjectMemoryStore(memoryRootFor(root, this.config.memoryDir)).load()
@@ -133,19 +115,16 @@ export class WatchManager {
   }
 
   start(intervalMs = 30000) {
-    // 轮询进行中 `timer` 会短暂为 null；此时再 start 会排第二个定时器（asynchronous poll
-    // 之前不可能出现，因为同步循环占着事件循环）。等这一轮结束由 `_tick()` 自己续。
+    // 轮询进行中 `timer` 会短暂为 null；此时再 start 会排第二个定时器。等这一轮结束由 `_tick()` 自己续。
     if (this.timer || this._polling) return
-    // NaN/undefined 会让定时器退化成 1ms 轮询（Node 只发一条 TimeoutNaNWarning），
-    // 足以打满事件循环让 agent 无法响应；非法值回退到默认 30s。
+    // 非法值（NaN/undefined）会让定时器退化成 1ms 轮询打满事件循环，故回退默认 30s。
     const raw = Number(intervalMs)
     this._baseInterval = Number.isFinite(raw) ? Math.max(raw, 1000) : 30000
     // 空闲退避：连续没有变化的轮次把间隔翻倍，最长 2 分钟一轮；任何变化立刻回到 base。
-    // 轮询本身是 O(树) 的 walkDir + 逐文件 stat（本仓库一轮实测 58–87ms），
-    // 常驻 15s 一轮意味着不管有没有改动都在磨 I/O。
+    // 轮询是 O(树) 的 walkDir + 逐文件 stat（本仓库一轮实测 58–87ms），常驻 15s 一轮都在磨 I/O。
     this._maxInterval = Math.max(this._baseInterval, Math.min(this._baseInterval * 8, 120000))
     // 活跃兜底：**有人正在跑回合**时把节拍压到最低（默认 5 分钟、且不小于 base 的 10 倍）。
-    // 不是"永不扫描"——外部编辑器改文件、或回合一直不结束（崩溃/长任务）时，索引仍会自愈。
+    // 不是"永不扫描"——外部编辑器改文件、或回合一直不结束（崩溃/长任务）时索引仍会自愈。
     this._activeInterval = Math.max(this._baseInterval * 10, 300000)
     this._interval = this._baseInterval
     this._stopped = false
@@ -154,10 +133,8 @@ export class WatchManager {
 
   /**
    * 会话活跃信号：有会话在跑就把轮询压到最低，**回合结束立刻合并扫一次**。
-   *
-   * 为什么：轮询是唯一"用户没在等、却仍在花机器"的地方，而它扫描的时机（用户正打字/模型正在
-   * 跑）恰恰是最不该抢 CPU 的时候。活跃期间真实改动会由下一轮兜底（≤ activeInterval）覆盖，
-   * 回合一结束就把这一轮攒下的改动一次性并进来——索引还比"边跑边扫"更新鲜。
+   * 轮询是唯一"用户没在等、却仍在花机器"的地方，扫描时机恰好最不该抢 CPU；活跃期间的
+   * 真实改动由下一轮兜底（≤ activeInterval 覆盖），回合结束一次性并入。
    * @param key - 会话标识（`session.id`）；多会话下任一活跃即活跃。
    * @param active - 该会话是否正在跑回合。
    */
@@ -188,7 +165,7 @@ export class WatchManager {
 
   async _tick() {
     this.timer = null
-    // stop() 之后若还有定时器已经触发，不能再扫一轮（旧实现只在 poll 之后检查）。
+    // stop() 之后若还有定时器已经触发，不能再扫一轮。
     if (this._stopped) return
     let changed = false
     try {
@@ -200,8 +177,7 @@ export class WatchManager {
     this._interval = this._active
       ? this._activeInterval
       : changed ? this._baseInterval : Math.min(this._interval * 2, this._maxInterval)
-    // poll 期间 setSessionActive()/并发的 _tick() 可能已经排过下一轮；有就不再覆盖它的句柄
-    // （覆盖会让旧句柄变成没人 clearTimeout 的泄漏，轮询频率也会翻倍）。
+    // poll 期间可能已排过下一轮；有就不再覆盖，否则旧句柄泄漏、轮询频率翻倍。
     if (!this.timer) this._schedule()
   }
 
@@ -233,9 +209,9 @@ export class WatchManager {
   async pollRoot(root, state) {
     const seen = new Set()
     const updates = []
-    // rel → 本轮采集的 mtime:size。提交成功后才落进快照；CAS 失败的条目留在原地等下一轮。
+    // rel → 本轮采集的 mtime:size。提交成功后才落进快照；CAS 失败的条目下轮重试。
     const signatures = new Map()
-    // 本轮用的 store：命中缓存即 O(1)，被逐出则重新读盘。整个 pollRoot 期间共用同一个实例。
+    // 本轮用的 store：命中缓存即 O(1)，被逐出则重新读盘。整个 pollRoot 期间共用这一个实例。
     const store = this.storeFor(root)
 
     const { files, truncated, capped, skipped: nestedRoots, unreadable } = listProjectFiles(root, {
@@ -244,7 +220,7 @@ export class WatchManager {
       config: this.config,
     })
     if (nestedRoots.length && !this._nestedStoreWarned.has(root)) {
-      // 同上，只提示一次。这里同时说明"旧副本会被本轮清掉"——升级后的存量重复就是这么收敛的。
+      // 只提示一次：说明它们的旧副本会被本轮清掉。
       this._nestedStoreWarned.add(root)
       const rels = nestedRoots.map((p) => storeKey(relativePath(root, p)))
       console.error(
@@ -271,7 +247,7 @@ export class WatchManager {
       )
     }
 
-    // 先把所有文件的元数据并发取回来；下面的解析仍按顺序（真正的解析量只与"变了的文件"有关）。
+    // 先把元数据并发取回来；解析仍按顺序，解析量只与"变了的文件"有关。
     const statsByIndex = await mapLimit(files, 16, async (filePath) => {
       try {
         return await stat(filePath)
@@ -304,7 +280,7 @@ export class WatchManager {
           size: stats.size,
         })
       } catch (err) {
-        // 坏文件每轮都会重试：同一个文件的同一个错误只上报一次，否则逐轮 console.error 刷屏。
+        // 坏文件每轮都会重试：同一个文件的同一个错误只上报一次，否则逐轮刷屏。
         if (state.failures.get(rel) !== err.message) {
           state.failures.set(rel, err.message)
           console.error(`[dsh-project-memory] re-index failed for ${rel}: ${err.message}`)
@@ -312,8 +288,7 @@ export class WatchManager {
         continue
       }
       state.failures.delete(rel)
-      // 内容未变 / 体积超限也要落快照：否则 mtime:size 快路径永远命中不了，
-      // 每次 poll 都要把整个仓库重读一遍再哈希（watch 默认开、15s 一轮）。
+      // 内容未变 / 体积超限也要落快照：否则 mtime:size 快路径永远命中不了，每次 poll 都要重读全仓。
       if (plan.key === UNCHANGED || plan.key === OVERSIZE) {
         state.snapshot[rel] = sig
         continue
@@ -323,16 +298,15 @@ export class WatchManager {
       updates.push(toFileUpdate(rel, plan, record))
     }
 
-    // 单事务写盘；CAS 失败的条目本轮不落快照，下一轮自然重试。
-    // 截断时**不传 unseen**：没扫到的文件不等于被删了，否则一份被上限截掉的树每轮都会
-    // 把自己的记忆删掉一半（先删再下轮重新索引，纯粹的抖动）。`truncated` 同样覆盖
-    // "有目录读不到"（EACCES）这一路。
+    // 单事务写盘；CAS 失败的条目本轮不落快照，下一轮重试。
+    // 截断时**不传 unseen**：没扫到的文件不等于被删了，否则被上限截掉的树每轮都会删掉自己
+    // 一半记忆（先删再重新索引，纯粹的抖动）。`truncated` 同样覆盖"有目录读不到"（EACCES）。
     const { stale, removed } = commitFileUpdates(store, {
       updates,
       unseen: truncated ? null : seen,
       root,
     })
-    // 扫全了才剪快照：删掉的文件不能留在这里，否则它以同样的 mtime:size 回来时会被当成未变。
+    // 扫全了才剪快照：删掉的文件不能留着，否则它以同样的 mtime:size 回来会被当成未变。
     if (!truncated) {
       for (const rel of Object.keys(state.snapshot)) if (!seen.has(rel)) delete state.snapshot[rel]
       for (const rel of state.failures.keys()) if (!seen.has(rel)) state.failures.delete(rel)

@@ -1,13 +1,8 @@
 // 动作平面：把"这一步在做什么"从工具调用解析成有限的 op + 写目标 + 主机环境。
-//
-// 为什么不能继续用文本匹配：语料（路径、命令、被读文件正文）里的字符串可以冒充动作。
-// 实测病征是 `keyword:rm` 命中 `dcterms`、`keyword:pptx` 命中一个文件扩展名。
+// 不能用文本匹配：语料（路径、命令、被读文件正文）里的字符串可以冒充动作。
 // op 与 target 是低维、可枚举、可审计的：不随文本长度变化，也不会被正文污染。
-//
-// 分工：ops.js 只负责"把调用读成什么动作"，不负责决定注入什么（那是 readiness/auto-inject）。
-// 刻意不 import readiness：readiness 要 import 本模块的 op 闭集，反向依赖会造成循环。
-// 路径 token 的规则因此收在 util/path-token.js —— 它谁也不依赖，两个模块都能 import
-// （原先这里就地抄了一份，注释还写着"与 readiness.extractPaths 同规则"，实际已漂移）。
+// 只读"是什么动作"，不决定注入什么（那是 readiness/auto-inject）；刻意不 import 它，避免循环。
+// 路径 token 规则收在 util/path-token.js —— 它无依赖，两个模块共用。
 
 import { extractPathTokens } from './util/path-token.js'
 
@@ -32,19 +27,18 @@ export const OP_IDS = [
 ]
 
 /**
- * 兜底 op：它们描述的是"发生了某类操作"，信息量低、假阳性高。
- * 允许写进 `when.ops`，但自检会 warn——兜底 op 只该命中兜底级记忆。
+ * 兜底 op：信息量低、假阳性高。允许写进 `when.ops`，但自检会 warn——只该命中兜底级记忆。
  */
 export const FALLBACK_OPS = new Set(['shell-run', 'file-write', 'query-memory'])
 
 /**
- * 弱 op：日常动作。它本身不构成边界（每天都在提交），所以当条目**已经有更精确的 writes**
- * 时，迁移会把弱 op 丢掉——留着它只会把"改这个文件时"扩大成"任何一次提交时"。
- * 实测：`git-commit` 让一条"别删内部文档"的教训在发版场景里被注入。
+ * 弱 op：日常动作，本身不构成边界。条目**已有更精确的 writes** 时迁移会丢掉弱 op，
+ * 留着只会把"改这个文件时"扩大成"任何一次提交时"。实测 `git-commit` 让一条"别删内部文档"
+ * 的教训在发版场景里被注入。
  */
 export const WEAK_OPS = new Set([...FALLBACK_OPS, 'git-commit', 'git-push'])
 
-/** 旧 action id → op。旧值里有一批从来没进过 ACTION_LEXICON 的死值，这里给它们一个归宿。 */
+/** 旧 action id → op；没有对应动作的映射为 null。 */
 export const LEGACY_ACTION_ALIAS = {
   'git-add': 'git-commit',
   'npm-pack': 'npm-publish',
@@ -73,13 +67,9 @@ const SHELL_TOOLS = new Set(['bash', 'shell', 'pwsh', 'powershell', 'run', 'exec
 const QUERY_TOOLS = new Set(['query_memory', 'recall'])
 
 /**
- * 会写盘的文件类命令头。**只作用于命令头**，不再对整条命令做无锚点正则。
- *
- * 为什么改：旧实现对整条命令跑 `/\b(bench|migrate|rm|删除)\b/`，于是
- *   `find src client test scripts bench docs -type f` 里的目录名 `bench` → `run-bench`（实测注入
- *   了 4 条基准 procedure、1777 字符）；`grep -rn "migrate" docs` → `migrate`；子代理提示词里的
- *   "删除/迁移" → `file-delete`/`migrate`（实测父会话连吃 8 步）。
- * 命令头是"这个 shell 到底在做什么"的唯一可靠位置；参数、路径、引号里的词都是**提及**。
+ * 会写盘的文件类命令头。**只作用于命令头**，不对整条命令做无锚点正则：
+ * 参数、路径、引号里的词都只是**提及**（`find … bench …` 的目录名、`grep -rn "migrate" docs`）。
+ * 命令头才是"这个 shell 到底在做什么"的唯一可靠位置。
  */
 const WRITE_HEADS = new Set(['rm', 'rmdir', 'unlink', 'shred', 'mv', 'cp', 'touch', 'tee', 'truncate', 'mkdir'])
 /** 包在真命令前面的词：跳过它们再取命令头。 */
@@ -116,10 +106,7 @@ function unquotedSegments(text) {
   return out.map((s) => s.trim()).filter(Boolean)
 }
 
-/**
- * 剥掉 heredoc 正文，只留下 opener 那一行。
- * 正文是脚本内容（可能是 python/js），不是 shell 命令——旧实现会把里面的 `mkdir`/`rm` 当动作。
- */
+/** 剥掉 heredoc 正文，只留 opener 那一行：正文是脚本内容，不是 shell 命令。 */
 function stripHeredocBodies(text) {
   return text.replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n[\s\S]*?\n\2(?=\s*(?:$|\n))/g, (m) => `${m.split('\n')[0]}\n`)
 }
@@ -407,10 +394,8 @@ export function activityFromText(text) {
     // 先按"工具调用"解析（`edit {"file_path":"..."}`）：结构化参数比正则猜命令可靠得多。
     const call = /^\s*([A-Za-z_][\w-]*)\s+(\{[\s\S]*\})\s*$/.exec(line)
     const r = call ? classifyToolCall(call[1], call[2]) : classifyShellCommand(line)
-    // 纯文本行里没有 shell 动作时不要退化成 shell-run（那是噪音源）。但**只丢这个 op**：
-    // 行里的写目标/主机是具体事实（要靠路径 token、/mnt/ 这类签名才抽得出，泛泛的散文产不出来），
-    // 一起丢掉会让 `bash {"command":"echo x >> .gitignore"}` 这种 shell-run-only 的写意图
-    // 到不了 when.writes —— 实测它连结构化工具调用行的写目标都会被静默吞掉。
+    // 纯文本行里没有 shell 动作时不要退化成 shell-run（噪音源）。但**只丢这个 op**：
+    // 行里的写目标/主机是具体事实，一起丢会让 shell-run-only 的写意图到不了 when.writes。
     const noiseOp = r.ops.length === 1 && r.ops[0] === 'shell-run' && !/\b\w+\s+-/.test(line)
     if (!noiseOp) for (const op of r.ops) ops.add(op)
     for (const t of r.targets) targets.add(t)
