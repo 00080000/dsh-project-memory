@@ -116,23 +116,29 @@ ok('leanvecFingerprint：不可用目录 → null')
 
 // ---- ⑫ 假 leanvec：验证「重排开关」与「写入去重开关」是分开的 ----
 // 用一份最小的假模型目录（dist 里两个文件 + src/embed.mjs），不需要真实 80MB 表。
-function fakeLeanvec() {
+function fakeLeanvec({ slow = false } = {}) {
   const d = mkdtempSync(join(tmpdir(), 'fake-lv-'))
   mkdirSync(join(d, 'dist'), { recursive: true })
   mkdirSync(join(d, 'src'), { recursive: true })
   writeFileSync(join(d, 'dist', 'leanvec.tokenizer.json'), JSON.stringify({ dim: DIM }))
   writeFileSync(join(d, 'dist', 'leanvec.f32'), Buffer.alloc(DIM * 4))
   writeFileSync(join(d, 'src', 'embed.mjs'), `
+    ${slow ? 'await new Promise((resolve) => setTimeout(resolve, 50))' : ''}
     export function loadLeanvec() {
-      return { dim: ${DIM}, size: 1, embed(t) {
-        if (!t) return null
-        const v = new Float32Array(${DIM})
-        let s = 0
-        for (let i = 0; i < ${DIM}; i++) { v[i] = Math.sin(i + t.length); s += v[i] * v[i] }
-        const n = Math.sqrt(s) || 1
-        for (let i = 0; i < ${DIM}; i++) v[i] /= n
-        return v
-      } }
+      let closed = false
+      return { dim: ${DIM}, size: 1,
+        embed(t) {
+          if (closed) throw new Error('leanvec closed')
+          if (!t) return null
+          const v = new Float32Array(${DIM})
+          let s = 0
+          for (let i = 0; i < ${DIM}; i++) { v[i] = Math.sin(i + t.length); s += v[i] * v[i] }
+          const n = Math.sqrt(s) || 1
+          for (let i = 0; i < ${DIM}; i++) v[i] /= n
+          return v
+        },
+        close() { closed = true },
+      }
     }
   `)
   return d
@@ -166,6 +172,36 @@ function fakeLeanvec() {
   assert.equal(after.has('c2'), true)
   assert.equal(forgetVectorRows({ dir: storeDir, ids: ['nope'] }), 0, '没命中就是 0')
   ok('forget 向量行：磁盘与进程内缓存同时移除（不加载模型）')
+}
+
+// ---- ⑭ 运行时目录切换：旧 index 的 embed 闭包不能服务新目录 ----
+// 同一模型内容放在两个路径下，fingerprint 相同、dir 不同。若 indexCache 只按指纹复用，
+// 第二次会拿到第一个运行时的 index；而第一个 lv 已被 close()，向量分静默变空。
+{
+  const firstDir = fakeLeanvec()
+  const secondDir = fakeLeanvec()
+  const storeDir = mkdtempSync(join(tmpdir(), 'vec-switch-'))
+  const items = [{ id: 's1', title: 'pnpm 拦截安装脚本' }]
+  await createVectorCosine({ storeDir, items, vectorDir: firstDir })
+  const second = await createVectorCosine({ storeDir, items, vectorDir: secondDir })
+  assert.ok(second, '切换目录后应拿到新的运行时')
+  assert.ok(second('pnpm 拦截安装脚本', items).get('s1') > 0.99, '新目录的索引必须可用（不能复用已 close 的旧 lv）')
+  ok('运行时目录切换：新目录的索引不复用旧 lv')
+}
+
+// ---- ⑮ 冷启动并发：同一运行时只加载一次，不能互相 close ----
+{
+  const slowDir = fakeLeanvec({ slow: true })
+  const storeDir = mkdtempSync(join(tmpdir(), 'vec-race-'))
+  const items = [{ id: 'r1', title: 'pnpm 拦截安装脚本' }]
+  const [a, b] = await Promise.all([
+    createVectorCosine({ storeDir, items, vectorDir: slowDir }),
+    createVectorCosine({ storeDir, items, vectorDir: slowDir }),
+  ])
+  assert.ok(a && b, '两路并发都应拿到打分器')
+  assert.ok(a('pnpm 拦截安装脚本', items).get('r1') > 0.99, '第一路不能被第二路 close 掉')
+  assert.ok(b('pnpm 拦截安装脚本', items).get('r1') > 0.99, '第二路同样要能编码')
+  ok('冷启动并发：只加载一次运行时，两路都可用')
 }
 
 rmSync(dir, { recursive: true, force: true })
