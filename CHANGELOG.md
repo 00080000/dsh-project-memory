@@ -34,7 +34,7 @@ Snowball 词干不幂等（`память → памя → пам`）。`recallIt
 
 `GlobalStore.flushPending()` 返回 `commit()` 的 `fn` 返回值（通常 undefined），`flushDirtyStores()` 把已成功落盘的 global store 计成 0。现在显式返回 `lastCommitOk`。
 
-**测试**：`npm test` **869 项 / 49 个文件**全绿；`npm run typecheck` 通过。新增俄语词干固定样例 `test/fixtures/ru-stems.json`（200 个词形，与 snowballstemmer 3.1.1 一致）。
+**测试**：`npm test` **866 项 / 49 个文件**全绿；`npm run typecheck` 通过。新增俄语词干固定样例 `test/fixtures/ru-stems.json`（200 个词形，与 snowballstemmer 3.1.1 一致）。
 
 ## 0.6.6 (2026-10-27)
 
