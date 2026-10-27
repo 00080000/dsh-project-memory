@@ -246,6 +246,24 @@ store.commit()
   ok('global 写锁失败留下内部状态（默认静默），释放后可补写')
 }
 
+// --- 8b. global store 成功 flush 也要计入 flushDirtyStores 的返回值 ---
+{
+  const d = dir()
+  const file = path.join(d, 'global.json')
+  const store = new GlobalStore(file).load()
+  store.doc.items.push({ id: 'g_flush', kind: 'lesson', scope: 'global', title: 'flush' })
+  store.markDirty()
+  writeLock(d, { pid: process.pid, host: hostname(), token: 'held' })
+  store.commit(undefined, { timeoutMs: 50 })
+  assert.equal(store.lastCommitOk, false)
+  unlinkSync(lockFile(d))
+  const saved = flushDirtyStores({ timeoutMs: 500 })
+  assert.ok(saved >= 1, 'global store 成功落盘必须计入返回的成功数')
+  assert.equal(store.lastCommitOk, true)
+  assert.ok(existsSync(file), 'global 文件应已写入')
+  ok('global store 退出 flush 返回成功计数')
+}
+
 // --- 9. 退出兜底：脏 store 会被 flushDirtyStores 同步写掉 ---
 {
   const d = dir()
