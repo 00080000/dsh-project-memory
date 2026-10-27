@@ -19,7 +19,7 @@
 import { FALLBACK_OPS, WEAK_OPS, activityFromText, opForLegacyAction } from './ops.js'
 import { extractPathTokens } from './util/path-token.js'
 import { CJK_RANGE, tokenize } from './util/search.js'
-import { CYRILLIC_RANGE, RU_STOPWORDS, normalizeRuWord } from './util/ru.js'
+import { CYRILLIC_RANGE, CYRILLIC_WORD_RE, RU_STOPWORDS, normalizeRuWord, stemRu } from './util/ru.js'
 
 /**
  * 动作词典：动作 id → 匹配模式。命令形态与人类意图词都归一成同一套 id，
@@ -269,9 +269,9 @@ export function isIntentWord(word) {
   const s = String(word || '').trim()
   if (!s) return false
   if (CJK_RANGE.test(s)) return s.length >= 2
-  // 俄语：作者写的意图词是**原形**，不经过检索侧的词干；只要 ≥3 字符、不是虚词、
-  // 不含路径/标识符字符即可。不能用拉丁的 ≥5：`мост` / `код` / `файл` 都是 3–4 字母的实义词，
-  // 而俄语的三字母词几乎都是实词（虚词已经被 RU_STOPWORDS 挡掉），没有拉丁那种缩写歧义。
+  // 俄语：作者写**原形**（匹配时按 Snowball 词干比对词形，见 matchIntent）；只要 ≥3 字符、
+  // 不是虚词、不含路径/标识符字符即可。不能用拉丁的 ≥5：`мост` / `код` / `файл` 都是 3–4
+  // 字母的实义词，而俄语的三字母词几乎都是实词（虚词已经被 RU_STOPWORDS 挡掉），没有拉丁那种缩写歧义。
   if (CYRILLIC_RANGE.test(s)) {
     const w = normalizeRuWord(s)
     return w.length >= 3 && !RU_STOPWORDS.has(w) && !/[_./\\*]/.test(w) && !/\s/.test(w)
@@ -293,24 +293,39 @@ export function isDroppableGlob(pattern) {
 }
 
 /**
- * 意图词命中：CJK 用包含，拉丁用词边界（避免 `ppt` 命中 `pptx`）。
+ * 意图词命中：CJK 用包含，拉丁用词边界（避免 `ppt` 命中 `pptx`），
+ * 俄语先做 ё/е 归一 + 词边界精确匹配，未命中再按 Snowball 词干比对词形。
+ *
+ * 为什么俄语要词干：作者写的是原形（`миграция`），人类消息里几乎总是变格/变位
+ * （`миграции`）；只做字面匹配会让俄语触发面基本失效。词干与检索侧同一把尺子，
+ * `город` 仍然不会命中 `городской`（`город` vs `городск`）。
  * @param {string} word
  * @param {string} text - 已经是 {@link intentText} 处理过的意图文本
  */
 export function matchIntent(word, text) {
-  const w = String(word || '').trim()
+  const raw = String(word || '').trim()
   const hay = String(text || '')
-  if (!w || !hay) return false
-  if (CJK_RANGE.test(w)) return w.length >= 2 && hay.includes(w)
-  const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  // 俄语用 Unicode 词边界：`[^A-Za-z0-9_]` 会把"俄文词内部的命中"当成边界
-  // （`город` 命中 `городской`），那正是这条匹配要防的假阳性。
-  // 长度门槛与 isIntentWord 保持一致（≥3），不套用拉丁的 ≥4。
-  if (CYRILLIC_RANGE.test(w)) {
+  if (!raw || !hay) return false
+  if (CJK_RANGE.test(raw)) return raw.length >= 2 && hay.includes(raw)
+  if (CYRILLIC_RANGE.test(raw)) {
+    // 两侧都归一：作者写 `ёлка`、消息里打 `елка`（或反过来）必须命中。
+    const w = normalizeRuWord(raw)
     if (w.length < 3) return false
-    return new RegExp(`(^|[^\\p{L}\\p{N}_])${esc}(?![\\p{L}\\p{N}_])`, 'iu').test(hay)
+    const normalizedHay = normalizeRuWord(hay)
+    const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    // Unicode 词边界：`[^A-Za-z0-9_]` 会把俄文词内部的命中当成边界（`город`/`городской`）。
+    // 归一后已全小写，不需要 i 标志。
+    if (new RegExp(`(^|[^\\p{L}\\p{N}_])${esc}(?![\\p{L}\\p{N}_])`, 'u').test(normalizedHay)) return true
+    const stem = stemRu(w)
+    if (stem.length < 2) return false
+    for (const candidate of normalizedHay.match(CYRILLIC_WORD_RE) || []) {
+      if (candidate.length < 3) continue
+      if (stemRu(candidate) === stem) return true
+    }
+    return false
   }
-  if (w.length < 4) return false
+  const esc = raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  if (raw.length < 4) return false
   return new RegExp(`(^|[^A-Za-z0-9_])${esc}([^A-Za-z0-9_]|$)`, 'i').test(hay)
 }
 
