@@ -146,6 +146,35 @@ release()
   ok('同步等待另一个进程释放锁后写入成功（不依赖 20s 重试）')
 }
 
+// --- 4c. 锁文件不可读（同名目录 / EACCES）→ 到 deadline 放弃，不得忙等 ---
+// 读不出来时若不看 deadline，就是一个按住事件循环的忙等。
+{
+  const d = dir()
+  mkdirSync(lockFile(d), { recursive: true })
+  const started = Date.now()
+  const release = acquireDirLock(d, { timeoutMs: 120 })
+  const elapsed = Date.now() - started
+  assert.equal(release, null, '读不出来的锁不能永远等下去')
+  assert.ok(elapsed < 1000, `应在 deadline 附近放弃，实际 ${elapsed}ms`)
+  ok(`不可读的锁文件到 deadline 放弃（${elapsed}ms）`)
+}
+
+// --- 4d. 非锁原因的写失败（这里用"目标是目录"造 EISDIR）：状态与退出 flush 都要跟上 ---
+{
+  const d = dir()
+  const store = new ProjectMemoryStore(d).load()
+  store.replaceInsightItems([{ id: 'stuck', kind: 'lesson', scope: 'project', title: 'stuck' }])
+  mkdirSync(path.join(d, 'insights.json'), { recursive: true })
+  const before = _pendingDirtyCountForTest()
+  assert.throws(() => store.save())
+  assert.equal(store.lastSaveOk, false, '写失败必须反映到 lastSaveOk')
+  assert.equal(_pendingDirtyCountForTest(), before + 1, '失败后要登记进退出 flush')
+  rmSync(path.join(d, 'insights.json'), { recursive: true })
+  assert.equal(store.save(), true, '故障消失后同一份脏数据能补写')
+  assert.equal(_pendingDirtyCountForTest(), before, '写成功后要摘掉标记')
+  ok('非锁原因写失败：lastSaveOk=false 且进入退出 flush')
+}
+
 // --- 5. 跨进程删除不被复活：insights ---
 {
   const d = dir()

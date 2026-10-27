@@ -49,6 +49,18 @@ const ok = (name) => {
   ok('classifyShellCommand：渲染器才算 render-doc，扩展名不算')
 }
 
+// --- 2a. npm run bench / bench:peak 也算 run-bench（只认带路径的脚本会漏掉 README 里的跑法）---
+{
+  assert.deepEqual(classifyShellCommand('npm run bench').ops, ['run-bench'], 'npm run bench')
+  assert.deepEqual(classifyShellCommand('npm run bench:peak').ops, ['run-bench'], 'npm run bench:peak')
+  assert.deepEqual(classifyShellCommand('pnpm -C packages/x run bench').ops, ['run-bench'], '全局 flag 之后的 run 仍要认')
+  assert.deepEqual(classifyShellCommand('npm --prefix . run bench:edits').ops, ['run-bench'], '--prefix 带一个值')
+  assert.deepEqual(classifyShellCommand('yarn bench').ops, ['run-bench'], '按脚本名直接跑')
+  assert.deepEqual(classifyShellCommand('npm --prefix . publish').ops, ['npm-publish'], 'flag 之后的 publish 仍是发包')
+  assert.deepEqual(classifyShellCommand('npm run benching').ops, ['shell-run'], '只认整个脚本名，不做子串匹配')
+  ok('classifyShellCommand：npm run bench / bench:peak 与全局 flag 之后的子命令')
+}
+
 // --- 2b. 误命中回归：目录名 / grep pattern / 引号 / heredoc / 脚本正文里的词都不是动作 ---
 // 这一组全部来自 2026-10-25 的真实会话（一个审计任务，含 4 个子代理）：
 // `find … bench …` 命中 run-bench 注入了 4 条基准 procedure、1777 字符；
@@ -67,6 +79,8 @@ const ok = (name) => {
   assert.deepEqual(classifyShellCommand('echo "a > b"').targets, [], '引号里的 > 不是重定向')
   assert.deepEqual(classifyShellCommand('git commit -m "fix rm and migrate bugs"').ops, ['git-commit'], '提交信息里的词不是动作')
   assert.deepEqual(classifyShellCommand('bash -c "npm publish"').ops, ['npm-publish'], 'bash -c 要递归一层')
+  assert.deepEqual(classifyShellCommand('bash -lc "rm -rf x"').ops, ['file-delete'], '合并短选项 -lc 也要递归')
+  assert.deepEqual(classifyShellCommand('sh -ec "git commit -am y"').ops, ['git-commit'], 'sh -ec 也要递归')
   assert.deepEqual(classifyShellCommand('cd x && rm -rf build').ops, ['file-delete'], '分段后第二段仍要认 rm')
   assert.deepEqual(
     classifyShellCommand('python3 - <<PY\nimport os\nos.system("rm -rf x")\nPY').ops,

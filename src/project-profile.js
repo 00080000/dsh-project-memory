@@ -3,7 +3,7 @@
 import { readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 
-const cache = new Map() // root -> { tags: string[], mtimeMs: number }
+const cache = new Map() // root -> { tags: string[], stamp: string }
 
 function tryRead(file) {
   try {
@@ -11,6 +11,19 @@ function tryRead(file) {
   } catch {
     return null
   }
+}
+
+/** 缓存键：三份清单的 mtime 拼串；缺失用 `-`，这样没有 package.json 的项目也能命中缓存。 */
+function manifestStamp(root) {
+  const parts = []
+  for (const name of ['package.json', 'go.mod', 'Cargo.toml']) {
+    try {
+      parts.push(`${name}:${statSync(path.join(root, name)).mtimeMs}`)
+    } catch {
+      parts.push(`${name}:-`)
+    }
+  }
+  return parts.join('|')
 }
 
 function depsOf(manifest, fields) {
@@ -41,20 +54,12 @@ function depsOf(manifest, fields) {
  */
 export function projectTags(root) {
   if (!root) return []
-  try {
-    const cached = cache.get(root)
-    const pkgPath = path.join(root, 'package.json')
-    const marker = pkgPath
-    const mtime = statSync(marker).mtimeMs
-    if (cached && cached.mtimeMs === mtime) return cached.tags
-    const tags = collectTags(root)
-    cache.set(root, { tags, mtimeMs: mtime })
-    return tags
-  } catch {
-    const tags = collectTags(root)
-    cache.set(root, { tags, mtimeMs: 0 })
-    return tags
-  }
+  const stamp = manifestStamp(root)
+  const cached = cache.get(root)
+  if (cached && cached.stamp === stamp) return cached.tags
+  const tags = collectTags(root)
+  cache.set(root, { tags, stamp })
+  return tags
 }
 
 function collectTags(root) {

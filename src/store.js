@@ -1000,6 +1000,12 @@ export class ProjectMemoryStore {
         writeJsonAtomic(path.join(this.dir, WATCH_FILE), this.watchlist, { ensureDir: false })
         this._dirtyWatch = false
       }
+    } catch (err) {
+      // 非锁原因的写失败（ENOSPC / EISDIR / 只读挂载）：状态要与锁竞争路径一致，
+      // 否则 lastSaveOk 还是 true，脏 store 也不会进退出 flush。
+      this.lastSaveOk = false
+      trackDirty(this)
+      throw err
     } finally {
       release()
     }

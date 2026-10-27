@@ -5,7 +5,8 @@
 // 而 watch/lazy 保留旧记录；terms 回填与单次读盘的写法也各不相同。
 // 现在「这个文件该不该读、读出来该写什么条目」只在这里定义一次；
 // 调用方只保留自己的编排（批量计数、watch 的 mtime 快照、lazy 的根解析与副作用）。
-import { statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
+import path from 'node:path'
 import { isSupportedCode, isSupportedDoc, readFileForIndex } from './util/fs.js'
 import { buildDocEntries } from './doc-pipeline.js'
 import { docEntriesNeedBackfill } from './doc-index.js'
@@ -13,7 +14,7 @@ import { scanSymbols } from './symbols.js'
 
 /** 不索引的后缀。 */
 export const UNSUPPORTED = 'unsupported'
-/** 代码文件超过 maxFileSizeMb：读盘成本不抵符号表收益。 */
+/** 文件超过 maxFileSizeMb（读写之前先判，避免整份读进来再拒绝）。 */
 export const OVERSIZE = 'oversize'
 /** 内容哈希未变，且无需回填词项。 */
 export const UNCHANGED = 'unchanged'
@@ -29,8 +30,8 @@ export function fileKind(ext) {
   return null
 }
 
-function exceedsSizeCap(kind, size, config) {
-  return kind === 'code' && !!config.maxFileSizeMb && size > config.maxFileSizeMb * 1024 * 1024
+function exceedsSizeCap(size, config) {
+  return !!config.maxFileSizeMb && size > config.maxFileSizeMb * 1024 * 1024
 }
 
 /**
@@ -46,7 +47,7 @@ function exceedsSizeCap(kind, size, config) {
 export async function planFileIndex({ rel, filePath, kind, config, record, existingEntries = [], size, force = false }) {
   if (!kind) return { key: UNSUPPORTED }
   const fileSize = typeof size === 'number' ? size : statSync(filePath).size
-  if (exceedsSizeCap(kind, fileSize, config)) return { key: OVERSIZE }
+  if (exceedsSizeCap(fileSize, config)) return { key: OVERSIZE }
 
   // 单次读盘：同一 buffer 供内容哈希与正文解码使用（未变更的文件不解码）。
   const { hash, buffer } = readFileForIndex(filePath)
@@ -93,10 +94,13 @@ export function toFileUpdate(rel, plan, record) {
  * 不再重建 doc↔symbol 链接：链接是读取期解算的派生关系（见 src/link.js），
  * 所以这里也没有了那个「中间批次跳过链接、最后一批统一做」的 `link` 参数。
  *
+ * @param {{updates: object[], unseen?: Set<string>|null, root?: string|null}} args
+ *   `root` 给出时，显式索引过、且文件仍在盘上的条目不会被 unseen 清理删掉：它们本来就不在
+ *   扫描清单里（.gitignore 排除），"没扫到"不等于"被删了"。
  * @returns {{stale: string[], removed: number}} stale 是 CAS 失败（并发改动）的 rel，
  *   调用方应让它们保持「未落快照」状态，下一轮重试。
  */
-export function commitFileUpdates(store, { updates, unseen = null }) {
+export function commitFileUpdates(store, { updates, unseen = null, root = null }) {
   const stale = []
   let removed = 0
   store.commit((s) => {
@@ -109,10 +113,10 @@ export function commitFileUpdates(store, { updates, unseen = null }) {
     }
     if (unseen) {
       for (const rel of Object.keys(s.files)) {
-        if (!unseen.has(rel)) {
-          s.removeFile(rel)
-          removed++
-        }
+        if (unseen.has(rel)) continue
+        if (root && s.files[rel]?.explicit && existsSync(path.join(root, rel))) continue
+        s.removeFile(rel)
+        removed++
       }
     }
   })

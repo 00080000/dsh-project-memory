@@ -143,4 +143,30 @@ const CONFIG = { memoryDir: '.dsh-project-memory', chunkChars: 3000, maxChunksPe
   ok('不存在的索引根 / Windows 风格路径被拒绝，且零文件系统副作用')
 }
 
+// ---- 8. 超大文档在读盘之前就判 OVERSIZE；显式索引的 gitignored 文件不被清理掉 ----
+{
+  const { planFileIndex, commitFileUpdates, OVERSIZE } = await import('../src/index-pipeline.js')
+  const { rmSync, truncateSync } = await import('node:fs')
+  const root = mkdtempSync(path.join(tmpdir(), 'pm-di-oversize-'))
+  const big = path.join(root, 'big.txt')
+  writeFileSync(big, 'x')
+  truncateSync(big, 64 * 1024 * 1024)
+  const plan = await planFileIndex({ rel: 'big.txt', filePath: big, kind: 'doc', config: { maxFileSizeMb: 1 } })
+  assert.equal(plan.key, OVERSIZE, '超大文档要在读盘前被拒绝（旧实现先整份读入再抛错）')
+  rmSync(big)
+
+  // 显式索引：文件在 .gitignore 里，扫描清单永远看不到它 —— 清理不能把它当成"被删了"
+  const storeDir = mkdtempSync(path.join(tmpdir(), 'pm-di-explicit-'))
+  const store = new ProjectMemoryStore(storeDir).load()
+  const file = path.join(storeDir, 'private-notes.md')
+  writeFileSync(file, 'x')
+  store.markFile('private-notes.md', { sha256: 'h', size: 1, type: 'doc', indexedAt: new Date().toISOString(), explicit: true })
+  commitFileUpdates(store, { updates: [], unseen: new Set(), root: storeDir })
+  assert.ok(store.fileRecord('private-notes.md'), '显式索引且文件还在 → 保留')
+  rmSync(file)
+  commitFileUpdates(store, { updates: [], unseen: new Set(), root: storeDir })
+  assert.equal(store.fileRecord('private-notes.md'), undefined, '文件真被删了 → 清掉')
+  ok('超大文档提前 OVERSIZE；显式索引的文件不被 unseen 清理')
+}
+
 console.log(`\ndoc-index tests: ${passed} passed`)
