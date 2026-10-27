@@ -5,7 +5,7 @@
 // 关键词 / 去重）都是空的。这里按"分词 → 闸门 → 检索 → 去重 → 迁移"逐层钉住。
 // 夹具一律用中性占位（сервер / город），不引用任何真实项目名。
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -78,6 +78,14 @@ console.log('\n== 词干：与 snowballstemmer 的词形对照 ==')
   // 参考实现的边界：无元音的词不动（RV 区域为空时 tidy 也不许削 ь）
   assert.equal(stemRu('брь'), 'брь')
   ok('无元音词不被误削')
+
+  // 固定样例由 snowballstemmer 3.1.1 生成（含真实词形 + 边界随机串），随仓库提供，
+  // 这样“与参考实现一致”不是一条不可复跑的口头结论。
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/ru-stems.json', import.meta.url), 'utf8'))
+  for (const [word, expected] of Object.entries(fixture)) {
+    assert.equal(stemRu(word), expected, `词干与参考实现不一致：${word}`)
+  }
+  ok(`固定样例 ${Object.keys(fixture).length} 个词形与 snowballstemmer 一致`)
 }
 
 // ---- 3. 召回闸门：短西里尔词不被当成"短拉丁噪声"丢掉 ----

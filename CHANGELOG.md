@@ -1,3 +1,41 @@
+## Unreleased
+
+**兼容**：无配置键、无 store 格式变更，老 profile 直接升级。
+
+### 修复：俄语查询在 insight / experience 层被重复词干
+
+Snowball 词干不幂等（`память → памя → пам`）。`recallItems()` 先把查询 tokenize 成词干、打分器又 tokenize 一次，导致俄语 lesson / decision / experience 的单字/多字查询大量查不到（doc 层不受影响）。现在 `gatedQueryText()` 用 `tokenizeRaw(..., { stem: false })` 只做过滤，真正的打分器词干一次。回归直接走 `recallItems()` 的 insight 与 experience 两个桶。
+
+### 修复：store 目录 / `.gitignore` 被外部删除后不自愈
+
+`_storeDirReady` 缓存把“上次写过”当成“这次还在”，目录被 `git clean -fdx` / 用户清理后锁永远拿不到，写盘一直失败；`_selfIgnoreReady` 同理会把 store 留在 git 可提交状态。现在 dirty save 命中缓存时补一次目录 stat，失配就重建并让 shards / format / ignore 三处状态失效；`acquireDirLock(ensureDir:false)` 也在 `ENOENT` 上补建一次。自我忽略不再缓存“已存在”。
+
+### 修复：向量运行时并发加载 / 目录切换互相 close
+
+新增 `runtimeLoading` 单飞：同一 `(dir, fingerprint)` 的冷启动只 `loadLeanvec()` 一次。换运行时前先清掉引用旧 `lv` 的 indexCache，再 close 旧 fd；索引缓存 key 带上运行时目录，避免用旧闭包服务新目录。并发 injection + 写入去重、或同一模型内容从两个路径加载，都不会再静默退化成空向量。
+
+### 修复：多实例下任务级条目合并丢更新
+
+任务级 insight 的增删/编辑不 bump `task.updatedAt`，按整条任务时间戳选一侧会丢另一边的新增。现在用上次成功落盘时的 insight id 基线做三方合并：新增补写、本地删除不复活、同 id 取 `updatedAt` 新者。整条任务删除的墓碑逻辑不变。
+
+### 修复：watch 异步轮询的定时器重复 / stop 后扫描
+
+异步 `poll()` 期间 `setSessionActive()` 会先排一个定时器，`_tick()` 结束又排一个并覆盖句柄，导致待触发定时器翻倍、`stop()` 只能清掉一个。现在 `_tick()` 只在没有待触发定时器时续排，入口与结束都检查 `_stopped`；`start()` 在轮询中不重复排。
+
+### 修复：旧 source 形状的自注入被当成人类消息
+
+`isOwnInjection()` 认迁移前 `{ plugin: 'dsh-project-memory' }` 形状，但 `installCallObserver()` 只判 `source.kind`，于是自己的注入块进入 `humanText`，下一步拿它当 query（自激）。现在 observer 与 `lastUserText()` 共用同一个自注入判据。
+
+### 修复：俄语意图词未归一 ё / 词形
+
+`isIntentWord()` 会归一，`matchIntent()` 却拿原文做字面匹配：`ёлка`/`елка`、`миграция`/`миграции` 都不命中。现在两侧先 `normalizeRuWord()` 做词边界精确匹配，未命中再按 Snowball 词干比对词形；`город` 仍不命中 `городской`（词干不同）。
+
+### 修复：global store 退出 flush 计数
+
+`GlobalStore.flushPending()` 返回 `commit()` 的 `fn` 返回值（通常 undefined），`flushDirtyStores()` 把已成功落盘的 global store 计成 0。现在显式返回 `lastCommitOk`。
+
+**测试**：`npm test` **869 项 / 49 个文件**全绿；`npm run typecheck` 通过。新增俄语词干固定样例 `test/fixtures/ru-stems.json`（200 个词形，与 snowballstemmer 3.1.1 一致）。
+
 ## 0.6.6 (2026-10-27)
 
 **升级注意**：这是一次**行为变更**——注入会变少。没有新增配置键、没有 store 格式变更，老 profile 直接升级。变化只在"什么时候允许全文注入"：子代理提示词、其它工具的参数、后台任务 / 子代理通知，以及人类消息里的删除 / 清理 / 渲染 / 基准类词，不再触发全文注入。

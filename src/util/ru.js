@@ -44,8 +44,9 @@ export const RU_STOPWORDS = new Set([
 ])
 
 // Snowball Russian 的 ending 表。**必须整张照抄**（含 ив/ыв 变体与 group 语义）：
-// 拷自 snowballstemmer 3.1.1 生成的 russian_stemmer.py，用同一实现的 2354 个词形做了
-// 逐词对照（tools 里的 `test/ru-stem-parity` 见测试文件）。自己"简化"词尾表会立刻偏离。
+// 拷自 snowballstemmer 3.1.1 生成的 russian_stemmer.py；开发时用同版本做过全量离线对照，
+// 仓库内可复跑的固定样例见 test/fixtures/ru-stems.json（200 个词形）。
+// 自己“简化”词尾表会立刻偏离。
 // 每条 = [词尾, group]；匹配取**最长**词尾。group 语义：1 = 还要求前一个字符是 а/я。
 const SUFFIX = (list) => list
   .slice()
