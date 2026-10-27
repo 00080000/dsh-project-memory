@@ -104,4 +104,52 @@ const settle = () => new Promise((resolve) => setImmediate(resolve))
   ok('边界：watch: false / stop() 之后，活跃信号不抛错也不复活定时器')
 }
 
+// ---- 6. 异步 poll 期间切活跃 / stop：定时器不重复，stop 后不再扫描 ----
+{
+  const origSetTimeout = globalThis.setTimeout
+  const origClearTimeout = globalThis.clearTimeout
+  const pending = new Set()
+  globalThis.setTimeout = (fn, ms, ...args) => {
+    const h = origSetTimeout(fn, ms, ...args)
+    pending.add(h)
+    return h
+  }
+  globalThis.clearTimeout = (h) => {
+    pending.delete(h)
+    return origClearTimeout(h)
+  }
+  try {
+    const wm = new WatchManager({}, { memoryDir: '.dsh-project-memory' })
+    let polls = 0
+    wm.poll = async () => {
+      polls++
+      await new Promise((resolve) => origSetTimeout(resolve, 20))
+      return false
+    }
+    wm.start(1000)
+    assert.equal(pending.size, 1, 'start() 后只有一个定时器')
+
+    // 取走第一个定时器并手动跑一轮，模拟它“已经触发”。
+    const first = wm.timer
+    pending.delete(first)
+    origClearTimeout(first)
+    wm.timer = null
+    const tick = wm._tick()
+    await new Promise((resolve) => origSetTimeout(resolve, 5))
+    wm.setSessionActive('s1', true) // poll 还在 await，期间切到活跃
+    await tick
+
+    assert.equal(pending.size, 1, 'poll 期间切活跃不得再排第二个定时器（旧实现会留下两个）')
+    wm.stop()
+    assert.equal(pending.size, 0, 'stop() 必须清掉唯一待触发的定时器')
+    await new Promise((resolve) => origSetTimeout(resolve, 30))
+    assert.equal(polls, 1, 'stop() 后不得再跑一轮扫描')
+  } finally {
+    globalThis.setTimeout = origSetTimeout
+    globalThis.clearTimeout = origClearTimeout
+    for (const h of pending) origClearTimeout(h)
+  }
+  ok('异步 poll 期间切活跃/stop：定时器不重复，stop 后不再扫描')
+}
+
 console.log(`\nwatch-idle tests: ${passed} passed`)
