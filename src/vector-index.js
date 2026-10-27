@@ -226,7 +226,15 @@ export function vectorItemsFrom(store, globalStore) {
 
 /** leanvec 运行时只在进程内加载一次（77 MB 表 + 词表索引 Map，加载 ~90ms、常驻 ~120MB）。 */
 let runtimeCache = null
-/** 向量索引按 (storeDir, 模型指纹) 缓存；条目增删改由 `score()` 里的逐条对齐懒处理。 */
+/**
+ * 同一 `(dir, fingerprint)` 的并发首次加载只做一次。
+ *
+ * 没有它时，两个调用会各自 `loadLeanvec()`，后完成的一个把前一个 `close()` 掉；而前一个
+ * 已经把索引（`embed` 闭包引用旧 `lv`）放进 `indexCache`，于是之后的向量分永远是空 Map，
+ * 直到进程重启。冷启动的 injection 与写入去重并发就会撞上。
+ */
+const runtimeLoading = new Map()
+/** 向量索引按 (storeDir, 运行时 key) 缓存；条目增删改由 `score()` 里的逐条对齐懒处理。 */
 const indexCache = new Map()
 /**
  * "解析目录 + 模型指纹"的进程内记忆。
@@ -282,31 +290,53 @@ async function openEngine({ storeDir = null, items = [], vectorDir = null } = {}
   const { dir, fingerprint } = await resolveVectorLayer(vectorDir)
   if (!dir || !fingerprint) return null
   try {
-    // 运行时按「目录 + 模型指纹」缓存：同一目录换了模型文件时必须重新加载，
-    // 否则会用旧模型编码、却把新指纹写进 vectors.json。
-    if (!runtimeCache || runtimeCache.dir !== dir || runtimeCache.fingerprint !== fingerprint) {
-      const mod = await import(pathToFileURL(join(dir, 'src', 'embed.mjs')).href)
-      // 换模型前先关旧表的 fd：Windows 上开着句柄会让 pnpm 替换 node_modules 报 EBUSY。
-      try { runtimeCache?.lv?.close?.() } catch { /* 老版本没有 close() */ }
-      const lv = mod.loadLeanvec({
-        table: join(dir, 'dist', 'leanvec.f32'),
-        tokenizer: join(dir, 'dist', 'leanvec.tokenizer.json'),
-        // 8 MB ≈ 8,000 行：首次建索引要连续编码上百条，缓存能把随机读摊平成一次。查询侧不靠它。
-        cacheBytes: 8 * 1024 * 1024,
-      })
-      runtimeCache = { dir, lv, fingerprint }
+    const runtimeKey = `${dir}\u0000${fingerprint}`
+    let runtime = runtimeCache?.key === runtimeKey ? runtimeCache : null
+    if (!runtime) {
+      let pending = runtimeLoading.get(runtimeKey)
+      if (!pending) {
+        pending = (async () => {
+          const mod = await import(pathToFileURL(join(dir, 'src', 'embed.mjs')).href)
+          const lv = mod.loadLeanvec({
+            table: join(dir, 'dist', 'leanvec.f32'),
+            tokenizer: join(dir, 'dist', 'leanvec.tokenizer.json'),
+            // 8 MB ≈ 8,000 行：首次建索引要连续编码上百条，缓存能把随机读摊平成一次。查询侧不靠它。
+            cacheBytes: 8 * 1024 * 1024,
+          })
+          return { key: runtimeKey, dir, fingerprint, lv }
+        })()
+        runtimeLoading.set(runtimeKey, pending)
+      }
+      try {
+        runtime = await pending
+      } finally {
+        runtimeLoading.delete(runtimeKey)
+      }
+      if (runtimeCache?.key !== runtimeKey) {
+        const previous = runtimeCache
+        runtimeCache = runtime
+        if (previous && previous !== runtime) {
+          // 旧运行时上的索引一律作废：它们闭包里的 `lv` 马上会被 close()，留着只会在下一次
+          // `openEngine` 时被复用并静默返回空向量分。先清缓存，再关 fd（Windows 上 pnpm
+          // 替换 node_modules 需要这个 close）。
+          for (const [ck, entry] of indexCache) if (entry.runtime === previous) indexCache.delete(ck)
+          try { previous.lv.close?.() } catch { /* 老版本没有 close() */ }
+        }
+      }
     }
-    const { lv } = runtimeCache
-    const ck = `${storeDir ?? ''}\u0000${fingerprint}`
-    // 索引按 (storeDir, 指纹) 缓存；之后新增/改写的条目由 `score()` 里的逐条对齐懒处理
+    // key 里带运行时目录：同一模型内容从两个路径加载时，不能用一份 index 的 embed 闭包去
+    // 服务另一个运行时（否则切换目录会把先前的索引一起带坏）。
+    const ck = `${storeDir ?? ''}\u0000${runtimeKey}`
+    // 索引按 (storeDir, 运行时) 缓存；之后新增/改写的条目由 `score()` 里的逐条对齐懒处理
     // （内容变了就重算那一行并落盘），所以这里不需要按 items 签名判断是否重建。
-    let index = indexCache.get(ck)
-    if (!index) {
-      index = openVectorIndex({ dir: storeDir, items, embed: (t) => lv.embed(t), model: fingerprint })
+    let entry = indexCache.get(ck)
+    if (!entry) {
+      const index = openVectorIndex({ dir: storeDir, items, embed: (t) => runtime.lv.embed(t), model: fingerprint })
       if (!index) return null
-      indexCache.set(ck, index)
+      entry = { index, runtime }
+      indexCache.set(ck, entry)
     }
-    return { index, fingerprint, dir }
+    return { index: entry.index, fingerprint, dir }
   } catch {
     return null // 任何异常都降级到纯词法，绝不因为可选的向量层让召回失败
   }
@@ -369,9 +399,9 @@ export function forgetVectorRows({ dir = null, ids = [] } = {}) {
   if (!dir || !want.size) return 0
   let n = 0
   // ① 进程内缓存：按 storeDir 前缀找对应的索引（一个 store 一般只有一份）
-  for (const [ck, idx] of indexCache) {
+  for (const [ck, entry] of indexCache) {
     if (!ck.startsWith(`${dir}\u0000`)) continue
-    if (idx && typeof idx.forget === 'function') n += idx.forget([...want])
+    if (entry?.index && typeof entry.index.forget === 'function') n += entry.index.forget([...want])
   }
   // ② 磁盘：文件可能是别的进程写的，单独再清一遍（幂等）
   const file = join(dir, FILE)
