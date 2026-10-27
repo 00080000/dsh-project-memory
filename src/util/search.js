@@ -48,7 +48,19 @@ function expandQuery(query) {
   return { original: lower, expanded: [...expanded], cjkPhrases }
 }
 
-export function tokenizeRaw(text) {
+/**
+ * 查询/索引共用的分词器。
+ *
+ * `stem:false` 只用于**已经 tokenize 过一次、接下来还会再 tokenize 一次**的查询拼接串
+ * （见 recall.js 的 `gatedQueryText`）。Snowball 词干不是幂等的：`память → памя → пам`。
+ * 如果这里先词干、调用方再词干一次，俄语查询词就会和索引词项对不上。
+ *
+ * 这个开关只影响俄语分支（拉丁/CJK 没有词干步骤）；默认 `true`，既有调用方行为不变。
+ * @param {string} text
+ * @param {{ stem?: boolean }} [opts]
+ * @returns {string[]}
+ */
+export function tokenizeRaw(text, { stem = true } = {}) {
   if (!text) return []
   const lower = text.toLowerCase()
   const tokens = []
@@ -70,8 +82,8 @@ export function tokenizeRaw(text) {
     if (word.length < 2 || RU_STOPWORDS.has(word)) continue
     // ≤3 字符不词干：俄语缩写（ИИ / БД / ОС）在 Snowball 下会被削成单字母
     // （`ии` → `и`），那既丢语义又和虚词撞车；这些短词本来也没有可削的格尾。
-    const stem = word.length <= 3 ? word : stemRu(word)
-    if (stem.length >= 2) tokens.push(stem)
+    const token = word.length <= 3 || !stem ? word : stemRu(word)
+    if (token.length >= 2) tokens.push(token)
   }
   for (const ch of lower) {
     if (CJK_RANGE.test(ch)) cjkRun += ch

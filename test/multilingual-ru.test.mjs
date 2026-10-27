@@ -18,6 +18,7 @@ import { indexRepository } from '../src/tools/index-repo.js'
 import { ProjectMemoryStore } from '../src/store.js'
 import { memoryRootFor } from '../src/util/fs.js'
 import { queryMemoryTool } from '../src/tools/query-memory.js'
+import { insightToEntry, recallItems } from '../src/recall.js'
 
 let passed = 0
 const ok = (name) => {
@@ -171,6 +172,27 @@ console.log('\n== 端到端：俄文文档可被俄文查询召回 ==')
   assert.ok(migrated.every((e) => e.termsVersion === TOKENIZER_VERSION), '旧条目应被回填到当前版本')
   assert.ok(migrated.some((e) => /сервер/.test(e.terms || '')), `回填后的 terms 应含俄文词干：${migrated[0].terms}`)
   ok('旧 store 的 doc terms 在下次索引时一次性回填（内容未变也重抽）')
+}
+
+// ---- 7. experience / insight 层：查询只能词干一次（Snowball 不幂等） ----
+console.log('\n== insight 层：俄文查询不被重复词干 ==')
+{
+  // `память → памя → пам`、`система → систем → сист`：如果 recall 先把查询词干、
+  // 打分器再词干一次，查询词就和索引词项对不上。这里从 recallItems 的公开入口回归。
+  const base = {
+    id: 'ins_ru_memory', scope: 'project', title: 'Память проекта и системы',
+    fix: 'Проверять блокировку и повторять попытку', confidence: 1,
+    createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+  }
+  for (const [layer, kind] of [['insight', 'lesson'], ['experience', 'experience']]) {
+    const entry = insightToEntry({ ...base, kind })
+    for (const query of ['память', 'система', 'системы', 'память проекта']) {
+      const res = recallItems({ entries: [entry], queries: [query], layers: [layer], limit: 5 })
+      const hits = res.layers.find((l) => l.layer === layer)?.hits || []
+      assert.ok(hits.length, `${layer} 层应召回（query=${query}）；查询词被重复词干会得到 0 条`)
+    }
+  }
+  ok('俄文 insight / experience 查询只词干一次（память / система 可召回）')
 }
 
 console.log(`\nmultilingual-ru tests: ${passed} passed`)
