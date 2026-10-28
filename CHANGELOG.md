@@ -1,6 +1,6 @@
 ## 0.6.7 (2026-10-28)
 
-**兼容**：无新增配置键，也没有破坏性的 store 变更——条目上只多一个可选的 `explicit` 标记（旧条目缺省即按非显式处理），老 profile 与旧 store 直接升级。
+**兼容**：无新增配置键，也没有破坏性的 store 变更——条目上只多一个可选的 `explicit` 标记（旧条目缺省即按非显式处理）。一处判据语义变化：原生 Windows 壳现在签 `windows` 而不是 `wsl`，写了 `guard.hosts: ['wsl']` 又想覆盖原生 Windows 命令的条目要改成 `windows`。老 profile 与旧 store 直接升级。
 
 ### 修复：Windows 上重启后的残留写锁把写入永久挡死（且默认静默）
 
@@ -29,8 +29,6 @@
 ### 修复：带 UTF-8 BOM 的 SKILL.md 解析不出 frontmatter
 
 记事本保存的 `SKILL.md` 以 `\uFEFF` 开头，`^---` 匹配不上，frontmatter 整段被忽略，skill 的 name / description 静默回落默认值。现在解析前先剥掉 BOM。
-
-**测试**：新增 `test/windows-compat.test.mjs`（11 项：跨开机残留锁、跨机锁不被误伤、`maxHoldMs`、反斜杠/绝对路径的 `writes` 与 `guard`、Windows 命令形态、`hosts`、路径 token、store 缓存键、BOM）。这些判据都在字符串/时间层面，Linux CI 同样能跑（"同实例"那条按 `win32/darwin` 分支断言）。`npm test` **879 项 / 50 个文件**全绿；`npm run typecheck` 通过。
 
 ### 修复：`when.writes` 里的 `?` 让整个 pre-step 注入静默失效
 
@@ -104,7 +102,7 @@ Snowball 词干不幂等（`память → памя → пам`）。`recallIt
 
 `GlobalStore.flushPending()` 返回 `commit()` 的 `fn` 返回值（通常 undefined），`flushDirtyStores()` 把已成功落盘的 global store 计成 0。现在显式返回 `lastCommitOk`。
 
-**测试**：`npm test` **874 项 / 49 个文件**全绿；`npm run typecheck` 通过。新增俄语词干固定样例 `test/fixtures/ru-stems.json`（200 个词形，与 snowballstemmer 3.1.1 一致）。
+**测试**：`npm test` **885 项 / 50 个文件**全绿；`npm run typecheck` 通过。新增 `test/windows-compat.test.mjs`（11 项：跨开机残留锁、跨机锁不被误伤、`maxHoldMs`、反斜杠/绝对路径的 `writes` 与 `guard`、Windows 命令形态、`hosts`、路径 token、store 缓存键、BOM；判据都在字符串/时间层面，Linux CI 同样能跑，"同实例"那条按 `win32/darwin` 分支断言）与俄语词干固定样例 `test/fixtures/ru-stems.json`（200 个词形，与 snowballstemmer 3.1.1 一致）。
 
 ## 0.6.6 (2026-10-27)
 
