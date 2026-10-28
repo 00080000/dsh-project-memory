@@ -1,6 +1,6 @@
-## Unreleased
+## 0.6.7 (2026-10-28)
 
-**兼容**：无配置键、无 store 格式变更，老 profile 直接升级。
+**兼容**：无新增配置键，也没有破坏性的 store 变更——条目上只多一个可选的 `explicit` 标记（旧条目缺省即按非显式处理），老 profile 与旧 store 直接升级。
 
 ### 修复：`when.writes` 里的 `?` 让整个 pre-step 注入静默失效
 

@@ -6,7 +6,7 @@
 
 [![ci](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![npm](https://img.shields.io/npm/v/@yolk_vat-y/dsh-project-memory)](https://www.npmjs.com/package/@yolk_vat-y/dsh-project-memory) [![npm downloads](https://img.shields.io/npm/dm/%40yolk_vat-y%2Fdsh-project-memory?style=flat-square&color=orange)](https://www.npmjs.com/package/@yolk_vat-y/dsh-project-memory) [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/00080000/dsh-project-memory) [![Awesome](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
-为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）agent 提供持久化的 **项目开发记忆**。专门针对项目开发，原生融合 dsh 任务系统，会话内任务清单与读过的文件自动沉淀为跨会话任务记录，任务↔文件自动关联——开发工作流可切换、可续接，无需重复梳理整个项目，解决上下文失效；文档（PDF/Markdown/txt）与代码符号写入工作区独立存储，文档自动交叉链接至所提及的代码符号；经验笔记（问题 → 方案）自动去重，避免重复踩坑。项目级与任务级数据按项目落盘；global 级条目放在一个全局文件里（默认 `~/.config/dsh-project-memory/global.json`）。数据跨会话压缩与交接保留，召回附带 `路径:行号` 可回源核实。无原生构建、无向量数据库。约 85 MB 的本地嵌入表 `leanvec` 随安装默认启用（约 +45 MB 常驻）；它不在时自动退回纯词法。
+为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）agent 提供持久化的 **项目开发记忆**。专门针对项目开发，原生融合 dsh 任务系统，会话内任务清单与读过的文件自动沉淀为跨会话任务记录，任务↔文件自动关联——开发工作流可切换、可续接，无需重复梳理整个项目，解决上下文失效。底层是一套**混合索引**：文档块、代码符号、经验笔记与洞察各占一层，召回时分层打分再合并排序。文档（PDF/Markdown/txt）与代码符号写入工作区独立存储，文档自动交叉链接至所提及的代码符号；经验笔记（问题 → 方案）自动去重，避免重复踩坑。数据跨会话压缩与交接保留，召回附带 `路径:行号` 可回源核实。
 
 
 > 插件在磁盘上维护一份精简的项目**记忆**，每条记录指向具体的文件与行号；agent 需要快速了解项目时先查**记忆**，无需重读整个项目。
@@ -48,12 +48,12 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 
 以下工具由 **agent 自动调用**，无需用户手动输入。在对话中直接说自然语言即可——例如「给这个项目建个索引」或「auth 模块是干嘛的」，或者正常开发即可——agent 会自动调用对应工具。默认开启「读到即索引」：模型读哪个文件，就顺便索引哪个文件，记忆在你干活的过程中自然积累。`watch_repo` 让显式监听的根目录在后台保持新鲜；`index_repo` 强制对项目做一次全量回填（未变更文件自动跳过）。
 
-在 git 工作树里，语料就是 `git ls-files --cached --others --exclude-standard` 的清单——已跟踪文件，加上未被忽略的未跟踪文件——因此 `.gitignore`（含嵌套规则）决定什么会被记忆。不是 git 工作树的目录退回普通遍历（不套忽略规则）。「读到即索引」对单个文件套用同一判据；显式 `index_doc` 不受 `.gitignore` 限制，但仍服从 `roots.exclude`、可读性与体积上限。
+在 git 工作树里，语料就是 `git ls-files --cached --others --exclude-standard` 的清单——已跟踪文件，加上未被忽略的未跟踪文件——因此 `.gitignore`（含嵌套规则）决定什么会被记忆。不是 git 工作树的目录退回普通遍历（不套忽略规则）。「读到即索引」对单个文件套用同一判据；显式 `index_doc` 不受 `.gitignore` 限制，但仍服从 `roots.exclude`、可读性与体积上限，且只要文件还在，它的条目就能活过后续扫描清理。
 
 | 工具 | 用途 |
 |---|---|
 | `index_doc file_path` | 索引单个文档（PDF/MD/txt）：分块、确定性摘要，带 `路径:行号` 入库。未变更文件自动跳过。 |
-| `index_repo root` | 索引整个项目：文档生成确定性摘要，代码文件生成零 token 符号表。增量更新，store 跟随文件清单：已删除、被忽略或移走的文件会被清理；文档与符号交叉链接。根目录不存在或在排除名单上时，会在写入任何内容前拒绝。 |
+| `index_repo root` | 索引整个项目：文档生成确定性摘要，代码文件生成零 token 符号表。增量更新，store 跟随文件清单：已删除、被忽略或移走的文件会被清理（显式 `index_doc` 的条目只要文件还在就保留）；文档与符号交叉链接。根目录不存在或在排除名单上时，会在写入任何内容前拒绝。 |
 | `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件，仅重抽这些文件。监听根会记在该项目的 store 里，在该项目下启动 dsh 时恢复监听；不存在或在排除名单上的根目录会被拒绝，已消失的根目录会被丢弃而不是被重新创建。 |
 | `memory_stats root` | 查看记忆库内容：总量、最近索引时间，以及按时间排序的逐文件清单。 |
 | `query_memory query` | 对文档、符号、经验与 insight 执行排序检索，可选 LLM 查询扩展。`type` 选择层（`all` / `doc` / `symbol` / `experience` / `insight` / `task`）。返回带相对分数、引用或 insight id、以及文档→符号链接的结果。 |
@@ -74,7 +74,7 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 
 - **易失性** — 上下文是临时的，会话压缩即丢失。
 - **持久性** — **记忆**存于磁盘，跨压缩与会话保留。
-- **紧凑性** — 代码层每个符号只存一行有界声明，文档层每个 chunk 保留 ≤300 字符的摘要与有界词项。doc→symbol 链接不落盘，读取期计算。最终体积取决于符号密度与 chunk 长度，下面是特定语料的实测值（2026-10-13），不是承诺：纯代码的前端应用（289 文件）实测 **325 bytes/条目 ≈ 源码 21%**；符号密集的 TypeScript monorepo（12,634 文件 / 代码 107 MB + 文档 14 MB）实测代码层 **占源码 22%**（整库 549 bytes/条目）、文档层 **占其源码 127%**；文档占比高的语料单条目最大，一个文档为主的工作区（Markdown + PDF）实测 **1,401 bytes/条目**。
+- **紧凑性** — 代码层每个符号只存一行有界声明，文档层每个 chunk 保留 ≤300 字符的摘要与有界词项。doc→symbol 链接不落盘，读取期计算。
 - **可核验性** — **召回**在适用时携带 `路径:行号` 引用，agent 可对照源文件核实。
 
 默认开启懒索引时，构建**记忆**无需预先全量扫描：文件在模型读取时被记忆，**记忆**恰好覆盖实际处理过的内容；`index_repo` 或监听根可以覆盖其余文件。未变更的文件重读是空操作，因此持续维护开销很低。
@@ -240,17 +240,6 @@ dsh web --patch ./config.yml
 | 热路径懒记忆 | 单文件重记忆+落盘 | p50 5.5 ms / 最大 8.4 ms (10k) |
 
 > 合成基准：生成代码（~4–5 符号/文件），实测于 2026-10-13。复现命令 `npm run bench:synthetic -- 5000`（脚本 `scripts/bench-synthetic.mjs`）。测量纯索引开销，不含 LLM 调用。写入后的首次查询会重建 IDF 缓存（**40k 条目 141 ms**，20k 条目 68 ms，4k 条目 17 ms），后续查询命中缓存。
-
-### Windows / 大量小文件
-
-Windows（NTFS）的瓶颈不是 CPU，而是**每次写盘的文件操作数**。watch 以有界并发异步 `stat`，元数据 I/O 不会再按住事件循环。同一份 400 个小文件（WSL 挂 NTFS 的悲观代理）：首次索引 8–10 s、单文件"改 → 懒索引" p50 约 46 ms；ext4 上分别是 60–90 ms 与 1 ms。3,000 / 10,000 个小文件索引的峰值 RSS 约 85 / 112 MB——**大量小文件不是 OOM 面**（单个大文件才是）。
-
-```bash
-npm run bench:edits -- --dir C:\\Temp\\pm-bench      # Windows 原生
-node scripts/bench-edits.mjs --dir /mnt/c/Users/Public/pm-bench --files 400
-```
-
-脚本在临时目录里造语料，跑完删除；报首次索引、单文件更新 p50/p90/max 与峰值 RSS。
 
 ### 自己复现这些数字
 
