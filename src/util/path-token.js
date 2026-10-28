@@ -17,24 +17,29 @@
  *      —— `src/.env` 这类中缀点文件名没有扩展名可依，与普通点号无法区分，不在规则内；
  *      调用方若已知道完整路径，应直接并入，而不是指望从文本里猜。
  *
+ * **两种分隔符都算**：Windows 上的 `D:\proj\src\a.ts` / `src\util\fs.js` 是常态，只认 `/`
+ * 会把它切成 `a.ts` / `fs.js`，写目标就只剩裸文件名（`when.writes` 里带目录的判据
+ * 因此永远不命中）。输出统一成 `/` 分隔，与 store 里 rel 键、写入期 `normalizeCitationFiles()`
+ * 的口径一致；绝对前缀（盘符、盘外目录）由匹配侧按路径后缀处理，不在这里猜。
+ *
  * 只导出函数、不导出正则：全局正则一旦被 `.test()`/`.exec()` 用过就带 `lastIndex` 状态，
  * 共享出去等于把「顺序敏感」的坑一起共享。`matchAll` 内部克隆正则，这里无状态。
  * @module dsh-project-memory/util/path-token
  */
 
-const PATH_TOKEN = /(?:[A-Za-z0-9_.@-]+\/)*[A-Za-z0-9_.@-]+\.[A-Za-z][A-Za-z0-9]{0,7}\b/g
+const PATH_TOKEN = /(?:[A-Za-z0-9_.@-]+[\\/])*[A-Za-z0-9_.@-]+\.[A-Za-z][A-Za-z0-9]{0,7}\b/g
 const DOTFILE_TOKEN = /(?:^|[\s"'`(])(\.[A-Za-z0-9_-]{2,})/g
 
 /**
  * 文本 → 路径 token（去重、顺序确定、无副作用）。
  * @param {unknown} text - 工具调用参数、人类消息或 shell 命令。
- * @returns {string[]} 去重后的路径 token；空/缺失输入返回 `[]`。
+ * @returns {string[]} 去重后的路径 token（`/` 分隔）；空/缺失输入返回 `[]`。
  */
 export function extractPathTokens(text) {
   const s = String(text || '')
   if (!s) return []
   const out = new Set()
-  for (const m of s.matchAll(PATH_TOKEN)) out.add(m[0])
+  for (const m of s.matchAll(PATH_TOKEN)) out.add(m[0].replace(/\\/g, '/'))
   for (const m of s.matchAll(DOTFILE_TOKEN)) out.add(m[1])
   return [...out]
 }

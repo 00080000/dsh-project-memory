@@ -72,10 +72,20 @@ const QUERY_TOOLS = new Set(['query_memory', 'recall'])
  * 命令头才是"这个 shell 到底在做什么"的唯一可靠位置。
  */
 const WRITE_HEADS = new Set(['rm', 'rmdir', 'unlink', 'shred', 'mv', 'cp', 'touch', 'tee', 'truncate', 'mkdir'])
+/**
+ * Windows / PowerShell 的写盘命令。与 POSIX 同名命令并列而不是另开分支：`isWriteSegment()` 与
+ * `opsOfHead()` 都按命令头查表，多一组名字就够了。缺了它们，Windows 上的 `del a.ts` /
+ * `copy a b` / `Set-Content a.ts` 会全部退化成兜底 op `shell-run`，`writes` 也抽不出来。
+ */
+const WINDOWS_WRITE_HEADS = new Set([
+  'del', 'erase', 'rd', 'move', 'ren', 'rename', 'copy', 'xcopy', 'robocopy', 'md',
+  'remove-item', 'clear-content', 'new-item', 'set-content', 'add-content', 'out-file',
+  'copy-item', 'move-item', 'rename-item',
+])
 /** 包在真命令前面的词：跳过它们再取命令头。 */
 const WRAPPERS = new Set(['sudo', 'env', 'command', 'builtin', 'exec', 'time', 'nohup', 'nice', 'stdbuf'])
-/** 递归解析 `bash -c "…"` 的壳；深度上限防 `bash -c 'bash -c …'`。 */
-const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh'])
+/** 递归解析 `bash -c "…"` / `pwsh -Command "…"` / `cmd /c …` 的壳；深度上限防套娃。 */
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'pwsh', 'powershell', 'cmd'])
 /** 分段：按未加引号的 `\n ; && || | &` 切。引号里的分隔符是正文，不是命令边界。 */
 function unquotedSegments(text) {
   const out = []
@@ -120,13 +130,26 @@ function tokenizeWords(segment) {
     const c = segment[i]
     if (quote) {
       if (c === quote) { quote = null; continue }
-      if (c === '\\' && quote === '"' && i + 1 < segment.length) { cur += segment[++i]; continue }
+      // 双引号里的 `\"` 是转义；但 Windows 路径 `"C:\Program Files\nodejs\npm.cmd"` 里的 `\`
+      // 是分隔符，吞掉它命令头就变成 `c:program files…`，整个动作面失配。
+      if (c === '\\' && quote === '"' && i + 1 < segment.length && /["\\]/.test(segment[i + 1])) {
+        cur += segment[++i]
+        continue
+      }
       cur += c
       continue
     }
     if (c === "'" || c === '"' || c === '`') { quote = c; continue }
     if (/\s/.test(c)) { if (cur) { out.push(cur); cur = '' } continue }
-    if (c === '\\' && i + 1 < segment.length) { cur += segment[++i]; continue }
+    if (c === '\\' && i + 1 < segment.length) {
+      // POSIX 的 `\ ` 是转义空格，Windows 的 `\` 是路径分隔符，两种都要能吃：只有"被转义的
+      // 确实是分隔语义字符"时才吞掉反斜杠，否则按字面量保留（`src\util\fs.js` 不能被压成
+      // `srcutilfs.js`，否则写目标与命令头都抽不出来）。
+      const next = segment[i + 1]
+      if (/[\s"'`\\|&;<>()$#]/.test(next)) { cur += next; i++; continue }
+      cur += c
+      continue
+    }
     cur += c
   }
   if (cur) out.push(cur)
@@ -142,14 +165,17 @@ function commandHead(tokens) {
     break
   }
   const raw = tokens[i] || ''
-  const head = raw.split('/').pop().toLowerCase()
+  // 目录（两种分隔符）+ Windows 可执行后缀都要剥：`C:\Program Files\nodejs\npm.cmd` → `npm`。
+  // 只 `split('/')` 会让 Windows 上的绝对路径命令头整个失配，`.cmd`/`.exe` 同理。
+  const head = raw.split(/[\\/]/).pop().toLowerCase().replace(/\.(exe|cmd|bat|com|ps1)$/, '')
   let rest = tokens.slice(i + 1)
   if (rest.length && rest[rest.length - 1] === ')') rest = rest.slice(0, -1)
   return { head, rest }
 }
 
-const BENCH_ARG = /(^|\/)bench(mark)?(\/|\.(mjs|js|ts|cjs|mts|json)$)/i
-const RENDER_ARG = /(^|\/)(pptxgenjs|soffice|libreoffice|pandoc|marp|slidev)(\b|\/)/i
+// 路径两侧的分隔符都算：Windows 上 `node scripts\bench.mjs` 与 `pnpm exec marp\cli` 是常态。
+const BENCH_ARG = /(^|[\\/])bench(mark)?([\\/]|\.(mjs|js|ts|cjs|mts|json)$)/i
+const RENDER_ARG = /(^|[\\/])(pptxgenjs|soffice|libreoffice|pandoc|marp|slidev)(\b|[\\/])/i
 /** npm script 名（`bench` / `bench:peak` / `benchmark`）：`npm run bench` 是文档里的跑法。 */
 const BENCH_SCRIPT = /^(bench|benchmark)(:[\w.-]+)?$/i
 /** 包管理器里带值的全局 flag（`npm --prefix x …`）。 */
@@ -218,6 +244,14 @@ function opsOfHead(head, rest) {
       return ['run-bench']
     case 'curl': case 'wget':
       return ['fetch-web']
+    // Windows / PowerShell 的写盘命令：与上面的 POSIX 名字同等对待。
+    case 'del': case 'erase': case 'rd':
+    case 'remove-item': case 'clear-content':
+      return ['file-delete']
+    case 'copy': case 'move': case 'ren': case 'rename': case 'xcopy': case 'robocopy':
+    case 'new-item': case 'set-content': case 'add-content': case 'out-file':
+    case 'copy-item': case 'move-item': case 'rename-item':
+      return ['file-write']
     default:
       return []
   }
@@ -244,7 +278,8 @@ function redirectTargets(segment) {
     while (j < segment.length && !/[\s;|&)]/.test(segment[j])) { tok += segment[j]; j++ }
     i = Math.max(i, j - 1)
     if (!tok) continue
-    if (tok.startsWith('&') || tok === '/dev/null' || tok.startsWith('/dev/stdout') || tok.startsWith('/dev/stderr')) continue
+    // `nul` 是 Windows 的 /dev/null：`2>nul` 不是写文件。
+    if (tok.startsWith('&') || /^nul:?$/i.test(tok) || tok === '/dev/null' || tok.startsWith('/dev/stdout') || tok.startsWith('/dev/stderr')) continue
     if (/^\d+$/.test(tok)) continue
     out.push(tok)
   }
@@ -254,7 +289,7 @@ function redirectTargets(segment) {
 /** 这个段落在写盘吗？写盘命令头、`sed -i`、重定向都算。 */
 function isWriteSegment(head, rest, redirects) {
   if (redirects.length) return true
-  if (WRITE_HEADS.has(head)) return true
+  if (WRITE_HEADS.has(head) || WINDOWS_WRITE_HEADS.has(head)) return true
   if (head === 'sed' && rest.includes('-i')) return true
   if (head === 'git' && String(rest[0] || '').toLowerCase() === 'rm') return true
   return false
@@ -317,8 +352,8 @@ function classifyCommand(command, depth) {
   for (const segment of unquotedSegments(stripHeredocBodies(raw))) {
     const { head, rest } = commandHead(tokenizeWords(segment))
     if (SHELLS.has(head) && depth < 2) {
-      // `-lc` / `-ec` 这类合并短选项也带 `-c`。
-      const ci = rest.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a))
+      // POSIX 的 `-c` / `-lc` / `-ec`；PowerShell 的 `-Command`；cmd 的 `/c`。
+      const ci = rest.findIndex((a) => /^-[A-Za-z]{0,4}c$/.test(a) || /^-command$/i.test(a) || /^\/c$/i.test(a))
       if (ci >= 0 && rest[ci + 1]) {
         const inner = classifyCommand(rest.slice(ci + 1).join(' '), depth + 1)
         for (const op of inner.ops) if (op !== 'shell-run') pushUnique(ops, op)
@@ -333,7 +368,13 @@ function classifyCommand(command, depth) {
     }
   }
   if (!ops.length) ops.push('shell-run')
-  const hosts = WSL_HINT_RE.test(raw) || /\b(powershell|pwsh|cmd)\.exe\b/i.test(raw) ? ['wsl'] : []
+  // 主机面：`/mnt/c/…` 是 WSL 的路径签名；`pwsh.exe` / `powershell.exe` / `cmd.exe` 是**原生
+  // Windows** 的壳签名——旧实现把它也标成 `wsl`，于是 `guard.hosts: ['wsl']` 的条目在原生
+  // Windows 上会被放行（它本该只在 WSL 里生效）。壳名后面必须跟一个选项（`-Command` / `/c`），
+  // 否则 `grep cmd README.md` 这种"正文里提到 cmd"也会被当成壳签名——`hosts` 只用于收窄，误判的
+  // 代价是让本该被挡住的条目放行。
+  const nativeShell = /\b(powershell|pwsh|cmd)(\.exe)?\b\s*(?:-\S|\/c\b)/i
+  const hosts = WSL_HINT_RE.test(raw) ? ['wsl'] : nativeShell.test(raw) ? ['windows'] : []
   return { ops, targets, hosts }
 }
 

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { tokenizeRaw, makeSearchText } from './util/search.js'
-import { acquireDirLock, writeJsonAtomic } from './util/fs.js'
+import { acquireDirLock, storeKey, writeJsonAtomic } from './util/fs.js'
 import { debugPersistence } from './util/persist.js'
 import { trackDirty, untrackDirty } from './util/flush.js'
 import { backfillDerivedTriggers } from './readiness.js'
@@ -21,6 +21,14 @@ const GITIGNORE_FILE = '.gitignore'
 const LEGACY_TYPE_CACHE_DIR = 'type-cache'
 
 const storeCache = new Map()
+/**
+ * `storeKey(解析后的目录)` → `storeCache` 里实际使用的键。Windows/macOS 的文件系统大小写不敏感：
+ * `D:\proj\.dsh-project-memory` 与 `d:\PROJ\.DSH-PROJECT-MEMORY` 是同一个目录，但字符串不同。
+ * 没有这层别名就会给同一个物理 store 建两份实例——双份内存，且一边未落盘的条目另一边看不见
+ * （`load()` 是从盘上读的）。缓存键本身仍保持"真实解析路径"形态：它会出现在告警文案和诊断输出里，
+ * 统一改成小写会让这些输出与用户看到的路径不一致。
+ */
+const storeCacheAlias = new Map()
 /** 单实例超预算的告警只打一次（key = 解析后的 store 目录）。 */
 const warnedOverBudget = new Set()
 /** 条目数上限（兜底）。 */
@@ -32,6 +40,12 @@ const STORE_CACHE_MAX = 32
 let STORE_CACHE_MAX_BYTES = 256 * 1024 * 1024
 /** 每轮 save 最多补写多少个待压实的老分片（有界，避免升级后一次重写整库）。 */
 const COMPACT_BATCH = 200
+
+/** 解析后的真实目录 + 它在缓存里的键（大小写别名命中时是**先插入**的那份写法）。 */
+function cacheKeyFor(dir) {
+  const resolved = path.resolve(dir)
+  return { resolved, key: storeCacheAlias.get(storeKey(resolved)) ?? resolved }
+}
 
 /**
  * 一个值的驻留字节：形状开销 + 字符串的**编码字节数**。用 `Buffer.byteLength()` 而非
@@ -187,6 +201,8 @@ function evictStoreCache(keepKey) {
       }
     }
     storeCache.delete(oldest)
+    // 别名跟着一起删：留着会让下一次 `load()` 命中一个已经不存在的键。
+    storeCacheAlias.delete(storeKey(oldest))
   }
   // 没做精确计量就不报单实例超预算：真超预算时下一次加载会走到这里并如实告警。
   if (!exact) return
@@ -420,7 +436,9 @@ export class ProjectMemoryStore {
   }
 
   load() {
-    const key = path.resolve(this.dir)
+    // 大小写归一（仅用于命中缓存）：Windows/macOS 上同一个物理目录可能有多种写法，
+    // 不归一就会并存两个实例；缓存键本身保持真实解析路径（见 `cacheKeyFor`）。
+    const { resolved, key } = cacheKeyFor(this.dir)
     const hot = storeCache.get(key)
     // 缓存命中即返回：`hot === this` 时再读一遍盘会静默丢弃本实例尚未 save 的变更。
     if (hot) {
@@ -438,6 +456,7 @@ export class ProjectMemoryStore {
     // 有些路径只读不写（审计 jsonl 直接写在 store 目录里），这里补一次自我忽略兜底。
     this.ensureSelfIgnore()
     storeCache.set(key, this)
+    storeCacheAlias.set(storeKey(resolved), key)
     evictStoreCache(key)
     return this
   }
@@ -819,7 +838,9 @@ export class ProjectMemoryStore {
     // 跨进程：整段读改写放进目录锁，默认同步等 15s。拿不到锁就保持脏状态并登记退出 flush，
     // 默认静默，不向用户/模型抛提示。
     const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000
-    const release = acquireDirLock(this.dir, { timeoutMs, ensureDir: false })
+    // `maxHoldMs`：同一次启动内 pid 被别的进程复用后，残留锁会一直被当成"活锁"（Windows 上
+    // 没有 /proc，看不出 pid 复用）。一次写盘只在毫秒级持锁，超过 10 分钟就不可能是"正在写"。
+    const release = acquireDirLock(this.dir, { timeoutMs, ensureDir: false, maxHoldMs: 10 * 60_000 })
     if (!release) {
       this.lastSaveOk = false
       trackDirty(this)

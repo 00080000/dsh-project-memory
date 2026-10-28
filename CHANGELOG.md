@@ -2,6 +2,36 @@
 
 **兼容**：无新增配置键，也没有破坏性的 store 变更——条目上只多一个可选的 `explicit` 标记（旧条目缺省即按非显式处理），老 profile 与旧 store 直接升级。
 
+### 修复：Windows 上重启后的残留写锁把写入永久挡死（且默认静默）
+
+锁的"pid 复用"判定只读 `/proc/<pid>`（Linux-only），Windows 上 `processStartMs()` 恒为 `null`；而 `lockIsStale()` 对"同机 + pid 存活"是绝不回收。于是崩在写盘途中、或断电/强杀留下的 `.write.lock`，在重启后一旦旧 pid 被系统服务复用，就永远被当成"活锁"：`save()` 每次返回 `false`（`lastSaveOk=false`，但按设计默认不打印），重试 5 次（≈20s）后放弃，退出 flush 也拿不到锁——记忆静默丢失，只能手删 `.write.lock` 或重启 dsh。现在锁内容多一个 `boot`（`Date.now() - os.uptime()*1000`）；`at`/`boot` 早于本次开机即判残留。**这条只对同机锁生效**：跨机锁仍只按 mtime 判（网络盘上另一台机器的 `at` 早于本机开机是常态，套用会抢掉真正在写的机器——原作者"宁可等也不能双写"的取舍保留）。另加 `acquireDirLock({ maxHoldMs })` 兜"同一次启动内 pid 被复用"：`save()` 传 10 分钟，默认 `0` 表示不设上限、维持原契约。
+
+### 修复：`when.writes` / `guard.paths` 在 Windows 路径上永不命中
+
+写入期 `normalizeCitationFiles()` 把 `writes` 归成项目相对、`/` 分隔；匹配侧却只比"整串相等"与"basename"，于是候选是 `D:\proj\src\a.ts`（工具参数）或 `src\util\fs.js`（模型的常见写法）时，带目录的判据一个都不命中——能命中的只有裸文件名。现在两侧都先把 `\` 归一成 `/`，判据除整串相等外再按**路径分段边界**匹配后缀（`(?:^|/)…$`）；`notlib/a.ts` 仍不会被 `lib/a.ts` 命中，`src/*.ts` 这类 glob 对绝对候选也成立。路径 token 抽取（`util/path-token`）同样认两种分隔符并统一输出 `/`，`intentText()` 剥引用时也不再漏掉反斜杠写法。
+
+### 修复：动作面认不出 Windows 命令形态
+
+`npm.cmd run bench`、`node scripts\bench.mjs`、`del`/`copy`/`move`/`Set-Content`、`pwsh -Command "git push"`、`cmd /c npm publish`、`"C:\Program Files\nodejs\npm.cmd" publish` 全部退化成兜底 op `shell-run`：`trigger.when.ops` 里的 `run-bench` / `file-delete` / `git-push` / `npm-publish` 因此永不触发，反而落进 `shell-run` 的误召面。现在命令头剥两种分隔符与 `.exe/.cmd/.bat/.com/.ps1`，`pwsh|powershell|cmd` 进外壳递归（认 `-c` / `-command` / `/c`），补一组 Windows 写盘命令，`bench`/`render` 的路径类正则也认 `\`，`2>nul` 不再当成写文件。
+
+### 修复：原生 Windows 壳被标成 `hosts: ['wsl']`
+
+`pwsh.exe` / `cmd.exe` 的命令文本被当成 WSL 签名，于是 `guard.hosts: ['wsl']` 的条目在原生 Windows 上会被放行（它本该只在 WSL 里生效）。现在原生壳签 `windows`，只有 `/mnt/c/…` 这类路径才签 `wsl`。**已存条目**若写了 `hosts: ['wsl']` 却想覆盖原生 Windows 命令，需要改成 `windows`；WSL 签名的含义没变。
+
+### 修复：同一个 store 因大小写不同建出两份实例
+
+`storeCache` 用 `path.resolve(dir)` 当键：`D:\proj\.dsh-project-memory` 与 `d:\PROJ\.DSH-PROJECT-MEMORY` 在 Windows/macOS 上是同一个目录、字符串却不同，于是并存两个实例——双份内存，且一边未落盘的条目另一边看不见（`load()` 从盘上读）。现在多一层 `storeKey()` 别名表做命中，缓存键本身仍是真实解析路径（告警与诊断输出里的路径不变形），逐出时别名一起删。
+
+### 修复：`git` 子进程在 Windows GUI 宿主里闪控制台窗
+
+`execFileSync('git', …)` 没传 `windowsHide: true`。Electron 打包的 dsh 没有控制台时，每次 `index_repo`（`git ls-files`）与 `isGitIgnored()`（`git check-ignore`）都可能闪一个窗口。
+
+### 修复：带 UTF-8 BOM 的 SKILL.md 解析不出 frontmatter
+
+记事本保存的 `SKILL.md` 以 `\uFEFF` 开头，`^---` 匹配不上，frontmatter 整段被忽略，skill 的 name / description 静默回落默认值。现在解析前先剥掉 BOM。
+
+**测试**：新增 `test/windows-compat.test.mjs`（11 项：跨开机残留锁、跨机锁不被误伤、`maxHoldMs`、反斜杠/绝对路径的 `writes` 与 `guard`、Windows 命令形态、`hosts`、路径 token、store 缓存键、BOM）。这些判据都在字符串/时间层面，Linux CI 同样能跑（"同实例"那条按 `win32/darwin` 分支断言）。`npm test` **879 项 / 50 个文件**全绿；`npm run typecheck` 通过。
+
 ### 修复：`when.writes` 里的 `?` 让整个 pre-step 注入静默失效
 
 glob 只支持 `*`，但 `?` 没转义；模式以 `?` 开头（`?.md`）时 `new RegExp('^?…')` 抛 `SyntaxError`，而它在每步的 `collectTriggered` 里，异常被 pre-step 兜住后 trigger + 提示 + 任务卡全部不注入。现在 `?` 按字面量转义。

@@ -123,28 +123,60 @@ function pidAlive(pid) {
   }
 }
 
+/** 时钟抖动 / NTP 校正的容差：`at` 早于开机时刻这么多才算"上次开机的残留"。 */
+const BOOT_SLACK_MS = 60_000
+/** 锁自带的 `boot` 标记与本次开机相差多少才算换了启动（`os.uptime()` 的取值精度远小于它）。 */
+const BOOT_MATCH_TOLERANCE_MS = 10 * 60_000
+
 /**
- * 锁是否可回收（stale）：同机 + pid 活着 → **绝不回收**（哪怕 mtime 很老）；同机 + pid 已死 →
- * 立即回收，不必等 staleMs；跨机或无 host 的旧锁只按 mtime：超 staleMs 回收，超 hardStaleMs 一律回收。
+ * 本次开机时刻（epoch ms）。`os.uptime()` 在 Windows / macOS 上也可用，而 `/proc` 只有 Linux——
+ * 判"锁是上次开机留下的"不能依赖 `/proc`（Windows 上 `processStartMs()` 恒为 null）。
+ * @returns {number}
+ */
+function bootTimeMs() {
+  const uptime = Number(os.uptime())
+  return Date.now() - (Number.isFinite(uptime) && uptime > 0 ? uptime * 1000 : 0)
+}
+
+/**
+ * 锁是否可回收（stale）。判定顺序：跨开机残留 → 跨机/无 pid（只按 mtime）→ pid 已死 → pid 复用 →
+ * 显式硬上限。**同机 + pid 活着**默认绝不回收（宁可等，也不能双写），只有三条硬证据能推翻它：
+ * 锁写于上次开机之前、锁自带的 boot 标记与本次不符、持有时间超过 `maxHoldMs`。
+ *
+ * 前两条是为 Windows 补的：那里没有 `/proc`，`processStartMs()` 恒为 null，重启后 pid 极易被
+ * 复用（系统服务拿到旧号），旧实现于是把残留锁当成"活锁"永久拒绝写入，且落盘失败默认静默。
  * @param {{meta: object, ageMs: number}} state
- * @param {number} staleMs
- * @param {number} hardStaleMs
+ * @param {{staleMs: number, hardLimit: number, maxHoldMs?: number}} opts
+ *   `hardLimit` 是跨机/无 pid 的绝对兜底；`maxHoldMs` 是"同机活锁"的持有上限（0 = 不设上限）。
  * @returns {boolean}
  */
-function lockIsStale(state, staleMs, hardStaleMs) {
+function lockIsStale(state, { staleMs, hardLimit, maxHoldMs = 0 }) {
   if (!state) return true
   const { meta, ageMs } = state
+  const at = Date.parse(meta.at || '')
   const sameHost = !meta.host || meta.host === LOCK_HOST
+  // 跨机 / 旧格式没有 pid：只能按 mtime，hardLimit 是最后兜底。
+  // 这两条**必须**先返回：开机时刻的判断只对"本机写的锁"成立——网络盘上另一台机器持锁时，
+  // 它的 `at` 早于本机本次开机是常态，拿它当证据会抢掉一台真正在写的机器（原作者在此处
+  // 刻意选了"宁可等也不能双写"，这条不能被顺手扩到跨机）。
   if (!sameHost || !Number.isInteger(meta.pid)) {
-    // 跨机 / 旧格式没有 pid：只能按 mtime，hardStaleMs 是最后兜底。
-    return ageMs > staleMs || ageMs > hardStaleMs
+    return ageMs > staleMs || ageMs > hardLimit
   }
+  const boot = bootTimeMs()
+  // 写于本机上一次开机之前：持有者早已随重启消失，无论 pid 是否存活都是残留。Windows 上没有
+  // /proc，`processStartMs()` 恒为 null，这是"重启后 pid 被复用"唯一能识破的证据。
+  if (Number.isFinite(at) && at < boot - BOOT_SLACK_MS) return true
+  // 锁自带的开机标记与本次不符：系统时钟被改过时 `at` 不可信，`boot` 仍可判。
+  if (Number.isFinite(meta.boot) && Math.abs(boot - meta.boot) > BOOT_MATCH_TOLERANCE_MS) return true
   if (!pidAlive(meta.pid)) return true
-  // 活着：正常绝不回收；唯一例外是 pid 被复用（新进程启动晚于旧锁）。
+  // 活着：正常绝不回收；例外是 pid 被复用（新进程启动晚于旧锁）。
   // 没有 `at` 的旧锁无法判断 → 信任存活，宁可等也不能双写。
   const started = processStartMs(meta.pid)
-  const at = Date.parse(meta.at || '')
   if (started !== null && Number.isFinite(at) && started > at + 5000) return true
+  // 同一次启动里 pid 也可能被别的进程复用（Windows 上无从从 pid 本身看出）：持有时间远超
+  // 一次同步写盘就不再当作"有人正在写"。**只在调用方显式给了上限时生效**（默认关闭，
+  // 保持"活锁绝不回收"的既有契约）。
+  if (maxHoldMs > 0 && ageMs > maxHoldMs) return true
   return false
 }
 
@@ -153,10 +185,12 @@ function lockIsStale(state, staleMs, hardStaleMs) {
  * 绝不 unlink 别人的锁；拿不到锁返回 null（调用方必须把这次写当成失败，而不是"等会儿会写"）。
  * `ensureDir: false` 只跳过预防性 mkdir（9p/NTFS ~4ms），ENOENT 时仍补建重试一次，否则外部删除会变成永久写失败。
  * @param {string} dir 目标目录（不存在则创建）
- * @param {{timeoutMs?: number, staleMs?: number, hardStaleMs?: number, ensureDir?: boolean}} [opts]
+ * @param {{timeoutMs?: number, staleMs?: number, hardStaleMs?: number, maxHoldMs?: number, ensureDir?: boolean}} [opts]
+ *   `maxHoldMs` 是"同机 + pid 存活"的持有上限（毫秒，0 = 不设）：给写路径用，避免同一次启动内
+ *   pid 被别的进程复用后残留锁永远挡住写入（Windows 上无法从 pid 本身识破复用）。
  * @returns {null | (() => void)} 释放函数；拿不到锁返回 null
  */
-export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000, hardStaleMs = 0, ensureDir = true } = {}) {
+export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000, hardStaleMs = 0, maxHoldMs = 0, ensureDir = true } = {}) {
   if (ensureDir) {
     try {
       mkdirSync(dir, { recursive: true })
@@ -167,7 +201,14 @@ export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000, hardSta
   const file = path.join(dir, LOCK_FILE)
   const hardLimit = hardStaleMs > 0 ? hardStaleMs : staleMs * 10
   const token = `${process.pid}-${Date.now().toString(36)}-${++lockSeq}-${randomUUID().slice(0, 8)}`
-  const payload = JSON.stringify({ pid: process.pid, host: LOCK_HOST, token, at: new Date().toISOString() })
+  const payload = JSON.stringify({
+    pid: process.pid,
+    host: LOCK_HOST,
+    token,
+    at: new Date().toISOString(),
+    // 本次开机时刻：跨重启的残留锁靠它识破（Windows 没有 /proc，pid 存活不足以证明持有者还在）。
+    boot: bootTimeMs(),
+  })
   const deadline = Date.now() + timeoutMs
   const sleeper = new Int32Array(new SharedArrayBuffer(4))
   let recoveredDir = false
@@ -199,7 +240,7 @@ export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000, hardSta
         Atomics.wait(sleeper, 0, 0, 10)
         continue
       }
-      if (lockIsStale(state, staleMs, hardLimit)) {
+      if (lockIsStale(state, { staleMs, hardLimit, maxHoldMs })) {
         // 只删"刚刚读到的那个内容"：两次读之间锁可能已被别人抢到并重写。
         try {
           if (readFileSync(file, 'utf8') === state.text) unlinkSync(file)
@@ -243,10 +284,10 @@ function releaseDirLock(file, token) {
 /**
  * 读锁状态（诊断/测试用）：谁持有、多久了、是否会被当成 stale。
  * @param {string} dir
- * @param {{staleMs?: number, hardStaleMs?: number}} [opts]
+ * @param {{staleMs?: number, hardStaleMs?: number, maxHoldMs?: number}} [opts]
  * @returns {null | { pid: number|undefined, host: string|undefined, token: string|undefined, ageMs: number, stale: boolean }}
  */
-export function inspectDirLock(dir, { staleMs = 10000, hardStaleMs = 0 } = {}) {
+export function inspectDirLock(dir, { staleMs = 10000, hardStaleMs = 0, maxHoldMs = 0 } = {}) {
   const state = readLockState(path.join(dir, LOCK_FILE))
   if (!state) return null
   return {
@@ -254,7 +295,11 @@ export function inspectDirLock(dir, { staleMs = 10000, hardStaleMs = 0 } = {}) {
     host: state.meta.host,
     token: state.meta.token,
     ageMs: state.ageMs,
-    stale: lockIsStale(state, staleMs, hardStaleMs > 0 ? hardStaleMs : staleMs * 10),
+    stale: lockIsStale(state, {
+      staleMs,
+      hardLimit: hardStaleMs > 0 ? hardStaleMs : staleMs * 10,
+      maxHoldMs,
+    }),
   }
 }
 
@@ -492,6 +537,8 @@ function gitListedFiles(root) {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'ignore'],
+      // GUI 宿主（Electron 打包的 dsh）从 Windows 起子进程时，不隐藏就会闪一个控制台窗口。
+      windowsHide: true,
     })
     return out.split('\0').filter(Boolean)
   } catch {
@@ -560,7 +607,10 @@ export function listProjectFiles(root, opts = {}) {
 export function isGitIgnored(root, filePath) {
   if (!root || !filePath || !existsSync(path.join(root, '.git'))) return false
   try {
-    execFileSync('git', ['-C', root, 'check-ignore', '-q', '--', relativePath(root, filePath)], { stdio: 'ignore' })
+    execFileSync('git', ['-C', root, 'check-ignore', '-q', '--', relativePath(root, filePath)], {
+      stdio: 'ignore',
+      windowsHide: true,
+    })
     return true
   } catch {
     return false
