@@ -16,7 +16,7 @@ export function lessonTool(config) {
   return defineTool({
     name: 'save_lesson',
     description:
-      '写入一条教训 / 决策 / 流程（单条 insight）。写入前与既有记忆比对：高相似度自动覆盖（旧值留在 prev），'
+      '写入一条教训 / 决策 / 流程（单条 insight）。只写下次仍成立的判据与命令；某次运行的值（版本号、计数、分支名）不进正文。写入前与既有记忆比对：高相似度自动覆盖（旧值留在 prev），'
       + '较近的提示近邻 id。发现记错/过时：带 id 再写一次即就地覆盖；确定要删用 forget。',
     parameters: {
       id: { type: 'string', description: '既有条目 id（就地更新，忽略 scope）' },
@@ -40,7 +40,7 @@ export function lessonTool(config) {
               writes: { type: 'array', items: { type: 'string' }, description: '项目相对路径，禁 glob' },
               intents: { type: 'array', items: { type: 'string' }, description: '意图词（CJK≥2，拉丁≥5）' },
             },
-            description: '唯一触发面：三者取或。',
+            description: '唯一触发面：三者取或；不写则只能靠检索命中，不会主动注入。',
           },
           guard: {
             type: 'object',
