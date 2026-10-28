@@ -7,7 +7,7 @@
 [![ci](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/00080000/dsh-project-memory/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![npm](https://img.shields.io/npm/v/@yolk_vat-y/dsh-project-memory)](https://www.npmjs.com/package/@yolk_vat-y/dsh-project-memory) [![npm downloads](https://img.shields.io/npm/dm/%40yolk_vat-y%2Fdsh-project-memory?style=flat-square&color=orange)](https://www.npmjs.com/package/@yolk_vat-y/dsh-project-memory) [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/00080000/dsh-project-memory) [![Awesome](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
 
-A persistent **project development memory** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) agents. Built specifically for project development, natively integrated with dsh's task system: task lists and files read during a session are automatically persisted as cross-session task records, with tasks ↔ files linked — workflows can be switched and resumed, no need to re-scope the whole project, solving context loss. Documents (PDF/Markdown/txt) and code symbols are stored separately per workspace; documents are automatically cross-linked to the code symbols they mention. Experience notes (problem → solution) are automatically deduplicated, preventing repeated mistakes. Project- and task-scope data is stored per project on disk; global-scope entries live in one global file (`~/.config/dsh-project-memory/global.json` by default). Data survives session compaction and handover; recalls include `path:line` citations for source verification. No native builds, no vector database. An ~85 MB local embedding table (`leanvec`) installs and runs by default (≈+45 MB resident); without it, recall falls back to pure lexical.
+A persistent **project development memory** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) agents. Built specifically for project development, natively integrated with dsh's task system: task lists and files read during a session are automatically persisted as cross-session task records, with tasks ↔ files linked — workflows can be switched and resumed, no need to re-scope the whole project, solving context loss. Underneath sits a **hybrid index**: document chunks, code symbols, experience notes and insights each form a layer, scored per layer and merged into one ranking. Documents (PDF/Markdown/txt) and code symbols are stored separately per workspace; documents are automatically cross-linked to the code symbols they mention. Experience notes (problem → solution) are automatically deduplicated, preventing repeated mistakes. Data survives session compaction and handover; recalls include `path:line` citations for source verification.
 
 > The plugin keeps a compact project **memory** on disk, with every entry pointing to a concrete file and line — the agent can reorient quickly instead of re-reading the whole project.
 
@@ -50,12 +50,12 @@ Each indexed project has its own store at `<root>/.dsh-project-memory/`. It keep
 
 The tools below are **invoked by the agent**, not typed by the user. In the chat, just ask naturally — e.g. "index this project" or "what does the auth module do?" — or simply keep working, and the agent calls the matching tool automatically. By default files are indexed the moment the model reads them, so memory fills in while you work. `watch_repo` keeps explicitly-watched roots fresh in the background; `index_repo` forces a full backfill (unchanged files are skipped).
 
-In a git work tree the corpus is whatever `git ls-files --cached --others --exclude-standard` lists — tracked files plus untracked files that are not ignored — so `.gitignore`, nested rules included, decides what gets remembered. A directory that is not a git work tree falls back to a plain walk (no ignore rules). Lazy indexing applies the same check per file; an explicit `index_doc` bypasses `.gitignore`, but still respects `roots.exclude`, readability and the size limit.
+In a git work tree the corpus is whatever `git ls-files --cached --others --exclude-standard` lists — tracked files plus untracked files that are not ignored — so `.gitignore`, nested rules included, decides what gets remembered. A directory that is not a git work tree falls back to a plain walk (no ignore rules). Lazy indexing applies the same check per file; an explicit `index_doc` bypasses `.gitignore`, but still respects `roots.exclude`, readability and the size limit, and its entry survives later scan passes for as long as the file exists.
 
 | Tool | Purpose |
 |---|---|
 | `index_doc file_path` | Index one document (PDF/MD/txt): chunk, summarize deterministically, and store with a `path:line` citation. Unchanged files are skipped. |
-| `index_repo root` | Index a whole project: documents get deterministic summaries, code files get a token-free symbol table. Incremental and self-healing: the store follows the file listing, so deleted, ignored or moved files are dropped, and documents are cross-linked to symbols. A non-existent or excluded root is rejected before anything is written. |
+| `index_repo root` | Index a whole project: documents get deterministic summaries, code files get a token-free symbol table. Incremental and self-healing: the store follows the file listing, so deleted, ignored or moved files are dropped (an entry created by an explicit `index_doc` is kept while its file still exists), and documents are cross-linked to symbols. A non-existent or excluded root is rejected before anything is written. |
 | `watch_repo root` | Enable automatic refresh: a background poll detects new and changed files and re-indexes only those. A watched root is recorded in that project's store, so it resumes when dsh starts there; a non-existent or excluded root is refused, roots that disappear are dropped rather than re-created. |
 | `memory_stats root` | Show what the store contains: totals, last index time, and the per-file list sorted by recency. |
 | `query_memory query` | Ranked search over documents, symbols, experience and insights, optionally query-expanded by the LLM. `type` selects a layer (`all` / `doc` / `symbol` / `experience` / `insight` / `task`). Returns hits with relative scores, sources or insight ids, and doc→symbol references. |
@@ -76,7 +76,7 @@ The design follows four principles:
 
 - **Volatility** — context is ephemeral; it is lost when a session is compacted.
 - **Persistence** — the **memory** is stored on disk and survives compaction and new sessions.
-- **Compactness** — one bounded declaration line per symbol, and a ≤300-char summary plus a bounded term set per document chunk. Doc→symbol links are not stored; they are computed at read time. Index size depends on symbol density and chunk length, so treat these as measurements of specific corpora (2026-10-13), not guarantees: a code-only frontend app (289 files) lands at **325 bytes/entry ≈ 21% of source**, a symbol-dense TypeScript monorepo (12,634 files / 107 MB of code + 14 MB of docs) at **22% of source for the code layer (549 bytes/entry overall)** and **127% for the document layer**, and a document-heavy workspace (Markdown + PDFs) at **1,401 bytes/entry**.
+- **Compactness** — one bounded declaration line per symbol, and a ≤300-char summary plus a bounded term set per document chunk. Doc→symbol links are not stored; they are computed at read time.
 - **Verifiability** — **recalls** carry a `path:line` citation where applicable, so the agent can confirm details against the source.
 
 With default lazy indexing, building the **memory** does not require an upfront scan: files are memorized as the model reads them, so the **memory** grows to cover what has been worked with; `index_repo` or a watched root can cover the rest. Re-reading an unchanged file is a no-op, so the **memory** stays fresh with minimal ongoing overhead.
@@ -242,17 +242,6 @@ Four corpora, one Linux machine (Node 24.19), each run twice with the **second, 
 | Hot lazy re-index (single file) | 10k files | p50 5.5 ms / max 8.4 ms |
 
 > Generated code (~4–5 symbols/file), measured 2026-10-13. Reproduce with `npm run bench:synthetic -- 5000` (`scripts/bench-synthetic.mjs`). Pure indexing overhead, no LLM calls. The first query after a write rebuilds the IDF cache (**141 ms at 40k entries**, 68 ms at 20k, 17 ms at 4k); later queries hit it.
-
-### Windows / many small files
-
-On Windows (NTFS) the bottleneck is not CPU but the **number of file operations per write**. Watch stats files asynchronously with bounded concurrency, so metadata I/O does not hold the event loop; for 400 small files (WSL over NTFS, a pessimistic proxy): first index 8–10 s and a single-file edit p50 ≈ 46 ms; on ext4 the same work takes 60–90 ms and 1 ms. Indexing 3,000 / 10,000 small files peaks at ≈ 85 / 112 MB RSS — **many small files are not the OOM surface**; a single large file is.
-
-```bash
-npm run bench:edits -- --dir C:\\Temp\\pm-bench      # native Windows
-node scripts/bench-edits.mjs --dir /mnt/c/Users/Public/pm-bench --files 400
-```
-
-The script builds its corpus in a temporary directory and deletes it afterwards; it reports first-index cost, edit p50/p90/max and peak RSS.
 
 ### Reproduce it on your own project
 
