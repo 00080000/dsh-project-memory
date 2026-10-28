@@ -23,7 +23,9 @@ const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/
  * @returns {{ meta: Record<string,string>, body: string }}
  */
 export function parseSkillFile(text) {
-  const source = String(text || '')
+  // 记事本/部分编辑器保存 UTF-8 时会带 BOM：`^---` 会因此匹配不上，frontmatter 整段被忽略，
+  // skill 的 name/description 静默回落默认值。BOM 不是内容，先剥掉。
+  const source = String(text || '').replace(/^\uFEFF/, '')
   const match = FRONTMATTER.exec(source)
   const meta = {}
   if (match) {

@@ -202,10 +202,14 @@ export function hintQueryText(text) {
     .trim()
 }
 
-/** glob（只支持 `*`）→ 正则。`?` 不是通配符，必须按字面量转义，否则 `^?` 是非法正则。 */
-function globToRegExp(pattern) {
+/**
+ * glob（只支持 `*`）→ 正则。`?` 不是通配符，必须按字面量转义，否则 `^?` 是非法正则。
+ * `suffix: true` 时锚在**路径分段边界**上（`(?:^|/)…$`）：写目标是项目相对路径，而候选常常是
+ * 绝对路径（`D:\proj\src\a.ts`），两者只差一个前缀。一次编译、两次 `test()`，不做按段切分的循环。
+ */
+function globToRegExp(pattern, { suffix = false } = {}) {
   const escaped = String(pattern).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\?/g, '\\?').replace(/\*/g, '.*')
-  return new RegExp(`^${escaped}$`, 'i')
+  return new RegExp(`${suffix ? '(?:^|/)' : '^'}${escaped}$`, 'i')
 }
 
 /**
@@ -222,7 +226,9 @@ export function intentText(text) {
     .replace(/"[^"\n]*"/g, ' ')
     .replace(/“[^”\n]*”/g, ' ')
     .replace(/[A-Za-z]:\\[^\s"']*/g, ' ')
-    .replace(/(?:[A-Za-z0-9_.@-]+\/)+[A-Za-z0-9_.@-]+/g, ' ')
+    // 相对路径两侧的分隔符都算语料：`src/util/a.ts` 与 `src\util\a.ts` 都要剥掉，
+    // 否则 Windows 写法会在意图文本里留下 `src\util` 这类碎片，把 `a` 当意图词。
+    .replace(/(?:[A-Za-z0-9_.@-]+[\\/])+[A-Za-z0-9_.@-]+/g, ' ')
     // 带扩展名的**非 ASCII 文件名**（`示例调研.pptx`）也要剥：ASCII 裸名（notes.md）保持原语义不动。
     // 按 token 逐个找 `.ext`，只切"token 开头 → 扩展名结尾"；`\S*` 两段匹配在长中文串上指数回溯（4000 字 12s）。
     .replace(/\S+/g, (tok) => {
@@ -302,14 +308,34 @@ export function matchIntent(word, text) {
   return new RegExp(`(^|[^A-Za-z0-9_])${esc}([^A-Za-z0-9_]|$)`, 'i').test(hay)
 }
 
+/**
+ * 路径槽位的归一：反斜杠 → `/`、去掉 `./` 前缀。
+ * Windows 上模型给的候选几乎都是 `D:\proj\src\a.ts` 或 `src\a.ts`，而 `when.writes` 里存的是
+ * 项目相对、`/` 分隔的路径（写入期由 `normalizeCitationFiles()` 归好）。不归一这两侧，
+ * 带目录的 writes 判据在 Windows 上永远不会命中——只命中裸文件名（basename 兜底）。
+ * @param {unknown} value
+ * @returns {string}
+ */
+function normalizeMatchPath(value) {
+  return String(value || '').replace(/\\/g, '/').replace(/^\.\//, '')
+}
+
+/**
+ * 写目标匹配：`pattern` 是项目相对路径（可含 `*`），候选来自工具参数或人类消息，可能是绝对路径。
+ * 两档判据——整串相等，或"从某个路径分段边界起的后缀"相等（`D:/proj/src/a.ts` 的后缀
+ * `src/a.ts`）。于是"项目相对判据 vs 绝对候选"在 Windows 与 POSIX 上口径一致，而 `notlib/a.ts`
+ * 不会被 `lib/a.ts` 命中（边界是分段，不是子串）。正则自带 `i`，正好对上 Windows/macOS
+ * 大小写不敏感的文件系统语义。
+ */
 function matchAnyPath(pattern, targets) {
-  const p = String(pattern || '')
+  const p = normalizeMatchPath(pattern)
   if (!p) return false
-  const re = globToRegExp(p)
+  const full = globToRegExp(p)
+  const tail = globToRegExp(p, { suffix: true })
   return (targets || []).some((cand) => {
-    const c = String(cand || '')
+    const c = normalizeMatchPath(cand)
     if (!c) return false
-    return re.test(c) || re.test(c.split(/[\\/]/).pop() || '')
+    return full.test(c) || tail.test(c)
   })
 }
 
