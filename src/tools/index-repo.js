@@ -50,10 +50,13 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
     if (!kind) continue
 
     try {
-      const size = statSync(filePath).size
+      const st = statSync(filePath)
+      const size = st.size
       const record = store.fileRecord(rel)
-      const plan = await planFileIndex({ rel, filePath, kind, config, record, existingEntries: store.entries[rel], size, force: reindex })
+      const plan = await planFileIndex({ rel, filePath, kind, config, record, existingEntries: store.entries[rel], size, mtimeMs: st.mtimeMs, force: reindex })
       if (plan.key === UNCHANGED) {
+        // 内容没变、mtime 变了（touch / checkout 还原）：把新 mtime 记回去，下一次扫描才命得快路径。
+        if (typeof plan.mtimeMs === 'number') store.refreshMtime(rel, plan.mtimeMs)
         skipped++
         continue
       }

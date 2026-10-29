@@ -42,21 +42,39 @@ function exceedsSizeCap(size, config) {
  *   key 为 UNSUPPORTED / OVERSIZE / UNCHANGED / DROP / WRITE 之一。
  * @param {object} args
  * @param {number} [args.size] 调用方已 statSync 时传入，避免重复 stat。
+ * @param {number} [args.mtimeMs] 调用方已 statSync 时传入；与 `record.mtimeMs` 构成"未改"快路径。
  * @param {boolean} [args.force] index_repo 的 reindex：忽略哈希跳过。
  */
-export async function planFileIndex({ rel, filePath, kind, config, record, existingEntries = [], size, force = false }) {
+export async function planFileIndex({ rel, filePath, kind, config, record, existingEntries = [], size, mtimeMs, force = false }) {
   if (!kind) return { key: UNSUPPORTED }
-  const fileSize = typeof size === 'number' ? size : statSync(filePath).size
+  let fileSize = size
+  let fileMtime = mtimeMs
+  if (typeof fileSize !== 'number' || typeof fileMtime !== 'number') {
+    const st = statSync(filePath)
+    if (typeof fileSize !== 'number') fileSize = st.size
+    if (typeof fileMtime !== 'number') fileMtime = st.mtimeMs
+  }
   if (exceedsSizeCap(fileSize, config)) return { key: OVERSIZE }
+
+  // 旧 store 的 doc 条目缺 terms → 即使哈希未变也重抽一次（一次性回填）。
+  const backfill = kind === 'doc' && docEntriesNeedBackfill(existingEntries)
+  // 快路径：mtime + size 都没动就不读盘、不哈希。懒索引由 `fs/observed` 触发，重复读同一个
+  // 文件不该每次整读 + sha256。代价与 make/tsc 同一取舍（rsync -t 保留 mtime 的还原察觉不到，
+  // 需要时用 reindex: true 强制重读）。
+  if (!force && !backfill && record && typeof record.mtimeMs === 'number' && record.mtimeMs === fileMtime && record.size === fileSize) {
+    return { key: UNCHANGED }
+  }
 
   // 单次读盘：同一 buffer 供内容哈希与正文解码使用（未变更的文件不解码）。
   const { hash, buffer } = readFileForIndex(filePath)
-  // 旧 store 的 doc 条目缺 terms → 即使哈希未变也重抽一次（一次性回填）。
-  const backfill = kind === 'doc' && docEntriesNeedBackfill(existingEntries)
-  if (!force && record && record.sha256 === hash && !backfill) return { key: UNCHANGED }
+  if (!force && record && record.sha256 === hash && !backfill) {
+    // 内容没变但 mtime 变了（touch / checkout / 还原）：把新 mtime 记回去，否则快路径永远命不中，
+    // 每次扫描都要重新整读这个文件。调用方负责 `refreshMtime`。
+    return record.mtimeMs === fileMtime ? { key: UNCHANGED } : { key: UNCHANGED, mtimeMs: fileMtime }
+  }
 
   if (kind === 'code') {
-    return { key: WRITE, hash, size: fileSize, type: 'code', entries: scanSymbols(rel, filePath, buffer.toString('utf8')) }
+    return { key: WRITE, hash, size: fileSize, type: 'code', entries: scanSymbols(rel, filePath, buffer.toString('utf8')), mtimeMs: fileMtime }
   }
   // dump 判定在 buildDocEntries 内部（唯一真源）：不可索引的文档返回 null。
   const entries = await buildDocEntries(rel, filePath, {
@@ -65,7 +83,7 @@ export async function planFileIndex({ rel, filePath, kind, config, record, exist
     maxFileSizeMb: config.maxFileSizeMb,
     maxPdfPages: config.maxPdfPages,
   })
-  return entries === null ? { key: DROP } : { key: WRITE, hash, size: fileSize, type: 'doc', entries }
+  return entries === null ? { key: DROP } : { key: WRITE, hash, size: fileSize, type: 'doc', entries, mtimeMs: fileMtime }
 }
 
 /**
@@ -84,6 +102,7 @@ export function toFileUpdate(rel, plan, record) {
     size: plan.size,
     type: plan.type,
     entries: plan.entries,
+    mtimeMs: plan.mtimeMs,
   }
 }
 

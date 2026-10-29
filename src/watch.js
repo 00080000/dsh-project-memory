@@ -278,6 +278,7 @@ export class WatchManager {
           record,
           existingEntries: store.entries[rel],
           size: stats.size,
+          mtimeMs: stats.mtimeMs,
         })
       } catch (err) {
         // 坏文件每轮都会重试：同一个文件的同一个错误只上报一次，否则逐轮刷屏。
@@ -290,6 +291,8 @@ export class WatchManager {
       state.failures.delete(rel)
       // 内容未变 / 体积超限也要落快照：否则 mtime:size 快路径永远命中不了，每次 poll 都要重读全仓。
       if (plan.key === UNCHANGED || plan.key === OVERSIZE) {
+        // 内容没变、只有 mtime 变了：把新 mtime 写回条目，让下一轮（及其它入口）的快路径能命中。
+        if (plan.key === UNCHANGED && typeof plan.mtimeMs === 'number') store.refreshMtime(rel, plan.mtimeMs)
         state.snapshot[rel] = sig
         continue
       }

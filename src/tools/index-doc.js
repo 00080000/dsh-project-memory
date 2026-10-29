@@ -1,5 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
+import { statSync } from 'node:fs'
 import { assertIndexRoot, assertReadableFile, assertSafeRoot, excludedEntryForPath, findProjectRoot, memoryRootFor, sessionMemoryRootOrNull, sha256OfFile, storeKey } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { docEntriesNeedBackfill } from '../doc-index.js'
@@ -84,7 +85,16 @@ export function indexDocTool(ctx, config) {
         s.setEntries(rel, entries)
         // explicit：这个文件可能是被 .gitignore 排除的（显式索引不受 gitignore 限制），
         // 扫描清单里永远不会有它 —— 清理时靠这个标记区分"没扫到"与"被删了"。
-        s.markFile(rel, { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString(), explicit: true })
+        // mtimeMs 让后续 `fs/observed` 的重复读能走 mtime+size 快路径，不必重解析 PDF。
+        let mtimeMs
+        try {
+          mtimeMs = statSync(filePath).mtimeMs
+        } catch {
+          mtimeMs = undefined
+        }
+        const record = { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString(), explicit: true }
+        if (typeof mtimeMs === 'number' && Number.isFinite(mtimeMs)) record.mtimeMs = mtimeMs
+        s.markFile(rel, record)
         const preview = entries
           .map((e) => `  - ${e.title} @ ${rel}:${e.sourceLine}`)
           .join('\n')

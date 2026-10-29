@@ -1,3 +1,35 @@
+## Unreleased
+
+**兼容**：条目上多一个可选的 `mtimeMs`（旧条目缺省即按老行为每次整读 + 哈希）。无新增配置键，无破坏性 store 变更。一处判据收紧：`fs/observed` 触发的懒索引不再对**已有记录**的文件问 gitignore（新文件仍问），见下。
+
+### 性能：懒索引每读一个文件要付两次"起进程 / 走祖先"的固定税
+
+**背景**：懒索引由 `fs/observed` 触发——**每读一个文件**就走一遍 `indexFile`。这条路径的成本几乎全是固定开销，与文件内容变没变无关：`findProjectRoot` 逐层 readdir（9p 实测 18–45ms）、`git check-ignore` 起进程（9p 30ms、ext4 2.7ms），而真正"读 + 哈希 + 落盘"只占其中一部分。
+
+**实测**（12k 文件 / 48k 条目的 store，WSL 挂 `/mnt/c` 作 NTFS 悲观代理；同机同小时新旧 checkout A/B）：
+
+| 场景 | 修前 | 修后 |
+|---|---|---|
+| 重复读同一个已索引文件 | 66.0 ms p50 | **0.9 ms p50** |
+| 改一个文件后单独索引 | 96.5 ms p50 | **32.7 ms p50** |
+| 一次 flush 里 10 个已改文件 | **10 次 save** | **1 次 save** |
+
+**改了什么**：
+
+- `planFileIndex` 增加 mtime + size 快路径（`record.mtimeMs`）：没改过的文件不读盘、不哈希。取舍与 make/tsc 一致——`rsync -t` / `tar` 保留了 mtime 的还原察觉不到，需要时用 `index_repo` 的 `reindex`。
+- `refreshMtime()`：内容没变、只有 mtime 变了（touch / checkout 还原）时把新 mtime 记回去。不记回去快路径就永远命不中，白读一遍。
+- `indexFile` 拆成"规划 + 落盘"两段，新增 `indexObservedBatch()`：一次 flush 先批量规划，再**每个 store 只 commit 一次**（原来每个文件各 commit 一次）。
+- 根按目录缓存 5s（只缓存命中的根，不缓存"没找到"，避免后来才建出 `.git` 的场景拿旧结论）。
+- `isGitIgnoredBatch()`：一条 `git check-ignore --stdin -z` 判一批；且 gitignore 判定移到"确认有变化"之后——重复读已索引文件不再起 git 进程。
+- 判据收紧：gitignore 只管**新条目**进不进语料；已有记录的条目在刷新时不再问 git（把"后来被 ignore"交给 `index_repo` / watch 的清理路径）。这一步把单文件更新里的 30ms 进程启动拿掉。
+- `watch` / `index_repo` / `index_doc` 也传 `mtimeMs`，让它们的下一次扫描能命中同一条快路径。
+
+**测试**：`npm test` 全绿；新增 `test/lazy-batch.test.mjs`（6 项：快路径、touch 后刷新 mtime、一批 8 文件只落盘一次、批量 gitignore 与逐个判定一致、批内忽略不污染其它文件）。
+
+**已知取舍**：mtime + size 都没变即视为未变更（`test/lazy-batch.test.mjs` 把这条写成断言，别当 bug"修掉"）。要强制重读用 `index_repo({ reindex: true })`。
+
+**没做**：分片打包 / 追加式记录。冷启动的 12k 文件仍是一次一个 open（9p 27.1s），这部分与上面的读路径无关，属于下一档结构性改动。
+
 ## 0.6.7 (2026-10-28)
 
 **兼容**：无新增配置键，也没有破坏性的 store 变更——条目上只多一个可选的 `explicit` 标记（旧条目缺省即按非显式处理）。一处判据语义变化：原生 Windows 壳现在签 `windows` 而不是 `wsl`，写了 `guard.hosts: ['wsl']` 又想覆盖原生 Windows 命令的条目要改成 `windows`。老 profile 与旧 store 直接升级。
