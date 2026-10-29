@@ -1389,15 +1389,34 @@ export class ProjectMemoryStore {
    *   （调用方让该条目保持未落快照，下一轮重试）。
    * 移除条目不经过这里：调用方在 commit 里直接 removeFile（见 index-pipeline.js）。
    */
-  applyFileUpdate(relPath, { expectedHash, hash, entries, type, size }) {
+  applyFileUpdate(relPath, { expectedHash, hash, entries, type, size, mtimeMs }) {
     if ((this.fileRecord(relPath)?.sha256 ?? null) !== (expectedHash ?? null)) return false
-    this.markFile(relPath, {
+    const record = {
       sha256: hash,
       size,
       type,
       indexedAt: new Date().toISOString(),
-    })
+    }
+    // mtime 是**加速用的缓存**，不是事实：缺了只是退化成每次整读 + 哈希（老 store 的条目就没有）。
+    if (typeof mtimeMs === 'number' && Number.isFinite(mtimeMs)) record.mtimeMs = mtimeMs
+    this.markFile(relPath, record)
     this.setEntries(relPath, entries)
+    return true
+  }
+
+  /**
+   * 内容没变、只是 mtime 变了（touch / checkout / 还原）时把新 mtime 记回去。
+   * 不记回去的话 `planFileIndex` 的快路径永远命不中，每次扫描都要重新整读一遍这个文件。
+   * 只标脏、不立刻落盘：调用方本来就在一次扫描/一批里，等那一次 save 一起写。
+   * @returns {boolean} 是否真的改了（用于测试与诊断）
+   */
+  refreshMtime(relPath, mtimeMs) {
+    const rec = this.files[relPath]
+    if (!rec || typeof mtimeMs !== 'number' || !Number.isFinite(mtimeMs)) return false
+    if (rec.mtimeMs === mtimeMs) return false
+    this.files[relPath] = { ...rec, mtimeMs }
+    this._dirtyShards.add(relPath)
+    this._removedShards.delete(relPath)
     return true
   }
 }

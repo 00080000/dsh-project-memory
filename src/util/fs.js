@@ -617,6 +617,42 @@ export function isGitIgnored(root, filePath) {
   }
 }
 
+/**
+ * 批量版 `isGitIgnored`：一次 `git check-ignore --stdin` 判定一批相对路径。
+ * 逐个判定的成本几乎全在**起进程**上（9p 实测 30ms/次、ext4 2.7ms/次，Windows 上更高），
+ * 一次懒索引 flush 里往往十几个文件，必须并成一次。
+ *
+ * @param {string} root 项目根
+ * @param {string[]} rels 项目相对路径（`relativePath()` 的形状，`/` 分隔）
+ * @returns {Set<string>} 被忽略的那些 rel（原样返回，便于与调用方的 rel 对齐）
+ */
+export function isGitIgnoredBatch(root, rels) {
+  const ignored = new Set()
+  if (!root || !rels || rels.length === 0) return ignored
+  if (!existsSync(path.join(root, '.git'))) return ignored
+  if (rels.length === 1) {
+    if (isGitIgnored(root, path.join(root, rels[0]))) ignored.add(rels[0])
+    return ignored
+  }
+  try {
+    // `-z` 让输入输出都以 NUL 分隔：文件名里带换行/空格也不会错位。
+    const out = execFileSync('git', ['-C', root, 'check-ignore', '--stdin', '-z'], {
+      input: rels.join('\0') + '\0',
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'ignore'],
+      maxBuffer: 16 * 1024 * 1024,
+    })
+    for (const p of String(out).split('\0')) if (p) ignored.add(p)
+    return ignored
+  } catch (err) {
+    // status 1 = 正常：一条都没被忽略（check-ignore 用退出码表达"有/没有"）。
+    if (err?.status === 1) return ignored
+    // 其它失败（老 git 不支持 --stdin、输入过长、非仓目录）：退回逐条判定，语义不变，只是慢。
+    for (const rel of rels) if (isGitIgnored(root, path.join(root, rel))) ignored.add(rel)
+    return ignored
+  }
+}
+
 export function isSupportedDoc(ext) {
   return ['.pdf', '.md', '.markdown', '.txt'].includes(ext)
 }
