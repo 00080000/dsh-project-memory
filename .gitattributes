@@ -1,0 +1,3 @@
+# 统一 LF：sourcemap 的 `sourcesContent` 会原样嵌入源文件行尾，
+# Windows 上 autocrlf=true 的检出因此会产出与 Linux 不同的产物（只差 .map）。
+* text=auto eol=lf

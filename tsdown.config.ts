@@ -1,6 +1,6 @@
 import { defineConfig } from 'tsdown'
 import { readFile } from 'node:fs/promises'
-import { basename, dirname, relative, resolve as resolvePath } from 'node:path'
+import { basename, dirname, relative, sep, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { transform } from 'lightningcss'
 
@@ -21,6 +21,12 @@ const CLIENT_EXTERNALS = [
 
 const CSS_VIRTUAL_PREFIX = '\0dsh-css:'
 const CSS_VIRTUAL_SUFFIX = '.mjs'
+
+// 虚拟 id 与交给 lightningcss 的 `filename` 都必须是 **POSIX 相对路径**：
+// `[hash]` 把 filename 字符串算进类名哈希（绝对路径、甚至只是 `\` 与 `/` 的差别都会变），
+// 拿绝对路径当 filename 会让产物随机器/平台整体换一套类名——同一份 CSS 在别处
+// `npm run build:client` 就是几百行假 diff，且默认没有 CI 校验产物是否一致。
+const posixRelToRoot = (abs: string) => relative(ROOT, abs).split(sep).join('/')
 
 export default defineConfig([
   {
@@ -52,8 +58,8 @@ export default defineConfig([
       resolveId(source, importer) {
         if (!source.endsWith('.module.css')) return null
         const abs = importer !== undefined ? resolvePath(dirname(importer), source) : source
-        // 虚拟 id 存相对仓库根的路径（产物注释不再含绝对路径）
-        return CSS_VIRTUAL_PREFIX + relative(ROOT, abs) + CSS_VIRTUAL_SUFFIX
+        // 虚拟 id 存相对仓库根的 POSIX 路径（产物注释不会再随平台写成 `src\client\...`，也不含绝对路径）
+        return CSS_VIRTUAL_PREFIX + posixRelToRoot(abs) + CSS_VIRTUAL_SUFFIX
       },
       async load(this, virtualId) {
         if (!virtualId.startsWith(CSS_VIRTUAL_PREFIX)) return null
@@ -62,7 +68,8 @@ export default defineConfig([
         this.addWatchFile(fileId)
         const source = await readFile(fileId)
         const { code, exports: cssExports } = transform({
-          filename: fileId,
+          // 用相对 POSIX 路径而不是绝对 `fileId`：见 posixRelToRoot() 的注释（类名哈希的唯一稳定输入）
+          filename: relId,
           code: source,
           cssModules: { pattern: '[hash]_[local]' },
           minify: true,
