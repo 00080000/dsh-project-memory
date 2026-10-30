@@ -1,8 +1,10 @@
 import path from 'node:path'
 import { statSync } from 'node:fs'
 import {
+  ROOT_SOURCES,
   excludedEntryForPath,
   findProjectRoot,
+  findProjectRootWithSource,
   isGitIgnored,
   isGitIgnoredBatch,
   memoryRootFor,
@@ -27,7 +29,11 @@ export { findProjectRoot }
  *   ① 根按目录缓存（5s 上限）：一次 flush 里的文件通常同目录，别每个文件走一遍祖先；
  *   ② mtime + size 未变 → 不读盘、不问 git（`record.mtimeMs` 由写入侧记下）；
  *   ③ 一次 flush 只 commit 一次、只起一次 `git check-ignore`。
- * 只缓存**命中**的根：没找到根不缓存，避免"后来才建出 .git"的测试/场景一直拿旧结论。
+ * 根缓存只存**由标记推出**的根：`session` 兜底是"这一带还没有标记"的推断，钉 5s 会让
+ * `git init` / `npm init` 建出来的项目先落进会话根的 store（真根出现后就是一份重复条目）。
+ * 代价只是无标记目录仍按次走一遍祖先（与加缓存之前一致），有标记的项目热路径不受影响。
+ * 已有标记的根仍缓存 5s：在它的子目录里 5s 内嵌套新建项目，文件可能先落进父根的 store，
+ * 下一次解析就换根、父 store 里的副本留给扫描清理——这是缓存换热路径的必要取舍。
  */
 const ROOT_CACHE_TTL_MS = 5000
 const ROOT_CACHE_MAX = 4096
@@ -57,8 +63,10 @@ function cachedProjectRoot(config, filePath, watchManager, sessionRoot) {
   const hit = cache.get(key)
   const now = Date.now()
   if (hit && now - hit.at < ROOT_CACHE_TTL_MS) return hit.root
-  const root = findProjectRoot(filePath, { extraRoots, sessionRoot, config })
+  const { root, source } = findProjectRootWithSource(filePath, { extraRoots, sessionRoot, config })
   if (!root) return null
+  // 会话根兜底不进缓存：它是"没找到标记"的推断，而"后来才建出标记"正是唯一能让它失效的事件。
+  if (source === ROOT_SOURCES.SESSION) return root
   if (cache.size >= ROOT_CACHE_MAX) cache.clear()
   cache.set(key, { root, at: now })
   return root

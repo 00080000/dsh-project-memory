@@ -50,7 +50,7 @@ Each indexed project has its own store at `<root>/.dsh-project-memory/`. It keep
 
 The tools below are **invoked by the agent**, not typed by the user. In the chat, just ask naturally — e.g. "index this project" or "what does the auth module do?" — or simply keep working, and the agent calls the matching tool automatically. By default files are indexed the moment the model reads them, so memory fills in while you work. `watch_repo` keeps explicitly-watched roots fresh in the background; `index_repo` forces a full backfill (unchanged files are skipped).
 
-In a git work tree the corpus is whatever `git ls-files --cached --others --exclude-standard` lists — tracked files plus untracked files that are not ignored — so `.gitignore`, nested rules included, decides what gets remembered. A directory that is not a git work tree falls back to a plain walk (no ignore rules). Lazy indexing applies the same check per file; an explicit `index_doc` bypasses `.gitignore`, but still respects `roots.exclude`, readability and the size limit, and its entry survives later scan passes for as long as the file exists.
+In a git work tree the corpus is whatever `git ls-files --cached --others --exclude-standard` lists — tracked files plus untracked files that are not ignored — so `.gitignore`, nested rules included, decides what gets remembered. A directory that is not a git work tree falls back to a plain walk (no ignore rules). Lazy indexing applies the same check when a file first enters the store; a file that is already indexed is refreshed on later reads without asking git again — if `.gitignore` starts excluding it, the `index_repo` / `watch_repo` scan drops it. An explicit `index_doc` bypasses `.gitignore`, but still respects `roots.exclude`, readability and the size limit, and its entry survives later scan passes for as long as the file exists.
 
 | Tool | Purpose |
 |---|---|
@@ -284,7 +284,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 885 tests
+npm test                    # 892 tests
 npm run eval:injection      # synthetic pool P/R: precision 0.93 / recall 1.00, + a 3-scenario hint-only group
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)

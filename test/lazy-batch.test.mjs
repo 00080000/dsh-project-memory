@@ -14,7 +14,7 @@ import path from 'node:path'
 
 import { indexFile, indexObservedBatch } from '../src/lazy.js'
 import { ProjectMemoryStore } from '../src/store.js'
-import { isGitIgnored, isGitIgnoredBatch } from '../src/util/fs.js'
+import { findProjectRootWithSource, isGitIgnored, isGitIgnoredBatch } from '../src/util/fs.js'
 
 let passed = 0
 const ok = (name) => {
@@ -160,6 +160,39 @@ const countSaves = (store) => {
   assert.ok(store.fileRecord('src/a.js'), 'a.js 应在 store 里')
   assert.equal(store.fileRecord('src/ignored.js'), undefined, 'ignored.js 不应进 store')
   ok('批内 gitignore 生效且不污染其它文件')
+}
+
+// ---------------------------------------------------------------------------
+// 5. 会话根兜底不进缓存：子目录后来长出 package.json，下一次读取必须立刻换根
+//    缓存的键还是同一个目录（5s 内），如果连"没找到标记"的结论也缓存，b.js 会被写进
+//    会话根的 store；之后真根出现，同一个文件就多出一份重复条目。
+// ---------------------------------------------------------------------------
+{
+  const root = mkdtempSync(path.join(tmpdir(), 'lazybatch-bare-'))
+  const src = path.join(root, 'src')
+  mkdirSync(src, { recursive: true })
+  const a = path.join(src, 'a.js')
+  writeFileSync(a, 'export function a(){ return 1 }\n')
+  const first = findProjectRootWithSource(a, { sessionRoot: root })
+  if (first.source !== 'session') {
+    // 临时目录之上竟然有标记（非常规环境）：前提不成立，明确打印而不是静默当成通过。
+    console.log('  skip session-fallback cache test (a marker exists above the temp dir)')
+  } else {
+    await indexFile({}, config, a, null, root)
+    const outerStore = new ProjectMemoryStore(path.join(root, config.memoryDir)).load()
+    assert.ok(outerStore.fileRecord('src/a.js'), 'precondition: a.js is indexed under the session root')
+
+    // 项目在这个 5s 窗口里被建出来：下一次读取必须按新标记换根，而不是沿用缓存的兜底结论。
+    writeFileSync(path.join(src, 'package.json'), '{"name":"born-later"}')
+    const b = path.join(src, 'b.js')
+    writeFileSync(b, 'export function b(){ return 2 }\n')
+    assert.equal(await indexFile({}, config, b, null, root), true)
+
+    const innerStore = new ProjectMemoryStore(path.join(src, config.memoryDir)).load()
+    assert.ok(innerStore.fileRecord('b.js'), 'b.js should be indexed under the new marker root')
+    assert.equal(outerStore.fileRecord('src/b.js'), undefined, 'the session-root store must not get a duplicate')
+    ok('session-root fallback is not cached (a marker created later wins immediately)')
+  }
 }
 
 console.log(`\nlazy-batch tests: ${passed} passed`)
