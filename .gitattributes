@@ -1,3 +1,14 @@
 # 统一 LF：sourcemap 的 `sourcesContent` 会原样嵌入源文件行尾，
 # Windows 上 autocrlf=true 的检出因此会产出与 Linux 不同的产物（只差 .map）。
 * text=auto eol=lf
+
+# 构建产物按字节存，不做行尾转换
+client/client.js           -text
+client/client.js.map       -text
+client/client.d.ts         -text
+client/client.d.ts.map     -text
+client/style.css           -text
+lib/index.mjs              -text
+lib/index.mjs.map          -text
+lib/index.d.mts            -text
+lib/index.d.mts.map        -text
