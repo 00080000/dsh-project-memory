@@ -11,6 +11,10 @@
         autoIndexOnFirstUse: false
         watch: true
         watchInterval: 30
+        # 其中三个也能在 web 的「插件 → 项目记忆」详情页里可视化修改（默认收起的「常用设置」）：
+        #   watchInterval / autoIndexOnFirstUse / llmQueryExpansion
+        # 保存即生效（autoIndexOnFirstUse 下次启动生效）；页面上的改动落在 profile 的用户层，不改这个文件。
+        # watch / lazyIndexing / enableTypeScript 刻意不放进界面：关掉只会让记忆变旧。
         # 危险根护栏（家目录 / 文件系统根 / 系统与包管理器前缀整体扫描会吃满内存）。
         # 兼容开关：只放开内置名单；roots.deny / roots.exclude 仍然优先。
         allowUnsafeRoots: false

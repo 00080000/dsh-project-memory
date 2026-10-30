@@ -1,3 +1,18 @@
+## Unreleased
+
+**兼容**：无新增配置键，无 store 变更。三个既有键——`watchInterval` / `autoIndexOnFirstUse` / `llmQueryExpansion`——在 `Config` 里标成 `.volatile()`：这是宿主设置表单的准入条件（只有 volatile 字段能被 settings 接口写入），也让它们在运行中原地更新而不重启插件。profile / 命令行的写法完全不变。插件内部读取统一走 `cfgValue()`：volatile 字段在运行时是 ref（`.get()`），直接把 ref 当布尔会读错。升级后**需要重启一次 dsh**——volatile 元数据只在装配期解析。
+
+### 新增：插件页上的可视化设置（web）
+
+- 座位是 `plugins.bundle.config`（key = 包名）：**插件 → 项目记忆 → 详情页**，在描述与行列表之间出现「常用设置」卡片。
+- 三个手调旋钮：启动时全量索引（`autoIndexOnFirstUse`，下次启动生效）、刷新间隔（`watchInterval`，秒）、检索时扩展查询（`llmQueryExpansion`）。后台监视**刻意不给开关**：关掉只会让记忆越来越旧，不是一个"偏好"；`lazyIndexing` / `enableTypeScript` 属于内部取舍，也留在 profile。
+- 卡片默认收起（与宿主的插件卡片同构：标题 + 说明 + 箭头），展开后三行、底部右对齐保存；未保存时标题旁有一个"未保存"标记。保存走宿主 `settings` 接口（Config 校验 + revision fence），不另写配置文件——卡片始终是宿主那份配置的投影。
+- 立即生效：`watchInterval` 由 `applyWatchSettings()` 按新值重排定时器；`llmQueryExpansion` 每次查询时读取。`autoIndexOnFirstUse` 是一次性启动动作，卡片上写明"下次启动生效"。
+- 门控是**两层**且都是软依赖：客户端只在宿主同时提供 `slots` / `configForms` / `locale`、且 `project-memory` 命名空间已被提供时才注册；旧宿主（ui-primitives 没有对应控件）上零注册，并打一条点名原因的告警而不是静默消失。组件存在性判定必须接受 `forwardRef` 返回的**对象**（宿主的 `Button` 就是对象）——用 `typeof x === 'function'` 会把真实组件当成不存在，卡片整块消失。
+- 其余旋钮（`memoryDir`、`roots.*`、扫描上限、insight / 反思 / 自动注入）**不进卡片**：它们要么一改就换数据位置，要么需要理解上下文，仍写 profile。
+
+**测试**：新增 `test/settings-card.test.mjs`（9 项：三个 volatile 键与默认值（并断言其余键不进命名空间）、`cfgValue()` 的 ref/普通值双形状、空路径 `[[]]` 读成"全部重读"、watch 关停/改间隔即重排、整份 `apply()` 在 ref 形状 Config 上装配、槽位注册的 key 与命名空间、默认收起与展开后 3 行、`Button` 以 forwardRef 对象形状参与注册、命名空间未提供与缺 settings 控件两种零注册）。
+
 ## 0.6.8 (2026-10-30)
 
 **兼容**：条目上多一个可选的 `mtimeMs`（旧条目缺省时按老行为整读 + 哈希）。无新增配置键，无破坏性 store 变更。懒索引不再对已有记录的文件问 gitignore，新文件仍问。

@@ -7,7 +7,7 @@ import { rememberTool } from './tools/remember.js'
 import { forgetTool } from './tools/forget.js'
 import { watchRepoTool } from './tools/watch-repo.js'
 import { statsTool } from './tools/stats.js'
-import { WatchManager } from './watch.js'
+import { WatchManager, applyWatchSettings } from './watch.js'
 import { setupLazyIndexing } from './lazy.js'
 import { initTypeScript } from './enhancer.js'
 import { setupTaskbridge } from './setup/taskbridge.js'
@@ -18,6 +18,7 @@ import { rememberRoute } from './llm-route.js'
 import { workflowCommandDefinition } from './commands/workflow.js'
 import { setupSkill } from './skill.js'
 import { flushDirtyStores } from './util/flush.js'
+import { cfgValue, changedConfigKeys } from './util/config.js'
 
 export const name = 'dsh-project-memory'
 export const inject = ['llm', 'tools']
@@ -32,7 +33,7 @@ export const Config = Schema.object({
   maxFileSizeMb: Schema.number().default(10),
   maxOutputChars: Schema.number().default(8000),
   maxPdfPages: Schema.number().default(1000),
-  llmQueryExpansion: Schema.boolean().default(false),
+  llmQueryExpansion: Schema.boolean().default(false).volatile(),
   expansionCount: Schema.number().default(6),
   // 辅助 LLM 调用的路由覆写 —— **索引期零 LLM**，只服务召回期查询扩展与反思期。
   // 未设置时取当前会话 header 的 provider/model，后台路径取最近一次会话路由；都拿不到时
@@ -41,10 +42,16 @@ export const Config = Schema.object({
     provider: Schema.string(),
     model: Schema.string(),
   }).default({}),
+  // 以下三个键在 web 的插件页上有可视化设置（`plugins.bundle.config`，见 src/client/settings-card.tsx）。
+  // `.volatile()` 是宿主设置页的准入条件：只有 volatile 字段能经 settings 接口写入，且写入后**不重启**
+  // 插件、以 ref 形式原地更新。读取一律走 util/config.js 的 cfgValue()（ref 是对象，直接判真会读错）。
+  //
+  // 其余的键**刻意不标 volatile**：`lazyIndexing` / `watch` / `enableTypeScript` 关掉只会让记忆变旧，
+  // 不属于"用户偏好"；它们仍可在 profile 里改，但不出现在卡片上（关掉监视等于放任索引过期）。
   lazyIndexing: Schema.boolean().default(true),
-  autoIndexOnFirstUse: Schema.boolean().default(false),
+  autoIndexOnFirstUse: Schema.boolean().default(false).volatile(),
   watch: Schema.boolean().default(true),
-  watchInterval: Schema.number().default(30),
+  watchInterval: Schema.number().default(30).volatile(),
   // 危险根护栏：家目录 / 文件系统根 / 系统目录 / 包管理器前缀（/opt/homebrew …）整体扫描会吃满
   // 内存，默认一律拒绝。`roots.*` 是配置档级例外表；`allowUnsafeRoots` 只放开内置名单，deny/exclude 仍优先。
   allowUnsafeRoots: Schema.boolean().default(false),
@@ -159,17 +166,33 @@ export function apply(ctx, config) {
   }
 
   const watchManager = new WatchManager(ctx, config)
-  if (config.watch) {
-    watchManager.restorePersisted()
-    ctx.effect(() => {
-      watchManager.start(config.watchInterval * 1000)
-      return () => watchManager.stop()
-    })
+  // watchInterval 是 volatile 字段：设置页改完要当场生效（重排定时器），而不是等下次启动。
+  // watch 本身不提供界面开关（关掉监视等于放任索引过期），但仍可在 profile 里设 false。
+  // 持久化的根清单只恢复一次；先关后开时补一次（否则"打开监视"要等到下次启动才真的开始轮询）。
+  let watchRestored = false
+  const syncWatch = () => {
+    if (cfgValue(config, 'watch') !== false && !watchRestored) {
+      watchRestored = true
+      watchManager.restorePersisted()
+    }
+    return applyWatchSettings(watchManager, config)
   }
+  ctx.effect(() => {
+    syncWatch()
+    return () => watchManager.stop()
+  })
 
   if (config.lazyIndexing) {
     setupLazyIndexing(ctx, config, watchManager)
   }
+
+  // 设置页保存（宿主 volatile 更新）后：只有 watchInterval 会影响运行中的定时器，
+  // 其余 volatile 字段都在各自的读取点当场生效（llmQueryExpansion 每次查询读、autoIndex 只认启动值）。
+  // paths 为 `[[]]` 时表示整份 Config 都可能变了 → changedConfigKeys 返回 null，按"全部重读"处理。
+  ctx.on('loader/volatile-update', (paths) => {
+    const changed = changedConfigKeys(paths)
+    if (changed === null || changed.has('watchInterval')) syncWatch()
+  })
 
   // 卸载/退出前把还脏着的 store 同步写一次（后台重试只是兜底，不能当正确性保证）。
   if (typeof ctx.effect === 'function') {
@@ -218,7 +241,9 @@ export function apply(ctx, config) {
   // 注册 agent/pre-step 监听，向每步请求追加记忆消息（默认开；异常/无会话 cwd → 交回默认决策）。
   installAutoInject(ctx, config)
 
-  if (config.autoIndexOnFirstUse) {
+  // 启动时全量索引是**一次性**动作：设置页把它打开只影响下一次启动，不会当场扫全树
+  // （卡片上的说明也这么写）。所以这里读的是本次启动时的值，不订阅后续变化。
+  if (cfgValue(config, 'autoIndexOnFirstUse')) {
     // effect 回调必须同步并返回 disposer；异步体独立执行，用 cancelled 标志避免卸载后再写日志
     ctx.effect(() => {
       let cancelled = false

@@ -88,6 +88,22 @@ export const zh = {
   'slash.tasks-desc': '任务清单：步骤进度、涉及文件、当前会话绑定',
   'slash.project-desc': '项目记忆：本项目的教训 / 决策 / 流程',
   'slash.global-desc': '全局记忆：跨项目的经验条目',
+  // 插件页上的可视化设置卡片（src/client/settings-card.tsx）。
+  'settings.title': '常用设置',
+  'settings.subtitle': '保存后立即生效（启动时全量索引除外）；其余配置在 profile 的 cordis.patch.yml 里。',
+  'settings.unsaved': '未保存',
+  'settings.autoIndexOnFirstUse.title': '启动时全量索引',
+  'settings.autoIndexOnFirstUse.hint': '插件加载后扫描当前工作目录；打开后从下次启动开始生效。',
+  'settings.watchInterval.title': '刷新间隔',
+  'settings.watchInterval.hint': '后台自动刷新索引的频率（秒）。回合进行中降频，空闲时最多退避到 2 分钟。',
+  'settings.llmQueryExpansion.title': '检索时扩展查询',
+  'settings.llmQueryExpansion.hint': '让模型先改写几条变体查询再检索，命中更准，但会消耗 token。',
+  'settings.unit.seconds': '秒',
+  'settings.form.unavailable': '设置不可用：宿主没有提供本插件的配置命名空间。',
+  'settings.form.readOnly': '当前部署只读，改动无法保存。',
+  'settings.form.saveFailed': '宿主没有接受这次保存，请检查取值。',
+  'settings.form.save': '保存',
+  'settings.form.saving': '保存中…',
 }
 
 export const en = {
@@ -174,6 +190,21 @@ export const en = {
   'slash.tasks-desc': 'Task list: progress, involved files, current session binding',
   'slash.project-desc': 'Project memory: this project’s lessons / decisions / procedures',
   'slash.global-desc': 'Global memory: experience entries shared across projects',
+  'settings.title': 'Common settings',
+  'settings.subtitle': 'Saved changes apply immediately, except the startup full index; the rest stays in the profile’s cordis.patch.yml.',
+  'settings.unsaved': 'Unsaved',
+  'settings.autoIndexOnFirstUse.title': 'Full index on startup',
+  'settings.autoIndexOnFirstUse.hint': 'Scan the current working directory after the plugin loads; takes effect from the next start.',
+  'settings.watchInterval.title': 'Refresh interval',
+  'settings.watchInterval.hint': 'How often the index refreshes in the background, in seconds. Slower during a turn, up to two minutes when idle.',
+  'settings.llmQueryExpansion.title': 'Expand queries',
+  'settings.llmQueryExpansion.hint': 'Ask the model for a few query variants before search: better recall, spends tokens.',
+  'settings.unit.seconds': 's',
+  'settings.form.unavailable': 'Settings unavailable: the host serves no configuration namespace for this plugin.',
+  'settings.form.readOnly': 'This deployment is read-only; changes cannot be saved.',
+  'settings.form.saveFailed': 'The host rejected this save; check the values.',
+  'settings.form.save': 'Save',
+  'settings.form.saving': 'Saving…',
 }
 
 export type LocaleDict = typeof zh

@@ -2,6 +2,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
 import { assertIndexRoot, assertSafeRoot, memoryRootFor, rootRejection, sessionMemoryRootOrNull } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
+import { cfgValue } from '../util/config.js'
 
 export function watchRepoTool(watchManager, config) {
   return defineTool({
@@ -67,8 +68,9 @@ export function watchRepoTool(watchManager, config) {
       new ProjectMemoryStore(memoryDir).load().commit((s) => s.addWatch(root))
       await mirrorSessionWatchlist(true)
       watchManager.addRoot(root)
-      watchManager.start(config.watchInterval * 1000)
-      return `Watching ${root} (interval ${config.watchInterval}s). Docs/code changes will be re-indexed silently.`
+      const interval = Number(cfgValue(config, 'watchInterval'))
+      watchManager.start(interval * 1000)
+      return `Watching ${root} (interval ${interval}s). Docs/code changes will be re-indexed silently.`
     },
   })
 }

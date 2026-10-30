@@ -11,6 +11,7 @@ import { createVectorRerank, vectorItemsFrom } from '../vector-index.js'
 import { resolveLinkedSymbols } from '../link.js'
 import { truncate } from '../util/text.js'
 import { stepContent, stepStatus } from '../util/task-view.js'
+import { cfgValue } from '../util/config.js'
 function toAbs(root, rel) {
   return path.isAbsolute(rel) ? rel : path.join(root, rel)
 }
@@ -101,7 +102,7 @@ export function queryMemoryTool(ctx, config) {
       const type = args.type || 'all'
       const limit = Math.max(1, Math.min(Number(args.limit) || 8, 20))
 
-      const queries = config.llmQueryExpansion
+      const queries = cfgValue(config, 'llmQueryExpansion')
         ? await expandQuery(ctx.llm, args.query, config.expansionCount, { route: resolveRoute(exec, config) })
         : [args.query]
 
