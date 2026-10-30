@@ -19,3 +19,9 @@ jobs:
       - run: npm install
       - run: npm run typecheck
       - run: npm test
+      # 产物（client/）是提交进仓库的：改了 src/client 却忘了重建，发出去的还是旧界面。
+      # 构建已跨平台确定（tsdown.config.ts 用相对 POSIX 路径喂 CSS module 哈希），
+      # 所以两个 OS 都必须零 diff；有差异就是"忘重建"或"构建又开始随环境变化"。
+      # .gitattributes 已把产物钉成 -text，避免 Windows runner 的 CRLF 转换造成假失败。
+      - run: npm run build:client
+      - run: git diff --exit-code -- client
