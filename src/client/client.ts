@@ -26,6 +26,7 @@ import { registerShowTaskPanelView } from './ShowTaskPanelNode.tsx'
 import { taskUIStore } from './task-ui-store.ts'
 import { createSlashSource } from './slash.ts'
 import { DEGRADED_GRACE_MS, later, missingServices, service } from './services.ts'
+import { registerSettingsCard } from './settings-card.tsx'
 
 const NS = 'dsh-project-memory'
 
@@ -174,8 +175,10 @@ function reportDegradedLater(ctx: any): void {
 }
 
 export function apply(ctx: any): void {
-  // 顶层不再有任何硬依赖：这里的三步都在缺服务时降级，绝不早退（早退就是静默消失）。
+  // 顶层不再有任何硬依赖：这里的几步都在缺服务时降级，绝不早退（早退就是静默消失）。
   registerTaskPanel(ctx)
   registerSlashSource(ctx)
+  // 插件详情页上的可视化设置：宿主没有 settings / configForms 时整段不跑（见 settings-card.tsx）。
+  registerSettingsCard(ctx)
   reportDegradedLater(ctx)
 }

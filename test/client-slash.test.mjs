@@ -165,9 +165,10 @@ function mounted(options) {
 // ---- 2. 源的身份与排序 ----
 {
   const { host, source } = mounted()
-  assert.deepEqual(host.injected, [['slots'], ['inputTriggers', 'sessions']],
-    'slots 与 slash 依赖都走嵌套 inject（软依赖），不进顶层声明；'
-    + 'slash 只等它真正用到的 inputTriggers / sessions（那三行不发宿主命令）')
+  assert.deepEqual(host.injected, [['slots'], ['inputTriggers', 'sessions'], ['slots', 'configForms', 'locale']],
+    'slots / slash / 设置卡片的依赖都走嵌套 inject（软依赖），不进顶层声明；'
+    + 'slash 只等它真正用到的 inputTriggers / sessions（那三行不发宿主命令）；'
+    + '设置卡片只在宿主提供 configForms 时才挂，旧宿主上没有这一段')
   assert.equal(host.registered.length, 1, '应当注册恰好一个 slash 源')
   assert.equal(source.trigger, '/', '挂在 / 触发上')
   assert.equal(source.name, 'project-memory', '源名（组标识）')

@@ -5,6 +5,25 @@ import { listProjectFiles, memoryDirName, memoryRootFor, relativePath, rootRejec
 import { OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from './index-pipeline.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileChanged, isTypeScriptFile } from './enhancer.js'
+import { cfgValue } from './util/config.js'
+
+/**
+ * 把 `watch` / `watchInterval` 的**当前值**落到轮询器上。
+ *
+ * 这两个键是 volatile 字段：设置页保存后宿主会发 `loader/volatile-update`，插件不重启，
+ * 由这里按新值重排定时器。stop() 对没启动过的实例是空操作；start() 会按新间隔重算
+ * base/backoff/active 三个节拍。抽成函数是为了让"关掉后没有定时器、打开后按新间隔起"
+ * 这条契约可以被单测直接钉住（否则它只存在于 apply 的闭包里）。
+ * @param {WatchManager} watchManager 轮询器
+ * @param {object} config 插件 Config（volatile 字段是 ref）
+ * @returns {boolean} 当前是否在轮询
+ */
+export function applyWatchSettings(watchManager, config) {
+  watchManager.stop()
+  if (cfgValue(config, 'watch') === false) return false
+  watchManager.start(Number(cfgValue(config, 'watchInterval')) * 1000)
+  return true
+}
 
 /**
  * 有界并发 map。同步 `statSync` 循环在 Windows（尤其 WSL 挂 `/mnt/c`）会把事件循环卡住：
