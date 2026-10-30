@@ -30,6 +30,11 @@
 
 **没做**：分片打包 / 追加式记录。冷启动的 12k 文件仍是一次一个 open（9p 27.1s），这部分与上面的读路径无关，属于下一档结构性改动。
 
+### 修复：mtime 用例在 NTFS 上必红；`index_doc` 记录的 mtime 可能比正文新
+
+- `test/lazy-batch.test.mjs`：原生 Windows 上 `utimes()` 无法把 mtime 还原到逐位相等（实测差 <1µs），用例会走回读路径并判"改动被检出"，因此在 CI 的 windows 任务上必红。改为直接改写记录里的 mtime，测的仍是"mtime + size 不变即视为未变更"这条取舍。
+- `index_doc`：mtime 原先在解析完成后才 stat，而 hash/size 取自更早的读取；索引途中文件被改写时，记录会拿到比正文新的 mtime，之后 `fs/observed` 的快路径会跳过真实改动。现在与 lazy / watch / index_repo 一致，先 stat 再读正文。
+
 ## 0.6.7 (2026-10-28)
 
 **兼容**：无新增配置键，也没有破坏性的 store 变更——条目上只多一个可选的 `explicit` 标记（旧条目缺省即按非显式处理）。一处判据语义变化：原生 Windows 壳现在签 `windows` 而不是 `wsl`，写了 `guard.hosts: ['wsl']` 又想覆盖原生 Windows 命令的条目要改成 `windows`。老 profile 与旧 store 直接升级。

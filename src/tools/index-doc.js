@@ -58,6 +58,13 @@ export function indexDocTool(ctx, config) {
       const store = new ProjectMemoryStore(memoryDir).load()
 
       const rel = storeKey(path.relative(root, filePath).split(path.sep).join('/'))
+      // mtime 必须在读正文之前取：记录里的 mtime 不能比内容新，否则懒索引的快路径会跳过之后的真实改动。
+      let mtimeMs
+      try {
+        mtimeMs = statSync(filePath).mtimeMs
+      } catch {
+        mtimeMs = undefined
+      }
       const { hash, size } = await sha256OfFile(filePath)
       const existing = store.fileRecord(rel)
       // 与 index_repo/watch/lazy 同一条判据：哈希未变但旧条目缺 terms 时仍要重抽一次（一次性回填）。
@@ -85,13 +92,6 @@ export function indexDocTool(ctx, config) {
         s.setEntries(rel, entries)
         // explicit：这个文件可能是被 .gitignore 排除的（显式索引不受 gitignore 限制），
         // 扫描清单里永远不会有它 —— 清理时靠这个标记区分"没扫到"与"被删了"。
-        // mtimeMs 让后续 `fs/observed` 的重复读能走 mtime+size 快路径，不必重解析 PDF。
-        let mtimeMs
-        try {
-          mtimeMs = statSync(filePath).mtimeMs
-        } catch {
-          mtimeMs = undefined
-        }
         const record = { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString(), explicit: true }
         if (typeof mtimeMs === 'number' && Number.isFinite(mtimeMs)) record.mtimeMs = mtimeMs
         s.markFile(rel, record)

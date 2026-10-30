@@ -72,9 +72,11 @@ const countSaves = (store) => {
   assert.equal(store.fileRecord('src/a.js').sha256, sha, '未变更时不应重建条目')
   ok('未变更的重复读走 mtime 快路径（不写入、不改条目）')
 
-  // 有意取舍：把 mtime 还原回去的同尺寸改动不会被发现 —— 需要时用 index_repo reindex。
+  // 有意取舍：mtime + size 都没变时按未变更处理 —— 需要时用 index_repo reindex。
+  // 直接改写记录里的 mtime，不依赖 utimes() 还原：部分文件系统（如 NTFS）上 JS 无法逐位还原。
   writeFileSync(file, 'export function a(){ return 2 }\n')
-  utimesSync(file, rec.mtimeMs / 1000, rec.mtimeMs / 1000)
+  store.refreshMtime('src/a.js', statSync(file).mtimeMs)
+  store.commit(() => {})
   assert.equal(await indexFile({}, config, file, null, root), false, 'mtime+size 都没变时按未变更处理')
   assert.equal(store.fileRecord('src/a.js').sha256, sha, '这就是 mtime 快路径的代价（文档已写明）')
   ok('mtime 被还原的同尺寸改动察觉不到（与 make/tsc 同一取舍）')
