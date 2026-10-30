@@ -215,7 +215,7 @@ where `config.yml` contains the same override block.
 
 ### Measured on real projects (2026-10-13)
 
-Four corpora, one Linux machine (Node 24.19), each run twice with the **second, warm-cache run** quoted. "Cold index" is a full index pass (walk + hash + extract + commit); "query" runs the shipped scorer over 100 sampled queries; "re-index 1 file" is the watch/lazy hot path.
+Four corpora, one Linux machine (Node 24.19), each run twice with the **second, warm-cache run** quoted. "Cold index" is a full index pass (walk + hash + extract + commit); "query" runs the shipped scorer over 100 sampled queries; "re-index 1 file" is the watch re-index core (read + extract + commit), which excludes the lazy path's root-resolution / `.gitignore` overhead (measured separately below).
 
 | Corpus | Files / entries | Cold index | Cold load | Query p50 / p95 | Re-index 1 file | Store content / on disk | Heap after load |
 |--------|-----------------|-----------|-----------|-----------------|-----------------|------------------------|-----------------|
@@ -228,20 +228,32 @@ Four corpora, one Linux machine (Node 24.19), each run twice with the **second, 
 
 > `read+hash` depends on the OS page cache — 2.3 s cold vs 0.27 s warm on the 12,634-file tree — so the table quotes the warm figure.
 
+### Lazy hot path (0.6.8, same-session A/B, 2026-10-30)
+
+0.6.8 changes the **lazy read path** (`fs/observed`), which the corpus table above does not cover. Same-session A/B on Linux/ext4 with warm page cache, median of three runs:
+
+| Path | 0.6.7 | 0.6.8 |
+|------|-------|-------|
+| Re-reading an already-indexed file (200-file git repo) | 1.4 ms | **0.007 ms** |
+| Edit a file, then lazy re-index (same repo) | 1.7 ms | **0.19 ms** |
+| Re-reading in a marker-less directory | 0.08 ms | 0.07 ms |
+
+The last row is the documented cost: a session-root fallback is a *guess* ("no marker here yet"), so it is no longer cached and each observation walks the ancestors once (see the root-cache note in [`CHANGELOG.md`](CHANGELOG.md)). On all four corpora above, the same-session A/B (0.6.7 vs 0.6.8, two runs each, second quoted) kept cold index, query and the watch core within ±5%; the small-corpus cold load just jitters (vue measured 7–11 ms across runs). This release does not change those paths.
+
 ### Synthetic Benchmark (Node 24.19, Linux)
 
 | Scenario | Scale | Measured |
 |----------|-------|----------|
 | Full cold index | 5,000 files / 20k entries | 284 ms avg (p50 286) |
 | Cold load | 5,000 files | 58 ms |
-| Hot lazy re-index (single file) | 5k files | p50 2.5 ms / max 6.7 ms |
+| Hot lazy re-index (single file) | 5k files | p50 0.47 ms / max 0.89 ms |
 | query_memory (cached) | 5k files / 20k entries | p50 2.9 ms / p95 6.0 ms |
 | query_memory (cached) | 1k files / 4k entries | p50 0.5 ms / p95 1.1 ms |
 | Full cold index | 10,000 files / 40k entries | 558 ms avg (p50 540) |
 | Cold load | 10,000 files | 117 ms |
-| Hot lazy re-index (single file) | 10k files | p50 5.5 ms / max 8.4 ms |
+| Hot lazy re-index (single file) | 10k files | p50 0.98 ms / max 1.55 ms |
 
-> Generated code (~4–5 symbols/file), measured 2026-10-13. Reproduce with `npm run bench:synthetic -- 5000` (`scripts/bench-synthetic.mjs`). Pure indexing overhead, no LLM calls. The first query after a write rebuilds the IDF cache (**141 ms at 40k entries**, 68 ms at 20k, 17 ms at 4k); later queries hit it.
+> Generated code (~4–5 symbols/file), measured 2026-10-13; the two **hot lazy re-index** rows were re-measured on 2026-10-30 with 0.6.8 (same script). That session ran ~20% slower on the identical generated corpus, so the gain shown is conservative. Reproduce with `npm run bench:synthetic -- 5000` (`scripts/bench-synthetic.mjs`). Pure indexing overhead, no LLM calls. The first query after a write rebuilds the IDF cache (**141 ms at 40k entries**, 68 ms at 20k, 17 ms at 4k); later queries hit it.
 
 ### Reproduce it on your own project
 
