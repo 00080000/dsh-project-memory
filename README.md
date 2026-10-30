@@ -275,8 +275,7 @@ Pass `--queries your-queries.json` to run the labeled-set method (hit@5 / hit@10
 - **Model-facing memory: the agent writes, no human in the loop** — the consumer is the agent, usually headless, so memory that only promotes when someone clicks a card would never promote at all. `draft` is a provenance marker plus an evidence threshold, not an approval queue.
 - **Full entries returned directly** — entries are already compact, so returning them whole is more verifiable and one round-trip cheaper.
 - **`forget` by query is aggressive; use IDs for precision** — experience notes are low-risk and high-volume, so stale noise hurts more than an over-broad delete. For exact deletion use the ID shown by `query_memory`.
-- **TypeScript enhancement is optional, lazy and cached** — it runs in the background, never blocks indexing, and falls back to the regex scanner; its queue is bounded, and any dropped files are reported. The **default lib is not loaded**: inference that depends on global types (`Promise`/`Array`/DOM) degrades to `any`/`unknown`, while explicit annotations are unaffected.
-- **Subagent sessions are out of scope**
+- **TypeScript enhancement is optional and lazy** — it runs in the background, never blocks indexing, and falls back to the regex scanner; its queue is bounded and deduplicated by content, and any dropped files are reported. The **default lib is not loaded**: inference that depends on global types (`Promise`/`Array`/DOM) degrades to `any`/`unknown`, while explicit annotations are unaffected.
 
 ## Development (for contributors)
 
