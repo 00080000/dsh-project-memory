@@ -1267,16 +1267,28 @@ function resolveDir(dir) {
 }
 
 /**
+ * 根来源：显式登记的根 / VCS 标记 / 项目标记 / 会话工作目录兜底。
+ * 调用方（懒索引的根缓存）据此区分"看到的标记"与"还没有标记时的推断"——只有前者能缓存。
+ */
+export const ROOT_SOURCES = Object.freeze({
+  EXTRA: 'extra',
+  VCS: 'vcs',
+  PROJECT: 'project',
+  SESSION: 'session',
+})
+
+/**
  * 自底向上找最近的根标记。**一次遍历同时看 VCS 与 PROJECT**，语义仍是 VCS 优先：
  * 先命中的 VCS 直接返回（它一定最深的）；没有 VCS 就返回最深的 PROJECT。每层只 readdir
  * 一次（两组标记各走一遍祖先链、每个 marker 一次 existsSync 在 WSL/NTFS 上实测 ~119ms/次）。
+ * @returns {{dir: string, source: 'vcs'|'project'}|null}
  */
 function nearestRootByMarkers(absPath, vcsMarkers, projectMarkers, isUnsafe) {
   let project = null
   let dir = path.dirname(absPath)
   for (;;) {
     // 撞到危险根边界就停：不把边界当根，也不再向上。已记录的 PROJECT 命中仍有效（在边界下方）。
-    if (isUnsafe(dir)) return project
+    if (isUnsafe(dir)) return project ? { dir: project, source: ROOT_SOURCES.PROJECT } : null
     let names = null
     try {
       names = new Set(readdirSync(dir))
@@ -1284,11 +1296,11 @@ function nearestRootByMarkers(absPath, vcsMarkers, projectMarkers, isUnsafe) {
       names = null
     }
     if (names) {
-      if (vcsMarkers.some((marker) => names.has(marker))) return dir
+      if (vcsMarkers.some((marker) => names.has(marker))) return { dir, source: ROOT_SOURCES.VCS }
       if (!project && projectMarkers.some((marker) => names.has(marker))) project = dir
     }
     const parent = path.dirname(dir)
-    if (parent === dir) return project
+    if (parent === dir) return project ? { dir: project, source: ROOT_SOURCES.PROJECT } : null
     dir = parent
   }
 }
@@ -1296,13 +1308,17 @@ function nearestRootByMarkers(absPath, vcsMarkers, projectMarkers, isUnsafe) {
 /**
  * 项目根推导（**只认标记与显式声明，绝不从文件路径兜底**）。`roots.exclude` 是最强的否定：
  * 文件落在被排除子树里 → 直接 null，不再向上找标记，也不退回会话工作目录。
+ *
+ * 比 `findProjectRoot` 多返回 `source`：调用方需要区分"看到的标记"和"没有标记时的会话目录兜底"，
+ * 二者不能同等缓存（见 `src/lazy.js` 的根缓存：兜底是"这一带还没有标记"的推断，项目可能刚建出来）。
+ *
  * @param {string} filePath 目标文件（也接受目录内探针文件路径）
  * @param {{ extraRoots?: Iterable<string>, sessionRoot?: string|null, isUnsafe?: (dir: string) => boolean,
  *   config?: object, policy?: object }} [opts] `extraRoots` 显式登记的根；`sessionRoot` 作为**最后**一级推定。
- * @returns {string|null}
+ * @returns {{root: string|null, source: 'extra'|'vcs'|'project'|'session'|null}}
  */
-export function findProjectRoot(filePath, opts = {}) {
-  if (typeof filePath !== 'string' || !filePath) return null
+export function findProjectRootWithSource(filePath, opts = {}) {
+  if (typeof filePath !== 'string' || !filePath) return { root: null, source: null }
   const policy = isCompiledRootPolicy(opts.policy)
     ? opts.policy
     : isCompiledRootPolicy(opts.config)
@@ -1315,19 +1331,32 @@ export function findProjectRoot(filePath, opts = {}) {
   try {
     abs = path.resolve(filePath)
   } catch {
-    return null
+    return { root: null, source: null }
   }
-  if (excludedEntryForAbs(abs, policy)) return null
+  if (excludedEntryForAbs(abs, policy)) return { root: null, source: null }
   const explicit = longestRootContaining(opts.extraRoots || [], abs)
-  if (explicit) return isUnsafe(explicit) ? null : explicit
+  if (explicit) {
+    return isUnsafe(explicit) ? { root: null, source: null } : { root: explicit, source: ROOT_SOURCES.EXTRA }
+  }
 
   // 标记优先于会话根兜底；VCS 优先于 PROJECT（"a marker above the cwd still wins" 是既有契约）。
   const byMarker = nearestRootByMarkers(abs, VCS_MARKERS, PROJECT_MARKERS, isUnsafe)
-  if (byMarker) return byMarker
+  if (byMarker) return { root: byMarker.dir, source: byMarker.source }
 
   const session = resolveDir(opts.sessionRoot)
-  if (session && !isUnsafe(session) && isInside(session, abs)) return session
-  return null
+  if (session && !isUnsafe(session) && isInside(session, abs)) return { root: session, source: ROOT_SOURCES.SESSION }
+  return { root: null, source: null }
+}
+
+/**
+ * 项目根推导：只要根，语义与 `findProjectRootWithSource` 完全一致。
+ * @param {string} filePath 目标文件（也接受目录内探针文件路径）
+ * @param {{ extraRoots?: Iterable<string>, sessionRoot?: string|null, isUnsafe?: (dir: string) => boolean,
+ *   config?: object, policy?: object }} [opts]
+ * @returns {string|null}
+ */
+export function findProjectRoot(filePath, opts = {}) {
+  return findProjectRootWithSource(filePath, opts).root
 }
 
 /**

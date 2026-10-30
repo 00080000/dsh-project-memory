@@ -48,7 +48,7 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 
 以下工具由 **agent 自动调用**，无需用户手动输入。在对话中直接说自然语言即可——例如「给这个项目建个索引」或「auth 模块是干嘛的」，或者正常开发即可——agent 会自动调用对应工具。默认开启「读到即索引」：模型读哪个文件，就顺便索引哪个文件，记忆在你干活的过程中自然积累。`watch_repo` 让显式监听的根目录在后台保持新鲜；`index_repo` 强制对项目做一次全量回填（未变更文件自动跳过）。
 
-在 git 工作树里，语料就是 `git ls-files --cached --others --exclude-standard` 的清单——已跟踪文件，加上未被忽略的未跟踪文件——因此 `.gitignore`（含嵌套规则）决定什么会被记忆。不是 git 工作树的目录退回普通遍历（不套忽略规则）。「读到即索引」对单个文件套用同一判据；显式 `index_doc` 不受 `.gitignore` 限制，但仍服从 `roots.exclude`、可读性与体积上限，且只要文件还在，它的条目就能活过后续扫描清理。
+在 git 工作树里，语料就是 `git ls-files --cached --others --exclude-standard` 的清单——已跟踪文件，加上未被忽略的未跟踪文件——因此 `.gitignore`（含嵌套规则）决定什么会被记忆。不是 git 工作树的目录退回普通遍历（不套忽略规则）。「读到即索引」只在文件**首次入库**时套用同一判据；已入库的条目后续只刷新内容、不再问 git——等 `.gitignore` 开始排除它时，由 `index_repo` / `watch_repo` 的扫描清理摘掉。显式 `index_doc` 不受 `.gitignore` 限制，但仍服从 `roots.exclude`、可读性与体积上限，且只要文件还在，它的条目就能活过后续扫描清理。
 
 | 工具 | 用途 |
 |---|---|
@@ -282,7 +282,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ```bash
 npm install
-npm test                    # 885 项测试
+npm test                    # 892 项测试
 npm run eval:injection      # 合成池 P/R：精确率 0.93 / 召回率 1.00，另有 3 个 hint-only 场景
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）

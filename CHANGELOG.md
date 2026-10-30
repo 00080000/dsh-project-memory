@@ -7,7 +7,7 @@
 - `planFileIndex`：mtime + size 未变直接返回，不读盘、不哈希。
 - 新增 `refreshMtime()`：内容未变但 mtime 变了（touch / checkout 还原）时记回新 mtime。
 - `indexFile` 拆成规划与落盘两段，新增 `indexObservedBatch()`：一次 flush 每个 store 只 commit 一次。
-- 项目根按目录缓存 5s，只缓存命中的根。
+- 项目根按目录缓存 5s，但只缓存**由标记推出**的根：会话根兜底是"这一带还没有标记"的推断，不入缓存——`git init` / `npm init` 在子目录里建出项目时，缓存会让文件先落进会话根的 store（真根出现后就多一份重复条目）。无标记目录因此仍按次走一遍祖先（与加缓存前一致）。
 - 新增 `isGitIgnoredBatch()`：一条 `git check-ignore --stdin -z` 判一批；gitignore 判定挪到确认有变化之后。
 - `watch` / `index_repo` / `index_doc` 也记录 `mtimeMs`。
 - 新增 `test/lazy-batch.test.mjs`。
@@ -16,6 +16,7 @@
 
 - `test/lazy-batch.test.mjs`：不再用 `utimes()` 还原 mtime（Windows 上无法逐位还原），改为直接改写记录里的 mtime。
 - `index_doc`：先 stat 再读正文，记录里的 mtime 不会比内容新。
+- 懒索引的根缓存：会话根兜底不再入缓存（判据是 `findProjectRootWithSource()` 的 `source`，不靠 `root === sessionRoot` 猜）——子目录里 5s 内新建的 `.git` / `package.json` 立刻生效。
 
 ## 0.6.7 (2026-10-28)
 
