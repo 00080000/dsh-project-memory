@@ -16,6 +16,7 @@
 
 ### 修复
 
+- 构建：产物改为跨平台确定。lightningcss 的 `[hash]` 会把 `filename` 算进类名，此前传的是绝对路径，换台机器构建就整套换类名；现改用相对 POSIX 路径。`.gitattributes` 统一 LF（sourcemap 的 `sourcesContent` 会原样嵌入源文件行尾），CI 增加产物一致性校验。
 - `test/lazy-batch.test.mjs`：不再用 `utimes()` 还原 mtime（Windows 上无法逐位还原），改为直接改写记录里的 mtime。
 - `index_doc`：先 stat 再读正文，记录里的 mtime 不会比内容新。
 - 懒索引的根缓存：会话根兜底不再入缓存（判据是 `findProjectRootWithSource()` 的 `source`，不靠 `root === sessionRoot` 猜）——子目录里 5s 内新建的 `.git` / `package.json` 立刻生效。
