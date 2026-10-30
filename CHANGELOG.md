@@ -12,11 +12,15 @@
 - `watch` / `index_repo` / `index_doc` 也记录 `mtimeMs`。
 - 新增 `test/lazy-batch.test.mjs`。
 
+**实测**（同会话旧 vs 新）：12k 文件 / 48k 条目的 store、WSL 挂 `/mnt/c`（NTFS 悲观代理）下，重复读 66.0 → 0.9 ms p50、改一个文件后单独索引 96.5 → 32.7 ms p50；本机 ext4（200 文件 git 仓库）重复读 1.4 → 0.007 ms、改文件 1.7 → 0.19 ms。四个真实语料（vue / voice / harness 3k / 全树）同会话 A/B 的冷索引、查询与 watch 内核重索引都在 ±5% 噪声内（小语料冷加载本身抖动大，vue 7–11 ms）。
+
 ### 修复
 
 - `test/lazy-batch.test.mjs`：不再用 `utimes()` 还原 mtime（Windows 上无法逐位还原），改为直接改写记录里的 mtime。
 - `index_doc`：先 stat 再读正文，记录里的 mtime 不会比内容新。
 - 懒索引的根缓存：会话根兜底不再入缓存（判据是 `findProjectRootWithSource()` 的 `source`，不靠 `root === sessionRoot` 猜）——子目录里 5s 内新建的 `.git` / `package.json` 立刻生效。
+
+**测试**：`npm test` **892 项 / 51 个文件**全绿；`npm run typecheck` 通过。新增 `test/lazy-batch.test.mjs`（7 项：mtime 快路径、touch 后回填 mtime、批内一次 save、批量 gitignore 与逐个判定一致、会话根兜底不缓存）。
 
 ## 0.6.7 (2026-10-28)
 
