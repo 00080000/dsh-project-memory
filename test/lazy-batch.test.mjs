@@ -7,13 +7,14 @@
 // （rsync -t / tar 的还原就是这种形状）。这里把这条取舍写成断言，免得以后被当成 bug"修掉"而
 // 悄悄把每次读文件都变成一次整读 + sha256。
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import { indexFile, indexObservedBatch } from '../src/lazy.js'
 import { ProjectMemoryStore } from '../src/store.js'
+import { WatchManager } from '../src/watch.js'
 import { findProjectRootWithSource, isGitIgnored, isGitIgnoredBatch } from '../src/util/fs.js'
 
 let passed = 0
@@ -193,6 +194,30 @@ const countSaves = (store) => {
     assert.equal(outerStore.fileRecord('src/b.js'), undefined, 'the session-root store must not get a duplicate')
     ok('session-root fallback is not cached (a marker created later wins immediately)')
   }
+}
+
+// ---------------------------------------------------------------------------
+// 6. 懒索引新登记 watch 根：即使本轮没有任何条目更新，也必须把 watch.json 落盘
+//    （否则重启后这个根不在恢复清单里，监视静默退回启动时的集合）
+// ---------------------------------------------------------------------------
+{
+  const root = project()
+  const doc = path.join(root, 'note.md')
+  writeFileSync(doc, '# note\n\nbody\n')
+
+  assert.equal(await indexFile({}, config, doc, null, root), true, '首次索引应写入')
+  const store = storeOf(root)
+  assert.ok(store.fileRecord('note.md'), 'precondition: note.md 已索引')
+  assert.deepEqual(store.watchlist, [], 'precondition: 还没登记 watch 根')
+
+  const wm = new WatchManager({}, config)
+  const written = await indexFile({}, config, doc, wm, root)
+  assert.equal(written, false, '内容未变，本轮不应更新条目')
+  assert.ok(store.watchlist.includes(root), '新根应记进内存 watchlist')
+
+  const onDisk = JSON.parse(readFileSync(path.join(root, config.memoryDir, 'watch.json'), 'utf8'))
+  assert.ok(onDisk.includes(root), 'watch.json 必须落盘（不能等下一次条目更新）')
+  ok('懒索引新登记 watch 根：无条目更新也会持久化')
 }
 
 console.log(`\nlazy-batch tests: ${passed} passed`)

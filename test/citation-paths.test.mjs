@@ -32,11 +32,11 @@ const ROOT = path.resolve('/tmp/cite-root')
 // ---- 1. 纯函数：相对路径保真 + 归一 + 去重 ----
 {
   const r = normalizeCitationFiles(
-    ['./src/a.js', 'src\\b.js', 'src/a.js', '', '   ', null, 42, 'docs/x.md'],
+    ['./src/a.js', 'src\\b.js', 'src/a.js', '', '   ', null, 42, 'docs/x.md', '..hidden.md'],
     ROOT,
   )
-  assert.deepEqual(r.files, ['src/a.js', 'src/b.js', 'docs/x.md'],
-    '相对路径原样保留；`./` 前缀与反斜杠归一；重复与非字符串/空串丢掉')
+  assert.deepEqual(r.files, ['src/a.js', 'src/b.js', 'docs/x.md', '..hidden.md'],
+    '相对路径原样保留；`./` 前缀与反斜杠归一；重复与非字符串/空串丢掉；`..hidden.md` 不是逃出根')
   assert.deepEqual(r.dropped, [], '这些都不该被丢')
   ok('纯函数：相对路径保真（`./` 归一、反斜杠→`/`、去重、跳过非字符串）')
 }

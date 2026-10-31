@@ -248,19 +248,30 @@ export function queryMemoryTool(ctx, config) {
       if (type === 'task') {
         const q = (queries[0] || '').toLowerCase()
         const matched = tasks
-          .filter((t) => !t.archived && (t.title.toLowerCase().includes(q) || (t.steps || []).some((s) => stepContent(s).toLowerCase().includes(q)) || (t.files || []).some((f) => f.toLowerCase().includes(q))))
+          .filter((t) => {
+            const title = String(t.title || '').toLowerCase()
+            const steps = Array.isArray(t.steps) ? t.steps : []
+            const files = Array.isArray(t.files) ? t.files : []
+            return !t.archived && (
+              title.includes(q)
+              || steps.some((s) => stepContent(s).toLowerCase().includes(q))
+              || files.some((f) => String(f).toLowerCase().includes(q))
+            )
+          })
           .slice(0, limit)
         if (!matched.length) {
           return `任务记录: 0 套匹配 "${args.query}"（list_tasks 查看全部，select_task 续做）`
         }
         for (const t of matched) {
-          const done = (t.steps || []).filter((s) => stepStatus(s) === 'completed').length
-          const total = (t.steps || []).length
-          const stepsText = (t.steps || []).length
-            ? (t.steps || []).map((s) => `- [${stepStatus(s) === 'completed' ? 'x' : stepStatus(s) === 'in_progress' ? '*' : ' '}] ${stepContent(s)}`).join('\n')
+          const steps = Array.isArray(t.steps) ? t.steps : []
+          const files = Array.isArray(t.files) ? t.files : []
+          const done = steps.filter((s) => stepStatus(s) === 'completed').length
+          const total = steps.length
+          const stepsText = steps.length
+            ? steps.map((s) => `- [${stepStatus(s) === 'completed' ? 'x' : stepStatus(s) === 'in_progress' ? '*' : ' '}] ${stepContent(s)}`).join('\n')
             : '（无步骤）'
-          const files = (t.files || []).slice(0, 8).join(', ')
-          lines.push(`### ${t.title} (${done}/${total} 完成)\n${stepsText}\n- 文件: ${files || '无'}`)
+          const filesText = files.slice(0, 8).join(', ')
+          lines.push(`### ${t.title} (${done}/${total} 完成)\n${stepsText}\n- 文件: ${filesText || '无'}`)
         }
         return truncate(lines.join('\n\n'), config.maxOutputChars)
       }

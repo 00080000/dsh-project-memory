@@ -481,7 +481,9 @@ function readJson(file, fallback) {
 function normalizeDoc(doc) {
   if (doc && typeof doc === 'object' && Array.isArray(doc.items)) {
     if (typeof doc.version !== 'number') doc.version = 1
-    if (!Array.isArray(doc.items)) doc.items = []
+    // 手改/旧版本可能把 null 混进 items：调用方大量使用 `it.id` / `it.archived`，一个 null
+    // 就能让全局召回或容量裁剪整段抛错。与 project 级 `_loadInsights` 的过滤保持一致。
+    doc.items = doc.items.filter((it) => it && typeof it === 'object' && !Array.isArray(it))
     return doc
   }
   return emptyInsightsDoc()

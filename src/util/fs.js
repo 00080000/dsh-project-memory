@@ -70,6 +70,18 @@ export function writeJsonAtomic(file, data, { ensureDir = true } = {}) {
   }
 }
 
+/**
+ * 删除文件并对 Windows 的瞬时占用（EPERM/EBUSY/EACCES）重试。
+ *
+ * 为什么需要：`unlinkSync` 和 `renameSync` 一样会被杀毒/索引器短暂占用。删除失败若被当成
+ * "已经没了"，删除意图（`forget` / 索引清理）会被静默丢掉，下一次 load 时旧 shard 又会复活。
+ * @param {string} file - 目标文件。
+ * @throws 真实失败（ENOENT 之外且重试仍失败）时原样抛出。
+ */
+export function unlinkWithRetry(file) {
+  return retryTransient(() => unlinkSync(file))
+}
+
 /** 本机标识：锁的存活判定只在同机可信（跨机只能退回 mtime）。 */
 const LOCK_HOST = os.hostname()
 const LOCK_FILE = '.write.lock'
@@ -243,9 +255,9 @@ export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000, hardSta
       if (lockIsStale(state, { staleMs, hardLimit, maxHoldMs })) {
         // 只删"刚刚读到的那个内容"：两次读之间锁可能已被别人抢到并重写。
         try {
-          if (readFileSync(file, 'utf8') === state.text) unlinkSync(file)
+          if (readFileSync(file, 'utf8') === state.text) unlinkWithRetry(file)
         } catch {
-          // 已被别处回收
+          // 已被别处回收，或杀毒瞬时占用；下一轮继续判定
         }
         continue
       }
@@ -275,7 +287,24 @@ function releaseDirLock(file, token) {
     } else if (text.trim() !== String(process.pid)) {
       return
     }
-    unlinkSync(file)
+    // 释放失败不能静默：锁文件还在、pid 又是自己，下一次 acquire 会把自己当成活锁
+    // （同机 pid 存活默认不回收，save 的 maxHoldMs 是 10 分钟），后续写入会被堵住。
+    // 先对 Windows 的 EPERM/EBUSY 做瞬时重试；仍删不掉就把内容改成 pid 0（死进程），
+    // 下一次 acquire 能立即判 stale，而不是等 10 分钟。
+    try {
+      unlinkWithRetry(file)
+    } catch {
+      try {
+        writeFileSync(file, JSON.stringify({
+          pid: 0,
+          host: LOCK_HOST,
+          token: 'released',
+          at: new Date().toISOString(),
+        }))
+      } catch {
+        // 连覆盖也失败：只能等 staleMs 兜底，不能因此抛给调用方
+      }
+    }
   } catch {
     // 已被回收或目录不可写：不影响调用方
   }
@@ -703,13 +732,13 @@ export function normalizeCitationFiles(files, root) {
     let rel = value.replace(/^\.\//, '')
     if (abs !== null) {
       const inside = path.relative(base, abs)
-      if (inside === '' || inside.startsWith('..') || path.isAbsolute(inside)) {
+      if (inside === '' || inside === '..' || inside.startsWith(`..${path.sep}`) || path.isAbsolute(inside)) {
         dropped.push(raw)
         continue
       }
       rel = inside.split(path.sep).join('/')
     }
-    if (!rel || rel.startsWith('..')) {
+    if (!rel || rel === '..' || rel.startsWith('../')) {
       dropped.push(raw)
       continue
     }
@@ -1238,7 +1267,7 @@ export function hasProjectMarker(dir) {
 
 function isInside(parent, child) {
   const rel = path.relative(parent, child)
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel))
 }
 
 /** 显式登记的根里，包含该文件的**最深**那一个（最长前缀匹配）。 */

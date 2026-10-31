@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { WatchManager } from '../src/watch.js'
+import { WatchManager, applyWatchSettings } from '../src/watch.js'
 
 let passed = 0
 const ok = (name) => {
@@ -153,6 +153,64 @@ const settle = () => new Promise((resolve) => setImmediate(resolve))
     for (const h of pending) origClearTimeout(h)
   }
   ok('异步 poll 期间切活跃/stop：定时器不重复，stop 后不再扫描')
+}
+
+// ---- 7. poll 进行中保存设置（stop → start）：watch 不得永久停摆 ----
+//
+// 回归：applyWatchSettings() 先 stop()（_stopped=true、清 timer）再 start()；旧 start() 的
+// `if (timer || _polling) return` 在轮询期间直接返回，于是 _stopped 留在 true，在飞那轮
+// _tick() 收尾时看到"已停止"就 return，watch 再也不排下一轮——设置页保存一次就可能静默停掉监视。
+{
+  const wm = new WatchManager({}, { memoryDir: '.dsh-project-memory' })
+  wm.poll = async () => false
+  wm.start(30000)
+  wm.timer?.unref?.()
+
+  wm._polling = true // 模拟一轮 poll 正在 await
+  const watching = applyWatchSettings(wm, { watch: { get: () => true }, watchInterval: { get: () => 45 } })
+  assert.equal(watching, true)
+  assert.equal(wm.timer, null, '轮询中不排第二个定时器')
+
+  wm._polling = false // 在飞那轮结束，_tick() 走收尾
+  await wm._tick()
+  assert.equal(wm._stopped, false, 'start() 必须复位 _stopped（否则 watch 永久停摆）')
+  assert.ok(wm.timer, '在飞 poll 结束后必须续上定时器')
+  assert.equal(wm._baseInterval, 45000, '新间隔生效')
+  wm.stop()
+  ok('poll 进行中保存设置：watch 不停摆，新间隔生效')
+}
+
+// ---- 8. poll 进行中回合结束：不要把它当成"本轮无变化"而翻倍退避 ----
+{
+  const wm = new WatchManager({}, { memoryDir: '.dsh-project-memory' })
+  let polls = 0
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  wm.poll = async () => {
+    polls++
+    wm._polling = true
+    await gate
+    wm._polling = false
+    return true // 这一轮真的有改动
+  }
+  wm.start(30000)
+  wm.setSessionActive('s1', true) // 活跃：节拍压到兜底
+  wm.timer?.unref?.()
+
+  const first = wm.timer
+  clearTimeout(first)
+  wm.timer = null
+  const tick = wm._tick()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(polls, 1, '先有一轮 poll 在跑')
+
+  wm.setSessionActive('s1', false) // 回合结束，但 poll 还在跑
+  release()
+  await tick
+  assert.equal(polls, 1, '不得在在飞 poll 上再叠一轮（那会被当成无变化）')
+  assert.equal(wm._interval, 30000, '有改动 → 回到 base，而不是翻倍退避')
+  wm.stop()
+  ok('poll 进行中回合结束：不叠轮、不误入退避')
 }
 
 // ---- 真实 pollRoot：删掉的文件要从 mtime 快照里清掉（否则同名同尺寸回来时会被当成未变）----

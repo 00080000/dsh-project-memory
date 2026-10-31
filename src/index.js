@@ -18,7 +18,7 @@ import { rememberRoute } from './llm-route.js'
 import { workflowCommandDefinition } from './commands/workflow.js'
 import { setupSkill } from './skill.js'
 import { flushDirtyStores } from './util/flush.js'
-import { cfgValue, changedConfigKeys } from './util/config.js'
+import { cfgValue, changedConfigKeys, asVolatile } from './util/config.js'
 
 export const name = 'dsh-project-memory'
 export const inject = ['llm', 'tools']
@@ -33,7 +33,7 @@ export const Config = Schema.object({
   maxFileSizeMb: Schema.number().default(10),
   maxOutputChars: Schema.number().default(8000),
   maxPdfPages: Schema.number().default(1000),
-  llmQueryExpansion: Schema.boolean().default(false).volatile(),
+  llmQueryExpansion: asVolatile(Schema.boolean().default(false)),
   expansionCount: Schema.number().default(6),
   // 辅助 LLM 调用的路由覆写 —— **索引期零 LLM**，只服务召回期查询扩展与反思期。
   // 未设置时取当前会话 header 的 provider/model，后台路径取最近一次会话路由；都拿不到时
@@ -49,9 +49,9 @@ export const Config = Schema.object({
   // 其余的键**刻意不标 volatile**：`lazyIndexing` / `watch` / `enableTypeScript` 关掉只会让记忆变旧，
   // 不属于"用户偏好"；它们仍可在 profile 里改，但不出现在卡片上（关掉监视等于放任索引过期）。
   lazyIndexing: Schema.boolean().default(true),
-  autoIndexOnFirstUse: Schema.boolean().default(false).volatile(),
+  autoIndexOnFirstUse: asVolatile(Schema.boolean().default(false)),
   watch: Schema.boolean().default(true),
-  watchInterval: Schema.number().default(30).volatile(),
+  watchInterval: asVolatile(Schema.number().default(30)),
   // 危险根护栏：家目录 / 文件系统根 / 系统目录 / 包管理器前缀（/opt/homebrew …）整体扫描会吃满
   // 内存，默认一律拒绝。`roots.*` 是配置档级例外表；`allowUnsafeRoots` 只放开内置名单，deny/exclude 仍优先。
   allowUnsafeRoots: Schema.boolean().default(false),

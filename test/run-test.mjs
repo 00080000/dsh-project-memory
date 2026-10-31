@@ -303,6 +303,33 @@ console.log('\n== sharded store layout & migration ==')
   check('same-dir instances share one state', instA === instB || instA.files === instB.files || Object.keys(instA.files).length === Object.keys(instB.files).length)
 }
 
+// 旧 store 的 entries.json 可能被手改成畸形形状：单个坏组不能拖垮整次迁移。
+{
+  const badDir = path.join(mkdtempSync(path.join(tmpdir(), 'pm-mig-bad-')), 'mem')
+  mkdirSync(badDir, { recursive: true })
+  writeFileSync(
+    path.join(badDir, 'index.json'),
+    JSON.stringify({ version: 1, files: {
+      'ok.md': { sha256: 'ok', size: 1, type: 'doc', indexedAt: '2026-08-25T00:00:00Z' },
+      'bad.md': { sha256: 'bad', size: 1, type: 'doc', indexedAt: '2026-08-25T00:00:00Z' },
+    } }),
+  )
+  writeFileSync(
+    path.join(badDir, 'entries.json'),
+    JSON.stringify({
+      'ok.md': [{ id: 'ok#1', type: 'doc', sourcePath: 'ok.md', sourceLine: 1, title: 'ok' }],
+      'bad.md': { not: 'an array' },
+    }),
+  )
+  writeFileSync(path.join(badDir, 'experience.json'), '[]')
+
+  const s = new ProjectMemoryStore(badDir).load()
+  check('malformed legacy entry group does not abort migration',
+    s.fileRecord('ok.md')?.sha256 === 'ok' && s.fileRecord('bad.md')?.sha256 === 'bad')
+  check('malformed legacy group is skipped, not crashed',
+    (s.entries['ok.md'] || []).length === 1 && (s.entries['bad.md'] || []).length === 0)
+}
+
 console.log('\n== store ==')
 {
   const storeDir = memoryRootFor(root, config.memoryDir)
@@ -633,6 +660,7 @@ console.log('\n== derived fields live in memory, not on disk ==')
   check('searchText 不写盘', Boolean(onDisk) && !('searchText' in onDisk))
   // 内存里按需物化（供 rankEntriesStreaming 用）
   delete st.entries['docs/a.md'][0].searchText
+  check('stats 不物化 searchText（只数条目）', st.stats().entries === 1 && st.entries['docs/a.md'][0].searchText === undefined)
   const got = st.allEntries()
   check('allEntries 按需物化 searchText', typeof got[0].searchText === 'string' && got[0].searchText.includes('alpha'))
 }

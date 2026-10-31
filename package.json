@@ -61,7 +61,7 @@
     "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.2",
     "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
     "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
-    "@deepseek-ai/schemastery": "^3.18.2",
+    "@deepseek-ai/schemastery": "^3.18.3",
     "@tsdown/css": "0.22.14",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
@@ -73,7 +73,7 @@
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-llm": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0 || >=0.1.1-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0",
     "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0 || >=0.1.1-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0",
-    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/schemastery": "^3.18.3",
     "typescript": "^5.0.0 || ^6.0.0"
   },
   "peerDependenciesMeta": {
