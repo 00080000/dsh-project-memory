@@ -359,7 +359,7 @@ export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BAT
     enhanceQueue.splice(existingIdx, 1)
   }
 
-  const task = { store, relPath, filePath, priority, cacheKey, promise: null, resolve: null }
+  const task = { store, relPath, filePath, priority, cacheKey, promise: null, resolve: null, hadRecord: Boolean(store?.files?.[relPath]) }
   task.promise = new Promise((resolve) => { task.resolve = resolve })
 
   if (enhanceQueue.length >= enhanceQueueMax) {
@@ -421,7 +421,7 @@ async function runEnhance(task) {
   try {
     const enhanced = deepParseWithTS(task.filePath, content)
     if (enhanced?.length) {
-      await task.store.commit(fn => applyEnhancedSymbols(fn, task.relPath, enhanced))
+      await task.store.commit(fn => applyEnhancedSymbols(fn, task.relPath, enhanced, { hadRecord: task.hadRecord }))
     }
   } catch (err) {
     console.warn(`[dsh-project-memory] enhance failed for ${task.relPath}: ${err.message}`)
@@ -452,7 +452,11 @@ function scheduleProcess() {
   processNext()
 }
 
-function applyEnhancedSymbols(fn, relPath, enhanced) {
+function applyEnhancedSymbols(fn, relPath, enhanced, { hadRecord = false } = {}) {
+  // 入队时这个文件还有记录、轮到执行时却没了：说明它已被删除/移出索引。此时再 setEntries
+  // 会写下**没有 files 记录**的孤儿符号，unseen 清理看不到它（只遍历 files），查询却会一直命它。
+  // `hadRecord` 为 false 的调用（测试 / 直接对未索引文件增强）保持旧行为：从零建条目。
+  if (hadRecord && !fn.files[relPath]) return
   // Store entries in fn.entries[relPath], not fn.files[relPath].entries
   const existingEntries = fn.entries[relPath] || []
   const nameOf = e => (e.title || '').replace(/\s*\([^)]*\)\s*$/, '')

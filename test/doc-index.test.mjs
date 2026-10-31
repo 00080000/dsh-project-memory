@@ -163,6 +163,18 @@ const CONFIG = { memoryDir: '.dsh-project-memory', chunkChars: 3000, maxChunksPe
   store.markFile('private-notes.md', { sha256: 'h', size: 1, type: 'doc', indexedAt: new Date().toISOString(), explicit: true })
   commitFileUpdates(store, { updates: [], unseen: new Set(), root: storeDir })
   assert.ok(store.fileRecord('private-notes.md'), '显式索引且文件还在 → 保留')
+
+  // watch / lazy 重新索引同一个文件时必须保留 explicit：否则下一次 index_repo 的 unseen
+  // 清理会把它当"没扫到 = 已删除"删掉（它本来就不在 git 清单里）。
+  const updated = store.applyFileUpdate('private-notes.md', {
+    expectedHash: 'h', hash: 'h2', size: 2, type: 'doc', mtimeMs: 1,
+    entries: [{ id: 'private-notes.md#0', type: 'doc', title: 'x', sourcePath: 'private-notes.md' }],
+  })
+  assert.equal(updated, true)
+  assert.equal(store.fileRecord('private-notes.md').explicit, true, '重新索引不得丢掉 explicit 标记')
+  commitFileUpdates(store, { updates: [], unseen: new Set(), root: storeDir })
+  assert.ok(store.fileRecord('private-notes.md'), '重新索引后仍应被 unseen 清理豁免')
+
   rmSync(file)
   commitFileUpdates(store, { updates: [], unseen: new Set(), root: storeDir })
   assert.equal(store.fileRecord('private-notes.md'), undefined, '文件真被删了 → 清掉')

@@ -330,5 +330,21 @@ console.log('\n== 队列有上界，且正文/解析只发生在出队时 ==')
   }
 }
 
+// ---- 11. 排队后文件被删除：增强结果不得留下没有 files 记录的孤儿符号 ----
+{
+  const d = mkdtempSync(path.join(tmpdir(), 'pm-enhancer-gone-'))
+  const st = new ProjectMemoryStore(path.join(d, '.dsh-project-memory')).load()
+  const file = path.join(d, 'gone.ts')
+  writeFileSync(file, 'export function gone(x: number): number { return x }\n')
+  st.commit((s) => {
+    s.markFile('gone.ts', { sha256: 'h', size: 1, type: 'code', indexedAt: new Date().toISOString() })
+    s.setEntries('gone.ts', [{ id: 'gone.ts#1', type: 'symbol', title: 'gone', sourcePath: 'gone.ts', sourceLine: 1 }])
+  })
+  const queued = enqueueEnhance(st, 'gone.ts', file, 2, { enableTypeScript: true }, d)
+  st.removeFile('gone.ts') // 模拟文件在排队后、任务执行前被删/移出索引
+  await queued
+  check('排队后删除：增强任务不得留下孤儿符号', st.entries['gone.ts'] === undefined && st.files['gone.ts'] === undefined)
+}
+
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECKS FAILED`} (${passed} passed)`)
 process.exit(failed === 0 ? 0 : 1)

@@ -11,7 +11,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { Config } from '../src/index.js'
-import { cfgValue, changedConfigKeys } from '../src/util/config.js'
+import { cfgValue, changedConfigKeys, asVolatile } from '../src/util/config.js'
 import { WatchManager, applyWatchSettings } from '../src/watch.js'
 
 let passed = 0
@@ -46,6 +46,25 @@ const ok = (name) => {
   assert.equal(cfgValue(undefined, 'watch'), undefined, 'undefined config 不抛错')
   assert.equal(cfgValue({}, 'watch'), undefined, '缺字段返回 undefined')
   ok('cfgValue 同时接受 ref 与普通值（watch 关得掉，不会把 ref 当永远为真）')
+}
+
+// ---- 2b. 旧宿主 schemastery 没有 .volatile()：降级为普通值，不能崩在模块加载期 ----
+{
+  const marked = { volatile: () => 'marked' }
+  assert.equal(asVolatile(marked), 'marked', '有 volatile 时原样标成 ref schema')
+
+  const plain = { meta: {} }
+  let warned = 0
+  const origWarn = console.warn
+  console.warn = () => { warned++ }
+  try {
+    assert.equal(asVolatile(plain), plain, '没有 volatile 时原样返回（降级，不抛错）')
+    assert.equal(typeof asVolatile({}), 'object', '降级后再次调用不抛错也不重复告警')
+  } finally {
+    console.warn = origWarn
+  }
+  assert.equal(warned, 1, '缺 .volatile() 只告警一次')
+  ok('schemastery < 3.18.3：asVolatile 降级而不是在加载期抛错')
 }
 
 // ---- 3. volatile 更新路径：整份 Config 的 `[[]]` 必须读成「全部重读」 ----

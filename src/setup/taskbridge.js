@@ -60,7 +60,7 @@ export function normalizeRelFile(root, file) {
   if (typeof file !== 'string' || !file) return null
   const abs = path.isAbsolute(file) ? file : path.resolve(root, file)
   const rel = path.relative(root, abs)
-  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null
+  if (!rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return null
   return rel.split(path.sep).join('/')
 }
 

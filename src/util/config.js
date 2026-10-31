@@ -21,6 +21,31 @@ export function cfgValue(config, key) {
   return value && typeof value.get === 'function' ? value.get() : value
 }
 
+let warnedNoVolatile = false
+/**
+ * 把 schema 标成 volatile；宿主 schemastery < 3.18.3 时降级为普通值。
+ *
+ * `.volatile()` 是 3.18.3 才有的方法，而 peer 范围曾经写成 `^3.18.1`：旧宿主在
+ * **模块加载期**执行 `Schema.boolean().default(false).volatile()` 会直接抛 TypeError，插件
+ * 整个起不来。这里做一次特性探测：方法不在就原样返回（设置页不可用，但 cfgValue 仍能读值，
+ * 插件其余功能正常），并只告警一次。
+ * @template T
+ * @param {T} schema 任意 schemastery schema
+ * @returns {T}
+ */
+export function asVolatile(schema) {
+  const method = schema?.volatile
+  if (typeof method === 'function') return method.call(schema)
+  if (!warnedNoVolatile) {
+    warnedNoVolatile = true
+    console.warn(
+      '[dsh-project-memory] host schemastery has no .volatile() (needs >= 3.18.3); ' +
+        'visual settings are unavailable, config values stay static',
+    )
+  }
+  return schema
+}
+
 /**
  * 把 `loader/volatile-update` 的路径列表归成顶层字段名集合。
  *

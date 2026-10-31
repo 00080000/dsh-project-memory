@@ -67,10 +67,32 @@ const CONFIG = { memoryDir: '.dsh-project-memory', maxOutputChars: 8000, chunkCh
   mkdirSync(path.join(d, 'shards'), { recursive: true })
   writeFileSync(path.join(d, 'shards', 'x.json'), JSON.stringify({ relPath: 'a.md', record: { sha256: 'h', type: 'doc' }, entries: {} }))
   writeFileSync(path.join(d, 'insights.json'), JSON.stringify({ version: 2, migratedAt: 'now', items: [null, { id: 'ok' }] }))
+  // 辅助集合的畸形形状：null 任务 / 非数组 watchlist / 数组 binding 都不能把读取或统计打崩。
+  writeFileSync(path.join(d, 'tasks.json'), JSON.stringify({ not: 'an array' }))
+  writeFileSync(path.join(d, 'binding.json'), JSON.stringify([]))
+  writeFileSync(path.join(d, 'watch.json'), JSON.stringify({ not: 'an array' }))
   const s = new ProjectMemoryStore(d).load()
   assert.deepEqual(s.allEntries(), [], 'entries 非数组时按空处理，不抛')
   assert.equal(s.insightItems().length, 1, 'null 条目被过滤')
+  assert.deepEqual(s.tasks, [], 'tasks 非数组时按空处理')
+  assert.deepEqual(s.binding, {}, 'binding 非对象时按空处理')
+  assert.deepEqual(s.watchlist, [], 'watchlist 非数组时按空处理')
+  assert.doesNotThrow(() => s.stats(), 'stats 不能在畸形辅助集合上抛')
+  assert.equal(s.addWatch('/tmp/root'), true, 'addWatch 不能在畸形 watchlist 上抛')
   ok('畸形 shard / insight 条目：读取不抛错')
+}
+
+// --- 3b. 任务级 insights 里的 null：不能让 forget / 去重整段崩 ---
+{
+  const d = dir('bad-task-ins-')
+  writeFileSync(path.join(d, 'format.json'), JSON.stringify({ version: 2, layout: 'sharded' }))
+  writeFileSync(path.join(d, 'tasks.json'), JSON.stringify([
+    { id: 'tsk_bad', title: 'bad', archived: false, insights: [null, { id: 'ti_ok', kind: 'lesson', title: 'ok' }] },
+  ]))
+  const s = new ProjectMemoryStore(d).load()
+  assert.equal(s.tasks[0].insights.length, 1, 'null 任务级条目被过滤')
+  assert.equal(s.tasks[0].insights[0].id, 'ti_ok')
+  ok('任务级 insights 畸形：null 被过滤，读取不抛错')
 }
 
 // --- 4. 衰减：从未命中但久置的条目也要归档（decayDays 不再是死开关） ---

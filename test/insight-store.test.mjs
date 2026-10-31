@@ -65,6 +65,16 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
   ok('GlobalStore 进程内单例：两个实例不互相覆盖')
 }
 
+// --- 0b. global.json 里混进 null：读取/裁剪不能崩 ---
+{
+  const { globalFile } = newProject()
+  writeFileSync(globalFile, JSON.stringify({ version: 1, items: [null, { id: 'g_ok', kind: 'lesson', scope: 'global', title: 'ok' }] }))
+  const g = new GlobalStore(globalFile).load()
+  assert.deepEqual(g.items().map((it) => it.id), ['g_ok'], 'null 条目必须被过滤')
+  assert.doesNotThrow(() => pruneItems(g.items(), 1), '容量裁剪不能在 null 条目上抛')
+  ok('global.json 畸形 items：读取与裁剪不抛错')
+}
+
 // --- 1. insights.json 存取往返（store.commit 事务） ---
 {
   const { root, store } = newProject()

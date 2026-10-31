@@ -54,10 +54,19 @@ export function indexDocTool(ctx, config) {
         }
       }
       const memoryDir = memoryRootFor(root, config.memoryDir)
+      // root 可以是显式传入的。文件必须真的在 root 之内：否则 rel 会变成 `../x`，引用路径
+      // 逃出项目根，下一次扫描也不可能再见到它（既不会被清理，也没法按项目相对路径引用）。
+      const relRaw = path.relative(root, filePath)
+      if (!relRaw || relRaw === '..' || relRaw.startsWith(`..${path.sep}`) || path.isAbsolute(relRaw)) {
+        return (
+          `Not indexed: ${filePath} is outside the index root ${root}. ` +
+          'Pass the document\'s own project root (or omit root to detect it from the document path).'
+        )
+      }
 
       const store = new ProjectMemoryStore(memoryDir).load()
 
-      const rel = storeKey(path.relative(root, filePath).split(path.sep).join('/'))
+      const rel = storeKey(relRaw.split(path.sep).join('/'))
       // mtime 必须在读正文之前取：记录里的 mtime 不能比内容新，否则懒索引的快路径会跳过之后的真实改动。
       let mtimeMs
       try {

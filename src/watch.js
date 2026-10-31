@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import { listProjectFiles, memoryDirName, memoryRootFor, relativePath, rootRejection, scanLimits, storeKey } from './util/fs.js'
@@ -67,7 +67,7 @@ export class WatchManager {
     let best = null
     for (const root of this.roots.keys()) {
       const rel = path.relative(root, absPath)
-      if (rel.startsWith('..') || path.isAbsolute(rel)) continue
+      if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) continue
       if (!best || root.length > best.length) best = root
     }
     return best
@@ -95,7 +95,11 @@ export class WatchManager {
           dropped++
           continue
         }
-        this.addRoot(root)
+        // 文件路径（历史遗留 / 手改 watch.json）也摘掉：addRoot 现在只接受目录。
+        if (!this.addRoot(root) && !this.roots.has(root)) {
+          store.removeWatch(root)
+          dropped++
+        }
       }
       if (dropped) store.save()
     }
@@ -104,6 +108,12 @@ export class WatchManager {
   addRoot(root) {
     // 根目录不存在就拒绝：否则每轮 poll 的 commit → save → mkdirSync 会把它重新「创建」出来。
     if (!existsSync(root)) return false
+    // 文件不是可轮询的根：readdir/listProjectFiles 会每轮失败，持久化后还会在启动时反复自愈。
+    try {
+      if (!statSync(root).isDirectory()) return false
+    } catch {
+      return false
+    }
     // 文件系统根 / 家目录 / 系统前缀 / roots.deny / roots.exclude 不整体监听（子目录允许），
     // 除非配置显式放行（仅内置名单可放行）。
     if (rootRejection(root, this.config)) return false
@@ -134,8 +144,6 @@ export class WatchManager {
   }
 
   start(intervalMs = 30000) {
-    // 轮询进行中 `timer` 会短暂为 null；此时再 start 会排第二个定时器。等这一轮结束由 `_tick()` 自己续。
-    if (this.timer || this._polling) return
     // 非法值（NaN/undefined）会让定时器退化成 1ms 轮询打满事件循环，故回退默认 30s。
     const raw = Number(intervalMs)
     this._baseInterval = Number.isFinite(raw) ? Math.max(raw, 1000) : 30000
@@ -146,7 +154,13 @@ export class WatchManager {
     // 不是"永不扫描"——外部编辑器改文件、或回合一直不结束（崩溃/长任务）时索引仍会自愈。
     this._activeInterval = Math.max(this._baseInterval * 10, 300000)
     this._interval = this._baseInterval
+    // 复位必须在 guard 之前：设置页保存走 stop() → start()，而 stop() 会把 _stopped 置 true。
+    // 如果轮询正在进行（_polling=true），这里的提前返回会留下 _stopped=true，那一轮 _tick() 收尾时
+    // 看到"已停止"就不再排下一轮——watch 永久停摆，且 applyWatchSettings() 还返回 true。
+    // 在飞的一轮结束时 _tick() 会按新的 _baseInterval/_activeInterval 续上。
     this._stopped = false
+    // 轮询进行中 `timer` 会短暂为 null；此时再 start 会排第二个定时器。等这一轮结束由 `_tick()` 自己续。
+    if (this.timer || this._polling) return
     this._schedule()
   }
 
@@ -173,7 +187,13 @@ export class WatchManager {
     if (next) {
       this._interval = this._activeInterval
       this._schedule(this._activeInterval)
-    } else void this._tick() // 回合结束：立刻补扫，然后回到常规节拍
+    } else if (!this._polling) {
+      // 回合结束：立刻补扫，然后回到常规节拍。
+      // 如果已经有一轮 poll 在跑，不要在这里再起一轮：`poll()` 的 reentry guard 会把它当成
+      // "本轮无变化"（返回 false），`_tick()` 于是按无变化把间隔翻倍；在飞那轮真正结束时
+      // 又因为定时器已存在而降不回 base——回合结束的补扫被推迟到退避间隔之后。
+      void this._tick()
+    }
   }
 
   _schedule(interval = this._interval) {

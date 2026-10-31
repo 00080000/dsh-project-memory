@@ -5,7 +5,7 @@
 // 一份重试 rename；父目录契约也不同）。这里的用例钉住合并后的统一语义，最后一条同时钉住
 // store.js 里那两句已冗余的 mkdirSync(shards) 删除是安全的。
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { writeJsonAtomic } from '../src/util/fs.js'
@@ -108,6 +108,32 @@ const base = mkdtempSync(path.join(tmpdir(), 'pm-atomic-'))
   assert.equal(reloaded.entries['a.js'][0].title, 'second', '重载后应读到新内容')
   assert.equal(leftoverTmps(shardsDir).length, 0)
   ok('shards/ 不存在时 store 仍能写入（父目录由 writeJsonAtomic 保证）')
+}
+
+// ---- 7. 删除 shard 失败不得被当成"已经没了"（否则下次 load 会复活旧条目）----
+{
+  const memoryDir = path.join(base, 'unlink-fail')
+  const store = new ProjectMemoryStore(memoryDir).load()
+  store.commit((s) => {
+    s.markFile('a.js', { sha256: 'h1', size: 1, type: 'code', indexedAt: new Date().toISOString() })
+    s.setEntries('a.js', [{ id: 'a.js#1', type: 'code', title: 'first', sourcePath: 'a.js', sourceLine: 1 }])
+  })
+  const shardsDir = path.join(memoryDir, 'shards')
+  const shardName = readdirSync(shardsDir).find((n) => n.endsWith('.json'))
+  const shardPath = path.join(shardsDir, shardName)
+  // 用一个目录占住 shard 路径，让 unlinkSync 真实失败（Windows EPERM / POSIX EISDIR）。
+  unlinkSync(shardPath)
+  mkdirSync(shardPath)
+
+  store.removeFile('a.js')
+  assert.equal(store.save(), false, '删除失败时 save 必须返回 false（不能谎报成功）')
+  assert.equal(store._removedShards.has('a.js'), true, '删除意图必须保留以便重试')
+  assert.equal(statSync(shardPath).isDirectory(), true, '前置条件：shard 路径仍是目录')
+
+  rmSync(shardPath, { recursive: true, force: true })
+  assert.equal(store.save(), true, '障碍消失后重试应成功')
+  assert.equal(existsSync(shardPath), false, '重试后 shard 必须真的被删除')
+  ok('删除 shard 失败：保留删除意图并在重试时完成（不静默复活）')
 }
 
 console.log(`\natomic-write tests: ${passed} passed`)

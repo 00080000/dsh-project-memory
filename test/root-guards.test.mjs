@@ -223,6 +223,9 @@ console.log('\n== watch manager ==')
   check('addRoot refuses the filesystem root', wm.addRoot(path.parse(process.cwd()).root) === false)
   const project = tempProject()
   check('addRoot accepts a project directory', wm.addRoot(project) === true)
+  const fileRoot = path.join(project, 'notes.md')
+  writeFileSync(fileRoot, '# n\n')
+  check('addRoot refuses a file (only directories can be polled)', wm.addRoot(fileRoot) === false)
   check('rootContaining finds the registered ancestor', wm.rootContaining(path.join(project, 'src', 'a.js')) === project)
   check('rootContaining ignores unrelated paths', wm.rootContaining(path.join(TMP, 'pm-unrelated', 'a.js')) === null)
 }
@@ -231,9 +234,12 @@ console.log('\n== restorePersisted self-heals a polluted watchlist ==')
 {
   const project = tempProject('pm-heal-')
   const store = new ProjectMemoryStore(memoryRootFor(project, CONFIG.memoryDir))
+  const fileRoot = path.join(project, 'watched.md')
+  writeFileSync(fileRoot, '# not a directory\n')
   store.addWatch(project)
   store.addWatch(HOME)
   store.addWatch('/opt/homebrew')
+  store.addWatch(fileRoot)
   store.save()
 
   const cwd = process.cwd
@@ -247,6 +253,7 @@ console.log('\n== restorePersisted self-heals a polluted watchlist ==')
   const after = new ProjectMemoryStore(memoryRootFor(project, CONFIG.memoryDir)).load()
   check('the home-directory root is removed from watch.json', !after.watchlist.includes(HOME))
   check('the package-manager root is dropped too', !after.watchlist.includes('/opt/homebrew'))
+  check('a persisted file root is dropped (only directories can be watched)', !wm.roots.has(fileRoot) && !after.watchlist.includes(fileRoot))
   wm.stop()
 }
 
@@ -276,6 +283,17 @@ console.log('\n== index_doc refuses documents outside a project ==')
   writeFileSync(docPath, '# Spec\n\nbody text here.')
   const indexed = await indexDocTool({}, CONFIG).execute({ file_path: docPath })
   check('a document inside a project still indexes', indexed.startsWith('Indexed:'))
+
+  // 显式 root 不是"随便指一个项目就能把外面的文件塞进来"：rel 变成 ../ 既逃出引用根，
+  // 也永远不会被扫描清单见到。
+  const holder = tempProject('pm-guard-holder-')
+  const outsideDoc = path.join(bare, 'outside.md')
+  writeFileSync(outsideDoc, '# Outside\n\nnot part of the holder project.')
+  const refused = await indexDocTool({}, CONFIG).execute({ file_path: outsideDoc, root: holder })
+  check('an explicit root rejects a file outside it',
+    refused.startsWith('Not indexed:') && /outside the index root/.test(refused))
+  check('the refused outside file creates no store under the explicit root',
+    !existsSync(path.join(holder, CONFIG.memoryDir)))
 }
 
 console.log('\n== read paths never create a store for a typo root ==')

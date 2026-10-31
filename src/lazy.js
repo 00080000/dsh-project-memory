@@ -178,15 +178,18 @@ export async function indexObservedBatch(config, items, watchManager = null) {
       }
     }
 
+    let addedWatch = false
     if (watchManager && watchManager.addRoot(root)) {
       // 只有真正新登记的根才持久化：addRoot 拒绝的根（不安全/不存在）不再被无条件
       // addWatch 记进 watch.json —— 那样会造出一个每次启动都复活的"僵尸根"。
-      store.addWatch(root)
+      addedWatch = store.addWatch(root)
     }
 
     try {
       if (updates.length > 0) commitFileUpdates(store, { updates })
-      else if (refreshed) store.commit(() => {})
+      // addedWatch 也要落盘：本轮可能没有任何条目更新（文件已是最新），但新登记的 watch 根
+      // 是独立的事实；不 save 的话重启后它不在 watch.json 里，监视会静默退回启动时的根集合。
+      else if (refreshed || addedWatch) store.commit(() => {})
     } catch (err) {
       console.error(`[dsh-project-memory] lazy index commit failed for ${root}: ${err.message}`)
     }

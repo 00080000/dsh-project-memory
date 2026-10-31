@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { tokenizeRaw, makeSearchText } from './util/search.js'
-import { acquireDirLock, storeKey, writeJsonAtomic } from './util/fs.js'
+import { acquireDirLock, storeKey, unlinkWithRetry, writeJsonAtomic } from './util/fs.js'
 import { debugPersistence } from './util/persist.js'
 import { trackDirty, untrackDirty } from './util/flush.js'
 import { backfillDerivedTriggers } from './readiness.js'
@@ -360,6 +360,15 @@ function shardRelPath(dir, rel) {
   return path.join(dir, SHARDS_DIR, createHash('sha256').update(rel).digest('hex') + '.json')
 }
 
+/** 数条目但**不**物化 searchText：stats/overview 只报数量，不该为一次统计把整库检索文本建出来。 */
+function countEntries(store) {
+  let n = 0
+  const entries = store?.entries
+  if (!entries || typeof entries !== 'object') return n
+  for (const list of Object.values(entries)) if (Array.isArray(list)) n += list.length
+  return n
+}
+
 export class ProjectMemoryStore {
   constructor(memoryDir) {
     this.dir = memoryDir
@@ -513,8 +522,14 @@ export class ProjectMemoryStore {
       )
     }
     for (const rel of Object.keys(files)) {
-      // 父目录由 writeJsonAtomic 保证
-      writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: files[rel], entries: (entries[rel] || []).map(withoutPersistedDerived) })
+      // 父目录由 writeJsonAtomic 保证。legacy 的每个组都可能是手改/损坏的形状；不是数组就
+      // 跳过该组（与 `_loadSharded` 对畸形 shard 的处理一致），不能让一个坏组拖垮整次迁移。
+      const group = entries[rel]
+      const list = Array.isArray(group) ? group : []
+      if (group !== undefined && !Array.isArray(group)) {
+        console.error(`[dsh-project-memory] migration skipped malformed entry group for ${rel} (expected an array)`)
+      }
+      writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: files[rel], entries: list.map(withoutPersistedDerived) })
     }
     writeJsonAtomic(formatPath, { version: 2, layout: 'sharded' })
     for (const stale of [legacyEntriesPath, path.join(this.dir, INDEX_FILE)]) {
@@ -589,9 +604,26 @@ export class ProjectMemoryStore {
     }
     this._entriesVersion++
     this.experience = this._loadJson(path.join(this.dir, EXPERIENCE_FILE), [])
-    this.tasks = this._loadJson(path.join(this.dir, TASKS_FILE), [])
-    this.binding = this._loadJson(path.join(this.dir, BINDING_FILE), {})
-    this.watchlist = this._loadJson(path.join(this.dir, WATCH_FILE), [])
+    // 辅助集合也可能被手改/旧版本写成别的形状。读路径不能因此抛错：tasks 里的 null 会让
+    // `t.archived` / `.id` 崩，watchlist 不是数组则 `[...watchlist]` 直接 TypeError。
+    const tasksDoc = this._loadJson(path.join(this.dir, TASKS_FILE), [])
+    this.tasks = Array.isArray(tasksDoc) ? tasksDoc.filter(isRecord) : []
+    if (tasksDoc !== null && !Array.isArray(tasksDoc)) {
+      console.error(`[dsh-project-memory] ${TASKS_FILE} is not an array; starting with no tasks`)
+    }
+    // 任务级 insights 同样可能混进 null：`taskContaining()` / `removeMemory()` 直接读 `i.id`，
+    // 一个 null 就能让 forget/去重整段抛错。只保留对象，非数组形状按空处理。
+    for (const task of this.tasks) {
+      if (Array.isArray(task.insights)) task.insights = task.insights.filter(isRecord)
+      else if (task.insights !== undefined) task.insights = []
+    }
+    const bindingDoc = this._loadJson(path.join(this.dir, BINDING_FILE), {})
+    this.binding = isRecord(bindingDoc) ? bindingDoc : {}
+    const watchDoc = this._loadJson(path.join(this.dir, WATCH_FILE), [])
+    this.watchlist = Array.isArray(watchDoc) ? watchDoc.filter((r) => typeof r === 'string' && r) : []
+    if (watchDoc !== null && !Array.isArray(watchDoc)) {
+      console.error(`[dsh-project-memory] ${WATCH_FILE} is not an array; starting with no watch roots`)
+    }
     // 这四个集合的内容刚刚被换掉，让 auxCharsOf/精确估算重算（而不是沿用上一份实例的账）。
     this._auxVersion++
     this._formatWritten = existsSafe(path.join(this.dir, FORMAT_FILE))
@@ -637,51 +669,80 @@ export class ProjectMemoryStore {
       console.error(`[dsh-project-memory] ${EXPERIENCE_FILE} is not an array; importing nothing (file kept as-is)`)
       return
     }
+    // 已经迁移过、或没有可导入的输入：只负责把残留的旧文件归档，然后清空内存副本。
+    if (this.insights.migratedAt || (!legacyOnDisk && legacy.length === 0)) {
+      if (legacyOnDisk) {
+        try {
+          renameSync(legacyFile, `${legacyFile}.migrated`)
+        } catch (err) {
+          if (err?.code !== 'ENOENT') {
+            console.error(`[dsh-project-memory] could not archive ${EXPERIENCE_FILE}: ${err.message}`)
+          }
+        }
+      }
+      this.experience = []
+      return
+    }
+    // 需要导入：整段"读 insights → 合并 → 写回 → 归档旧文件"必须放在跨进程目录锁里。
+    // 否则两个 dsh 同时升级同一个旧 store 时，后写的迁移会把另一个进程刚写入的 insight 覆盖掉。
+    const release = acquireDirLock(this.dir, { timeoutMs: 2000, ensureDir: false })
+    if (!release) {
+      // 保持 experience 原样，下一次 load() 再试；本次查询暂时看不到旧笔记，但不丢数据。
+      console.error(`[dsh-project-memory] ${EXPERIENCE_FILE} migration skipped: store is busy; will retry on next load`)
+      return
+    }
     let imported = 0
-    // 只有值得写的输入（`migratedAt` 为空 + 旧文件在或有旧条目）才导入：否则 `load()` 会在空目录里
-    // mkdir + 写 insights.json，让调用方"目录已存在/有内容"的判断失真（容器目录被当成项目根）。
-    if (!this.insights.migratedAt && (legacyOnDisk || legacy.length > 0)) {
-      const now = new Date().toISOString()
-      const known = new Set(this.insights.items.map((it) => it.id))
-      for (const item of legacy) {
-        if (!item || !item.problem || known.has(item.id)) continue
-        known.add(item.id)
-        this.insights.items.push({
-          id: item.id,
-          kind: 'experience',
-          scope: 'project',
-          title: String(item.problem).slice(0, 120),
-          problem: item.problem,
-          solution: item.solution,
-          files: item.sourceFile ? [item.sourceFile] : [],
-          symbols: [],
-          sourceTaskIds: [],
-          source: 'migrate',
-          confidence: 1,
-          hitCount: 0,
-          createdAt: item.createdAt || now,
-          updatedAt: item.updatedAt || now,
-        })
-        imported++
-      }
-      this.insights.migratedAt = now
-      try {
+    try {
+      // 等锁期间另一个进程可能已经迁移完：以磁盘为准，绝不能用等锁前的旧快照覆盖它。
+      const insightsPath = path.join(this.dir, INSIGHTS_FILE)
+      const diskDoc = this._loadJson(insightsPath, null)
+      if (isRecord(diskDoc) && Array.isArray(diskDoc.items) && diskDoc.migratedAt) {
+        this.insights = { ...diskDoc, items: diskDoc.items.filter(isRecord) }
+      } else {
+        const now = new Date().toISOString()
+        const known = new Set(this.insights.items.map((it) => it.id))
+        for (const item of legacy) {
+          if (!item || !item.problem || known.has(item.id)) continue
+          known.add(item.id)
+          this.insights.items.push({
+            id: item.id,
+            kind: 'experience',
+            scope: 'project',
+            title: String(item.problem).slice(0, 120),
+            problem: item.problem,
+            solution: item.solution,
+            files: item.sourceFile ? [item.sourceFile] : [],
+            symbols: [],
+            sourceTaskIds: [],
+            source: 'migrate',
+            confidence: 1,
+            hitCount: 0,
+            createdAt: item.createdAt || now,
+            updatedAt: item.updatedAt || now,
+          })
+          imported++
+        }
+        this.insights.migratedAt = now
         mkdirSync(this.dir, { recursive: true })
-        writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights, { ensureDir: false })
-      } catch (err) {
-        // 没写进 insights.json 就**不能**把旧文件收走：那会真的丢数据。
-        console.error(`[dsh-project-memory] insights migration write failed, keeping ${EXPERIENCE_FILE}: ${err.message}`)
-        return
+        writeJsonAtomic(insightsPath, this.insights, { ensureDir: false })
       }
-    }
-    if (legacyOnDisk) {
-      try {
-        renameSync(legacyFile, `${legacyFile}.migrated`)
-      } catch (err) {
-        console.error(`[dsh-project-memory] could not archive ${EXPERIENCE_FILE} (imported ${imported} note(s)): ${err.message}`)
+      if (legacyOnDisk) {
+        try {
+          renameSync(legacyFile, `${legacyFile}.migrated`)
+        } catch (err) {
+          // 另一个进程可能已经归档走了；ENOENT 不算失败。
+          if (err?.code !== 'ENOENT') {
+            console.error(`[dsh-project-memory] could not archive ${EXPERIENCE_FILE} (imported ${imported} note(s)): ${err.message}`)
+          }
+        }
       }
+      this.experience = []
+    } catch (err) {
+      // 没写进 insights.json 就**不能**把旧文件收走：那会真的丢数据。
+      console.error(`[dsh-project-memory] insights migration write failed, keeping ${EXPERIENCE_FILE}: ${err.message}`)
+    } finally {
+      release()
     }
-    this.experience = []
   }
 
   insightsDoc() {
@@ -851,8 +912,7 @@ export class ProjectMemoryStore {
       this._scheduleSaveRetry()
       return false
     }
-    let wroteInsights = false
-    let wroteTasks = false
+    let removalFailed = false
     try {
       // 先合并另一进程已落盘的小文档，再写；分片按“加载时 hash”做冲突检测。
       this._mergeAuxFromDisk()
@@ -903,27 +963,40 @@ export class ProjectMemoryStore {
           // 删除与另一进程的更新撞车：没有删除时间戳可比，保守采用对方版本，让内存与磁盘一致。
           this._adoptDiskShard(rel, disk)
           this._warnConflict(rel)
+          this._removedShards.delete(rel)
           continue
         }
         try {
-          unlinkSync(shardRelPath(this.dir, rel))
-        } catch {
-          // shard file already gone; nothing to do
+          // 删除也要对 Windows 瞬时占用重试；失败时**保留删除意图**，否则下一次 load 会把
+          // 这个 shard 里的旧条目复活（`unlinkSync` 的 EPERM 曾经被 catch 成"已经没了"）。
+          unlinkWithRetry(shardRelPath(this.dir, rel))
+        } catch (err) {
+          if (err?.code !== 'ENOENT') {
+            removalFailed = true
+            console.error(
+              `[dsh-project-memory] could not delete shard for ${rel}: ${err?.message || err}; will retry`,
+            )
+            continue
+          }
         }
+        this._removedShards.delete(rel)
         this._baseFileSha.delete(rel)
       }
-      this._removedShards.clear()
-      wroteInsights = this._dirtyInsights
-      wroteTasks = this._dirtyTasks
-      if (wroteInsights) {
+      if (this._dirtyInsights) {
         // v2 → v3 是纯语义升级，形状不变；老版本读到 v3 仍按 v2 字段解析。
         if (this.insights && this.insights.version !== 3) this.insights.version = 3
         writeJsonAtomic(path.join(this.dir, INSIGHTS_FILE), this.insights, { ensureDir: false })
         this._dirtyInsights = false
+        // 合并基线在**这一份写成功后**就推进：后面的 binding/watch 写失败时，
+        // 不能让 insights 的基线停在旧水位，否则下一次删除新建条目可能算不出墓碑。
+        this._baseInsightIds = new Set(this.insights.items.map((it) => it?.id).filter(Boolean))
+        this._createdInsightIds.clear()
       }
       if (this._dirtyTasks) {
         writeJsonAtomic(path.join(this.dir, TASKS_FILE), this.tasks, { ensureDir: false })
         this._dirtyTasks = false
+        this._createdTaskIds.clear()
+        this._resetTaskInsightBases()
       }
       if (this._dirtyBinding) {
         writeJsonAtomic(path.join(this.dir, BINDING_FILE), this.binding, { ensureDir: false })
@@ -941,20 +1014,17 @@ export class ProjectMemoryStore {
     } finally {
       release()
     }
-    this._saveRetryAttempts = 0
-    this.lastSaveOk = true
-    untrackDirty(this)
-    // 落盘成功才推进基线：失败时保持"本进程新建"的标记，下一次 save 仍要补写。
-    if (wroteInsights) {
-      this._baseInsightIds = new Set(this.insights.items.map((it) => it?.id).filter(Boolean))
-      this._createdInsightIds.clear()
+    if (removalFailed) {
+      // 其它文件已经写成功，只是删除没做完：保持脏、留给后台/退出 flush 重试，并如实返回 false。
+      this.lastSaveOk = false
+      trackDirty(this)
+      this._scheduleSaveRetry()
+    } else {
+      this._saveRetryAttempts = 0
+      this.lastSaveOk = true
+      untrackDirty(this)
     }
-    if (wroteTasks) {
-      // 只有真的落盘成功才推进任务条目的合并基线；失败时保留旧基线，重试仍能识别本地新增/删除。
-      this._createdTaskIds.clear()
-      this._resetTaskInsightBases()
-    }
-    return true
+    return !removalFailed
   }
 
   /**
@@ -1255,7 +1325,7 @@ export class ProjectMemoryStore {
   stats() {
     return {
       files: Object.keys(this.files).length,
-      entries: this.allEntries().length,
+      entries: countEntries(this),
       // 经验笔记 = insight 里 kind:'experience' 的那些（含从 v0.4 导入的）。project 级为准。
       experience: this.insights.items.filter((it) => it && it.kind === 'experience').length,
       tasks: this.tasks.length,
@@ -1391,16 +1461,23 @@ export class ProjectMemoryStore {
    */
   applyFileUpdate(relPath, { expectedHash, hash, entries, type, size, mtimeMs }) {
     if ((this.fileRecord(relPath)?.sha256 ?? null) !== (expectedHash ?? null)) return false
+    const previous = this.fileRecord(relPath)
     const record = {
       sha256: hash,
       size,
       type,
       indexedAt: new Date().toISOString(),
     }
+    // `explicit` 是"这个文件不在扫描清单里（gitignore / roots.exclude），但作者显式索引过"的
+    // 唯一凭证：watch/lazy 重新索引它时必须保留，否则下一次 index_repo 的 unseen 清理会把它删掉。
+    if (previous?.explicit) record.explicit = true
     // mtime 是**加速用的缓存**，不是事实：缺了只是退化成每次整读 + 哈希（老 store 的条目就没有）。
     if (typeof mtimeMs === 'number' && Number.isFinite(mtimeMs)) record.mtimeMs = mtimeMs
-    this.markFile(relPath, record)
+    // 先写 entries 再写 files：`setEntries` 里 makeSearchText/内存分配可能抛（极端但存在）。
+    // 顺序反过来的话，files 已指向新 hash、entries 还是旧的，下一次扫描会被 mtime/size 快路径
+    // 当成"未变更"直接跳过，旧条目就永久留在库里。
     this.setEntries(relPath, entries)
+    this.markFile(relPath, record)
     return true
   }
 
@@ -1437,7 +1514,7 @@ export function storeOverview(store) {
   }
   return {
     files: Object.keys(store.files).length,
-    entries: store.allEntries().length,
+    entries: countEntries(store),
     // 不调 store.stats()：overview 也会被喂裸桩（测试/子索引汇总），少一个必需方法就少一处崩点。
     experience: Array.isArray(store.insights?.items) ? store.insights.items.filter((it) => it && it.kind === 'experience').length : 0,
     latest,
