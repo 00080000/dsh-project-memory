@@ -50,6 +50,12 @@ export class WatchManager {
     this.ctx = ctx
     this.config = config
     this.roots = new Map()
+    /**
+     * `storeKey(root)` → `roots` 里实际使用的写法。Windows/macOS 上大小写不同的路径是同一
+     * 物理目录：没有这层索引，同一个项目会被登记两次（每轮扫两遍），而 `watch_repo({watch:false})`
+     * 只删得掉其中一条。
+     */
+    this._rootsByKey = new Map()
     this.timer = null
     this._polling = false
     this._truncationWarned = new Set()
@@ -97,7 +103,8 @@ export class WatchManager {
           continue
         }
         // 文件路径（历史遗留 / 手改 watch.json）也摘掉：addRoot 现在只接受目录。
-        if (!this.addRoot(root) && !this.roots.has(root)) {
+        // hasRoot 按大小写归一判定：磁盘上可能是另一种写法的同一条。
+        if (!this.addRoot(root) && !this.hasRoot(root)) {
           store.removeWatch(root)
           dropped++
         }
@@ -118,6 +125,9 @@ export class WatchManager {
     // 文件系统根 / 家目录 / 系统前缀 / roots.deny / roots.exclude 不整体监听（子目录允许），
     // 除非配置显式放行（仅内置名单可放行）。
     if (rootRejection(root, this.config)) return false
+    // 同一物理目录（大小写不敏感平台）不重复登记。
+    const key = storeKey(root)
+    if (this._rootsByKey.has(key)) return false
     if (!this.roots.has(root)) {
       // **不在这里 load()**：`restorePersisted()` 会对整条 watchlist 逐个 addRoot，急切读盘等于
       // 「watch 过多少个根，启动就同步读多少个 store 的全部 shard」。store 到 pollRoot 需要时才取。
@@ -126,9 +136,15 @@ export class WatchManager {
         // rel → 上次已上报的错误。坏文件每轮都会重试，逐轮打印会刷屏。
         failures: new Map(),
       })
+      this._rootsByKey.set(key, root)
       return true
     }
     return false
+  }
+
+  /** 这个目录是否已在监视（大小写不敏感平台按归一后的路径判）。 */
+  hasRoot(root) {
+    return this._rootsByKey.has(storeKey(root))
   }
 
   /**
@@ -141,6 +157,13 @@ export class WatchManager {
   }
 
   removeRoot(root) {
+    const key = storeKey(root)
+    const actual = this._rootsByKey.get(key)
+    if (actual !== undefined) {
+      this._rootsByKey.delete(key)
+      return this.roots.delete(actual)
+    }
+    // 兜底：roots 可能被外部直接写过（诊断/测试），按原写法再试一次。
     return this.roots.delete(root)
   }
 

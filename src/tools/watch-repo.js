@@ -1,6 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
-import { assertIndexRoot, assertSafeRoot, memoryRootFor, resolveIndexRoot, rootRejection, sessionMemoryRootOrNull } from '../util/fs.js'
+import { assertIndexRoot, assertSafeRoot, memoryRootFor, resolveIndexRoot, rootRejection, sessionMemoryRootOrNull, storeKey } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { cfgValue } from '../util/config.js'
 
@@ -46,7 +46,8 @@ export function watchRepoTool(watchManager, config) {
         // 会话根不可用（家目录/系统目录且无标记）时跳过镜像：那会在不该有项目记忆的目录里
         // 造出 watch.json，而 watch.json 一旦落在那里，下次以该目录为 cwd 启动又会把它读回来。
         if (!sessionRoot || !sessionMemoryDir) return
-        if (path.resolve(sessionMemoryDir) === path.resolve(memoryDir)) return
+        // Windows/macOS 大小写不敏感：同一目录的两种写法不能当成两个 store 互相镜像。
+        if (storeKey(path.resolve(sessionMemoryDir)) === storeKey(path.resolve(memoryDir))) return
         const sessionStore = new ProjectMemoryStore(sessionMemoryDir).load()
         const removed = sessionStore.removeWatch(root)
         const added = present ? sessionStore.addWatch(root) : false

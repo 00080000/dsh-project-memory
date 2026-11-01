@@ -360,6 +360,26 @@ function shardRelPath(dir, rel) {
   return path.join(dir, SHARDS_DIR, createHash('sha256').update(rel).digest('hex') + '.json')
 }
 
+/**
+ * watch.json 去重：Windows/macOS 上 `D:\proj` 与 `d:\PROJ` 是同一个物理目录，字符串却不同。
+ * 同一目录写两条会让 watch 每轮扫两遍、`watch_repo({watch:false})` 也只删掉其中一条（另一条
+ * 下次启动又复活）。保留第一次出现的写法（用户看到的形态不变）。
+ * @param {unknown} list
+ * @returns {string[]}
+ */
+function dedupeWatchRoots(list) {
+  const seen = new Set()
+  const out = []
+  for (const root of Array.isArray(list) ? list : []) {
+    if (typeof root !== 'string' || !root) continue
+    const key = storeKey(root)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(root)
+  }
+  return out
+}
+
 /** 数条目但**不**物化 searchText：stats/overview 只报数量，不该为一次统计把整库检索文本建出来。 */
 function countEntries(store) {
   let n = 0
@@ -625,7 +645,11 @@ export class ProjectMemoryStore {
     const bindingDoc = this._loadJson(path.join(this.dir, BINDING_FILE), {})
     this.binding = isRecord(bindingDoc) ? bindingDoc : {}
     const watchDoc = this._loadJson(path.join(this.dir, WATCH_FILE), [])
-    this.watchlist = Array.isArray(watchDoc) ? watchDoc.filter((r) => typeof r === 'string' && r) : []
+    const rawWatch = Array.isArray(watchDoc) ? watchDoc.filter((r) => typeof r === 'string' && r) : []
+    // 老版本可能把同一个物理目录按不同大小写写了两条（Windows/macOS 大小写不敏感）：
+    // 加载时归一，加载后下一次 save 顺手把 watch.json 也治好。
+    this.watchlist = dedupeWatchRoots(rawWatch)
+    if (this.watchlist.length !== rawWatch.length) this._dirtyWatch = true
     if (watchDoc !== null && !Array.isArray(watchDoc)) {
       console.error(`[dsh-project-memory] ${WATCH_FILE} is not an array; starting with no watch roots`)
     }
@@ -1175,9 +1199,10 @@ export class ProjectMemoryStore {
     if (this._dirtyWatch) {
       const disk = this._loadJson(path.join(this.dir, WATCH_FILE), [])
       if (Array.isArray(disk)) {
-        const set = new Set([...disk, ...this.watchlist])
-        for (const root of this._removedWatch) set.delete(root)
-        this.watchlist = [...set]
+        // 跨进程合并也按归一键去重：另一进程可能写了同一目录的另一种大小写。
+        const merged = dedupeWatchRoots([...disk, ...this.watchlist])
+          .filter((r) => !this._removedWatch.has(storeKey(r)))
+        this.watchlist = merged
         this._auxVersion++
       }
     }
@@ -1215,10 +1240,13 @@ export class ProjectMemoryStore {
   }
 
   addWatch(root) {
-    if (!this.watchlist.includes(root)) {
+    // 大小写不同的同一目录视为同一条：否则 `watch_repo` 传入不同大小写就登记两次，
+    // 每轮扫两遍；`removeWatch` 还会漏掉另一条，重启后它又复活。
+    const key = storeKey(root)
+    if (!this.watchlist.some((r) => storeKey(r) === key)) {
       this.watchlist.push(root)
       this._dirtyWatch = true
-      this._removedWatch.delete(root)
+      this._removedWatch.delete(key)
       this._auxVersion++
       return true
     }
@@ -1226,10 +1254,12 @@ export class ProjectMemoryStore {
   }
 
   removeWatch(root) {
+    const key = storeKey(root)
     const before = this.watchlist.length
-    this.watchlist = this.watchlist.filter((r) => r !== root)
+    this.watchlist = this.watchlist.filter((r) => storeKey(r) !== key)
     if (this.watchlist.length !== before) {
-      this._removedWatch.add(root)
+      // 墓碑按归一键记：磁盘上那条可能是另一种大小写的写法。
+      this._removedWatch.add(key)
       this._dirtyWatch = true
       this._auxVersion++
     }

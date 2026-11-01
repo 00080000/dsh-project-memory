@@ -10,7 +10,7 @@
 //      全部退化成兜底 op `shell-run`；
 //   4. 原生 Windows 的 `pwsh.exe` / `cmd.exe` 被标成 `hosts: ['wsl']`（guard.hosts 收窄反了）。
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { hostname, tmpdir, uptime } from 'node:os'
 import path from 'node:path'
 
@@ -19,6 +19,7 @@ import { extractPathTokens } from '../src/util/path-token.js'
 import { buildReadinessContext, matchTrigger } from '../src/readiness.js'
 import { classifyShellCommand, classifyToolCall } from '../src/ops.js'
 import { ProjectMemoryStore, _storeCacheKeysForTest } from '../src/store.js'
+import { WatchManager } from '../src/watch.js'
 import { parseSkillFile } from '../src/skill.js'
 
 let passed = 0
@@ -222,6 +223,48 @@ const writeLock = (d, meta, ageMs = 0) => {
   assert.equal(meta.description, 'demo')
   assert.equal(body.trim(), '正文')
   ok('带 BOM 的 SKILL.md 仍能解析 frontmatter')
+}
+
+// --- 6. 大小写不同的同一目录只能登记一次（大小写不敏感文件系统） ----------------------
+// 判据用 existsSync(upper) 而不是 platform：macOS 也有 case-sensitive 卷，Windows/WSL 互挂时同理。
+{
+  const proj = path.join(tmp(), 'CaseWatch')
+  mkdirSync(proj, { recursive: true })
+  const upper = proj.toUpperCase()
+  const sameDir = existsSync(upper)
+  const wm = new WatchManager({}, { memoryDir: '.dsh-project-memory' })
+  assert.equal(wm.addRoot(proj), true)
+  if (sameDir) {
+    assert.equal(wm.addRoot(upper), false, '同一目录的另一种大小写不能重复登记')
+    assert.equal(wm.roots.size, 1, '只应有一个轮询根（否则每轮扫两遍）')
+    assert.equal(wm.hasRoot(upper), true)
+    assert.equal(wm.removeRoot(upper), true, '用另一种大小写也能停掉')
+    assert.equal(wm.roots.size, 0)
+    assert.equal(wm.hasRoot(proj), false)
+  } else {
+    assert.equal(wm.addRoot(upper), false, '大写路径在这台机器上不存在')
+    assert.equal(wm.roots.size, 1)
+    assert.equal(wm.removeRoot(upper), false)
+  }
+  ok(`watch 根按大小写归一（本机文件系统${sameDir ? '不敏感' : '敏感'}）`)
+
+  // watch.json：同一目录两种写法只落一条；用另一种写法删除后不得在下次 save 复活。
+  const mem = path.join(proj, '.dsh-project-memory')
+  const store = new ProjectMemoryStore(mem).load()
+  assert.equal(store.addWatch(proj), true)
+  if (sameDir) {
+    assert.equal(store.addWatch(upper), false, '同一目录的另一种大小写不能重复入 watchlist')
+    assert.equal(store.watchlist.length, 1)
+  }
+  store.save()
+  if (sameDir) {
+    assert.equal(store.removeWatch(upper), true, '另一种大小写也能移除')
+    assert.equal(store.watchlist.length, 0)
+    store.save()
+    const onDisk = JSON.parse(readFileSync(path.join(mem, 'watch.json'), 'utf8'))
+    assert.deepEqual(onDisk, [], '删除后另一种写法的根不得在下一次 save 复活')
+  }
+  ok('watch.json 按大小写归一：不重复、删除不复活')
 }
 
 console.log(`\nwindows-compat tests: ${passed} passed`)
