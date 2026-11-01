@@ -23,8 +23,9 @@
 - **扫描跳过隐藏路径的口径统一**：git 清单分支与 `walkDir` 回退都跳过任一段以 `.` 开头的路径（`.env`、`.github/**`、`.claude/**`），同一棵树 `git init` 前后语料一致；显式 `index_doc` 仍可索引隐藏文件。
 - **`autoContext.maxTokens: 0` 真正零注入**：不再被 `cfg.maxTokens || 400` 顶回默认值（任务卡与条目都静默）。
 - **`GlobalStore.markDirty()` 登记退出 flush**：`query_memory` 只改内存的 global 命中记账/派生 trigger 回填不会在进程退出时丢失（project store 有下一次 save 兜底，global 没有周期性 save 点）。
+- **Electron 宿主里 PDF 索引全灭（issue #10）**：pdf.js 只在 `isNodeJS` 为真时兜底 `workerSrc`，而宿主进程是 Electron 且 `process.type !== 'browser'` → 默认值整块跳过，每次解析都抛 `No "GlobalWorkerOptions.workerSrc" specified`。现在 `loadPdfjs()` 在 worker 未配置时用 `import.meta.resolve`（老 Node 退回 `createRequire`）解析 `pdf.worker.mjs` 的 `file://` URL 兜底；显式 `configurePdfjsWorker()` 与 pdf.js 自己的默认值仍优先。原实现里的 `configuredWorkerSrc` 分支因无人调用恒为假，纯 Node 测试里 `isNodeJS` 又恰好为真，所以这个洞从首版起一直没人发现（0.6.3 与 0.6.8 上都能复现），且失败只写一条 W 级日志。
 
-**测试**：新增 `test/settings-card.test.mjs`（10 项：三个 volatile 键与默认值（并断言其余键不进命名空间）、`cfgValue()` 的 ref/普通值双形状、空路径 `[[]]` 读成"全部重读"、watch 关停/改间隔即重排、整份 `apply()` 在 ref 形状 Config 上装配、槽位注册的 key 与命名空间、默认收起与展开后 3 行、`Button` 以 forwardRef 对象形状参与注册、命名空间未提供与缺 settings 控件两种零注册）。本轮另补 7 项回归：`maxTokens: 0` 零注入、相对 root 按会话 cwd 解析、git / walk 两种扫描的隐藏路径口径一致、懒索引也跳过隐藏路径、畸形任务缺 `files` 的归一、`GlobalStore.markDirty()` 进入退出 flush。`npm test` **923 项 / 51 个文件**全绿、`npm run typecheck` 通过。
+**测试**：新增 `test/pdfjs-host.test.mjs`（2 项：纯 Node 对照组；子进程里把 `process.type` / `process.versions.electron` 改成 Electron 宿主形态后解析 PDF，并断言正文命中——只断言"没抛错"会放过空正文的假成功）。新增 `test/settings-card.test.mjs`（10 项：三个 volatile 键与默认值（并断言其余键不进命名空间）、`cfgValue()` 的 ref/普通值双形状、空路径 `[[]]` 读成"全部重读"、watch 关停/改间隔即重排、整份 `apply()` 在 ref 形状 Config 上装配、槽位注册的 key 与命名空间、默认收起与展开后 3 行、`Button` 以 forwardRef 对象形状参与注册、命名空间未提供与缺 settings 控件两种零注册）。本轮另补 7 项回归：`maxTokens: 0` 零注入、相对 root 按会话 cwd 解析、git / walk 两种扫描的隐藏路径口径一致、懒索引也跳过隐藏路径、畸形任务缺 `files` 的归一、`GlobalStore.markDirty()` 进入退出 flush。`npm test` 全绿、`npm run typecheck` 通过。
 
 ## 0.6.8 (2026-10-30)
 

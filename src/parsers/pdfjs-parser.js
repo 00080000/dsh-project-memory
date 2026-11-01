@@ -1,15 +1,43 @@
 import { readFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
+
+const WORKER_SPECIFIER = 'pdfjs-dist/legacy/build/pdf.worker.mjs'
 
 let pdfjsPromise
 let configuredWorkerSrc
+
+/**
+ * 解析 pdf.js 的 worker 模块位置，返回 file:// URL；解析不到返回 undefined。
+ *
+ * 为什么必须显式给：pdf.js 只在 `isNodeJS` 为真时兜底 `workerSrc ||= './pdf.worker.mjs'`，
+ * 而 `isNodeJS` 排除 `process.versions.electron && process.type !== 'browser'`。宿主的插件
+ * 进程正是这种形态 → 默认值整块跳过、worker 也没被禁用，取 workerSrc 时直接抛
+ * `No "GlobalWorkerOptions.workerSrc" specified`。纯 Node 测试里 `isNodeJS` 为真，永远看不见。
+ *
+ * 用 file:// URL 而不是路径：worker 由 pdf.js `import(this.workerSrc)` 加载，Windows 的
+ * `C:\...` 会被当成协议。
+ */
+function resolveWorkerSrc() {
+  // Node ≥ 20.6 / 18.19 无 flag；更老的版本这里会抛，退回 require 解析
+  try {
+    if (typeof import.meta.resolve === 'function') return import.meta.resolve(WORKER_SPECIFIER)
+  } catch {}
+  try {
+    return pathToFileURL(createRequire(import.meta.url).resolve(WORKER_SPECIFIER)).href
+  } catch {}
+  return undefined
+}
 
 function loadPdfjs() {
   if (!pdfjsPromise) {
     pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs')
       .then((mod) => {
-        if (configuredWorkerSrc) {
-          mod.GlobalWorkerOptions.workerSrc = configuredWorkerSrc
-        }
+        // 显式配置 > pdf.js 自己已设的默认值 > 按文件位置解析出来的 URL。
+        // 必须用 `||` 而不是 `??`：GlobalWorkerOptions.workerSrc 的初始值是空字符串
+        // （GlobalWorkerOptions.#src = ""），`??` 会停在 "" 上直接跳过兜底解析。
+        const workerSrc = configuredWorkerSrc || mod.GlobalWorkerOptions.workerSrc || resolveWorkerSrc()
+        if (workerSrc) mod.GlobalWorkerOptions.workerSrc = workerSrc
         return mod
       })
       .catch((err) => {
@@ -24,7 +52,8 @@ const PDFJS_OPTIONS = {
   useSystemFonts: true,
   isEvalSupported: false,
   useWorkerFetch: false,
-  useWorker: false,
+  // 这里没有 useWorker：pdf.js 4.x 不认这个键（只有 useWorkerFetch），
+  // worker 是否启用只由 GlobalWorkerOptions.workerSrc 决定。
   // 0 = ERRORS。损坏/线性化缺失的 PDF 会让 pdf.js 打 "Warning: Indexing all PDF objects"
   // 之类的告警——那是它自己的恢复路径，对使用者没有可操作性，静音。
   verbosity: 0,
