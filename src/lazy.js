@@ -17,6 +17,7 @@ import { DROP, OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, 
 import { ProjectMemoryStore } from './store.js'
 import { onFileObserved } from './enhancer.js'
 import { sessionWorkingDir } from './util/session-dir.js'
+import { clearIndexFailure, recordIndexFailure } from './index-failures.js'
 
 // 根推导策略已收敛到 util/fs.js（唯一实现）。这里重新导出，保持既有 import 路径可用。
 export { findProjectRoot }
@@ -173,14 +174,18 @@ export async function indexObservedBatch(config, items, watchManager = null) {
         if (plan.key === UNCHANGED) {
           // 内容没变、只有 mtime 变了：把新 mtime 记回去，否则下次还要整读一遍。
           if (typeof plan.mtimeMs === 'number' && store.refreshMtime(cand.rel, plan.mtimeMs)) refreshed = true
+          clearIndexFailure(cand.root, cand.rel)
           continue
         }
+        clearIndexFailure(cand.root, cand.rel)
         if (plan.key === OVERSIZE) continue
         updates.push(toFileUpdate(cand.rel, plan, cand.record))
         if (plan.key !== DROP && plan.type === 'code') onFileObserved(store, cand.rel, cand.filePath, config, root)
         results.set(cand.filePath, plan.key !== DROP)
-      } catch {
-        // 单文件读盘 / 解析失败不影响同批其它文件。
+      } catch (err) {
+        // 单文件读盘 / 解析失败不影响同批其它文件；但要登记，否则"读了却没索引成"
+        // 在界面上完全不可见（过去这里连日志都没有）。
+        recordIndexFailure(cand.root, cand.rel, err.message)
         results.set(cand.filePath, false)
       }
     }

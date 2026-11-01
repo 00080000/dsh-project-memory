@@ -5,6 +5,7 @@ import { assertIndexRoot, assertSafeRoot, listProjectFiles, memoryDirName, memor
 import { DROP, OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from '../index-pipeline.js'
 import { ProjectMemoryStore } from '../store.js'
 import { onFileIndexed, isTypeScriptFile, enhanceQueueStats } from '../enhancer.js'
+import { listIndexFailures } from '../index-failures.js'
 
 /**
  * 每批提交的文件数。旧实现把整棵树的 updates 攒到最后一次性 commit：一次全量扫描的
@@ -115,6 +116,13 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
   }
   if (failures.length) {
     report += `\nfailed to index ${failures.length} file(s): ${failures.join(', ')}`
+  }
+  // 后台（watch / 懒索引）的失败不在本次扫描里，但它们同样意味着"这些文件没进语料"。
+  // 过去只写日志，用户看不到；这里跟随本次结果一起报出来。
+  const background = listIndexFailures(root, 5)
+  if (background.count) {
+    const detail = background.items.map((i) => `${i.rel} — ${i.message.slice(0, 100)}`).join('; ')
+    report += `\n${background.count} file(s) failing in background indexing (watch / lazy): ${detail}`
   }
 
   // Trigger TS enhancement for code files (TS/JS only), now that the base entries are on disk.

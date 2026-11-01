@@ -6,6 +6,7 @@ import { OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFile
 import { ProjectMemoryStore } from './store.js'
 import { onFileChanged, isTypeScriptFile } from './enhancer.js'
 import { cfgValue } from './util/config.js'
+import { clearIndexFailure, recordIndexFailure } from './index-failures.js'
 
 /**
  * 把 `watch` / `watchInterval` 的**当前值**落到轮询器上。
@@ -325,9 +326,13 @@ export class WatchManager {
           state.failures.set(rel, err.message)
           console.error(`[dsh-project-memory] re-index failed for ${rel}: ${err.message}`)
         }
+        // 日志只打一次是防刷屏；账本每轮都刷新时间，index_repo / memory_stats 才看得见
+        // "这个文件现在仍然没进语料"，而不是一条陈年记录。
+        recordIndexFailure(root, rel, err.message)
         continue
       }
       state.failures.delete(rel)
+      clearIndexFailure(root, rel)
       // 内容未变 / 体积超限也要落快照：否则 mtime:size 快路径永远命中不了，每次 poll 都要重读全仓。
       if (plan.key === UNCHANGED || plan.key === OVERSIZE) {
         // 内容没变、只有 mtime 变了：把新 mtime 写回条目，让下一轮（及其它入口）的快路径能命中。
@@ -351,7 +356,11 @@ export class WatchManager {
     // 扫全了才剪快照：删掉的文件不能留着，否则它以同样的 mtime:size 回来会被当成未变。
     if (!truncated) {
       for (const rel of Object.keys(state.snapshot)) if (!seen.has(rel)) delete state.snapshot[rel]
-      for (const rel of state.failures.keys()) if (!seen.has(rel)) state.failures.delete(rel)
+      for (const rel of [...state.failures.keys()]) {
+        if (seen.has(rel)) continue
+        state.failures.delete(rel)
+        clearIndexFailure(root, rel)
+      }
     }
     const failed = new Set(stale)
     let applied = 0

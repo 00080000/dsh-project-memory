@@ -5,6 +5,7 @@ import { cfgInsight, defaultGlobalFile, GlobalStore } from '../insight-store.js'
 import { cfgEngine } from '../auto-inject.js'
 import { resolveVectorLayer, vectorIndexSummary, vectorItemsFrom } from '../vector-index.js'
 import { truncate } from '../util/text.js'
+import { listIndexFailures } from '../index-failures.js'
 
 const TOP_N = 30
 
@@ -37,6 +38,13 @@ export function statsTool(config) {
         `Files indexed: ${overview.files} | Entries: ${overview.entries} | Experience notes: ${overview.experience}`,
         overview.latest ? `Last index: ${overview.latest}` : 'Last index: never',
       ]
+      // 后台索引失败（watch / 懒索引）过去只写日志：这里跟 store 状态一起报，避免
+      // "看着一切正常、实际有文件从没进过语料"。
+      const background = listIndexFailures(root, 3)
+      if (background.count) {
+        const detail = background.items.map((i) => `${i.rel} (${truncate(i.message, 60)})`).join('; ')
+        lines.push(`Index failures: ${background.count} file(s) — ${detail}`)
+      }
       if (files.length) {
         lines.push('')
         for (const [rel, rec] of files.slice(0, TOP_N)) {
