@@ -1,6 +1,6 @@
-## Unreleased
+## 0.6.9 (2026-11-02)
 
-**兼容**：无新增配置键，无 store 变更。三个既有键——`watchInterval` / `autoIndexOnFirstUse` / `llmQueryExpansion`——在 `Config` 里标成 `.volatile()`：这是宿主设置表单的准入条件（只有 volatile 字段能被 settings 接口写入），也让它们在运行中原地更新而不重启插件。profile / 命令行的写法完全不变。插件内部读取统一走 `cfgValue()`：volatile 字段在运行时是 ref（`.get()`），直接把 ref 当布尔会读错。升级后**需要重启一次 dsh**——volatile 元数据只在装配期解析。两处**行为变化**：① 扫描与懒索引都跳过隐藏路径（任一段以 `.` 开头，如 `.env` / `.github/**`），显式 `index_doc` 仍可索引（已存在的隐藏路径条目会在下一次完整扫描被清理）；② `autoContext.maxTokens: 0` 现在真的零注入（此前被 `|| 400` 顶回默认值）。
+**兼容**：无新增配置键，无 store 格式变更（启动时会顺手把 `watch.json` 里大小写重复的根条目合并成一条；文件格式不变）。三个既有键——`watchInterval` / `autoIndexOnFirstUse` / `llmQueryExpansion`——在 `Config` 里标成 `.volatile()`：这是宿主设置表单的准入条件（只有 volatile 字段能被 settings 接口写入），也让它们在运行中原地更新而不重启插件。profile / 命令行的写法完全不变。插件内部读取统一走 `cfgValue()`：volatile 字段在运行时是 ref（`.get()`），直接把 ref 当布尔会读错。升级后**需要重启一次 dsh**——volatile 元数据只在装配期解析。两处**行为变化**：① 扫描与懒索引都跳过隐藏路径（任一段以 `.` 开头，如 `.env` / `.github/**`），显式 `index_doc` 仍可索引（已存在的隐藏路径条目会在下一次完整扫描被清理）；② `autoContext.maxTokens: 0` 现在真的零注入（此前被 `|| 400` 顶回默认值）。
 
 ### 新增：插件页上的可视化设置（web）
 
@@ -27,7 +27,7 @@
 - **Electron 宿主里 PDF 索引全灭（issue #10）**：pdf.js 只在 `isNodeJS` 为真时兜底 `workerSrc`，而宿主进程是 Electron 且 `process.type !== 'browser'` → 默认值整块跳过，每次解析都抛 `No "GlobalWorkerOptions.workerSrc" specified`。现在 `loadPdfjs()` 在 worker 未配置时用 `import.meta.resolve`（老 Node 退回 `createRequire`）解析 `pdf.worker.mjs` 的 `file://` URL 兜底；显式 `configurePdfjsWorker()` 与 pdf.js 自己的默认值仍优先。原实现里的 `configuredWorkerSrc` 分支因无人调用恒为假，纯 Node 测试里 `isNodeJS` 又恰好为真，所以这个洞从首版起一直没人发现（0.6.3 与 0.6.8 上都能复现），且失败只写一条 W 级日志。
 - **大小写不同的同一目录不再被登记两次**：`watch_repo` 先以 `D:\proj`、后以 `d:\PROJ` 登记时，`watch.json` 会留两条、watch 每轮扫两遍，而 `watch_repo({watch:false})` 只删得掉其中一条（另一条下次启动复活）。`WatchManager` 与 watchlist 现在按 `storeKey()` 归一（保留第一次出现的写法；加载时顺手把老 store 里的重复条目合并）。
 
-**测试**：新增 `test/pdfjs-host.test.mjs`（2 项：纯 Node 对照组；子进程里把 `process.type` / `process.versions.electron` 改成 Electron 宿主形态后解析 PDF，并断言正文命中——只断言"没抛错"会放过空正文的假成功）。新增 `test/settings-card.test.mjs`（10 项：三个 volatile 键与默认值（并断言其余键不进命名空间）、`cfgValue()` 的 ref/普通值双形状、空路径 `[[]]` 读成"全部重读"、watch 关停/改间隔即重排、整份 `apply()` 在 ref 形状 Config 上装配、槽位注册的 key 与命名空间、默认收起与展开后 3 行、`Button` 以 forwardRef 对象形状参与注册、命名空间未提供与缺 settings 控件两种零注册）。本轮另补 7 项回归：`maxTokens: 0` 零注入、相对 root 按会话 cwd 解析、git / walk 两种扫描的隐藏路径口径一致、懒索引也跳过隐藏路径、畸形任务缺 `files` 的归一、`GlobalStore.markDirty()` 进入退出 flush、watch 根与 watch.json 的大小写归一（2 项）。新增 `test/index-failures.test.mjs`（3 项：账本按根隔离与上限、懒索引失败登记与成功清除、`index_repo` 报出后台失败）。`npm test` 全绿、`npm run typecheck` 通过。
+**测试**：新增 `test/pdfjs-host.test.mjs`（2 项：纯 Node 对照组；子进程里把 `process.type` / `process.versions.electron` 改成 Electron 宿主形态后解析 PDF，并断言正文命中——只断言"没抛错"会放过空正文的假成功）。新增 `test/settings-card.test.mjs`（10 项：三个 volatile 键与默认值（并断言其余键不进命名空间）、`cfgValue()` 的 ref/普通值双形状、空路径 `[[]]` 读成"全部重读"、watch 关停/改间隔即重排、整份 `apply()` 在 ref 形状 Config 上装配、槽位注册的 key 与命名空间、默认收起与展开后 3 行、`Button` 以 forwardRef 对象形状参与注册、命名空间未提供与缺 settings 控件两种零注册）。本轮另补 7 项回归：`maxTokens: 0` 零注入、相对 root 按会话 cwd 解析、git / walk 两种扫描的隐藏路径口径一致、懒索引也跳过隐藏路径、畸形任务缺 `files` 的归一、`GlobalStore.markDirty()` 进入退出 flush、watch 根与 watch.json 的大小写归一（2 项）。新增 `test/index-failures.test.mjs`（3 项：账本按根隔离与上限、懒索引失败登记与成功清除、`index_repo` 报出后台失败）。`npm test` **930 项 / 54 个文件**全绿、`npm run typecheck` 通过；`npm run build:client` 后 `client/` 零 diff（CI 也会复核产物与源码一致）。
 
 ## 0.6.8 (2026-10-30)
 

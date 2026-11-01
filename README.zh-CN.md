@@ -55,7 +55,7 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 | `index_doc file_path` | 索引单个文档（PDF/MD/txt）：分块、确定性摘要，带 `路径:行号` 入库。未变更文件自动跳过。 |
 | `index_repo root` | 索引整个项目：文档生成确定性摘要，代码文件生成零 token 符号表。增量更新，store 跟随文件清单：已删除、被忽略或移走的文件会被清理（显式 `index_doc` 的条目只要文件还在就保留）；文档与符号交叉链接。根目录不存在或在排除名单上时，会在写入任何内容前拒绝。 |
 | `watch_repo root` | 启用自动刷新：后台轮询检测新增/变更文件，仅重抽这些文件。监听根会记在该项目的 store 里，在该项目下启动 dsh 时恢复监听；不存在或在排除名单上的根目录会被拒绝，已消失的根目录会被丢弃而不是被重新创建。 |
-| `memory_stats root` | 查看记忆库内容：总量、最近索引时间，以及按时间排序的逐文件清单。 |
+| `memory_stats root` | 查看记忆库内容：总量、最近索引时间，以及按时间排序的逐文件清单。后台索引失败（watch / 懒索引，按根记账、最多 50 条）也会一并报出，让「文件一直没进语料」可见。 |
 | `query_memory query` | 对文档、符号、经验与 insight 执行排序检索，可选 LLM 查询扩展。`type` 选择层（`all` / `doc` / `symbol` / `experience` / `insight` / `task`）。返回带相对分数、引用或 insight id、以及文档→符号链接的结果。 |
 | `list_tasks` | 列出本项目任务记录（含归档，带标记）。新会话/续接前先调用。 |
 | `select_task` | 将会话绑定到某任务（此后 todo 清单与读文件同步进该任务）。按 `taskId` 精确绑定，或按 `title` 完全匹配（多个同名返回候选；无则新建）。带 title 可改名；自动解归档。 |
@@ -137,7 +137,7 @@ TaskPanel (Container)
 | `tasklist.enabled` / `tasklist.syncHostOnAdopt` | true / true | TaskBridge 自动同步（由会话 todo 清单与文件读取沉淀任务实体）；绑定任务时把其步骤推给宿主任务清单，使 dsh 镜像该任务 |
 | `insight.*` | dedupOverlap `0.7` · reinforceBand `0.65` · autoMergeCos `0.9` · autoMergeMargin `0.05` · hintCos `0.7` · maxForgetMatches `10` · maxProject `100` · maxGlobalProcedures `200` · promoteConfidence `0.7` · globalPromoteTasks `3` · decayDays `90` · `globalFile`（自动） | insight 去重 / 自动覆盖 / 近邻提示 / 删除上限 / 强化 / 提升 / 容量 / 归档设置。`autoMergeCos` / `hintCos` 设 `0` 表示**关闭**那条带 |
 | `reflection.enabled` | false | LLM 反思，**只写任务级草稿**（触发于任务切走 / 归档）。`cooldownMs` `1800000`、`maxLessonsPerReflect` `3`、`maxDecisionsPerReflect` `2` |
-| `autoContext.enabled` | true | 静默注入包装（常驻任务卡 + 受门槛约束的条目）；宿主无法解析会话 cwd 时完全透传。`maxTokens` `400`（单轮）、`editedMax` `3`（任务卡显示的最近"编辑中"文件数）、`signalMinRatio` `0.5`（提示至少达到该层最高分的一半）、`skipEchoSelfTodo` `true`、`budgetLog` `off`、`reinjectItemsAfter` `0`（同一条 insight 重复注入的冷却步数）、`rootNotice` `true` |
+| `autoContext.enabled` | true | 静默注入包装（常驻任务卡 + 受门槛约束的条目）；宿主无法解析会话 cwd 时完全透传。`maxTokens` `400`（单轮；`0` = 完全关闭注入）、`editedMax` `3`（任务卡显示的最近"编辑中"文件数）、`signalMinRatio` `0.5`（提示至少达到该层最高分的一半）、`skipEchoSelfTodo` `true`、`budgetLog` `off`、`reinjectItemsAfter` `0`（同一条 insight 重复注入的冷却步数）、`rootNotice` `true` |
 | `autoContext.gateCooldownSteps` | 2 | **准入旋钮**：两次*条目*注入之间至少隔几步（常驻任务卡不受限——它是状态快照）。这是"别频繁注入"的主旋钮 |
 | `autoContext.maxItemsPerSession` / `autoContext.maxItemCharsPerSession` | 60 / 24000 | **runaway 保险丝，不是节流阀** —— 按条数与字符计的每会话硬上限：一旦触顶，本会话余下部分条目通道持续沉默 |
 | `autoContext.hintMinCoverage` | 0.45 | 提示通道的**绝对**下限：条目覆盖了查询多少 IDF 加权信息量。只用相对阈值分不出"有信号"和"矮子里拔将军" |
@@ -200,6 +200,8 @@ store 建在被索引的目录树里，并且**自我忽略**：自己目录内�
 ```
 
 只需列出要改的键，其余键回落到插件默认值。用 `dsh --profile web --dump-config` 验证生效。
+
+**web profile 上有三个键同时提供可视化设置。** 位置是**插件 → 项目记忆 → 详情页 → 常用设置**（`plugins.bundle.config`，key 为包名）：`autoIndexOnFirstUse`、`watchInterval`（秒）、`llmQueryExpansion`。保存走宿主的 `settings` 接口——卡片始终是上面那份 profile 配置的投影，不另写文件。`watchInterval` 与 `llmQueryExpansion` 立即生效（轮询定时器当场重排，扩展开关每次查询时读取）；`autoIndexOnFirstUse` 是一次性启动动作，卡片上写明"下次启动生效"。其余旋钮——`memoryDir`、`roots.*`、扫描上限、insight / 反思 / 自动注入——**刻意留在 profile**：它们要么一改就换数据位置，要么需要理解上下文，三行卡片承载不了；后台监视也**不给开关**（关掉只会让记忆越来越旧）。宿主不提供 `slots` / `configForms` / `locale` 时卡片零注册，并打一条点名原因的告警，而不是静默消失。这三个键在插件装配期解析，所以**升级后需要重启一次 dsh**（在卡片里保存则无需重启）。
 
 不想改 profile 文件、只想临时试一次，可用 CLI 补丁覆盖：
 
@@ -281,7 +283,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ```bash
 npm install
-npm test                    # 923 项测试
+npm test                    # 930 项测试
 npm run eval:injection      # 合成池 P/R：精确率 0.93 / 召回率 1.00，另有 3 个 hint-only 场景
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）

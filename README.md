@@ -57,7 +57,7 @@ In a git work tree the corpus is whatever `git ls-files --cached --others --excl
 | `index_doc file_path` | Index one document (PDF/MD/txt): chunk, summarize deterministically, and store with a `path:line` citation. Unchanged files are skipped. |
 | `index_repo root` | Index a whole project: documents get deterministic summaries, code files get a token-free symbol table. Incremental and self-healing: the store follows the file listing, so deleted, ignored or moved files are dropped (an entry created by an explicit `index_doc` is kept while its file still exists), and documents are cross-linked to symbols. A non-existent or excluded root is rejected before anything is written. |
 | `watch_repo root` | Enable automatic refresh: a background poll detects new and changed files and re-indexes only those. A watched root is recorded in that project's store, so it resumes when dsh starts there; a non-existent or excluded root is refused, roots that disappear are dropped rather than re-created. |
-| `memory_stats root` | Show what the store contains: totals, last index time, and the per-file list sorted by recency. |
+| `memory_stats root` | Show what the store contains: totals, last index time, and the per-file list sorted by recency. Background index failures (watch or lazy, per root, most recent 50) are reported alongside, so a file that never made it into the corpus stays visible. |
 | `query_memory query` | Ranked search over documents, symbols, experience and insights, optionally query-expanded by the LLM. `type` selects a layer (`all` / `doc` / `symbol` / `experience` / `insight` / `task`). Returns hits with relative scores, sources or insight ids, and doc→symbol references. |
 | `list_tasks` | List task records for the project (archived marked). Call first in a new session before continuing work. |
 | `select_task` | Bind the session to a task so its todo list and file reads sync into it. Exact `taskId`, or exact `title` (multiple matches return candidates; no match creates a new task). Pass `title` with `taskId` to rename. Auto-unarchives. |
@@ -139,7 +139,7 @@ The workflow panel is collapsible, adapts to dsh and theme plugin styles, and of
 | `tasklist.enabled` / `tasklist.syncHostOnAdopt` | true / true | TaskBridge auto-sync (task entities from the session todo list and file reads); push a bound task's steps to the host task list so dsh mirrors it |
 | `insight.*` | dedupOverlap `0.7` · reinforceBand `0.65` · autoMergeCos `0.9` · autoMergeMargin `0.05` · hintCos `0.7` · maxForgetMatches `10` · maxProject `100` · maxGlobalProcedures `200` · promoteConfidence `0.7` · globalPromoteTasks `3` · decayDays `90` · `globalFile` (auto) | insight dedupe / auto-overwrite / near-neighbour hint / delete cap / reinforce / promotion / capacity / archive settings. `autoMergeCos` / `hintCos` = `0` turns that band **off** |
 | `reflection.enabled` | false | LLM reflection, **draft-only at task level** (fires on task switch-away / archive). `cooldownMs` `1800000`, `maxLessonsPerReflect` `3`, `maxDecisionsPerReflect` `2` |
-| `autoContext.enabled` | true | silent injection wrapper (resident task card + gated items); inert until the host exposes a resolvable session cwd. `maxTokens` `400` (per step), `editedMax` `3` (recently written files shown on the task card), `signalMinRatio` `0.5` (a hint must reach half of its layer's top score), `skipEchoSelfTodo` `true`, `budgetLog` `off`, `reinjectItemsAfter` `0` (steps before the same insight may be injected again), `rootNotice` `true` |
+| `autoContext.enabled` | true | silent injection wrapper (resident task card + gated items); inert until the host exposes a resolvable session cwd. `maxTokens` `400` (per step; `0` turns injection off entirely), `editedMax` `3` (recently written files shown on the task card), `signalMinRatio` `0.5` (a hint must reach half of its layer's top score), `skipEchoSelfTodo` `true`, `budgetLog` `off`, `reinjectItemsAfter` `0` (steps before the same insight may be injected again), `rootNotice` `true` |
 | `autoContext.gateCooldownSteps` | 2 | minimum number of pre-steps between two *item* injections (the resident task card is exempt — it is a state snapshot). This is the main "don't inject often" dial |
 | `autoContext.maxItemsPerSession` / `autoContext.maxItemCharsPerSession` | 60 / 24000 | **runaway fuse, not a throttle** — a hard per-session ceiling by count and characters; once reached, the item channel stays silent for the rest of the session |
 | `autoContext.hintMinCoverage` | 0.45 | **absolute** floor for the statistical channel: the IDF-weighted share of the query's information mass the entry covers. A ratio-only threshold cannot tell signal from "best of a bad lot" |
@@ -202,6 +202,8 @@ Settings live in the plugin's config object. To change them, add an override ent
 ```
 
 Only list the keys you want to change; the rest fall back to the plugin defaults. Verify the result with `dsh --profile web --dump-config`.
+
+**On the web profile, three of these keys also have a visual card.** It sits at **Plugins → Project memory → detail page → Common settings** (`plugins.bundle.config`, keyed by package name): `autoIndexOnFirstUse`, `watchInterval` (seconds) and `llmQueryExpansion`. Saving goes through the host's `settings` interface — the card is a projection of the same config the profile override above feeds, not a separate file. `watchInterval` and `llmQueryExpansion` take effect immediately (the poll timer is re-armed, the expansion flag is read per query); `autoIndexOnFirstUse` is a one-off startup action, so the card says "effective next start". Everything else — `memoryDir`, `roots.*`, scan caps, insight / reflection / autoContext — deliberately stays in the profile: those either move the store or need context a three-row card cannot carry, and there is no switch for background watching (turning it off only lets memory go stale). On a host that does not offer the `slots` / `configForms` / `locale` services the card registers nothing and logs one warning naming the missing piece, rather than disappearing silently. These three are resolved when the plugin is assembled, so **restart dsh once after upgrading** (saving the card itself needs no restart).
 
 For a one-off run without editing the profile, pass the override as a CLI patch overlay:
 
@@ -283,7 +285,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 923 tests
+npm test                    # 930 tests
 npm run eval:injection      # synthetic pool P/R: precision 0.93 / recall 1.00, + a 3-scenario hint-only group
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)
