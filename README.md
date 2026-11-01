@@ -50,7 +50,7 @@ Each indexed project has its own store at `<root>/.dsh-project-memory/`. It keep
 
 The tools below are **invoked by the agent**, not typed by the user. In the chat, just ask naturally — e.g. "index this project" or "what does the auth module do?" — or simply keep working, and the agent calls the matching tool automatically. By default files are indexed the moment the model reads them, so memory fills in while you work. `watch_repo` keeps explicitly-watched roots fresh in the background; `index_repo` forces a full backfill (unchanged files are skipped).
 
-In a git work tree the corpus is whatever `git ls-files --cached --others --exclude-standard` lists — tracked files plus untracked files that are not ignored — so `.gitignore`, nested rules included, decides what gets remembered. A directory that is not a git work tree falls back to a plain walk (no ignore rules). Lazy indexing applies the same check when a file first enters the store; a file that is already indexed is refreshed on later reads without asking git again — if `.gitignore` starts excluding it, the `index_repo` / `watch_repo` scan drops it. An explicit `index_doc` bypasses `.gitignore`, but still respects `roots.exclude`, readability and the size limit, and its entry survives later scan passes for as long as the file exists.
+In a git work tree the corpus is whatever `git ls-files --cached --others --exclude-standard` lists — tracked files plus untracked files that are not ignored — so `.gitignore`, nested rules included, decides what gets remembered. Hidden paths (any path segment starting with `.`) and the built-in ignore list (`node_modules`, `dist`, …) are skipped in both modes; a directory that is not a git work tree falls back to a plain walk with the same filter. Lazy indexing applies the same check when a file first enters the store; a file that is already indexed is refreshed on later reads without asking git again — if `.gitignore` starts excluding it, the `index_repo` / `watch_repo` scan drops it. An explicit `index_doc` bypasses both `.gitignore` and the hidden-path filter, but still respects `roots.exclude`, readability and the size limit, and its entry survives later scan passes for as long as the file exists.
 
 | Tool | Purpose |
 |---|---|
@@ -169,7 +169,7 @@ When the root comes from the working directory, the model gets one notice per se
 
 `deny` only decides whether the directory itself can be a root: when a parent is already a root, files under a denied child are still indexed by that parent — use `exclude` (or `.gitignore`, which the git-aware scan already honours) to drop the files too. Explicit `index_doc` also respects `exclude` and returns `Not indexed` for a file under it.
 
-Priority is `exclude` > `deny` > `allow` > built-in list. `allowUnsafeRoots: true` only releases the built-in list; `deny` / `exclude` still win. The same verdict is shared by explicit tool calls, lazy indexing, watch, the session audit trail and TaskBridge. Roots refused by the current policy are dropped from `watch.json` on startup. Configure under `config:` of `- id: project-memory` (CLI and web alike); the web UI has no dedicated settings page, so edit the profile.
+Priority is `exclude` > `deny` > `allow` > built-in list. `allowUnsafeRoots: true` only releases the built-in list; `deny` / `exclude` still win. The same verdict is shared by explicit tool calls, lazy indexing, watch, the session audit trail and TaskBridge. Roots refused by the current policy are dropped from `watch.json` on startup. Configure under `config:` of `- id: project-memory`.
 
 **Scan limits.** One pass covers at most `maxScanFiles` files (20000) and `maxScanDepth` directory levels (12). A truncated pass is reported in the `index_repo` result and logged once per root by the watcher, and it does not remove entries it did not reach. A directory that cannot be read (e.g. `EACCES`) counts as a truncated pass too and is named in the result: a read failure is not a deletion.
 
@@ -283,7 +283,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 892 tests
+npm test                    # 923 tests
 npm run eval:injection      # synthetic pool P/R: precision 0.93 / recall 1.00, + a 3-scenario hint-only group
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)

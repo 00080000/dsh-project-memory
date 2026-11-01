@@ -220,4 +220,24 @@ const countSaves = (store) => {
   ok('懒索引新登记 watch 根：无条目更新也会持久化')
 }
 
+// ---------------------------------------------------------------------------
+// 7. 隐藏路径不进懒索引（与 index_repo / watch 的扫描口径一致）
+//    否则模型偶然 read 一次 `.env` 就把它写进记忆，而扫描永远看不到它、也不会清理。
+// ---------------------------------------------------------------------------
+{
+  const root = project()
+  const env = path.join(root, '.env')
+  writeFileSync(env, 'SECRET=do-not-index\n')
+  mkdirSync(path.join(root, '.claude'), { recursive: true })
+  const hiddenDoc = path.join(root, '.claude', 'note.md')
+  writeFileSync(hiddenDoc, '# hidden\n')
+
+  assert.equal(await indexFile({}, config, env, null, root), false, '.env 不应被懒索引')
+  assert.equal(await indexFile({}, config, hiddenDoc, null, root), false, '隐藏目录里的文档不应被懒索引')
+  const store = storeOf(root)
+  assert.equal(store.fileRecord('.env'), undefined)
+  assert.equal(store.fileRecord('.claude/note.md'), undefined)
+  ok('隐藏路径不进懒索引（显式 index_doc 仍是唯一入口）')
+}
+
 console.log(`\nlazy-batch tests: ${passed} passed`)

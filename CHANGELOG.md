@@ -1,6 +1,6 @@
 ## Unreleased
 
-**兼容**：无新增配置键，无 store 变更。三个既有键——`watchInterval` / `autoIndexOnFirstUse` / `llmQueryExpansion`——在 `Config` 里标成 `.volatile()`：这是宿主设置表单的准入条件（只有 volatile 字段能被 settings 接口写入），也让它们在运行中原地更新而不重启插件。profile / 命令行的写法完全不变。插件内部读取统一走 `cfgValue()`：volatile 字段在运行时是 ref（`.get()`），直接把 ref 当布尔会读错。升级后**需要重启一次 dsh**——volatile 元数据只在装配期解析。
+**兼容**：无新增配置键，无 store 变更。三个既有键——`watchInterval` / `autoIndexOnFirstUse` / `llmQueryExpansion`——在 `Config` 里标成 `.volatile()`：这是宿主设置表单的准入条件（只有 volatile 字段能被 settings 接口写入），也让它们在运行中原地更新而不重启插件。profile / 命令行的写法完全不变。插件内部读取统一走 `cfgValue()`：volatile 字段在运行时是 ref（`.get()`），直接把 ref 当布尔会读错。升级后**需要重启一次 dsh**——volatile 元数据只在装配期解析。两处**行为变化**：① 扫描与懒索引都跳过隐藏路径（任一段以 `.` 开头，如 `.env` / `.github/**`），显式 `index_doc` 仍可索引（已存在的隐藏路径条目会在下一次完整扫描被清理）；② `autoContext.maxTokens: 0` 现在真的零注入（此前被 `|| 400` 顶回默认值）。
 
 ### 新增：插件页上的可视化设置（web）
 
@@ -11,7 +11,20 @@
 - 门控是**两层**且都是软依赖：客户端只在宿主同时提供 `slots` / `configForms` / `locale`、且 `project-memory` 命名空间已被提供时才注册；旧宿主（ui-primitives 没有对应控件）上零注册，并打一条点名原因的告警而不是静默消失。组件存在性判定必须接受 `forwardRef` 返回的**对象**（宿主的 `Button` 就是对象）——用 `typeof x === 'function'` 会把真实组件当成不存在，卡片整块消失。
 - 其余旋钮（`memoryDir`、`roots.*`、扫描上限、insight / 反思 / 自动注入）**不进卡片**：它们要么一改就换数据位置，要么需要理解上下文，仍写 profile。
 
-**测试**：新增 `test/settings-card.test.mjs`（9 项：三个 volatile 键与默认值（并断言其余键不进命名空间）、`cfgValue()` 的 ref/普通值双形状、空路径 `[[]]` 读成"全部重读"、watch 关停/改间隔即重排、整份 `apply()` 在 ref 形状 Config 上装配、槽位注册的 key 与命名空间、默认收起与展开后 3 行、`Button` 以 forwardRef 对象形状参与注册、命名空间未提供与缺 settings 控件两种零注册）。
+### 修复
+
+- **watch 设置保存 / 回合结束不再停摆或误退避**：`start()` 先复位 `_stopped` 再判断进行中的轮询（设置页走 `stop() → start()`，否则那一轮结束后永久不再排下一轮）；回合结束只在没有在飞 poll 时补扫，避免把"本轮无变化"误记成退避。
+- **删除分片失败不再被当成"已经没了"**：`unlink` 对 Windows 的 EPERM/EBUSY 重试，仍失败则保留删除意图、下次 save 继续删（否则下一次 load 会把旧分片复活）。锁释放失败时把锁内容改成死进程，避免自己堵自己 10 分钟。
+- **`explicit` 标记在重新索引时保留**：`applyFileUpdate()` 从旧记录继承 `explicit`，否则显式 `index_doc` 的 .gitignored 文件活不过下一轮扫描清理。
+- **`experience.json` 迁移放进跨进程目录锁**：锁内重读磁盘再决定是否导入，两个 dsh 同时升级同一个旧 store 时不再互相覆盖。
+- **畸形 store 容错**：`insights.items` / `tasks` / `watchlist` 里的 null 与非数组形状不再让全局召回或容量裁剪整段抛错；任务缺 `files` / `fileMeta` 在 `load()` 时归一（此前每次文件工具调用都会在 `touchTaskFile()` 抛错，热点追踪静默失效）。
+- **增强队列的孤儿符号**：文件在排队增强期间被删除时，不再写一条没有 `files` 记录的孤儿符号（`unseen` 清理看不到它，查询却会一直命中）。
+- **相对 `root` 按会话工作目录解析**：`resolveIndexRoot()` / `resolveSafeIndexRoot()` 以及 `index_repo` / `watch_repo` / `index_doc` 的显式 root 不再用宿主 `process.cwd()` 解析相对路径——web profile 下一个进程服务多个会话，cd 之后两者不是一回事。
+- **扫描跳过隐藏路径的口径统一**：git 清单分支与 `walkDir` 回退都跳过任一段以 `.` 开头的路径（`.env`、`.github/**`、`.claude/**`），同一棵树 `git init` 前后语料一致；显式 `index_doc` 仍可索引隐藏文件。
+- **`autoContext.maxTokens: 0` 真正零注入**：不再被 `cfg.maxTokens || 400` 顶回默认值（任务卡与条目都静默）。
+- **`GlobalStore.markDirty()` 登记退出 flush**：`query_memory` 只改内存的 global 命中记账/派生 trigger 回填不会在进程退出时丢失（project store 有下一次 save 兜底，global 没有周期性 save 点）。
+
+**测试**：新增 `test/settings-card.test.mjs`（10 项：三个 volatile 键与默认值（并断言其余键不进命名空间）、`cfgValue()` 的 ref/普通值双形状、空路径 `[[]]` 读成"全部重读"、watch 关停/改间隔即重排、整份 `apply()` 在 ref 形状 Config 上装配、槽位注册的 key 与命名空间、默认收起与展开后 3 行、`Button` 以 forwardRef 对象形状参与注册、命名空间未提供与缺 settings 控件两种零注册）。本轮另补 7 项回归：`maxTokens: 0` 零注入、相对 root 按会话 cwd 解析、git / walk 两种扫描的隐藏路径口径一致、懒索引也跳过隐藏路径、畸形任务缺 `files` 的归一、`GlobalStore.markDirty()` 进入退出 flush。`npm test` **923 项 / 51 个文件**全绿、`npm run typecheck` 通过。
 
 ## 0.6.8 (2026-10-30)
 

@@ -128,6 +128,23 @@ const ev = (type, data) => ({ type, data })
   ok('tool/call：绑定后 files 并集；项目外/非文件工具/未绑定均忽略')
 }
 
+// --- 5c. 畸形任务缺 files / fileMeta：load 归一，tool/call 仍能记热点 ---
+// 回归：`touchTaskFile()` 直接 `task.files.includes(...)`，手改或旧版 tasks.json 缺集合时
+// 每次文件工具调用都抛错（外层 catch 只打日志），该任务的热点追踪永久失效。
+{
+  const root = mkdtempSync(path.join(tmpdir(), 'tbridge-bad-'))
+  const dir = path.join(root, '.dsh-project-memory')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(path.join(dir, 'tasks.json'), JSON.stringify([{ id: 'tsk_bad', title: '坏任务', steps: null, archived: false }]))
+  writeFileSync(path.join(dir, 'binding.json'), JSON.stringify({ sB: 'tsk_bad' }))
+  const store = new ProjectMemoryStore(dir).load()
+  assert.deepEqual(store.getTask('tsk_bad').files, [], 'load 应把缺失的 files 归一成空数组')
+  assert.deepEqual(store.getTask('tsk_bad').fileMeta, {}, 'load 应把缺失的 fileMeta 归一成空对象')
+  onSessionEvent(config, sess('sB', root), ev('tool/call', { name: 'read', arguments: JSON.stringify({ file_path: 'src/x.ts' }) }), new Map())
+  assert.deepEqual(store.getTask('tsk_bad').files, ['src/x.ts'], '归一后热点仍能记录')
+  ok('畸形任务缺 files / fileMeta：load 归一，tool/call 不再抛')
+}
+
 // --- 5b. 文件热点延迟落盘：回合结束才写 tasks.json ---
 {
   const { root, store } = newProject()

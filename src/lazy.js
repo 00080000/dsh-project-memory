@@ -7,6 +7,7 @@ import {
   findProjectRootWithSource,
   isGitIgnored,
   isGitIgnoredBatch,
+  isHiddenPath,
   memoryRootFor,
   relativePath,
   rootRejection,
@@ -104,6 +105,12 @@ export async function indexObservedBatch(config, items, watchManager = null) {
       }
       const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
       const rel = storeKey(relativePath(root, filePath))
+      // 隐藏路径与扫描口径一致：`.env` / `.github/**` 这类默认是配置/状态/密钥，不因模型
+      // 偶然读了一次就进语料；要索引就显式 `index_doc`。
+      if (isHiddenPath(rel)) {
+        results.set(filePath, false)
+        continue
+      }
       const record = store.fileRecord(rel)
       const st = statSync(filePath)
       // 快路径：mtime + size 都没动 → 连 git 都不用问。这是"重复读同一个文件"的主路径。

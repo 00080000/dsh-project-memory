@@ -1427,6 +1427,12 @@ check(
   'explicit root wins over session cwd',
   resolveIndexRoot({ agent: { session: { header: { cwd: sessionCwdRoot } } } }, bareDir) === bareDir,
 )
+const relativeTarget = path.join(sessionCwdRoot, 'sub')
+mkdirSync(relativeTarget, { recursive: true })
+check(
+  'a relative explicit root resolves against the session cwd, not process cwd',
+  resolveIndexRoot({ agent: { session: { header: { cwd: sessionCwdRoot } } } }, 'sub') === relativeTarget,
+)
 check(
   'falls back to process cwd without a session',
   resolveIndexRoot(undefined, undefined) === bareDir,

@@ -613,9 +613,14 @@ export class ProjectMemoryStore {
     }
     // 任务级 insights 同样可能混进 null：`taskContaining()` / `removeMemory()` 直接读 `i.id`，
     // 一个 null 就能让 forget/去重整段抛错。只保留对象，非数组形状按空处理。
+    // `files` / `fileMeta` 同理：taskbridge 的 `touchTaskFile()` 每读/写一个文件都会读它们，
+    // 缺一个集合就等于这个任务的热点追踪从第一次工具调用起永久失效。
     for (const task of this.tasks) {
       if (Array.isArray(task.insights)) task.insights = task.insights.filter(isRecord)
       else if (task.insights !== undefined) task.insights = []
+      if (Array.isArray(task.files)) task.files = task.files.filter((f) => typeof f === 'string' && f)
+      else task.files = []
+      if (!isRecord(task.fileMeta)) task.fileMeta = {}
     }
     const bindingDoc = this._loadJson(path.join(this.dir, BINDING_FILE), {})
     this.binding = isRecord(bindingDoc) ? bindingDoc : {}

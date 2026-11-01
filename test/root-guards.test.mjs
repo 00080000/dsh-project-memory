@@ -209,6 +209,12 @@ console.log('\n== assertSafeRoot / resolveSafeIndexRoot ==')
     'allowUnsafeRoots lets an explicit unsafe root through (opt-in only)',
     resolveSafeIndexRoot(exec, HOME, { ...CONFIG, allowUnsafeRoots: true }) === HOME,
   )
+  const relProject = tempProject('pm-relroot-')
+  const relExec = { agent: { session: { header: { cwd: relProject } } } }
+  check(
+    'a relative explicit root resolves against the session cwd (not process.cwd)',
+    resolveSafeIndexRoot(relExec, '.', CONFIG) === relProject,
+  )
   check(
     'raw resolveIndexRoot stays a pure resolver (no throwing)',
     resolveIndexRoot(exec, undefined) === HOME,

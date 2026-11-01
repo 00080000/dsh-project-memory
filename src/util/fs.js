@@ -520,6 +520,8 @@ export function walkDir(root, opts = {}) {
       continue
     }
     for (const entry of entries) {
+      // 隐藏路径一律不进语料（与 listProjectFiles 的 git 分支同一口径）：配置/状态/密钥
+      // （`.env`、`.ssh`）默认落在点文件里；作者真要索引就显式 `index_doc`。
       if (entry.name.startsWith('.')) continue
       const full = path.join(dir, entry.name)
       if (entry.isDirectory()) {
@@ -603,6 +605,11 @@ export function listProjectFiles(root, opts = {}) {
     const rel = String(raw).split(path.sep).join('/')
     if (!rel) continue
     const segs = rel.split('/')
+    // 与 walkDir 同一口径：隐藏路径（任一段以 `.` 开头）与内置忽略名单都不进语料。
+    // 两份清单必须一致，否则同一棵树在 `git init` 前后索引内容会变；隐藏路径默认是
+    // 配置/状态/密钥（`.env`、`.ssh`），非 git 目录没有"被跟踪=作者同意"这层信号。
+    // 真要索引某个隐藏文件，走显式 `index_doc`（它不受扫描清单限制）。
+    if (segs.some((s) => s.startsWith('.'))) continue
     if (segs.some((s) => DEFAULT_IGNORE.has(s))) continue
     const abs = path.join(root, rel)
     // 与 walkDir 同一判据：exclude 是子树级前缀。必须在 maxDepth 之前——被排除文件不该把
@@ -705,6 +712,17 @@ export function isSupportedCode(ext) {
 
 export function relativePath(root, filePath) {
   return path.relative(root, filePath).split(path.sep).join('/')
+}
+
+/**
+ * 路径里是否有以 `.` 开头的段（与扫描口径一致）：隐藏路径默认是配置/状态/密钥，
+ * 不进入自动索引面（显式 `index_doc` 仍可索引）。按 `/` 切分后逐段判断，
+ * 因此 `.env`、`.github/x.md`、`src/.cache/y.js` 都算隐藏。
+ * @param {string} relOrAbs 项目相对或绝对路径
+ * @returns {boolean}
+ */
+export function isHiddenPath(relOrAbs) {
+  return String(relOrAbs || '').split(/[\\/]/).some((seg) => seg.startsWith('.'))
 }
 
 /**
@@ -1219,12 +1237,20 @@ export function assertSafeRoot(root, { requested = root, allowUnsafe = false, co
   throw new UnsafeRootError(root, requested, { rejection })
 }
 
+/**
+ * 解析「当前工作目录」：显式 root 优先，但**相对路径按会话工作目录解析**，而不是宿主的
+ * `process.cwd()`——web profile 里一个进程会服务多个会话，cd 之后两者的 cwd 不是一回事。
+ * 没有显式 root 时返回会话工作目录本身；会话信息缺失（测试 / 老宿主）才退回进程 cwd。
+ * @param {object|null} exec 宿主工具执行上下文（`exec.agent.session`）
+ * @param {string|null} [explicitRoot] 工具参数里的 root，可为绝对或相对路径
+ * @returns {string} 绝对路径
+ */
 export function resolveIndexRoot(exec, explicitRoot) {
-  if (explicitRoot && explicitRoot.trim()) return path.resolve(explicitRoot)
   // 会话当前工作目录：0.2.1+ 读 workingDirectory 投影（cd 后会变），老宿主回退 header.cwd。
   const sessionCwd = sessionWorkingDir(exec?.agent?.session, { agent: exec?.agent })
-  if (sessionCwd) return path.resolve(sessionCwd)
-  return path.resolve(process.cwd())
+  const base = sessionCwd ? path.resolve(sessionCwd) : path.resolve(process.cwd())
+  if (explicitRoot && String(explicitRoot).trim()) return path.resolve(base, String(explicitRoot))
+  return base
 }
 
 // ---------------------------------------------------------------------------
@@ -1404,10 +1430,11 @@ export function resolveProjectMemoryRoot(cwd, config) {
 export function resolveSafeIndexRoot(exec, explicitRoot, config) {
   const allowUnsafe = config?.allowUnsafeRoots === true
   const explicit = explicitRoot && String(explicitRoot).trim() ? String(explicitRoot) : null
+  // 显式 root 也走 resolveIndexRoot：相对路径必须按**会话**工作目录解析（见该函数注释）。
+  const cwd = resolveIndexRoot(exec, explicit)
   if (explicit) {
-    return assertSafeRoot(path.resolve(explicit), { requested: explicit, allowUnsafe, config })
+    return assertSafeRoot(cwd, { requested: explicit, allowUnsafe, config })
   }
-  const cwd = resolveIndexRoot(exec)
   const root = resolveProjectMemoryRoot(cwd, config)
   if (root) return root
   // allowUnsafeRoots 只放开内置名单；cwd 被 deny / exclude / 文件系统根命中时仍然拒绝。

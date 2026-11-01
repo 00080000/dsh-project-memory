@@ -1,7 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
 import { statSync } from 'node:fs'
-import { assertIndexRoot, assertSafeRoot, listProjectFiles, memoryDirName, memoryRootFor, relativePath, scanLimits, storeKey } from '../util/fs.js'
+import { assertIndexRoot, assertSafeRoot, listProjectFiles, memoryDirName, memoryRootFor, relativePath, resolveIndexRoot, scanLimits, storeKey } from '../util/fs.js'
 import { DROP, OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from '../index-pipeline.js'
 import { ProjectMemoryStore } from '../store.js'
 import { onFileIndexed, isTypeScriptFile, enhanceQueueStats } from '../enhancer.js'
@@ -142,7 +142,7 @@ export function indexRepoTool(ctx, config) {
       root: {
         type: 'string',
         required: true,
-        description: '项目根（绝对路径）',
+        description: '项目根（相对路径按会话当前工作目录解析）',
       },
       reindex: {
         type: 'boolean',
@@ -153,8 +153,9 @@ export function indexRepoTool(ctx, config) {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
-    async execute(args) {
-      const root = path.resolve(args.root)
+    async execute(args, exec) {
+      // 相对 root 按会话当前工作目录解析（不是宿主进程 cwd）——见 util/fs.js 的 resolveIndexRoot。
+      const root = resolveIndexRoot(exec, args.root)
       // 透传原始入参：Windows 风格路径在 POSIX 上会被 resolve 成 <cwd>/D:\...，
       // 报错时要点明这是路径风格问题，而不是“目录被删了”。
       assertIndexRoot(root, args.root)

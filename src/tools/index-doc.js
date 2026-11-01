@@ -1,7 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
 import { statSync } from 'node:fs'
-import { assertIndexRoot, assertReadableFile, assertSafeRoot, excludedEntryForPath, findProjectRoot, memoryRootFor, sessionMemoryRootOrNull, sha256OfFile, storeKey } from '../util/fs.js'
+import { assertIndexRoot, assertReadableFile, assertSafeRoot, excludedEntryForPath, findProjectRoot, memoryRootFor, resolveIndexRoot, sessionMemoryRootOrNull, sha256OfFile, storeKey } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { docEntriesNeedBackfill } from '../doc-index.js'
 import { ProjectMemoryStore } from '../store.js'
@@ -39,7 +39,8 @@ export function indexDocTool(ctx, config) {
       const explicit = args.root && args.root.trim() ? args.root : null
       let root
       if (explicit) {
-        root = path.resolve(explicit)
+        // 相对 root 按会话当前工作目录解析（不是宿主进程 cwd）。
+        root = resolveIndexRoot(exec, explicit)
         assertIndexRoot(root, explicit)
         assertSafeRoot(root, { requested: explicit, config })
       } else {

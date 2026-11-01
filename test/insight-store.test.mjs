@@ -25,6 +25,7 @@ import { ensureGlobalInit } from '../src/global-seed.js'
 import { normalizedTokenOverlap } from '../src/similarity.js'
 import { lessonTool } from '../src/tools/lesson-tools.js'
 import { forgetTool } from '../src/tools/forget.js'
+import { _pendingDirtyCountForTest } from '../src/util/flush.js'
 
 let passed = 0
 const ok = (name) => {
@@ -774,6 +775,20 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
     assert.equal(r3.action, 'auto-merged', '中等密度池不得被误收紧（μ+3σ 仍低于绝对下限）')
     ok('自动覆盖：密集池按 μ+3σ 收紧（0.92 不覆盖）；稀疏/中等池行为不变')
   }
+}
+
+// --- 15. GlobalStore.markDirty 必须登记退出 flush ---
+// 回归：query_memory 对 global 条目只 markDirty、不 commit；markDirty 不 trackDirty 时，
+// 命中记账与派生 trigger 回填会在进程退出时静默丢失（project store 有下一次 save 兜底，
+// global store 没有周期性 save 点）。
+{
+  const { globalFile } = newProject()
+  const before = _pendingDirtyCountForTest()
+  const gs = new GlobalStore(globalFile).load()
+  gs.doc.items.push({ id: 'ins_track', kind: 'lesson', scope: 'global', title: 'track me', fix: 'x', confidence: 1 })
+  gs.markDirty()
+  assert.ok(_pendingDirtyCountForTest() > before, 'markDirty 后必须进入 exit-flush 集合')
+  ok('GlobalStore.markDirty 登记退出 flush（query 路径的命中记账不会丢）')
 }
 
 console.log(`\ninsight-store tests: ${passed} passed`)

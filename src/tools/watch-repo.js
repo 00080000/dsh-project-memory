@@ -1,6 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import path from 'node:path'
-import { assertIndexRoot, assertSafeRoot, memoryRootFor, rootRejection, sessionMemoryRootOrNull } from '../util/fs.js'
+import { assertIndexRoot, assertSafeRoot, memoryRootFor, resolveIndexRoot, rootRejection, sessionMemoryRootOrNull } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { cfgValue } from '../util/config.js'
 
@@ -13,7 +13,7 @@ export function watchRepoTool(watchManager, config) {
       root: {
         type: 'string',
         required: true,
-        description: '项目根（绝对路径）',
+        description: '项目根（相对路径按会话当前工作目录解析）',
       },
       watch: {
         type: 'boolean',
@@ -25,7 +25,7 @@ export function watchRepoTool(watchManager, config) {
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args, exec) {
-      const root = path.resolve(args.root)
+      const root = resolveIndexRoot(exec, args.root)
       // 不存在的根不写进 watchlist：watch 每轮会 commit → save → mkdirSync，把它重新造出来。
       // 根是**文件**时同样要拦：否则 save() 的 mkdirSync 会抛裸 ENOTDIR。
       // 家目录 / 系统目录 / Homebrew 前缀也不监听：整体轮询扫描会吃满内存（issue #5）。

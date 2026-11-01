@@ -145,7 +145,10 @@ export function hotSortFiles(files, meta) {
 
 /** 触碰文件后更新元数据并重排 task.files（写 vs 读分别记时间/次数）。 */
 export function touchTaskFile(task, rel, kind, now) {
-  task.fileMeta = task.fileMeta || {}
+  // 手改 / 旧版本的 tasks.json 可能没有这两个集合。读路径必须容错：这里抛一次就会让
+  // 该任务后续的所有文件热点更新都静默停掉（外层 catch 只打一行日志）。
+  if (!Array.isArray(task.files)) task.files = []
+  task.fileMeta = task.fileMeta && typeof task.fileMeta === 'object' && !Array.isArray(task.fileMeta) ? task.fileMeta : {}
   if (!task.files.includes(rel)) task.files.push(rel)
   const m = task.fileMeta[rel] || {}
   m.n = (m.n || 0) + 1 // 兼容旧字段：读+写总数（保留，避免老任务语义漂移）

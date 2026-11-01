@@ -530,6 +530,9 @@ export class GlobalStore {
 
   markDirty() {
     this._dirty = true
+    // 退出/卸载时 flushDirtyStores() 只遍历 tracked 集合：不在这里登记，query_memory 这类
+    // "只改内存、不立刻 commit"的路径（命中记账、派生 trigger 回填）就会在进程退出时丢掉。
+    trackDirty(this)
   }
 
   /**

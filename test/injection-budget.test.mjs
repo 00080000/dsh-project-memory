@@ -210,4 +210,16 @@ function harness(items, autoContext) {
   ok(`长会话：50 步注入 ${injectedItems} 条（旧默认在第 12 条后永久静默）`)
 }
 
+// --- 11. maxTokens: 0 是"零预算"，不是"未配置" ---
+// 回归：`cfg.maxTokens || 400` 会把显式的 0 顶回默认值，任务卡 + 条目照旧注入。
+{
+  const cfg = cfgEngine({ autoContext: { maxTokens: 0 } })
+  assert.equal(cfg.maxTokens, 0, 'cfgEngine 必须保留显式的 0')
+  const task = { id: 't0', title: '零预算任务', steps: [], files: [], fileMeta: {}, insights: [lesson('a', '阈值')] }
+  const built = buildInjection({ query: '阈值要改', task, cfg, readiness: { humanText: '阈值要改' } })
+  assert.equal(built.text, '', 'maxTokens: 0 时不得注入任何内容（含任务卡）')
+  assert.equal(built.reasons.length, 0)
+  ok('maxTokens: 0 真的零注入（0 不再被 || 400 顶回默认）')
+}
+
 console.log(`\ninjection-budget tests: ${passed} passed`)

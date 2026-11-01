@@ -445,7 +445,9 @@ export function buildInjection(opts) {
   const quotaChars = typeof opts.maxChars === 'number' ? opts.maxChars : Infinity
   const maxItems = typeof opts.maxItems === 'number' ? opts.maxItems : Infinity
   const skipItems = opts.skipItems === true
-  const stepBudget = Math.max(0, (cfg.maxTokens || 400) * 3)
+  // 0 是合法值（= 不给注入预算）：不能用 `|| 400` 把显式的 0 顶回默认值。
+  const maxTokens = typeof cfg.maxTokens === 'number' && Number.isFinite(cfg.maxTokens) ? cfg.maxTokens : 400
+  const stepBudget = Math.max(0, maxTokens * 3)
   const itemBudget = Math.max(0, Math.min(stepBudget, quotaChars))
 
   const skipItem = typeof opts.skipItem === 'function' ? opts.skipItem : null
@@ -474,7 +476,7 @@ export function buildInjection(opts) {
 
   // 常驻块文本。去重指纹包含“编辑中”行：否则这条常驻状态只会在别的条目变化时顺带更新，
   // 模型会一直看到旧文件列表；只有热点文件集合/顺序变化时才重发整块。
-  const echo = cfg.entryOn !== false && shouldEchoTaskCard(task, cfg)
+  const echo = stepBudget > 0 && cfg.entryOn !== false && shouldEchoTaskCard(task, cfg)
   const entry = echo ? buildEntryContent(task, cfg) : ''
   const entryStable = entry
   let used = entry.length
