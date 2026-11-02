@@ -178,7 +178,12 @@ export async function indexObservedBatch(config, items, watchManager = null) {
           continue
         }
         clearIndexFailure(cand.root, cand.rel)
-        if (plan.key === OVERSIZE) continue
+        if (plan.key === OVERSIZE) {
+          // 与 index_repo 同一语义：文件涨过阈值后，旧条目必须摘掉，而不是只跳过本轮。
+          updates.push({ rel: cand.rel, drop: true })
+          results.set(cand.filePath, false)
+          continue
+        }
         updates.push(toFileUpdate(cand.rel, plan, cand.record))
         if (plan.key !== DROP && plan.type === 'code') onFileObserved(store, cand.rel, cand.filePath, config, root)
         results.set(cand.filePath, plan.key !== DROP)

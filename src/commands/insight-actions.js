@@ -4,9 +4,14 @@
 // （命令 handler：store.commit + gs.commit）统一负责，便于单测。
 import { ProjectMemoryStore } from '../store.js'
 import { memoryRootFor, normalizeCitationFiles } from '../util/fs.js'
-import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, recordDeleted, INSIGHT_KINDS } from '../insight-store.js'
+import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, recordDeleted, carryUsageFields, pruneItems, INSIGHT_KINDS } from '../insight-store.js'
 import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
+
+/** 容量旋钮的防御性取值：cfg 可能只带显式测试字段。 */
+function capOf(value, fallback) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
 
 /**
  * 记忆列表单页上限。面板每页只请求 30 条（客户端 PAGE_SIZE），远小于它——
@@ -163,16 +168,22 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       return { ok: true, text: `已${act === 'archive' ? '归档' : '恢复'}` }
     }
     if (act === 'promote') {
-      // task → project（手动提升，无视自动阈值）
+      // task → project（手动提升，无视自动阈值）。必须和自动提升一样保留使用痕迹：
+      // normalizeInsight 只复制白名单字段，triggerDerived/prev/lastHitAt 要显式带回。
+      const now = new Date().toISOString()
       const items = store.insightItems()
-      const copy = normalizeInsight(insight, { scope: 'project', source: insight.source, nowIso: new Date().toISOString() })
+      const copy = carryUsageFields(
+        normalizeInsight(insight, { scope: 'project', source: insight.source, nowIso: now }),
+        insight,
+      )
       copy.id = id
       copy.draft = false
       copy.confidence = Math.max(insight.confidence || 0, (cfg && cfg.promoteConfidence) || 0.7)
-      copy.movedFrom = { scope: 'task', id, at: new Date().toISOString() }
+      copy.movedFrom = { scope: 'task', id, at: now }
       copy.createdAt = insight.createdAt || copy.createdAt
       copy.hitCount = insight.hitCount || 0
       items.push(copy)
+      pruneItems(items, capOf(cfg?.maxProject, 100), now)
       store.replaceInsightItems(items)
       task.insights = (task.insights || []).filter((i) => i.id !== id)
       store.markTasksDirty()
@@ -202,13 +213,17 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       // project → global
       if (!gs) return { ok: false, text: 'global 存储不可用' }
       const now = new Date().toISOString()
-      const copy = normalizeInsight(ins, { scope: 'global', source: ins.source, nowIso: now })
+      const copy = carryUsageFields(
+        normalizeInsight(ins, { scope: 'global', source: ins.source, nowIso: now }),
+        ins,
+      )
       copy.id = id
       copy.draft = false
       copy.movedFrom = { scope: 'project', id, at: now }
       copy.createdAt = ins.createdAt || copy.createdAt
       copy.hitCount = ins.hitCount || 0
       gs.items().push(copy)
+      pruneItems(gs.items(), capOf(cfg?.maxGlobalProcedures, 200), now)
       gs.markDirty()
       items.splice(idx, 1)
       store.replaceInsightItems(items)
@@ -219,7 +234,10 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       const task = store.getTask(taskId)
       if (!task) return { ok: false, text: '降级到任务需要 taskId' }
       const now = new Date().toISOString()
-      const copy = normalizeInsight(ins, { scope: 'task', source: ins.source, nowIso: now })
+      const copy = carryUsageFields(
+        normalizeInsight(ins, { scope: 'task', source: ins.source, nowIso: now }),
+        ins,
+      )
       copy.id = `${id}_d${Date.now().toString(36)}`
       copy.movedFrom = { scope: 'project', id, at: now }
       copy.createdAt = ins.createdAt || copy.createdAt
@@ -255,11 +273,15 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       // global → project
       const now = new Date().toISOString()
       const pjItems = store.insightItems()
-      const copy = normalizeInsight(ins, { scope: 'project', source: ins.source, nowIso: now })
+      const copy = carryUsageFields(
+        normalizeInsight(ins, { scope: 'project', source: ins.source, nowIso: now }),
+        ins,
+      )
       copy.id = `${id}_d${Date.now().toString(36)}`
       copy.movedFrom = { scope: 'global', id, at: now }
       copy.createdAt = ins.createdAt || copy.createdAt
       pjItems.push(copy)
+      pruneItems(pjItems, capOf(cfg?.maxProject, 100), now)
       store.replaceInsightItems(pjItems)
       items.splice(idx, 1)
       gs.markDirty()

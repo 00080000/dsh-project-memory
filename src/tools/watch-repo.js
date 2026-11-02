@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { assertIndexRoot, assertSafeRoot, memoryRootFor, resolveIndexRoot, rootRejection, sessionMemoryRootOrNull, storeKey } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
@@ -60,7 +61,9 @@ export function watchRepoTool(watchManager, config) {
         // （这正是要修的场景），而写它会在家目录里造出 .dsh-project-memory。那份
         // watch.json 现在也没有任何启动路径会读取（restorePersisted 只认会话 cwd），
         // 留着即可；会话侧的镜像条目照常摘掉。
-        if (!rootRejection(root, config)) {
+        // 根可能早已被删除：这时**不能** load/commit，否则 save() 的 mkdirSync 会把
+        // watch_repo 刚停掉的路径重新创建出来。watch.json 的清理只对仍存在的根有意义。
+        if (existsSync(root) && !rootRejection(root, config)) {
           new ProjectMemoryStore(memoryDir).load().commit((s) => s.removeWatch(root))
         }
         await mirrorSessionWatchlist(false)

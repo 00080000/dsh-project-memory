@@ -182,6 +182,10 @@ export function archiveTaskTool(config, host) {
       if (task.archived) return truncate(JSON.stringify({ success: false, error: 'Already archived' }), config.maxOutputChars)
       task.archived = true
       task.updatedAt = new Date().toISOString()
+      // 归档 = 停止续做：绑定必须在同一事务里清掉，否则本会话（以及别的会话）下一次
+      // 注入仍会拿到这张归档任务卡，task 级 insights 也继续可见；下一次 load 的
+      // _pruneBindings() 会自愈，但用户已经在中间几步看到了错误状态。
+      store.removeBindingsForTask(task.id)
       store.markTasksDirty()
       store.save()
       // 反思钩子：归档即收割最终教训（默认关）

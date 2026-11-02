@@ -12,7 +12,7 @@ import { createWriteCosine } from '../auto-inject.js'
 export function lessonTool(config) {
   const kindDesc = 'lesson(坑→改法) | decision(选择+理由) | procedure(步骤) | experience(问题→解法)；默认 lesson。'
   const scopeDesc =
-    'task(任务私有) | project(项目资产) | global(跨项目)；默认 project；给 id 时就地更新。'
+    'task(任务私有) | project(项目资产) | global(跨项目)；默认：绑定任务时 task，否则 project；给 id 时就地更新。'
   return defineTool({
     name: 'save_lesson',
     description:
@@ -100,7 +100,9 @@ export function lessonTool(config) {
       if (!args.id && !raw.title && !raw.pattern && !raw.choice) {
         return truncate(JSON.stringify({ success: false, error: '需要 title / pattern / choice 之一（或给 id 做就地更新）' }), config.maxOutputChars || 8000)
       }
-      if (!INSIGHT_KINDS.includes(raw.kind)) raw.kind = 'lesson'
+      // 只有新建才补默认 kind；带 id 的就地更新必须“只覆盖传了的字段”，
+      // 否则一次改 fix/reason 会把 decision/procedure 静默降级成 lesson。
+      if (!args.id && !INSIGHT_KINDS.includes(raw.kind)) raw.kind = 'lesson'
 
       let scope = args.scope
       if (!scope) scope = taskId ? 'task' : 'project'

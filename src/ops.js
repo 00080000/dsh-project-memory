@@ -391,6 +391,19 @@ export function classifyToolCall(name, argsText) {
   const tool = String(name || '').toLowerCase()
   const { command, path } = argsFields(argsText)
   if (SHELL_TOOLS.has(tool)) return classifyShellCommand(command || String(argsText || ''))
+  // 宿主的 `str_replace_editor` 用 path + command（view/create/str_replace/insert），
+  // 不是 file_path；view 是读，其余三个才是写。漏掉它时文件编辑既不产 file-write，也进不了
+  // TaskBridge 的热点文件。
+  if (tool === 'str_replace_editor') {
+    const obj = safeJson(argsText) || {}
+    const filePath = typeof obj.path === 'string' ? obj.path : ''
+    const cmd = typeof obj.command === 'string' ? obj.command.toLowerCase() : ''
+    if (!filePath || !['create', 'str_replace', 'insert'].includes(cmd)) {
+      return { ops: [], targets: [], hosts: [] }
+    }
+    const targets = [filePath, ...extractPathTokens(filePath)]
+    return { ops: ['file-write'], targets: [...new Set(targets)], hosts: [] }
+  }
   if (READ_IMAGE_TOOLS.has(tool)) return { ops: ['read-image'], targets: [], hosts: [] }
   if (INDEX_TOOLS.has(tool)) return { ops: ['index-doc'], targets: [], hosts: [] }
   if (FETCH_TOOLS.has(tool)) return { ops: ['fetch-web'], targets: [], hosts: [] }

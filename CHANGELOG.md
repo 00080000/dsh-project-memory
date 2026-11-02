@@ -1,3 +1,24 @@
+## Unreleased (2026-11-02)
+
+**兼容**：无新增配置键，无 store 格式变更。
+
+### 修复
+
+- **`save_lesson` 带 `id` 更新时静默改 `kind`**：`kind` 的 `'lesson'` 默认值此前也作用于就地更新，改一条 decision/procedure 的 `fix`/`reason` 会把它降级成 lesson；现在只在新建时补默认值，更新只覆盖调用方显式传入的字段。
+- **watch / lazy 对超过 `maxFileSizeMb` 的文件只跳过、不摘旧条目**：文件涨过阈值后旧 entries 会永久可检索（watch 还把 `mtime:size` 写进快照，永远不再重试）。两处现在与 `index_repo` 一样走 `drop`；watch 轮询发现根已被删除时也不再经 `save()` 把根重新创建出来。
+- **`archive_task` 归档后不解绑**：绑定会话下一步仍会注入归档任务卡与任务级 insights，任务级记忆也继续被召回；现在工具与 `/tasks archive` 一样清掉所有绑定，注入/召回侧同时挡 `task.archived`。
+- **`autoContext.maxTokens: 0` 仍注入 root notice**：`buildInjection` 已零预算，但 `injectForStep` 在预算外补了“记忆根是推定的”提示；现在 0 预算时连状态声明也不发，真正零注入。
+- **`watch_repo({watch:false})` 对已不存在的 root 重新创建目录**：stop 路径不再 load/commit 缺失根；避免 `save()` 的 `mkdirSync` 把用户刚停掉的路径复活。
+- **宿主的 `str_replace_editor` 不被识别**：`ops` 现在按 `path` + `command` 把 create/str_replace/insert 归一成 `file-write`，`view` 不算写；TaskBridge 也把它的写/读分别记入任务热点文件。
+- **面板 promote/demote 丢使用痕迹**：手工提升/降级此前直接走 `normalizeInsight`，丢掉 `triggerDerived`/`prev`/`lastHitAt`，也不执行 `maxProject`/`maxGlobalProcedures`；现在与自动提升共用 `carryUsageFields` 并收口容量。
+- **空任务列表的 `/tasks` payload 缺 `root`**：跨标签页同步按项目根过滤，空列表时 root 为 null 会让本页失去项目作用域；现在空/非空两条路径都带 root。
+- **`memoryDir` 为空/空白时 store 落在项目根**：写路径此前用原始值，空串会让 `save()` 在项目根创建 `format.json`/`shards/`，并由自我忽略写出内容为 `*` 的 `.gitignore`，把整个仓库从 git 视角隐藏；`memoryRootFor()` 现在统一回落到默认目录。
+- **POSIX 上把 Windows 盘符路径当项目内相对路径**：`normalizeCitationFiles()` 现在丢弃 `C:\...` 这类在本平台不是绝对路径的盘符路径，避免生成 `C:/...` 的假引用。
+- **`GlobalStore` 缓存键大小写未归一**：Windows/macOS 上同一 `global.json` 的两种写法会建两个实例；现在与项目 store 一样走 `storeKey()`。
+- `save_lesson` 的 `scope` 描述改为与实现一致：绑定任务时默认 `task`，否则 `project`。
+
+**测试**：新增 `test/audit-2026-11-02.test.mjs`（13 项：save_lesson kind 保留、watch/lazy 超限摘旧条目、archive_task 解绑与注入/召回守卫、maxTokens 0 零注入、watch stop/poll 不重建缺失根、str_replace_editor 的 ops/TaskBridge、手工 promote 保留字段与容量、空任务 payload root、空 memoryDir 归一、POSIX 盘符路径丢弃）。`npm test` **943 项 / 55 个文件**全绿、`npm run typecheck` 通过。
+
 ## 0.6.9 (2026-11-02)
 
 **兼容**：无新增配置键，无 store 格式变更（启动时会顺手把 `watch.json` 里大小写重复的根条目合并成一条；文件格式不变）。三个既有键——`watchInterval` / `autoIndexOnFirstUse` / `llmQueryExpansion`——在 `Config` 里标成 `.volatile()`：这是宿主设置表单的准入条件（只有 volatile 字段能被 settings 接口写入），也让它们在运行中原地更新而不重启插件。profile / 命令行的写法完全不变。插件内部读取统一走 `cfgValue()`：volatile 字段在运行时是 ref（`.get()`），直接把 ref 当布尔会读错。升级后**需要重启一次 dsh**——volatile 元数据只在装配期解析。两处**行为变化**：① 扫描与懒索引都跳过隐藏路径（任一段以 `.` 开头，如 `.env` / `.github/**`），显式 `index_doc` 仍可索引（已存在的隐藏路径条目会在下一次完整扫描被清理）；② `autoContext.maxTokens: 0` 现在真的零注入（此前被 `|| 400` 顶回默认值）。

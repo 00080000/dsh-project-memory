@@ -7,7 +7,7 @@ import { readFileSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { normalizedTokenOverlap, findBestOverlapMatch, insightMatchText } from './similarity.js'
-import { acquireDirLock, writeJsonAtomic } from './util/fs.js'
+import { acquireDirLock, storeKey, writeJsonAtomic } from './util/fs.js'
 import { debugPersistence } from './util/persist.js'
 import { trackDirty, untrackDirty } from './util/flush.js'
 import { backfillDerivedTriggers } from './readiness.js'
@@ -509,7 +509,9 @@ export class GlobalStore {
   load() {
     // 整份文档读改写：同一路径必须共用实例，否则两个工具/会话交错时后写覆盖先写。
     // 与 ProjectMemoryStore 的 storeCache 同语义，这里只按路径缓存。
-    const key = path.resolve(this.file)
+    // Windows/macOS 大小写不敏感：同一个 global.json 的两种写法不能并存两个实例。
+    // 项目 store 已有同名归一（storeCacheAlias），这里此前漏了。
+    const key = storeKey(path.resolve(this.file))
     const hot = globalStoreCache.get(key)
     if (hot) {
       this.doc = hot.doc

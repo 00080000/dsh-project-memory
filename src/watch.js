@@ -270,6 +270,10 @@ export class WatchManager {
   }
 
   async pollRoot(root, state) {
+    // 根可能在运行期被删除/rename。这里**不能**继续走到 storeFor() → save()：
+    // save() 会把 !formatWritten 当脏并 mkdirSync，把删掉的根重新创建成一个空目录。
+    // 暂时读不到的挂载点同样跳过本轮；它回来后会继续按原逻辑扫描。
+    if (!existsSync(root)) return false
     const seen = new Set()
     const updates = []
     // rel → 本轮采集的 mtime:size。提交成功后才落进快照；CAS 失败的条目下轮重试。
@@ -356,11 +360,18 @@ export class WatchManager {
       }
       state.failures.delete(rel)
       clearIndexFailure(root, rel)
-      // 内容未变 / 体积超限也要落快照：否则 mtime:size 快路径永远命中不了，每次 poll 都要重读全仓。
-      if (plan.key === UNCHANGED || plan.key === OVERSIZE) {
+      // 内容未变也要落快照：否则 mtime:size 快路径永远命中不了，每次 poll 都要重读全仓。
+      if (plan.key === UNCHANGED) {
         // 内容没变、只有 mtime 变了：把新 mtime 写回条目，让下一轮（及其它入口）的快路径能命中。
-        if (plan.key === UNCHANGED && typeof plan.mtimeMs === 'number') store.refreshMtime(rel, plan.mtimeMs)
+        if (typeof plan.mtimeMs === 'number') store.refreshMtime(rel, plan.mtimeMs)
         state.snapshot[rel] = sig
+        continue
+      }
+      if (plan.key === OVERSIZE) {
+        // 体积超限必须把旧条目摘掉（与 index_repo 同一语义）：只跳过快照会让
+        // 查询继续命中一个按配置已经不该索引的文件。
+        signatures.set(rel, sig)
+        updates.push({ rel, drop: true })
         continue
       }
 

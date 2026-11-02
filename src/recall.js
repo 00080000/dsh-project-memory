@@ -152,7 +152,8 @@ export function visibleInsights({ store = null, globalStore = null, boundTaskId 
   }
   if (boundTaskId && store && typeof store.getTask === 'function') {
     const task = store.getTask(boundTaskId)
-    for (const it of (task && task.insights) || []) {
+    // 归档任务不再向绑定会话提供任务级记忆（与 buildInjection 的 task 守卫同一判据）。
+    for (const it of (task && !task.archived && task.insights) || []) {
       if (!it || it.archived) continue
       // 任务级也要挡草稿：reflection 写的是 draft:true，未确认前不该被召回。
       if (it.draft === true) continue

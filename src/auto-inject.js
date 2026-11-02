@@ -426,7 +426,9 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped, rerank =
  * @returns {{ text: string, labels: string[], reasons: object[], dropped: object[] }}
  */
 export function buildInjection(opts) {
-  const { query, task, globalStore, cfg } = opts
+  const { query, globalStore, cfg } = opts
+  // 归档任务不是“当前任务”：即使调用方还拿着旧绑定，也不能回声任务卡或任务级 insights。
+  const task = opts.task && !opts.task.archived ? opts.task : null
   const store = opts.store || null
   const tags = opts.projectTagsList || []
   // 就绪上下文可能**已经构建过**（injectForStep 先构建、再传给这里）。二次构建会把第一遍的
@@ -767,8 +769,9 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   }), shadow, root)
 
   // 记忆根通告：根是**推定**的（会话工作目录且无任何项目标记）时，第一次注入前告诉模型"记忆存在哪、
-  // 怎么改"。它是状态声明（与常驻任务卡同类），只发一次、不占条目额度。
-  const notice = rootNotice({ root, sessionId, sessions, config })
+  // 怎么改"。它是状态声明（与常驻任务卡同类），只发一次、不占条目额度；但 maxTokens: 0
+  // 的契约是"完全不注入"，状态声明也不能绕过。
+  const notice = cfg.maxTokens > 0 ? rootNotice({ root, sessionId, sessions, config }) : null
 
   const fp = built.text ? fingerprint(built.dedupeText ?? built.text) : fingerprint(notice || '')
   const injectedText = notice ? (built.text ? `${notice}\n${built.text}` : notice) : built.text

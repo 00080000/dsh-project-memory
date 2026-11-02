@@ -742,6 +742,13 @@ export function normalizeCitationFiles(files, root) {
     const value = raw.trim().replace(/\\/g, '/')
     if (!value) continue
     const looksAbsolute = value.startsWith('/') || /^[A-Za-z]:\//.test(value)
+    // Windows 盘符路径在 POSIX 上 `path.isAbsolute()` 是 false：不能把它当项目内相对路径
+    // 落成 `C:/...`（那会生成一个永远不存在的引用）。真正的 POSIX 绝对路径仍走下面的
+    // base/relative 判定，项目外的照常丢弃。
+    if (looksAbsolute && !path.isAbsolute(value)) {
+      dropped.push(raw)
+      continue
+    }
     if (base === null && looksAbsolute) {
       dropped.push(raw)
       continue
@@ -771,12 +778,21 @@ export function storeKey(rel, platform = process.platform) {
   return platform === 'win32' || platform === 'darwin' ? rel.toLowerCase() : rel
 }
 
-export function memoryRootFor(indexRoot, memoryDir) {
-  return path.join(indexRoot, memoryDir)
-}
-
 /** store 目录名（配置项 `memoryDir`；调用方可能来自工具参数，缺省时兜底成默认值）。 */
 export const DEFAULT_MEMORY_DIR = '.dsh-project-memory'
+
+/**
+ * 项目根 → store 目录。
+ *
+ * `memoryDir` 为空串/空白时必须回落到默认目录：`path.join(root, '')` 等于项目根本身，
+ * 而 `save()` 的自我忽略会在那里写一个内容为 `*` 的 `.gitignore`（把整个仓库从 git 的
+ * 视角隐藏），`format.json`/`shards/` 也会污染源码树。`memoryDirName()` 一直有这个兜底，
+ * 但写路径之前直接用了原始值，两边口径不一致。
+ */
+export function memoryRootFor(indexRoot, memoryDir) {
+  const name = typeof memoryDir === 'string' && memoryDir.trim() ? memoryDir : DEFAULT_MEMORY_DIR
+  return path.join(indexRoot, name)
+}
 
 export function memoryDirName(config) {
   const raw = config?.memoryDir

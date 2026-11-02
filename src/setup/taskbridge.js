@@ -9,7 +9,7 @@ import { ProjectMemoryStore } from '../store.js'
 import { BoundedMap } from '../util/session-cache.js'
 import { stepContent, stepStatus } from '../util/task-view.js'
 
-const FS_FILE_TOOLS = new Set(['read', 'write', 'edit', 'read_image'])
+const FS_FILE_TOOLS = new Set(['read', 'write', 'edit', 'read_image', 'str_replace_editor'])
 const WRITE_TOOLS = new Set(['write', 'edit']) // 编辑/写入 = 高热点
 const READ_TOOLS = new Set(['read', 'read_image'])
 const MAX_FILES_PER_TASK = 100
@@ -266,11 +266,21 @@ export function onSessionEvent(config, session, event, meta, ctx) {
     } catch {
       return
     }
-    const raw = typeof args?.file_path === 'string' ? args.file_path : null
+    // read/write/edit/read_image 用 file_path；宿主的 str_replace_editor 用 path。
+    const raw = typeof args?.file_path === 'string'
+      ? args.file_path
+      : typeof args?.path === 'string' ? args.path : null
     if (!raw) return
     const rel = normalizeRelFile(root, raw)
     if (!rel) return
-    const kind = WRITE_TOOLS.has(data.name) ? 'write' : READ_TOOLS.has(data.name) ? 'read' : null
+    let kind = null
+    if (data.name === 'str_replace_editor') {
+      const cmd = typeof args?.command === 'string' ? args.command.toLowerCase() : ''
+      if (cmd === 'view') kind = 'read'
+      else if (['create', 'str_replace', 'insert'].includes(cmd)) kind = 'write'
+    } else {
+      kind = WRITE_TOOLS.has(data.name) ? 'write' : READ_TOOLS.has(data.name) ? 'read' : null
+    }
     if (!kind) return
     // 文件工具调用是最高频的写口：每次 commit 都落盘会把 tasks.json 写成“每读一个文件一次”。
     // 这里只改内存 + 标脏，回合结束（turn/end）或会话销毁时统一 flush。

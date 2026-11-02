@@ -42,7 +42,7 @@ export function renderTaskSnapshot(config, cwd, sid) {
   const bound = boundId ? tasks.find((t) => t.id === boundId) : null
 
   if (!active.length) {
-    const payload = buildTaskPayload([], boundId, archived)
+    const payload = buildTaskPayload([], boundId, archived, root)
     const note = `项目 ${root}\n任务记录: 0 套${archived ? `（归档 ${archived}）` : ''}。让模型开始干活并维护 todo 清单后会自动建档。`
     return { kind: 'success', text: fencedJson(note, payload) }
   }
