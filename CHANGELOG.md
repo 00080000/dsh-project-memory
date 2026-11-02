@@ -2,6 +2,12 @@
 
 **兼容**：无新增配置键，无 store 格式变更。
 
+### 性能
+
+- **CJK 分词从「逐字符判断」改成「整段匹配」**：`tokenizeRaw` 此前对整篇文本逐码点调用 `CJK_RANGE.test()` 并累积字符串，纯英文文档也要跑满整篇。现在用一条从 `CJK_RANGE` 派生的正则一次取出所有连续段，再按原有规则结算（段长 1 产单字、≥2 产全部相邻二元组）。**输出逐字节一致**，所以 `TOKENIZER_VERSION` 不动、旧 store 不需要回填；等价性由 `test/tokenizer-equivalence.test.mjs` 差分守住（冻结旧实现当标尺 + 固定输出契约 + 18 个边界串 + 5 个真实文件 + 2000 组固定种子随机拼接 + `stem` 两态）。
+- **同会话 A/B**（Node 24.19 / WSL2 / 20 vCPU，同一小时内交替跑、每个版本两遍，引用页缓存已热的那遍）：TypeScript 整树（14,528 文件 / 95,316 条目）首次查询的 IDF 重建 **1.44–1.53 s → 0.94–0.96 s**（约 −35%），抽取 9.42–9.51 s → 8.79–8.95 s（−6%），冷索引 10.66 s → 10.00 s（−6%）；文档为主的语料（249 文件 / 889 条目）抽取 242–252 ms → 216–219 ms（−13%）、IDF 58–59 ms → 43–44 ms（−26%）。查询 p50 无可测变化（在噪声内）。
+- **已知代价**：极端构造输入（CJK 单字与拉丁字母逐字交替，如 `中a文a` 重复）实测 **0.97×**——段长恒为 1 时，正则产出的段数组比逐字累积多一层分配；真实代码与文档里不出现这个密度。README 的性能表是 2026-10-13 的历史测量口径，本轮未重测。
+
 ### 修复
 
 - **`save_lesson` 带 `id` 更新时静默改 `kind`**：`kind` 的 `'lesson'` 默认值此前也作用于就地更新，改一条 decision/procedure 的 `fix`/`reason` 会把它降级成 lesson；现在只在新建时补默认值，更新只覆盖调用方显式传入的字段。
@@ -17,7 +23,7 @@
 - **`GlobalStore` 缓存键大小写未归一**：Windows/macOS 上同一 `global.json` 的两种写法会建两个实例；现在与项目 store 一样走 `storeKey()`。
 - `save_lesson` 的 `scope` 描述改为与实现一致：绑定任务时默认 `task`，否则 `project`。
 
-**测试**：新增 `test/audit-2026-11-02.test.mjs`（13 项：save_lesson kind 保留、watch/lazy 超限摘旧条目、archive_task 解绑与注入/召回守卫、maxTokens 0 零注入、watch stop/poll 不重建缺失根、str_replace_editor 的 ops/TaskBridge、手工 promote 保留字段与容量、空任务 payload root、空 memoryDir 归一、POSIX 盘符路径丢弃）。`npm test` **943 项 / 55 个文件**全绿、`npm run typecheck` 通过。
+**测试**：新增 `test/audit-2026-11-02.test.mjs`（13 项：save_lesson kind 保留、watch/lazy 超限摘旧条目、archive_task 解绑与注入/召回守卫、maxTokens 0 零注入、watch stop/poll 不重建缺失根、str_replace_editor 的 ops/TaskBridge、手工 promote 保留字段与容量、空任务 payload root、空 memoryDir 归一、POSIX 盘符路径丢弃）与 `test/tokenizer-equivalence.test.mjs`（5 项：固定输出契约、18 个边界串、5 个真实语料文件、2000 组固定种子随机拼接、`stem` 两态——全部与冻结的旧实现逐字节比对）。`npm test` **948 项 / 56 个文件**全绿、`npm run typecheck` 通过。
 
 ## 0.6.9 (2026-11-02)
 

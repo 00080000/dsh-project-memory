@@ -4,6 +4,18 @@ export const CJK_RANGE =
   /[\u3400-\u9fff\uf900-\ufaff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/
 
 /**
+ * 一段连续的 CJK 字符。分词时用它一次性取出所有段，取代"逐字符 test 再累积"的状态机。
+ *
+ * 从 `CJK_RANGE` 派生而不是另抄一份字符类：「什么算 CJK」全仓库只该有一个定义，
+ * 改字符范围时不会有两处不同步。`u` 让字符类按码点匹配——当前字符集全在 BMP，
+ * 输出与逐字符判断一致；将来若要纳入增补平面（U+20000 起），段内的二元组切分
+ * 必须一并改成按码点，`test/tokenizer-equivalence.test.mjs` 里有一条哨兵用例会在那时失败。
+ *
+ * 输出与逐字符实现逐字节一致，由同一条差分测试守住。
+ */
+const CJK_RUN_RE = new RegExp(`${CJK_RANGE.source}+`, 'gu')
+
+/**
  * 分词契约的版本号。改 tokenizeRaw 的**输出集合**（新增书写系统、词干、停用词）就要 +1：
  * 落盘的 doc `terms` 是它的产物，旧版本写的 terms 里没有新词项，必须让
  * `docEntriesNeedBackfill` 触发一次重抽（见 doc-index.js）。
@@ -64,15 +76,6 @@ export function tokenizeRaw(text, { stem = true } = {}) {
   if (!text) return []
   const lower = text.toLowerCase()
   const tokens = []
-  let cjkRun = ''
-  const flushCjk = () => {
-    if (cjkRun.length === 1) {
-      tokens.push(cjkRun)
-    } else {
-      for (let i = 0; i < cjkRun.length - 1; i++) tokens.push(cjkRun.slice(i, i + 2))
-    }
-    cjkRun = ''
-  }
   const latin = lower.match(/[a-z0-9_]+/g) || []
   for (const tok of latin) tokens.push(tok)
   // 西里尔（只做了俄语）：切词 → 去虚词 → Snowball 词干。
@@ -85,11 +88,12 @@ export function tokenizeRaw(text, { stem = true } = {}) {
     const token = word.length <= 3 || !stem ? word : stemRu(word)
     if (token.length >= 2) tokens.push(token)
   }
-  for (const ch of lower) {
-    if (CJK_RANGE.test(ch)) cjkRun += ch
-    else flushCjk()
+  // CJK：按「连续段」结算 —— 段长 1 产单字，段长 ≥2 产全部相邻二元组。
+  // 旧实现是逐字符累积 + 遇非 CJK 结算，两者输出逐字节一致（差分测试见上）。
+  for (const run of lower.match(CJK_RUN_RE) || []) {
+    if (run.length === 1) tokens.push(run)
+    else for (let i = 0; i < run.length - 1; i++) tokens.push(run.slice(i, i + 2))
   }
-  flushCjk()
   return tokens
 }
 
