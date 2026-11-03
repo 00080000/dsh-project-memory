@@ -781,22 +781,54 @@ export function storeKey(rel, platform = process.platform) {
 /** store 目录名（配置项 `memoryDir`；调用方可能来自工具参数，缺省时兜底成默认值）。 */
 export const DEFAULT_MEMORY_DIR = '.dsh-project-memory'
 
+/** 已经告过警的 `memoryDir` 值：同一个坏值在进程里只吵一次。 */
+const warnedMemoryDir = new Set()
+
+function defaultMemoryDirWarning(value) {
+  if (warnedMemoryDir.has(value)) return
+  warnedMemoryDir.add(value)
+  console.warn(
+    `[dsh-project-memory] memoryDir ${JSON.stringify(value)} must stay inside the project root; `
+    + `using ${DEFAULT_MEMORY_DIR} instead.`,
+  )
+}
+
+/**
+ * `memoryDir` → 真正使用的目录名（读写两侧唯一的归一入口）。
+ *
+ * 合法值 = **项目根内的一段相对路径**。会让 store 落到根外、或落到根上（`save()` 的自我忽略
+ * 随后把整个仓库从 git 视角隐藏）的形态一律回落到默认目录并告警一次：空/空白、`.`、`..`、
+ * 含 `..` 段（`a/../b`）、绝对路径（POSIX `/x`、Windows `C:\\x`）。嵌套目录（`a/b`）仍允许——
+ * 它仍在根内。空串的兜底在这里收口，`memoryRootFor()` 与 `memoryDirName()` 不再各写一遍。
+ */
+export function safeMemoryDirName(raw, warn = defaultMemoryDirWarning) {
+  const value = typeof raw === 'string' ? raw.trim() : ''
+  if (!value) return DEFAULT_MEMORY_DIR
+  if (
+    value === '.' || value === '..'
+    || path.isAbsolute(value)
+    || WINDOWS_ABSOLUTE_PATH.test(value)
+    || value.split(/[\\/]+/).includes('..')
+  ) {
+    warn(value)
+    return DEFAULT_MEMORY_DIR
+  }
+  return value
+}
+
 /**
  * 项目根 → store 目录。
  *
- * `memoryDir` 为空串/空白时必须回落到默认目录：`path.join(root, '')` 等于项目根本身，
- * 而 `save()` 的自我忽略会在那里写一个内容为 `*` 的 `.gitignore`（把整个仓库从 git 的
- * 视角隐藏），`format.json`/`shards/` 也会污染源码树。`memoryDirName()` 一直有这个兜底，
- * 但写路径之前直接用了原始值，两边口径不一致。
+ * 空串/空白必须回落到默认目录：`path.join(root, '')` 等于项目根本身，而 `save()` 的自我忽略
+ * 会在那里写一个内容为 `*` 的 `.gitignore`（把整个仓库从 git 的视角隐藏），`format.json` /
+ * `shards/` 也会污染源码树。`.`, `..` 与绝对路径同理。
  */
 export function memoryRootFor(indexRoot, memoryDir) {
-  const name = typeof memoryDir === 'string' && memoryDir.trim() ? memoryDir : DEFAULT_MEMORY_DIR
-  return path.join(indexRoot, name)
+  return path.join(indexRoot, safeMemoryDirName(memoryDir))
 }
 
 export function memoryDirName(config) {
-  const raw = config?.memoryDir
-  return typeof raw === 'string' && raw.trim() ? raw : DEFAULT_MEMORY_DIR
+  return safeMemoryDirName(config?.memoryDir)
 }
 
 /**
