@@ -59,7 +59,7 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 | `query_memory query` | 对文档、符号、经验与 insight 执行排序检索，可选 LLM 查询扩展。`type` 选择层（`all` / `doc` / `symbol` / `experience` / `insight` / `task`）。返回带相对分数、引用或 insight id、以及文档→符号链接的结果。 |
 | `list_tasks` | 列出本项目任务记录（含归档，带标记）。新会话/续接前先调用。 |
 | `select_task` | 将会话绑定到某任务（此后 todo 清单与读文件同步进该任务）。按 `taskId` 精确绑定，或按 `title` 完全匹配（多个同名返回候选；无则新建）。带 title 可改名；自动解归档。 |
-| `archive_task` | 归档任务（隐藏默认视图、不占容量、停止同步）。`select_task` 可恢复。 |
+| `archive_task` | 归档任务（隐藏默认视图、不占容量、停止同步、清掉选中它的会话绑定；归档任务也不再参与注入与召回）。`select_task` 可恢复。 |
 | `show_task_panel` | 在 UI 中打开任务面板。用户要求查看任务列表或你想展示面板时调用。 |
 | `/tasks`（用户输入，不经模型） | 唯一的用户命令：展示任务栈并驱动工作流卡片。其余动作是它的**子动词**，由卡片按钮调用：`switch` / `archive` / `unbind` / `rename` / `todos …` / `step` / `step-move` / `step-text` 为任务动作，`insight list [scope] [offset] [limit]` / `confirm` / `promote` / `demote` / `archive` / `restore` / `delete` / `save` / `edit` 为记忆动作。 |
 | `remember problem solution` | 保存经验笔记。它就是 `kind: 'experience'` 的 insight——与教训 / 决策 / 流程同库、同去重、同删除入口。相似问题合并或覆盖而非重复。 |
@@ -121,9 +121,9 @@ TaskPanel (Container)
 
 | 键 | 默认值 | 含义 |
 |---|---|---|
-| `memoryDir` | `.dsh-project-memory` | 每个被索引根目录内的存储目录 |
+| `memoryDir` | `.dsh-project-memory` | 每个被索引根目录内的存储目录。必须是根内的相对路径：`.`、`..`、含 `..` 段或绝对路径都会回落到默认目录并告警一次（否则 store 会落到根外，或落到根上并把整个仓库自我忽略掉） |
 | `chunkChars` / `maxChunksPerFile` | 3000 / 40 | 每个文档块最大字符数、每文档最大块数 |
-| `maxFileSizeMb` | 10 | 大于该值（MB）的文档（含 PDF）/代码文件跳过；峰值系数见下文「单文件内存预算」 |
+| `maxFileSizeMb` | 10 | 大于该值（MB）的文档（含 PDF）/代码文件跳过；已经索引过的文件后来涨过阈值，旧条目会在下一轮扫描 / watch 时摘掉；峰值系数见下文「单文件内存预算」 |
 | `maxPdfPages` | 1000 | PDF 页数上限 |
 | `maxOutputChars` | 8000 | `query_memory` 返回文本上限（字符） |
 | `lazyIndexing` | true | 模型读取文件的瞬间即索引 |
@@ -241,7 +241,7 @@ dsh web --patch ./config.yml
 | 冷加载 | 10,000 文件 | 117 ms |
 | 热路径懒记忆 | 单文件重记忆+落盘 | p50 5.5 ms / 最大 8.4 ms (10k) |
 
-> 合成基准：生成代码（~4–5 符号/文件），实测于 2026-10-13。复现命令 `npm run bench:synthetic -- 5000`（脚本 `scripts/bench-synthetic.mjs`）。测量纯索引开销，不含 LLM 调用。写入后的首次查询会重建 IDF 缓存（**40k 条目 141 ms**，20k 条目 68 ms，4k 条目 17 ms），后续查询命中缓存。
+> 合成基准：生成代码（~4–5 符号/文件），实测于 2026-10-13。复现命令 `npm run bench:synthetic -- 5000`（脚本 `scripts/bench-synthetic.mjs`）。测量纯索引开销，不含 LLM 调用。写入后的首次查询会重建 IDF 缓存（**40k 条目 141 ms**，20k 条目 68 ms，4k 条目 17 ms），后续查询命中缓存。这组 IDF 数字是 0.6.10 之前的基线——0.6.10 的分词重写在同一语料上把这次重建缩短约三分之一（同会话 A/B，数字见 CHANGELOG）。
 
 ### 自己复现这些数字
 
@@ -283,7 +283,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ```bash
 npm install
-npm test                    # 943 项测试
+npm test                    # 956 项测试
 npm run eval:injection      # 合成池 P/R：精确率 0.93 / 召回率 1.00，另有 3 个 hint-only 场景
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）

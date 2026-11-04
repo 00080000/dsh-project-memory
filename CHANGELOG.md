@@ -1,6 +1,6 @@
-## Unreleased (2026-11-02)
+## 0.6.10 (2026-11-04)
 
-**兼容**：无新增配置键，无 store 格式变更。
+**兼容**：无新增配置键，无 store 格式变更。一处判据变化：`memoryDir` 只接受项目根内的相对路径，越界值（`.`、`..`、含 `..` 段、绝对路径）回落到默认目录并告警一次（此前会静默把 store 放到根上或根外）。
 
 ### 性能
 
@@ -18,12 +18,13 @@
 - **宿主的 `str_replace_editor` 不被识别**：`ops` 现在按 `path` + `command` 把 create/str_replace/insert 归一成 `file-write`，`view` 不算写；TaskBridge 也把它的写/读分别记入任务热点文件。
 - **面板 promote/demote 丢使用痕迹**：手工提升/降级此前直接走 `normalizeInsight`，丢掉 `triggerDerived`/`prev`/`lastHitAt`，也不执行 `maxProject`/`maxGlobalProcedures`；现在与自动提升共用 `carryUsageFields` 并收口容量。
 - **空任务列表的 `/tasks` payload 缺 `root`**：跨标签页同步按项目根过滤，空列表时 root 为 null 会让本页失去项目作用域；现在空/非空两条路径都带 root。
-- **`memoryDir` 为空/空白时 store 落在项目根**：写路径此前用原始值，空串会让 `save()` 在项目根创建 `format.json`/`shards/`，并由自我忽略写出内容为 `*` 的 `.gitignore`，把整个仓库从 git 视角隐藏；`memoryRootFor()` 现在统一回落到默认目录。
+- **`memoryDir` 为空 / `.` / `..` / 绝对路径时 store 落错位置**：空串与 `.` 让 `path.join(root, …)` 等于项目根本身，`save()` 的自我忽略会在那里写内容为 `*` 的 `.gitignore`（整个仓库从 git 视角消失），`format.json` / `shards/` 也会污染源码树；`..` 则把 store 写到根外。现在 `safeMemoryDirName()` 是读写两侧唯一的归一入口：空/空白、`.`、`..`、含 `..` 段、绝对路径（POSIX `/x`、Windows `C:\x`）一律回落到默认目录并告警一次；根内的嵌套目录（`a/b`）仍允许。
 - **POSIX 上把 Windows 盘符路径当项目内相对路径**：`normalizeCitationFiles()` 现在丢弃 `C:\...` 这类在本平台不是绝对路径的盘符路径，避免生成 `C:/...` 的假引用。
 - **`GlobalStore` 缓存键大小写未归一**：Windows/macOS 上同一 `global.json` 的两种写法会建两个实例；现在与项目 store 一样走 `storeKey()`。
 - `save_lesson` 的 `scope` 描述改为与实现一致：绑定任务时默认 `task`，否则 `project`。
+- **体检脚本读不到自定义 `memoryDir`**：`skills/project-memory/scripts/pm-digest.mjs` 把 store 目录写死成 `<root>/.dsh-project-memory`，配了自定义 `memoryDir` 的项目只会得到「no memory store」。现在依次按 `--memory-dir <name>` / `DSH_PROJECT_MEMORY_DIR` / 默认名解析；都没命中时在项目根下一层按 `format.json` 标记找唯一候选并标注 `auto-detected`，多个候选不猜、报错点名怎么传参。
 
-**测试**：新增 `test/audit-2026-11-02.test.mjs`（13 项：save_lesson kind 保留、watch/lazy 超限摘旧条目、archive_task 解绑与注入/召回守卫、maxTokens 0 零注入、watch stop/poll 不重建缺失根、str_replace_editor 的 ops/TaskBridge、手工 promote 保留字段与容量、空任务 payload root、空 memoryDir 归一、POSIX 盘符路径丢弃）与 `test/tokenizer-equivalence.test.mjs`（5 项：固定输出契约、18 个边界串、5 个真实语料文件、2000 组固定种子随机拼接、`stem` 两态——全部与冻结的旧实现逐字节比对）。`npm test` **948 项 / 56 个文件**全绿、`npm run typecheck` 通过。
+**测试**：新增 `test/audit-2026-11-02.test.mjs`（13 项：save_lesson kind 保留、watch/lazy 超限摘旧条目、archive_task 解绑与注入/召回守卫、maxTokens 0 零注入、watch stop/poll 不重建缺失根、str_replace_editor 的 ops/TaskBridge、手工 promote 保留字段与容量、空任务 payload root、空 memoryDir 归一、POSIX 盘符路径丢弃）与 `test/tokenizer-equivalence.test.mjs`（5 项：固定输出契约、18 个边界串、5 个真实语料文件、2000 组固定种子随机拼接、`stem` 两态——全部与冻结的旧实现逐字节比对）与 `test/memorydir-guard.test.mjs`（4 项：空/`.`/`..`/含 `..` 段/绝对路径回落默认目录且不移动 store、嵌套相对目录仍允许、默认告警对同一坏值只发一次、`memoryDir: '.'` 不把 `*` 写进项目根）；`test/skill.test.mjs` 补 1 项（自定义 `memoryDir` 的三种解析路径 + 多候选不猜）。`npm test` **956 项 / 57 个文件**全绿、`npm run typecheck` 通过。
 
 ## 0.6.9 (2026-11-02)
 

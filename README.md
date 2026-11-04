@@ -61,7 +61,7 @@ In a git work tree the corpus is whatever `git ls-files --cached --others --excl
 | `query_memory query` | Ranked search over documents, symbols, experience and insights, optionally query-expanded by the LLM. `type` selects a layer (`all` / `doc` / `symbol` / `experience` / `insight` / `task`). Returns hits with relative scores, sources or insight ids, and doc→symbol references. |
 | `list_tasks` | List task records for the project (archived marked). Call first in a new session before continuing work. |
 | `select_task` | Bind the session to a task so its todo list and file reads sync into it. Exact `taskId`, or exact `title` (multiple matches return candidates; no match creates a new task). Pass `title` with `taskId` to rename. Auto-unarchives. |
-| `archive_task` | Archive a task (hide from default views, exclude from capacity, stop syncing). `select_task` restores it. |
+| `archive_task` | Archive a task (hide from default views, exclude from capacity, stop syncing, unbind the sessions that had it selected; archived tasks are also skipped by injection and recall). `select_task` restores it. |
 | `show_task_panel` | Show the task panel in the UI. Call when the user asks to see the task list or when you want to display the panel. |
 | `/tasks` (typed by the user, not the model) | The only user command: shows the task stack and drives the workflow card. Every other action is a **sub-verb** invoked by card buttons: `switch` / `archive` / `unbind` / `rename` / `todos …` / `step` / `step-move` / `step-text` for tasks, `insight list [scope] [offset] [limit]` / `confirm` / `promote` / `demote` / `archive` / `restore` / `delete` / `save` / `edit` for memory. |
 | `remember problem solution` | Save an experience note. It is a `kind: 'experience'` insight — same store, same dedup and same delete path as lessons / decisions / procedures. Similar problems merge or overwrite instead of duplicating. |
@@ -123,9 +123,9 @@ The workflow panel is collapsible, adapts to dsh and theme plugin styles, and of
 
 | Key | Default | Meaning |
 |---|---|---|
-| `memoryDir` | `.dsh-project-memory` | store directory inside each indexed root |
+| `memoryDir` | `.dsh-project-memory` | store directory inside each indexed root. Must stay a relative path inside the root: `.`, `..`, any `..` segment or an absolute path falls back to the default with one warning (otherwise the store lands outside the root, or on the root itself and self-ignores the whole repository) |
 | `chunkChars` / `maxChunksPerFile` | 3000 / 40 | max chars per document chunk, max chunks per document |
-| `maxFileSizeMb` | 10 | skip documents (incl. PDF) and code files larger than this (MB); see the per-file memory budget below |
+| `maxFileSizeMb` | 10 | skip documents (incl. PDF) and code files larger than this (MB); entries of an already-indexed file that later grows past the cap are dropped on the next scan / watch pass; see the per-file memory budget below |
 | `maxPdfPages` | 1000 | PDF page cap |
 | `maxOutputChars` | 8000 | cap for `query_memory` result text (chars) |
 | `lazyIndexing` | true | index files the moment the model reads them |
@@ -243,7 +243,7 @@ Four corpora, one Linux machine (Node 24.19), each run twice with the **second, 
 | Cold load | 10,000 files | 117 ms |
 | Hot lazy re-index (single file) | 10k files | p50 5.5 ms / max 8.4 ms |
 
-> Generated code (~4–5 symbols/file), measured 2026-10-13. Reproduce with `npm run bench:synthetic -- 5000` (`scripts/bench-synthetic.mjs`). Pure indexing overhead, no LLM calls. The first query after a write rebuilds the IDF cache (**141 ms at 40k entries**, 68 ms at 20k, 17 ms at 4k); later queries hit it.
+> Generated code (~4–5 symbols/file), measured 2026-10-13. Reproduce with `npm run bench:synthetic -- 5000` (`scripts/bench-synthetic.mjs`). Pure indexing overhead, no LLM calls. The first query after a write rebuilds the IDF cache (**141 ms at 40k entries**, 68 ms at 20k, 17 ms at 4k); later queries hit it. Those IDF figures are the pre-0.6.10 baseline — the 0.6.10 tokenizer rewrite makes that rebuild roughly a third faster on the same corpus (same-session A/B, numbers in the CHANGELOG).
 
 ### Reproduce it on your own project
 
@@ -285,7 +285,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 943 tests
+npm test                    # 956 tests
 npm run eval:injection      # synthetic pool P/R: precision 0.93 / recall 1.00, + a 3-scenario hint-only group
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)
