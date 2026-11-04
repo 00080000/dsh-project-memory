@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 项目记忆的体检脚本（零依赖、不调模型、不写盘）。
 //
-//   node pm-digest.mjs [项目根] [--json]
+//   node pm-digest.mjs [项目根] [--json] [--memory-dir <name>]
 //
 // 面向模型与人类各一半：模型拿它替代"先读三个 JSON 再数数"的多次工具往返；
 // 人拿它看 store 是否异常增长、trigger 覆盖多少、任务是不是全归档了。
@@ -10,10 +10,61 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 
+const DEFAULT_MEMORY_DIR = '.dsh-project-memory'
+const STORE_MARKER = 'format.json'
+
 const args = process.argv.slice(2)
 const json = args.includes('--json')
-const root = path.resolve(args.find((a) => !a.startsWith('--')) || process.cwd())
-const memoryDir = path.join(root, '.dsh-project-memory')
+// store 目录名 = config 的 memoryDir；显式 --memory-dir / 环境变量优先。
+let memoryDirName = process.env.DSH_PROJECT_MEMORY_DIR || ''
+const positional = []
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i]
+  if (arg === '--json') continue
+  if (arg === '--memory-dir') {
+    memoryDirName = args[++i] || ''
+    continue
+  }
+  if (arg.startsWith('--memory-dir=')) {
+    memoryDirName = arg.slice('--memory-dir='.length)
+    continue
+  }
+  if (arg.startsWith('--')) continue
+  positional.push(arg)
+}
+const root = path.resolve(positional[0] || process.cwd())
+
+const isFile = (file) => {
+  try {
+    return statSync(file).isFile()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * store 目录。写死默认名在自定义 `memoryDir` 的项目上会报"没有 store"，
+ * 而脚本读不到宿主 profile，所以：显式名 → 默认名 → 根下一层按 `format.json` 标记找**唯一**候选。
+ * 0 个或多个候选都不猜，沿用默认名并在报错里点名怎么传。
+ */
+function resolveMemoryDir(root, name) {
+  if (name) return { dir: path.join(root, name), name }
+  const fallback = path.join(root, DEFAULT_MEMORY_DIR)
+  if (isFile(path.join(fallback, STORE_MARKER))) return { dir: fallback, name: DEFAULT_MEMORY_DIR }
+  let candidates = []
+  try {
+    candidates = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && isFile(path.join(root, entry.name, STORE_MARKER)))
+      .map((entry) => entry.name)
+  } catch {
+    candidates = []
+  }
+  if (candidates.length === 1) return { dir: path.join(root, candidates[0]), name: candidates[0], detected: true }
+  return { dir: fallback, name: DEFAULT_MEMORY_DIR }
+}
+
+const resolved = resolveMemoryDir(root, memoryDirName)
+const memoryDir = resolved.dir
 
 const readJson = (file, fallback) => {
   try {
@@ -94,8 +145,15 @@ const binding = readJson(path.join(memoryDir, 'binding.json'), null)
 const globalFile = path.join(homedir(), '.config', 'dsh-project-memory', 'global.json')
 const globalDoc = readJson(globalFile, null)
 
-if (!insDoc && !taskDoc) {
-  const msg = `no memory store at ${memoryDir} (run index_repo or index_doc first)`
+// 有没有 store：`format.json` 标记（走过一次 save）或已有的 insights/tasks 都算。
+// 只看后两者会把"只索引了文档、还没写洞察/任务"的项目误报成没有 store。
+const hasStore = isFile(path.join(memoryDir, STORE_MARKER)) || Boolean(insDoc || taskDoc)
+
+if (!hasStore) {
+  const hint = resolved.detected || memoryDirName
+    ? ''
+    : '; if `memoryDir` is customized, pass --memory-dir <name>'
+  const msg = `no memory store at ${memoryDir} (run index_repo or index_doc first)${hint}`
   if (json) process.stdout.write(JSON.stringify({ root, memoryDir, store: false }, null, 2) + '\n')
   else process.stdout.write(msg + '\n')
   process.exit(0)
@@ -107,6 +165,7 @@ const tasks = taskStats((Array.isArray(taskDoc) ? taskDoc : []) || [])
 const summary = {
   root,
   memoryDir,
+  ...(resolved.detected ? { detected: true } : {}),
   store: true,
   shards,
   insights,
@@ -123,6 +182,9 @@ if (json) {
 const kb = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.round(n / 102.4) / 10} KB`)
 const line = (label, value) => process.stdout.write(`${label.padEnd(12)} ${value}\n`)
 line('project', root)
+if (resolved.name !== DEFAULT_MEMORY_DIR || resolved.detected) {
+  line('location', `${resolved.name}${resolved.detected ? ' (auto-detected)' : ''}`)
+}
 line('store', `${shards.files} shards · ${kb(shards.bytes)} · ${insights.total} insights · ${tasks.total} tasks`)
 if (insights.total) {
   const kinds = Object.entries(insights.kinds).map(([k, n]) => `${k} ${n}`).join(' · ')

@@ -110,6 +110,67 @@ const dir = () => mkdtempSync(path.join(tmpdir(), 'skill-'))
   ok('体检脚本：真 store 计数、人类可读输出、空目录不报错')
 }
 
+// --- 4b. 体检脚本：自定义 memoryDir（显式 / 环境变量 / 唯一候选自动识别） ---
+{
+  const run = (root, extra = [], env = {}) => spawnSync(process.execPath, [script, root, ...extra], {
+    encoding: 'utf8',
+    env: { ...process.env, DSH_PROJECT_MEMORY_DIR: '', ...env },
+  })
+  const makeStore = (root, name) => {
+    const store = path.join(root, name)
+    mkdirSync(path.join(store, 'shards'), { recursive: true })
+    writeFileSync(path.join(store, 'format.json'), JSON.stringify({ version: 2, layout: 'sharded' }))
+    writeFileSync(path.join(store, 'insights.json'), JSON.stringify({
+      items: [{ id: 'i1', kind: 'lesson', scope: 'project', title: 'a', updatedAt: new Date().toISOString() }],
+    }))
+    return store
+  }
+
+  // 默认名不存在、根下只有一个 store 形状目录：认出来并标注 auto-detected
+  const single = dir()
+  const detected = makeStore(single, 'mem-store')
+  const auto = run(single, ['--json'])
+  assert.equal(auto.status, 0, auto.stderr)
+  const autoOut = JSON.parse(auto.stdout)
+  assert.equal(autoOut.store, true)
+  assert.equal(autoOut.memoryDir, detected, '必须认出自定义目录，不能写死默认名')
+  assert.equal(autoOut.detected, true)
+  assert.match(run(single).stdout, /mem-store \(auto-detected\)/, '人类可读输出要点明是自动认出的')
+
+  // 多个候选：不猜，报错点名怎么传
+  const multi = dir()
+  makeStore(multi, 'store-a')
+  makeStore(multi, 'store-b')
+  const ambiguous = run(multi)
+  assert.equal(ambiguous.status, 0)
+  assert.match(ambiguous.stdout, /no memory store/)
+  assert.match(ambiguous.stdout, /--memory-dir/, '多候选时报错要说怎么指定')
+
+  // 显式 --memory-dir 优先（两种写法），环境变量兜底
+  const explicit = JSON.parse(run(multi, ['--memory-dir', 'store-b', '--json']).stdout)
+  assert.equal(explicit.memoryDir, path.join(multi, 'store-b'))
+  assert.equal(explicit.detected, undefined, '显式指定不算 auto-detect')
+  const eq = JSON.parse(run(multi, ['--memory-dir=store-a', '--json']).stdout)
+  assert.equal(eq.memoryDir, path.join(multi, 'store-a'))
+
+  const envRoot = dir()
+  const envStore = makeStore(envRoot, 'from-env')
+  const fromEnv = JSON.parse(run(envRoot, ['--json'], { DSH_PROJECT_MEMORY_DIR: 'from-env' }).stdout)
+  assert.equal(fromEnv.memoryDir, envStore)
+
+  // 只索引过文档、还没写过洞察/任务的自定义 store：有 store 就不能报「no memory store」
+  const docsOnly = dir()
+  const docsStore = path.join(docsOnly, 'docs-mem')
+  mkdirSync(path.join(docsStore, 'shards'), { recursive: true })
+  writeFileSync(path.join(docsStore, 'shards', 'a.json'), '{}')
+  writeFileSync(path.join(docsStore, 'format.json'), JSON.stringify({ version: 2, layout: 'sharded' }))
+  const docsOut = JSON.parse(run(docsOnly, ['--json']).stdout)
+  assert.equal(docsOut.store, true, 'format.json 存在即算有 store')
+  assert.equal(docsOut.shards.files, 1)
+  assert.equal(docsOut.insights.total, 0)
+  ok('体检脚本：自定义 memoryDir（--memory-dir / 环境变量 / 唯一候选自动识别、多候选不猜、docs-only store）')
+}
+
 // --- 5. 发布面：skills 必须在 files 白名单里，否则 npm 包里没有它 ---
 {
   assert.ok(pkg.files.includes('skills'), 'package.json files 必须包含 skills')

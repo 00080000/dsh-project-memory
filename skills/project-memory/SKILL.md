@@ -66,7 +66,11 @@ Run from a shell (no dsh required):
 ```bash
 node <this-skill-dir>/scripts/pm-digest.mjs <project-root>
 node <this-skill-dir>/scripts/pm-digest.mjs <project-root> --json
+node <this-skill-dir>/scripts/pm-digest.mjs <project-root> --memory-dir <name>
 ```
 
 It prints store size, insight/task counts, trigger coverage, and staleness. Use it when memory looks
-empty, suspiciously large, or when you need to explain what is stored.
+empty, suspiciously large, or when you need to explain what is stored. The store directory is usually
+`.dsh-project-memory`; if the project configures another `memoryDir`, pass it with `--memory-dir`
+(or `DSH_PROJECT_MEMORY_DIR`) — without either, a single store-shaped directory directly under the
+root is picked up and reported as `auto-detected`, and the "no memory store" message says how to pass it.
