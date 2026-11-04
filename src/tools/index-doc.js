@@ -15,11 +15,11 @@ export function indexDocTool(ctx, config) {
       file_path: {
         type: 'string',
         required: true,
-        description: '文档绝对路径',
+        description: 'absolute path of the document',
       },
       root: {
         type: 'string',
-        description: '项目根（默认会话项目根）',
+        description: 'project root (default: session project root)',
       },
     },
     output: {

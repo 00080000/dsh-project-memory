@@ -10,24 +10,25 @@ import { createVectorRerank, vectorItemsFrom } from '../vector-index.js'
 import { createWriteCosine } from '../auto-inject.js'
 
 export function lessonTool(config) {
-  const kindDesc = 'lesson(坑→改法) | decision(选择+理由) | procedure(步骤) | experience(问题→解法)；默认 lesson。'
+  const kindDesc = 'lesson (pitfall → fix) | decision (choice + reason) | procedure (steps) | experience (problem → solution); default lesson.'
   const scopeDesc =
-    'task(任务私有) | project(项目资产) | global(跨项目)；默认：绑定任务时 task，否则 project；给 id 时就地更新。'
+    'task | project | global; default: task when a task is bound, else project; passing id updates in place.'
   return defineTool({
     name: 'save_lesson',
     description:
-      '写入一条教训 / 决策 / 流程（单条 insight）。只写下次仍成立的判据与命令；某次运行的值（版本号、计数、分支名）不进正文。写入前与既有记忆比对：高相似度自动覆盖（旧值留在 prev），'
-      + '较近的提示近邻 id。发现记错/过时：带 id 再写一次即就地覆盖；确定要删用 forget。',
+      'One lesson / decision / procedure (a single insight). Keep only the criterion and command that stay true next time; run-specific values (version numbers, counts, branch names) stay out. '
+      + 'It compares against existing memory first: high similarity overwrites (old value kept in prev), a near match returns the nearest id. '
+      + 'If an entry you saw is wrong, stale or too thin to act on, pass its id and write again to update it in place instead of adding a new one; use forget to delete.',
     parameters: {
-      id: { type: 'string', description: '既有条目 id（就地更新，忽略 scope）' },
-      title: { type: 'string', description: '一行标题' },
+      id: { type: 'string', description: 'existing entry id (in-place update)' },
+      title: { type: 'string', description: 'one-line title' },
       kind: { type: 'string', enum: INSIGHT_KINDS, description: kindDesc },
       scope: { type: 'string', enum: INSIGHT_SCOPES, description: scopeDesc },
-      pattern: { type: 'string', description: '错误模式' },
-      fix: { type: 'string', description: '修正做法' },
-      choice: { type: 'string', description: '选了什么' },
-      reason: { type: 'string', description: '为什么' },
-      steps: { type: 'array', items: { type: 'string' }, description: '有序步骤' },
+      pattern: { type: 'string', description: 'error pattern' },
+      fix: { type: 'string', description: 'corrected practice' },
+      choice: { type: 'string', description: 'what was chosen' },
+      reason: { type: 'string', description: 'why' },
+      steps: { type: 'array', items: { type: 'string' }, description: 'ordered steps' },
       trigger: {
         type: 'object',
         additionalProperties: false,
@@ -37,23 +38,23 @@ export function lessonTool(config) {
             additionalProperties: false,
             properties: {
               ops: { type: 'array', items: { type: 'string' }, description: 'file-write|file-delete|shell-run|git-commit|git-push|release|npm-publish|deploy|migrate|render-doc|index-doc|read-image|fetch-web|run-bench|query-memory' },
-              writes: { type: 'array', items: { type: 'string' }, description: '项目相对路径，禁 glob' },
-              intents: { type: 'array', items: { type: 'string' }, description: '意图词（CJK≥2，拉丁≥5）' },
+              writes: { type: 'array', items: { type: 'string' }, description: 'project-relative paths, no glob' },
+              intents: { type: 'array', items: { type: 'string' }, description: 'intent words (CJK ≥2, latin ≥5)' },
             },
-            description: '唯一触发面：三者取或；不写则只能靠检索命中，不会主动注入。',
+            description: 'the only trigger surface: any of the three; without it the entry is retrieval-only.',
           },
           guard: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              paths: { type: 'array', items: { type: 'string' }, description: '写目标须命中其一' },
+              paths: { type: 'array', items: { type: 'string' }, description: 'write target must match one of them' },
               not_paths: { type: 'array', items: { type: 'string' } },
-              hosts: { type: 'array', items: { type: 'string' }, description: '如 wsl' },
-              tags: { type: 'array', items: { type: 'string' }, description: '画像 tag 交集' },
+              hosts: { type: 'array', items: { type: 'string' }, description: 'e.g. wsl' },
+              tags: { type: 'array', items: { type: 'string' }, description: 'profile tag intersection' },
             },
-            description: '收窄条件：全部满足才放行。',
+            description: 'narrowing conditions: all must hold.',
           },
-          prevents: { type: 'string', description: '不知道它会做错什么' },
+          prevents: { type: 'string', description: 'what breaks without this entry' },
           // 旧字段：历史条目与旧调用仍可能带它们，保留形状但不占描述预算。
           keywords: { type: 'array', items: { type: 'string' } },
           symbols: { type: 'array', items: { type: 'string' } },
@@ -61,13 +62,13 @@ export function lessonTool(config) {
           paths: { type: 'array', items: { type: 'string' } },
           scope: { type: 'array', items: { type: 'string' } },
         },
-        description: '命中即在动手前注入；when 是唯一触发面，guard 只能收窄。',
+        description: 'injects before acting when matched; when is the only trigger surface.',
       },
-      task_id: { type: 'string', description: '目标任务 id' },
-      files: { type: 'array', items: { type: 'string' }, description: '关联文件（项目相对）' },
-      symbols: { type: 'array', items: { type: 'string' }, description: '关联符号' },
+      task_id: { type: 'string', description: 'target task id' },
+      files: { type: 'array', items: { type: 'string' }, description: 'related files (project-relative)' },
+      symbols: { type: 'array', items: { type: 'string' }, description: 'related symbols' },
       confidence: { type: 'number', description: '0..1' },
-      root: { type: 'string', description: '项目根' },
+      root: { type: 'string', description: 'project root' },
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args, exec) {

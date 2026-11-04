@@ -29,18 +29,18 @@ export function forgetTool(config) {
   return defineTool({
     name: 'forget',
     description:
-      'Delete memories by id or matching keywords, at task/project/global scope. Real deletion, no undo; '
-      + 'the last 5 deleted entries are kept in deleted.json. A keyword matching more than the cap deletes nothing '
-      + 'and lists the candidates instead.',
+      'Delete memories by id or keywords (task/project/global). Real deletion, no undo; '
+      + 'the last 5 deleted entries stay in deleted.json. Above the match cap nothing is deleted, '
+      + 'only the candidates are listed.',
     parameters: {
       id_or_query: {
         type: 'string',
         required: true,
-        description: '精确 id 或关键词；id 优先',
+        description: 'exact id or keywords; id takes priority',
       },
       root: {
         type: 'string',
-        description: '项目根（默认当前工作目录）',
+        description: 'project root (default: cwd)',
       },
     },
     output: {

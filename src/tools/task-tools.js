@@ -19,9 +19,9 @@ export function listTasksTool(config) {
   return defineTool({
     name: 'list_tasks',
     description:
-      '列出本项目的任务记录（含归档）。新会话或续接前先看它，再用 select_task 选一个。',
+      'List this project\'s task records (archived included). Look here first in a new or resumed session, then select_task to pick one.',
     parameters: {
-      root: { type: 'string', description: '项目根（默认当前工作目录）' },
+      root: { type: 'string', description: 'project root (default: cwd)' },
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args, exec) {
@@ -44,12 +44,12 @@ export function selectTaskTool(config, host) {
   return defineTool({
     name: 'select_task',
     description:
-      '把会话绑定到一个任务（此后 todo 与读过的文件同步进它）。按 taskId 精确绑定，或按 title 完全匹配'
-      + '（无则新建）；返回任务卡用于重建清单。',
+      'Bind the session to a task (its todo list and files read afterwards sync into it). Exact taskId, or an exact title match'
+      + '(creates one if absent); returns the task card used to rebuild the checklist.',
     parameters: {
-      taskId: { type: 'string', description: '精确 task id' },
-      title: { type: 'string', description: '精确标题；无则新建' },
-      root: { type: 'string', description: '项目根（默认当前工作目录）' },
+      taskId: { type: 'string', description: 'exact task id' },
+      title: { type: 'string', description: 'exact title; creates if absent' },
+      root: { type: 'string', description: 'project root (default: cwd)' },
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args, exec) {
@@ -170,7 +170,7 @@ export function archiveTaskTool(config, host) {
     description: 'Archive a task (restore by selecting it again).',
     parameters: {
       taskId: { type: 'string', required: true, description: 'task id' },
-      root: { type: 'string', description: '项目根（默认当前工作目录）' },
+      root: { type: 'string', description: 'project root (default: cwd)' },
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args, exec) {

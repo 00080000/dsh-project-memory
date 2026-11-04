@@ -61,25 +61,26 @@ export function queryMemoryTool(ctx, config) {
     name: 'query_memory',
     description:
       'Search project memory: docs, symbols, experience and insights. Returns cited sources or insight ids. '
-      + 'Use before grepping for orientation, a spec constraint, or a past decision.',
+      + 'Use before grepping for orientation, a spec constraint, or a past decision. '
+      + 'After a query, update stale or wrong entries right away (save_lesson with that id).',
     parameters: {
       query: {
         type: 'string',
         required: true,
-        description: 'What to look for',
+        description: 'what to look for',
       },
       root: {
         type: 'string',
-        description: '项目根（默认当前工作目录）',
+        description: 'project root (default: cwd)',
       },
       type: {
         type: 'string',
         enum: ['all', 'doc', 'symbol', 'experience', 'insight', 'task'],
-        description: 'all|doc|symbol|experience|insight|task；默认 all',
+        description: 'all|doc|symbol|experience|insight|task; default all',
       },
       limit: {
         type: 'number',
-        description: '最多返回条数，默认 8',
+        description: 'max results, default 8',
       },
     },
     output: {

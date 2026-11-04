@@ -17,7 +17,7 @@ export function statsTool(config) {
     parameters: {
       root: {
         type: 'string',
-        description: '项目根（默认当前工作目录）',
+        description: 'project root (default: cwd)',
       },
     },
     output: {

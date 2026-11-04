@@ -28,10 +28,16 @@ const defs = [
 ]
 
 let chars = 0
+let cjk = 0
 for (const def of defs) {
-  chars += def.description.length + JSON.stringify(def.parameters).length
+  const text = def.description + JSON.stringify(def.parameters)
+  chars += text.length
+  cjk += (text.match(/[\u4e00-\u9fff]/g) || []).length
 }
-console.log(`  tool schema: ${chars} chars (${defs.length} tools)`)
-// 2026-10 的基线：压缩前约 9100 字符，压缩后约 5200。留一点余量，但不再回到 6k 以上。
-assert.ok(chars <= 5600, `tool schema budget exceeded: ${chars} chars (limit 5600)`)
+// 预算按 **token 估算** 判，不按字符：中文字符约 1 token/字，其余约 4 字符/token。
+// 之前只看字符，导致"中文描述省字符"被当成省预算——同样的信息换成英文，字符 +25%、token 反而更少。
+// 基线（2026-11）：全英前 5458 字符 / 536 汉字 ≈ 1767 token；全英后 6801 字符 / 0 汉字 ≈ 1700 token。
+const tokens = cjk + Math.round((chars - cjk) / 4)
+console.log(`  tool schema: ${chars} chars · ${cjk} CJK · ~${tokens} tokens (${defs.length} tools)`)
+assert.ok(tokens <= 1800, `tool schema budget exceeded: ~${tokens} tokens (${chars} chars, limit ~1800 tokens)`)
 console.log('ALL CHECKS PASSED (1 passed)')

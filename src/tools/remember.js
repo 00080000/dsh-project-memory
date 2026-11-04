@@ -11,25 +11,25 @@ export function rememberTool(config) {
     name: 'remember',
     description:
       'Save a problem→solution note as kind:experience; same dedup as save_lesson. '
-      + 'Prefer save_lesson for anything that is not a problem→solution note.',
+      + 'Prefer save_lesson for anything else.',
     parameters: {
       problem: {
         type: 'string',
         required: true,
-        description: '问题/现象',
+        description: 'problem / symptom',
       },
       solution: {
         type: 'string',
         required: true,
-        description: '具体解法',
+        description: 'concrete fix',
       },
       root: {
         type: 'string',
-        description: '项目根（默认当前工作目录）',
+        description: 'project root (default: cwd)',
       },
       source_file: {
         type: 'string',
-        description: '关联文件（项目相对）',
+        description: 'related file (project-relative)',
       },
     },
     output: {

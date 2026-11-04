@@ -150,11 +150,11 @@ export function indexRepoTool(ctx, config) {
       root: {
         type: 'string',
         required: true,
-        description: '项目根（相对路径按会话当前工作目录解析）',
+        description: 'project root (relative: session cwd)',
       },
       reindex: {
         type: 'boolean',
-        description: '忽略哈希，强制重抽',
+        description: 'ignore hashes, force re-extraction',
       },
     },
     output: {

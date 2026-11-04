@@ -14,11 +14,11 @@ export function watchRepoTool(watchManager, config) {
       root: {
         type: 'string',
         required: true,
-        description: '项目根（相对路径按会话当前工作目录解析）',
+        description: 'project root (relative: session cwd)',
       },
       watch: {
         type: 'boolean',
-        description: 'false = 停止监听',
+        description: 'false = stop watching',
       },
     },
     output: {
