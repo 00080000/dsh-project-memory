@@ -22,8 +22,17 @@ import { clearIndexFailure, recordIndexFailure } from './index-failures.js'
 export function applyWatchSettings(watchManager, config) {
   watchManager.stop()
   if (cfgValue(config, 'watch') === false) return false
-  watchManager.start(Number(cfgValue(config, 'watchInterval')) * 1000)
+  watchManager.start(normalizeWatchIntervalMs(Number(cfgValue(config, 'watchInterval')) * 1000))
   return true
+}
+
+/**
+ * 把配置里的毫秒值归一成**实际会用的**轮询间隔：非法值回落 30s，合法值下限 1s。
+ * 工具回报与 `start()` 必须读同一份，否则 `watchInterval: 0` 会回报 "0s"、实际 1s。
+ */
+export function normalizeWatchIntervalMs(intervalMs) {
+  const raw = Number(intervalMs)
+  return Number.isFinite(raw) ? Math.max(raw, 1000) : 30000
 }
 
 /**
@@ -169,8 +178,7 @@ export class WatchManager {
 
   start(intervalMs = 30000) {
     // 非法值（NaN/undefined）会让定时器退化成 1ms 轮询打满事件循环，故回退默认 30s。
-    const raw = Number(intervalMs)
-    this._baseInterval = Number.isFinite(raw) ? Math.max(raw, 1000) : 30000
+    this._baseInterval = normalizeWatchIntervalMs(intervalMs)
     // 空闲退避：连续没有变化的轮次把间隔翻倍，最长 2 分钟一轮；任何变化立刻回到 base。
     // 轮询是 O(树) 的 walkDir + 逐文件 stat（本仓库一轮实测 58–87ms），常驻 15s 一轮都在磨 I/O。
     this._maxInterval = Math.max(this._baseInterval, Math.min(this._baseInterval * 8, 120000))

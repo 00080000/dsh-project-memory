@@ -254,11 +254,15 @@ export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000, hardSta
       }
       if (lockIsStale(state, { staleMs, hardLimit, maxHoldMs })) {
         // 只删"刚刚读到的那个内容"：两次读之间锁可能已被别人抢到并重写。
+        // 回收失败（只读目录、Windows 杀毒/索引器长期占用）不能无条件 continue：那会变成
+        // 无 deadline、无等待的同步自旋，timeoutMs 被完全忽略，save()/commit()/退出 flush 卡死。
+        if (Date.now() >= deadline) return null
         try {
           if (readFileSync(file, 'utf8') === state.text) unlinkWithRetry(file)
         } catch {
           // 已被别处回收，或杀毒瞬时占用；下一轮继续判定
         }
+        Atomics.wait(sleeper, 0, 0, 10)
         continue
       }
       if (Date.now() >= deadline) return null
@@ -610,12 +614,16 @@ export function listProjectFiles(root, opts = {}) {
     // 配置/状态/密钥（`.env`、`.ssh`），非 git 目录没有"被跟踪=作者同意"这层信号。
     // 真要索引某个隐藏文件，走显式 `index_doc`（它不受扫描清单限制）。
     if (segs.some((s) => s.startsWith('.'))) continue
-    if (segs.some((s) => DEFAULT_IGNORE.has(s))) continue
+    // 与 walkDir 同口径：`DEFAULT_IGNORE` 只作用于**目录段**，根目录下一个叫 `build`
+    // 的普通文件仍然要收（此前对文件名也判，`git init` 前后语料会变）。
+    if (segs.slice(0, -1).some((s) => DEFAULT_IGNORE.has(s))) continue
     const abs = path.join(root, rel)
     // 与 walkDir 同一判据：exclude 是子树级前缀。必须在 maxDepth 之前——被排除文件不该把
     // 扫描标成 truncated（否则本轮不清理"未见到的旧条目"）。
     if (policy && excludedEntryForAbs(abs, policy)) continue
-    if (segs.length > maxDepth) {
+    // 文件的“目录深度”是 segs.length - 1；walkDir 的 maxDepth 也按目录层数计，
+    // 此前用 segs.length 会让 git 分支少收浅一层，并在同一棵树上报不同的 capped。
+    if (segs.length - 1 > maxDepth) {
       capped = true
       continue
     }

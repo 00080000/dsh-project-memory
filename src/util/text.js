@@ -14,6 +14,8 @@ export function textOf(message) {
 
 export function truncate(text, maxChars) {
   if (typeof text !== 'string') return String(text)
+  // 非有限值（缺配置 / 测试桩）原样返回，而不是输出 “...[truncated at undefined chars]”。
+  if (!Number.isFinite(maxChars)) return text
   if (text.length <= maxChars) return text
   return text.slice(0, maxChars) + `\n\n...[truncated at ${maxChars} chars]`
 }

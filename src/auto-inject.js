@@ -775,7 +775,14 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
 
   const fp = built.text ? fingerprint(built.dedupeText ?? built.text) : fingerprint(notice || '')
   const injectedText = notice ? (built.text ? `${notice}\n${built.text}` : notice) : built.text
-  if (!injectedText || fp === sessions.lastText.peek(sessionId)) return null
+  // 条目级冷却（reinjectItemsAfter>0）与块级指纹必须对齐：条目级已放行、块正文没变时，
+  // 块级 fp 会把“该重发”判成“没变化”。宿主外部裁剪历史时，这个开关本来就是为了重发。
+  const seen = sessions.items.ensure(sessionId)
+  const reinjectDue = cfg.reinjectItemsAfter > 0 && built.reasons.some((r) => {
+    const rec = seen.get(r.id)
+    return rec && Number.isFinite(rec.step) && stepNo - rec.step >= cfg.reinjectItemsAfter
+  })
+  if (!injectedText || (!reinjectDue && fp === sessions.lastText.peek(sessionId))) return null
   sessions.lastText.set(sessionId, fp)
   const itemCount = built.reasons.length
   const summary = itemCount
@@ -783,7 +790,6 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     : built.entry ? 'memory inject: task card' : 'memory root notice'
 
   // 只记真的进了上下文的那几条：dropped 的没被看到，不能记账（否则以后永远不再注入）。
-  const seen = sessions.items.ensure(sessionId)
   for (const r of built.reasons) {
     if (r && r.id && r.hash) seen.set(r.id, { hash: r.hash, step: stepNo })
   }

@@ -285,7 +285,7 @@ export function MemoryView({
       return
     }
     void loadRef.current(0, PAGE_SIZE, false)
-  }, [scope, sessionId])
+  }, [scope, sessionId, root, boundTaskId])
 
   // 滚到底之前就取下一页（rootMargin 600px）。哨兵消失（nextOffset=null）即停止。
   useEffect(() => {
@@ -326,12 +326,15 @@ export function MemoryView({
   }
 
   const rowToForm = (row: InsightRow) => {
-    // 正文按 kind 取专属字段（fix/solution/reason），避免把与标题相同的 pattern/problem 当正文
+    // 正文按 kind 取专属字段（fix/solution/reason），避免把与标题相同的 pattern/problem 当正文。
+    // procedure 的 row.body 是服务端 insSummary 合成的“步骤 N 条：…”——它不是正文，
+    // 表单里也没有对应输入框；预填后提交会把合成摘要写进真实 body，所以这里不预填。
     const main =
       row.kind === 'lesson' ? row.fix
         : row.kind === 'experience' ? row.solution
           : row.kind === 'decision' ? row.reason
-            : row.body
+            : row.kind === 'procedure' ? ''
+              : row.body
     const body = main && main !== row.title ? main : ''
     return {
       title: row.title || '',
@@ -381,7 +384,8 @@ export function MemoryView({
       if (form.kind === 'lesson') fields.pattern = title
       if (form.kind === 'decision') fields.choice = title
       if (form.kind === 'experience') fields.problem = title
-      if (form.body.trim()) {
+      // procedure 的正文由 steps 表达；不要把 body 一起提交（它只可能是合成摘要）。
+      if (form.kind !== 'procedure' && form.body.trim()) {
         if (form.kind === 'lesson') fields.fix = form.body.trim()
         else if (form.kind === 'decision') fields.reason = form.body.trim()
         else if (form.kind === 'experience') fields.solution = form.body.trim()

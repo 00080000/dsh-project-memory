@@ -4,6 +4,7 @@ import path from 'node:path'
 import { assertIndexRoot, assertSafeRoot, memoryRootFor, resolveIndexRoot, rootRejection, sessionMemoryRootOrNull, storeKey } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { cfgValue } from '../util/config.js'
+import { normalizeWatchIntervalMs } from '../watch.js'
 
 export function watchRepoTool(watchManager, config) {
   return defineTool({
@@ -72,9 +73,9 @@ export function watchRepoTool(watchManager, config) {
       new ProjectMemoryStore(memoryDir).load().commit((s) => s.addWatch(root))
       await mirrorSessionWatchlist(true)
       watchManager.addRoot(root)
-      const interval = Number(cfgValue(config, 'watchInterval'))
-      watchManager.start(interval * 1000)
-      return `Watching ${root} (interval ${interval}s). Docs/code changes will be re-indexed silently.`
+      const intervalMs = normalizeWatchIntervalMs(Number(cfgValue(config, 'watchInterval')) * 1000)
+      watchManager.start(intervalMs)
+      return `Watching ${root} (interval ${intervalMs / 1000}s). Docs/code changes will be re-indexed silently.`
     },
   })
 }

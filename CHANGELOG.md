@@ -1,4 +1,25 @@
 ## Unreleased (2026-11-04)
+**兼容**：`format.json` 仅在成功从旧版 store 迁移时多一个可选的 `migratedFrom: 'legacy'` 标记（旧版本读到会忽略）；无新增配置键，无破坏性 store 变更。
+
+
+### 修复（2026-11-05 审计）
+
+- **旧版 store 迁移不再删库**：`entries.json` 有数据、`index.json` 缺失/无 `files` 时，`load()` 保护性跳过后 `save()` 不再补写 `format.json`；成功迁移的标记带 `migratedFrom: 'legacy'`，没有标记的旧 `format.json` 也不会触发清理。
+- **锁回收失败不再同步忙等**：stale 分支补 deadline 与 10ms 等待；只读目录 / Windows 持续占用下 `acquireDirLock()` 按 `timeoutMs` 返回 `null`，不再挂死 `save()` / 退出 flush。
+- **懒索引的 L2 增强不再被覆盖**：`onFileObserved()` 移到 `commitFileUpdates()` 之后（与 `index_repo` / watch 同序）；单文件读取后 `enhanced: true` 与类型符号都能落盘。
+- **`global.json` 缺失/不可读不再清空整库**：读不到磁盘文档时保留内存副本重写，不再把“空 doc”当成对端删光。
+- **experience 迁移保留并发写入**：锁内重读的 `insights.json` 作为合并基线，不再用等锁前的快照整份覆盖。
+- **`reinjectItemsAfter` 恢复生效**：条目级冷却到期时绕过块级指纹去重，历史被外部裁剪后能按配置重发。
+- **动作识别覆盖包装器与 npm 前置 flag**：`sudo -E rm`、`nice -n 10 npm publish`、`time -p`、`stdbuf -oL`、`npm --registry/--access/--otp … publish`、`(rm …)` / `{ …; }` / `if …; then …` 都归一成正确 op。
+- **流式检索按词边界计 TF**：`cat` 不再命中 `concatenate`，与 token 化 IDF 同源。
+- **面板删除同步清 `vectors.json`**（与 `forget` 一致）；`watch_repo` 回报的 interval 与真实定时器一致（0/负数 clamp 成 1s）。
+- **git 与非 git 扫描口径统一**：深度边界与 `DEFAULT_IGNORE` 只作用于目录段，`git init` 前后语料一致。
+- **增强队列按 store 身份去重**：多项目同名文件不再互相顶掉。
+- **畸形 `task.steps` / `fileMeta` 归一**：不会让绑定会话的整条注入与任务列表一起抛错。
+- **面板记忆列表在 `root` / 绑定任务变化后重取**；编辑 procedure 不再把合成摘要写进 `body`。
+- **空提交不再创建空 store**；`save_lesson` 改 `kind` 时清掉旧 kind 专属字段；`truncate()` 的缺省上限与 `timeAgo()` 的非法时间不再输出 `undefined` / `NaN天前`。
+
+**测试**：新增 `test/audit-2026-11-05.test.mjs`（19 项：迁移保护/并发合并/畸形任务/global 缺失/锁超时/lazy 顺序/队列身份/reinject/ops/词边界/向量清理/watch/scan/kind/空提交/truncate）。`npm test` **975 项 / 58 个文件**全绿、`npm run typecheck` 通过；`npm run build:client` 后 `client/` 与源码一致。
 
 **工具描述统一为英文，并写清「改而不是新建」**：12 个工具的描述与参数说明此前中英混排（3 中 / 9 英），现在全部英文。两处措辞补上更新优先：`save_lesson` 直说「看到的记忆记错、过时或不够用时，带 id 再写一次就地覆盖，别另建一条」；`query_memory` 补一句「查询后顺手用 id 更新过时、记错的条目」。
 

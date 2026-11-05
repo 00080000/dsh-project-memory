@@ -156,19 +156,51 @@ function tokenizeWords(segment) {
   return out
 }
 
-/** 跳过环境变量赋值与 sudo/env/time 之类包装，返回真正的命令头与参数。 */
+/** shell 复合命令的关键字：它们不是可执行命令，跳过后再取真正的命令头。 */
+const SHELL_KEYWORDS = new Set([
+  'if', 'then', 'else', 'elif', 'fi', 'while', 'until', 'for', 'do', 'done',
+  'case', 'esac', 'function', 'in', 'select', 'time',
+])
+/**
+ * 包装器带值的选项：`nice -n 10 npm publish` / `sudo -u user rm` / `env -u NAME rm`。
+ * 只跳过选项本身不够——值会被当成命令头，动作与写目标一起丢。
+ */
+const WRAPPER_VALUE_FLAGS = new Set([
+  '-n', '--adjustment', '-u', '--user', '-g', '--group', '-C', '--chdir', '-p', '--prompt',
+  '-r', '--role', '-t', '--type', '-U', '--other-user', '-f', '--format', '-o', '--output',
+  '-S', '--split-string', '-c', '--command', '-D', '--chdir',
+])
+
+/** 跳过环境变量赋值、包装器（及其选项/值）与 shell 关键字，返回真正的命令头与参数。 */
 function commandHead(tokens) {
   let i = 0
+  /** 最近一个包装器：`time -p` 与 `sudo -p <prompt>` 的 -p 语义不同，需要知道是谁。 */
+  let wrapper = null
   while (i < tokens.length) {
     const t = tokens[i]
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t) || WRAPPERS.has(t) || t === '(') { i++; continue }
+    if (WRAPPERS.has(t)) { wrapper = t; i++; continue }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t) || SHELL_KEYWORDS.has(t)) { i++; continue }
+    if (t === '(' || t === '{' || t === '}' || t === ')') { i++; continue }
+    if (t.startsWith('-') && t !== '-') {
+      // 包装器/命令的选项：带值的连值一起跳，避免把值当成可执行命令。
+      // `time -p` 是 POSIX 的“不打印计时”，不带值；其余同名 -p（sudo -p prompt）带值。
+      const takesValue = WRAPPER_VALUE_FLAGS.has(t) && !(wrapper === 'time' && t === '-p')
+      if (takesValue && i + 1 < tokens.length) i += 2
+      else i++
+      continue
+    }
     break
   }
-  const raw = tokens[i] || ''
+  let raw = tokens[i] || ''
+  // `(rm` / `{rm` 这类紧挨着的分段：剥掉开头括号再取命令头。
+  raw = raw.replace(/^[({]+/, '')
   // 目录（两种分隔符）+ Windows 可执行后缀都要剥：`C:\Program Files\nodejs\npm.cmd` → `npm`。
   // 只 `split('/')` 会让 Windows 上的绝对路径命令头整个失配，`.cmd`/`.exe` 同理。
   const head = raw.split(/[\\/]/).pop().toLowerCase().replace(/\.(exe|cmd|bat|com|ps1)$/, '')
   let rest = tokens.slice(i + 1)
+  if (rest.length && /[)}]+$/.test(rest[rest.length - 1])) {
+    rest[rest.length - 1] = rest[rest.length - 1].replace(/[)}]+$/, '')
+  }
   if (rest.length && rest[rest.length - 1] === ')') rest = rest.slice(0, -1)
   return { head, rest }
 }
@@ -181,8 +213,31 @@ const BENCH_SCRIPT = /^(bench|benchmark)(:[\w.-]+)?$/i
 /** 包管理器里带值的全局 flag（`npm --prefix x …`）。 */
 const PM_VALUE_FLAGS = new Set(['-C', '--prefix', '--cwd', '-w', '--workspace', '--filter', '-F', '--dir'])
 
+/**
+ * 包管理器子命令：先扫已知动词（`publish` / `version` / `run` / `exec` …），再退回第一个非选项。
+ * 不能直接取第一个非 `-` 参数：`npm --registry <url> publish` / `npm --otp 123456 publish`
+ * 会先把 flag 的值当子命令，发布动作因此识别不到（而 `npm publish --registry …` 正常）。
+ */
+const PM_VERBS = new Set([
+  'publish', 'pack', 'version', 'run', 'run-script', 'exec', 'dlx', 'x', 'test', 't', 'tst',
+  'install', 'i', 'add', 'remove', 'rm', 'uninstall', 'un', 'update', 'up', 'link', 'why',
+  'audit', 'config', 'init', 'create', 'start', 'stop', 'restart', 'rebuild', 'ci', 'dedupe',
+  'prune', 'outdated', 'view', 'info', 'search', 'login', 'logout', 'whoami', 'owner', 'team',
+  'token', 'deprecate', 'dist-tag', 'unpublish', 'workspace', 'workspaces',
+])
+
 /** 跳过全局 flag，返回第一个子命令及其后的参数。 */
 function packageSubcommand(args) {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (typeof a !== 'string') continue
+    if (a.startsWith('-')) {
+      if (PM_VALUE_FLAGS.has(a)) i++
+      continue
+    }
+    if (PM_VERBS.has(a.toLowerCase())) return { sub: a.toLowerCase(), rest: args.slice(i + 1) }
+  }
+  // 没有已知动词：退回旧行为，保留 `yarn bench` / `pnpm dlx …` 这类按脚本名直接跑的形态。
   for (let i = 0; i < args.length; i++) {
     if (args[i].startsWith('-')) {
       if (PM_VALUE_FLAGS.has(args[i])) i++

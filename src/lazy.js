@@ -158,6 +158,8 @@ export async function indexObservedBatch(config, items, watchManager = null) {
 
     const store = kept[0].store
     const updates = []
+    /** 基础条目落盘成功后才入增强队列（顺序与 index_repo / watch 一致）。 */
+    const codeToEnhance = []
     let refreshed = false
     for (const cand of kept) {
       try {
@@ -185,7 +187,7 @@ export async function indexObservedBatch(config, items, watchManager = null) {
           continue
         }
         updates.push(toFileUpdate(cand.rel, plan, cand.record))
-        if (plan.key !== DROP && plan.type === 'code') onFileObserved(store, cand.rel, cand.filePath, config, root)
+        if (plan.key !== DROP && plan.type === 'code') codeToEnhance.push([cand.rel, cand.filePath])
         results.set(cand.filePath, plan.key !== DROP)
       } catch (err) {
         // 单文件读盘 / 解析失败不影响同批其它文件；但要登记，否则"读了却没索引成"
@@ -203,7 +205,16 @@ export async function indexObservedBatch(config, items, watchManager = null) {
     }
 
     try {
-      if (updates.length > 0) commitFileUpdates(store, { updates })
+      if (updates.length > 0) {
+        const { stale } = commitFileUpdates(store, { updates })
+        // 增强是「合并进已有条目」：必须在基础条目落盘**之后**入队。先入队时 enhancer 的
+        // commit 会同步跑完、随后被本次 applyFileUpdate 的 setEntries 整段覆盖（实测 lazy
+        // 单文件读取会因此丢 L2 符号，甚至 0 条目）。
+        const staleSet = new Set(stale || [])
+        for (const [rel, filePath] of codeToEnhance) {
+          if (!staleSet.has(rel)) onFileObserved(store, rel, filePath, config, root)
+        }
+      }
       // addedWatch 也要落盘：本轮可能没有任何条目更新（文件已是最新），但新登记的 watch 根
       // 是独立的事实；不 save 的话重启后它不在 watch.json 里，监视会静默退回启动时的根集合。
       else if (refreshed || addedWatch) store.commit(() => {})

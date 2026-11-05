@@ -39,6 +39,10 @@ export function containsSecretFields(ins, fields = ['title', 'body', 'pattern', 
   return null
 }
 
+function isRecord(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
 function num(v, d) {
   return typeof v === 'number' && Number.isFinite(v) ? v : d
 }
@@ -224,10 +228,21 @@ export function mergeInto(existing, base, cfg, nowIso) {
 const UPDATE_FIELDS = ['title', 'kind', 'body', 'pattern', 'fix', 'problem', 'solution', 'choice', 'reason', 'steps', 'trigger', 'files', 'symbols', 'tags', 'confidence']
 const UPDATE_ARRAYS = ['steps', 'files', 'symbols', 'tags']
 
+// 切 kind 时要保留的专属字段；其余内容字段清掉（与 commands/insight-actions 的 editMemoryItem 同语义）。
+// 两条写入路径必须一致：同一次“改 kind”，面板会清、save_lesson 不清就是两套数据形状。
+const KIND_CONTENT = {
+  lesson: ['pattern', 'fix'],
+  decision: ['choice', 'reason'],
+  procedure: ['steps', 'trigger'],
+  experience: ['problem', 'solution'],
+}
+const ALL_CONTENT = ['body', 'pattern', 'fix', 'problem', 'solution', 'choice', 'reason', 'steps']
+
 /** 显式就地更新（`save_lesson` 带 id）：只动调用方给的字段，其余原样，旧值进 `prev`。 */
 export function applyUpdate(item, raw, nowIso) {
   const now = nowIso || new Date().toISOString()
   const replaced = []
+  const oldKind = item.kind
   for (const f of UPDATE_FIELDS) {
     const v = raw[f]
     if (v === undefined || v === null || v === '') continue
@@ -250,6 +265,17 @@ export function applyUpdate(item, raw, nowIso) {
       continue
     }
     putField(item, f, String(v), replaced)
+  }
+  // 改 kind 时清掉旧 kind 的专属字段（procedure 保留通用 body）：否则 lesson→decision 后
+  // `fix` 会盖在 `choice` 前面进入正文/摘要（insightBodyText 的优先级是 fix > choice > …）。
+  if (item.kind !== oldKind && KIND_CONTENT[item.kind]) {
+    const keep = new Set(KIND_CONTENT[item.kind])
+    const isProcedure = item.kind === 'procedure'
+    for (const f of ALL_CONTENT) {
+      if (keep.has(f)) continue
+      if (isProcedure && f === 'body') continue
+      delete item[f]
+    }
   }
   item.updatedAt = now
   if (item.archived) item.archived = false
@@ -591,25 +617,33 @@ export class GlobalStore {
       return res
     }
     try {
-      const disk = normalizeDoc(readJson(this.file, null))
-      const byId = new Map()
-      for (const it of disk.items) if (it?.id) byId.set(it.id, it)
-      for (const it of this.doc.items) {
-        if (!it?.id) continue
-        if (this._deletedIds.has(it.id)) {
-          byId.delete(it.id)
-          continue
+      const rawDisk = readJson(this.file, null)
+      const disk = isRecord(rawDisk) && Array.isArray(rawDisk.items) ? rawDisk : null
+      if (disk) {
+        const byId = new Map()
+        for (const it of disk.items) if (it?.id) byId.set(it.id, it)
+        for (const it of this.doc.items) {
+          if (!it?.id) continue
+          if (this._deletedIds.has(it.id)) {
+            byId.delete(it.id)
+            continue
+          }
+          const prev = byId.get(it.id)
+          if (!prev) {
+            // 磁盘没有：本进程新建的才补写；否则是对方删了，丢掉内存里的旧副本。
+            if (this._createdIds.has(it.id)) byId.set(it.id, it)
+            continue
+          }
+          if (newerIso(it.updatedAt, prev.updatedAt) >= 0) byId.set(it.id, it)
         }
-        const prev = byId.get(it.id)
-        if (!prev) {
-          // 磁盘没有：本进程新建的才补写；否则是对方删了，丢掉内存里的旧副本。
-          if (this._createdIds.has(it.id)) byId.set(it.id, it)
-          continue
-        }
-        if (newerIso(it.updatedAt, prev.updatedAt) >= 0) byId.set(it.id, it)
+        for (const id of this._deletedIds) byId.delete(id)
+        this.doc.items = [...byId.values()]
+      } else {
+        // 文件缺失/不可读/损坏（readJson 已把损坏件备份）时，不能把"空 doc"当成
+        // "对端把所有条目都删了"：那会把整库旧条目静默清掉。保留内存里的完整副本重写。
+        // 项目 store 在同样场景也是保留内存整份写回（见 _mergeAuxFromDisk 的 isRecord 守卫）。
+        this.doc.items = this.doc.items.filter((it) => isRecord(it) && it.id)
       }
-      for (const id of this._deletedIds) byId.delete(id)
-      this.doc.items = [...byId.values()]
       writeJsonAtomic(this.file, this.doc)
       this._dirty = false
       this._baseIds = new Set(this.doc.items.map((it) => it?.id).filter(Boolean))

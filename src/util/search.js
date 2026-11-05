@@ -215,12 +215,22 @@ export function rankEntriesMergedScored(entries, queries, limit = 8) {
 // （没有 problem/solution 参数），独立打分器会把那种条目打成 0 分且无处可查。现由
 // `recall.js` 用与洞察层相同的 `insightToEntry` 适配器打分，本函数随能力一起删除。
 
+const LATIN_TERM_RE = /^[a-z0-9_]+$/
+const WORD_CHAR_RE = /[a-z0-9_]/
+
 function countOccurrences(text, token) {
   if (!token) return 0
   let count = 0
   let pos = 0
+  // 拉丁词项必须按词边界计数：`searchText` 不是 token 化的，用裸 indexOf 会让 `cat` 命中
+  // "concatenate"、`log` 命中 "dialog"，与按 token 统计的 IDF 不同源（假阳性 + 分数不可比）。
+  // CJK bigram / 西里尔词干没有 ASCII 词边界，保持子串计数。
+  const bounded = LATIN_TERM_RE.test(token)
   while ((pos = text.indexOf(token, pos)) !== -1) {
-    count++
+    if (!bounded
+      || (!WORD_CHAR_RE.test(text[pos - 1] || '') && !WORD_CHAR_RE.test(text[pos + token.length] || ''))) {
+      count++
+    }
     pos += token.length
   }
   return count

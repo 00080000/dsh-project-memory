@@ -51,7 +51,9 @@ export function stepProgress(task) {
 
 /** 相对时间（中文）：面板、list_tasks、/tasks 三处文案共用同一套阈值。 */
 export function timeAgo(iso) {
-  const diff = Date.now() - new Date(iso).getTime()
+  const t = Date.parse(iso ?? '')
+  if (!Number.isFinite(t)) return '未知'
+  const diff = Date.now() - t
   const m = Math.floor(diff / 60000)
   if (m < 1) return '刚刚'
   if (m < 60) return `${m}分钟前`

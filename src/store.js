@@ -435,6 +435,11 @@ export class ProjectMemoryStore {
     this._dirtyBinding = false
     this._dirtyWatch = false
     this._formatWritten = false
+    /**
+     * 旧库迁移被保护性跳过（entries.json 有数据但 index.json 缺失/损坏）。
+     * 置位后 save() 不允许写 format.json：那个标记会让下一次 load 把旧文件当迁移残留删掉。
+     */
+    this._legacyBlocked = false
     this._idfCache = null
     /** entries 的变更计数：IDF 缓存与符号索引（读取期链接）都据此失效。 */
     this._entriesVersion = 0
@@ -490,9 +495,32 @@ export class ProjectMemoryStore {
     return this
   }
 
+  /** 迁移保护：置位后 save() 不写 format.json，下一次 load 会重试迁移而不是删旧文件。 */
+  _markLegacyBlocked(message) {
+    this._legacyBlocked = true
+    if (migrationWarned.has(this.dir)) return
+    migrationWarned.add(this.dir)
+    console.error(`[dsh-project-memory] ${message}`)
+  }
+
   _migrateLegacyIfNeeded() {
     const formatPath = path.join(this.dir, FORMAT_FILE)
-    if (loadJson(formatPath, null)?.version === 2) {
+    const formatDoc = loadJson(formatPath, null)
+    if (formatDoc?.version === 2) {
+      // 危险组合：format.json 已经写了，但 entries.json 还有数据/读不出来。正常迁移的标记带
+      // `migratedFrom`；没有它就是"某次 save() 在迁移被跳过后补写了 format"（旧版只把
+      // !formatWritten 当脏）。这时绝不能把 entries.json 当迁移残留删掉——那正是整库静默消失的路径。
+      const legacyEntriesPathV2 = path.join(this.dir, ENTRIES_FILE)
+      let legacyV2 = null
+      if (existsSafe(legacyEntriesPathV2)) legacyV2 = loadJson(legacyEntriesPathV2, null)
+      const legacyHasPayload = isRecord(legacyV2) && Object.keys(legacyV2).length > 0
+      const legacyUnreadable = existsSafe(legacyEntriesPathV2) && !isRecord(legacyV2)
+      if (formatDoc.migratedFrom !== 'legacy' && (legacyHasPayload || legacyUnreadable)) {
+        this._markLegacyBlocked(
+          `legacy ${ENTRIES_FILE} still exists next to a non-migration ${FORMAT_FILE}; keeping it (delete the stale ${FORMAT_FILE} after migrating manually)`,
+        )
+        return
+      }
       // 迁移在“写完标记、删旧文件前”崩溃会留下死文件；这里顺手清掉
       for (const stale of [path.join(this.dir, ENTRIES_FILE), path.join(this.dir, INDEX_FILE)]) {
         if (existsSafe(stale)) {
@@ -514,7 +542,9 @@ export class ProjectMemoryStore {
     const entries = loadJson(legacyEntriesPath, null)
     if (!isRecord(index) || !isRecord(entries)) {
       const hasEntries = isRecord(entries) && Object.keys(entries).length > 0
-      if (!hasEntries) {
+      // entries.json 读不出来但文件仍在（loadJson 的备份也失败了）：同样按"有数据"保护。
+      const unreadableEntries = !isRecord(entries) && existsSafe(legacyEntriesPath)
+      if (!hasEntries && !unreadableEntries) {
         // entries 损坏（已备份）或本就是空的：没有可保护的数据，按空旧库收尾。
         writeJsonAtomic(formatPath, { version: 2, layout: 'sharded' })
         for (const stale of [legacyEntriesPath, legacyIndexPath]) {
@@ -528,11 +558,22 @@ export class ProjectMemoryStore {
       }
       // index.json 是 entries.json → rel 的唯一映射；它缺失时继续迁移会写出 0 个 shard 再删掉
       // 完好的 entries.json，等于静默清空。保留现场，不写 format 标记，等修好后再迁。
-      if (!migrationWarned.has(this.dir)) {
-        migrationWarned.add(this.dir)
-        console.error(`[dsh-project-memory] legacy store at ${this.dir} has ${ENTRIES_FILE} but no readable ${INDEX_FILE}; migration skipped to protect it`)
-      }
+      this._markLegacyBlocked(
+        unreadableEntries
+          ? `legacy ${ENTRIES_FILE} is unreadable and could not be backed up; migration skipped to protect it`
+          : `legacy store at ${this.dir} has ${ENTRIES_FILE} but no readable ${INDEX_FILE}; migration skipped to protect it`,
+      )
       return
+    }
+    if (!isRecord(index.files)) {
+      // 与"index.json 缺失"同等对待：entries 非空而 files 不是对象时继续迁移会写出 0 个 shard
+      // 再把两个旧文件删掉（只留两行日志）。
+      if (Object.keys(entries).length > 0) {
+        this._markLegacyBlocked(
+          `legacy store at ${this.dir} has ${ENTRIES_FILE} but ${INDEX_FILE} has no readable files map; migration skipped to protect it`,
+        )
+        return
+      }
     }
     const files = isRecord(index.files) ? index.files : {}
     const orphans = Object.keys(entries).filter((rel) => !(rel in files))
@@ -551,7 +592,7 @@ export class ProjectMemoryStore {
       }
       writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: files[rel], entries: list.map(withoutPersistedDerived) })
     }
-    writeJsonAtomic(formatPath, { version: 2, layout: 'sharded' })
+    writeJsonAtomic(formatPath, { version: 2, layout: 'sharded', migratedFrom: 'legacy' })
     for (const stale of [legacyEntriesPath, path.join(this.dir, INDEX_FILE)]) {
       try {
         unlinkSync(stale)
@@ -640,7 +681,16 @@ export class ProjectMemoryStore {
       else if (task.insights !== undefined) task.insights = []
       if (Array.isArray(task.files)) task.files = task.files.filter((f) => typeof f === 'string' && f)
       else task.files = []
+      // `steps` 是第三条：对象/字符串形状会让 `(task.steps || []).map` 与 `for...of` 抛错，
+      // 而 pre-step 的 catch 会把整步注入降级（连 project/global insight 一起不注入）。
+      if (!Array.isArray(task.steps)) task.steps = []
       if (!isRecord(task.fileMeta)) task.fileMeta = {}
+      else {
+        // 单个 rel 的值不是对象时 `touchTaskFile()` 会往字符串上写属性而抛错：按空对象归一。
+        for (const rel of Object.keys(task.fileMeta)) {
+          if (!isRecord(task.fileMeta[rel])) task.fileMeta[rel] = {}
+        }
+      }
     }
     const bindingDoc = this._loadJson(path.join(this.dir, BINDING_FILE), {})
     this.binding = isRecord(bindingDoc) ? bindingDoc : {}
@@ -729,11 +779,17 @@ export class ProjectMemoryStore {
         this.insights = { ...diskDoc, items: diskDoc.items.filter(isRecord) }
       } else {
         const now = new Date().toISOString()
-        const known = new Set(this.insights.items.map((it) => it.id))
+        // 锁内重读到的 diskDoc 可能已有另一个进程刚写入的条目（只是还没写 migratedAt）。
+        // 不能拿等锁前的 this.insights 整份覆盖：那会把对方的条目静默丢掉。
+        const baseDoc = isRecord(diskDoc) && Array.isArray(diskDoc.items)
+          ? { ...diskDoc, items: diskDoc.items.filter(isRecord) }
+          : this.insights
+        const mergedItems = [...baseDoc.items]
+        const known = new Set(mergedItems.map((it) => it.id))
         for (const item of legacy) {
           if (!item || !item.problem || known.has(item.id)) continue
           known.add(item.id)
-          this.insights.items.push({
+          mergedItems.push({
             id: item.id,
             kind: 'experience',
             scope: 'project',
@@ -751,7 +807,7 @@ export class ProjectMemoryStore {
           })
           imported++
         }
-        this.insights.migratedAt = now
+        this.insights = { ...baseDoc, items: mergedItems, migratedAt: now }
         mkdirSync(this.dir, { recursive: true })
         writeJsonAtomic(insightsPath, this.insights, { ensureDir: false })
       }
@@ -881,6 +937,10 @@ export class ProjectMemoryStore {
     // 没有脏数据就不落盘：watch 每轮对每个根都无条件 commit → save，否则末尾的 IDF 缓存失效
     // 会打在跨实例共享的 store 上，等于每轮清空一次复用。待压实队列不算脏，但也要有界推进。
     const compacting = this._compactQueue.size > 0
+    // `!formatWritten` 只在**真有内容**时才算脏：否则一次空提交（或 global-only 写入后
+    // 对 project store 的 commit）就会给没有记忆的项目造出 `.dsh-project-memory/format.json`，
+    // 还会被 nestedStoreRoots 当成“自带 store 的嵌套项目”跳过整棵子树。
+    const hasContent = this.hasContent
     const dirty =
       compacting ||
       this._dirtyShards.size > 0 ||
@@ -889,7 +949,7 @@ export class ProjectMemoryStore {
       this._dirtyTasks ||
       this._dirtyBinding ||
       this._dirtyWatch ||
-      !this._formatWritten
+      (!this._formatWritten && !this._legacyBlocked && hasContent)
     if (dirty) {
       // 目录可能在 load 之后被外部删掉：`_storeDirReady` 只当"上次写过"的快路径，命中时补一次
       // stat；失配就重建目录，并让分片/格式/忽略三处的已就绪状态一起失效。
@@ -945,7 +1005,7 @@ export class ProjectMemoryStore {
     try {
       // 先合并另一进程已落盘的小文档，再写；分片按“加载时 hash”做冲突检测。
       this._mergeAuxFromDisk()
-      if (!this._formatWritten) {
+      if (!this._formatWritten && !this._legacyBlocked) {
         writeJsonAtomic(path.join(this.dir, FORMAT_FILE), { version: 2, layout: 'sharded' }, { ensureDir: false })
         this._formatWritten = true
       }

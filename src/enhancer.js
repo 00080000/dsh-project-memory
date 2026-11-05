@@ -343,8 +343,10 @@ export function enqueueEnhance(store, relPath, filePath, priority = PRIORITY.BAT
   }
   const cacheKey = getCacheKey(content)
 
-  // 去重：同 relPath 同内容 → 复用队列里那条 promise。
-  const existingIdx = enhanceQueue.findIndex(q => q.relPath === relPath)
+  // 去重：同一 store + 同 relPath + 同内容 → 复用队列里那条 promise。
+  // **必须带 store 身份**：web 进程同时服务多个项目时，两个项目都有 `src/api.ts` 很正常；
+  // 只比 relPath 会让后入队的顶掉前一个（promise 被 resolve、任务却从未增强）。
+  const existingIdx = enhanceQueue.findIndex(q => q.store === store && q.relPath === relPath)
   if (existingIdx >= 0) {
     const existing = enhanceQueue[existingIdx]
     if (existing.cacheKey === cacheKey) {

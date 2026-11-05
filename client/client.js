@@ -1883,7 +1883,12 @@ window.__ModuleLoader__.load({
 					return;
 				}
 				loadRef.current(0, 30, false);
-			}, [scope, sessionId]);
+			}, [
+				scope,
+				sessionId,
+				root,
+				boundTaskId
+			]);
 			(0, react.useEffect)(() => {
 				if (nextOffset === null || typeof IntersectionObserver === "undefined") return;
 				const sentinel = sentinelRef.current;
@@ -1918,7 +1923,7 @@ window.__ModuleLoader__.load({
 				}
 			};
 			const rowToForm = (row) => {
-				const main = row.kind === "lesson" ? row.fix : row.kind === "experience" ? row.solution : row.kind === "decision" ? row.reason : row.body;
+				const main = row.kind === "lesson" ? row.fix : row.kind === "experience" ? row.solution : row.kind === "decision" ? row.reason : row.kind === "procedure" ? "" : row.body;
 				const body = main && main !== row.title ? main : "";
 				return {
 					title: row.title || "",
@@ -1977,7 +1982,7 @@ window.__ModuleLoader__.load({
 					if (form.kind === "lesson") fields.pattern = title;
 					if (form.kind === "decision") fields.choice = title;
 					if (form.kind === "experience") fields.problem = title;
-					if (form.body.trim()) {
+					if (form.kind !== "procedure" && form.body.trim()) {
 						if (form.kind === "lesson") fields.fix = form.body.trim();
 						else if (form.kind === "decision") fields.reason = form.body.trim();
 						else if (form.kind === "experience") fields.solution = form.body.trim();

@@ -2,15 +2,32 @@
 // 动作：list / confirm / promote / demote / archive / restore / delete
 // 纯函数 actInsight / listInsights 操作传入的 store/gs 内存对象，持久化由调用方
 // （命令 handler：store.commit + gs.commit）统一负责，便于单测。
+import path from 'node:path'
 import { ProjectMemoryStore } from '../store.js'
 import { memoryRootFor, normalizeCitationFiles } from '../util/fs.js'
 import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, recordDeleted, carryUsageFields, pruneItems, INSIGHT_KINDS } from '../insight-store.js'
 import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
+import { forgetVectorRows } from '../vector-index.js'
 
 /** 容量旋钮的防御性取值：cfg 可能只带显式测试字段。 */
 function capOf(value, fallback) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+/**
+ * 面板/命令删除后的向量缓存清理：与 `forget` 工具同一承诺（真删），但这里不加载模型。
+ * 失败只影响缓存残留，不能挡住删除本身。
+ */
+function forgetVectorsForDeleted({ store, gs, home, ids }) {
+  try {
+    const dir = home === 'global'
+      ? (gs && typeof gs.file === 'string' ? path.dirname(gs.file) : null)
+      : (store && typeof store.dir === 'string' ? store.dir : null)
+    if (dir && ids.length) forgetVectorRows({ dir, ids })
+  } catch {
+    /* 缓存删除失败不影响删除承诺 */
+  }
 }
 
 /**
@@ -159,6 +176,7 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       recordDeleted({ store, globalStore: gs }, [{ ...insight, home: 'task', taskId: task.id }])
       task.insights = (task.insights || []).filter((i) => i.id !== id)
       store.markTasksDirty()
+      forgetVectorsForDeleted({ store, gs, home: 'task', ids: [id] })
       return { ok: true, text: `已删除任务级条目 ${id}` }
     }
     if (act === 'archive' || act === 'restore') {
@@ -207,6 +225,7 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       recordDeleted({ store, globalStore: gs }, [{ ...ins, home: 'project' }])
       items.splice(idx, 1)
       store.replaceInsightItems(items)
+      forgetVectorsForDeleted({ store, gs, home: 'project', ids: [id] })
       return { ok: true, text: `已删除 project 条目 ${id}` }
     }
     if (act === 'promote') {
@@ -267,6 +286,7 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       recordDeleted({ store, globalStore: gs }, [{ ...ins, home: 'global' }])
       items.splice(idx, 1)
       gs.markDirty()
+      forgetVectorsForDeleted({ store, gs, home: 'global', ids: [id] })
       return { ok: true, text: `已删除 global 条目 ${id}` }
     }
     if (act === 'demote') {
