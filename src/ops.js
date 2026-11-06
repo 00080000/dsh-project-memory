@@ -5,6 +5,7 @@
 // 路径 token 规则收在 util/path-token.js —— 它无依赖，两个模块共用。
 
 import { extractPathTokens } from './util/path-token.js'
+import { patchFilePaths } from './util/patch.js'
 
 /** op 闭集。新增一个 op 必须同时想清楚：它是动作，不是话题。 */
 export const OP_IDS = [
@@ -59,7 +60,7 @@ export const LEGACY_ACTION_ALIAS = {
   'write-docs': null,
 }
 
-const WRITE_TOOLS = new Set(['write', 'edit', 'multi_edit', 'apply_patch', 'str_replace', 'create_file', 'notebook_edit'])
+const WRITE_TOOLS = new Set(['write', 'edit', 'multi_edit', 'str_replace', 'create_file', 'notebook_edit'])
 const READ_IMAGE_TOOLS = new Set(['read_image'])
 const INDEX_TOOLS = new Set(['index_doc', 'index_repo', 'watch_repo'])
 const FETCH_TOOLS = new Set(['web_fetch', 'web_search'])
@@ -458,6 +459,20 @@ export function classifyToolCall(name, argsText) {
     }
     const targets = [filePath, ...extractPathTokens(filePath)]
     return { ops: ['file-write'], targets: [...new Set(targets)], hosts: [] }
+  }
+  // 0.2.2 的 `apply_patch` 没有 path/file_path：目标文件只写在补丁正文的
+  // `*** Add/Update/Delete File:` 与 `*** Move to:` 行里。漏掉它时跨文件补丁
+  // 只留下一个没有目标的 file-write，审计与热点都指不到具体文件。
+  // 同名工具若走 `path`/`file_path`（非 dsh 形状），退回通用路径，别把旧行为弄丢。
+  if (tool === 'apply_patch') {
+    const obj = safeJson(argsText) || {}
+    const files = patchFilePaths(obj.input)
+    const fromArgs = files.length > 0
+      ? files
+      : [obj.file_path, obj.path].filter((v) => typeof v === 'string' && v)
+    const targets = fromArgs.flatMap((p) => [p, ...extractPathTokens(p)])
+    const hosts = targets.some((t) => WSL_HINT_RE.test(t)) ? ['wsl'] : []
+    return { ops: ['file-write'], targets: [...new Set(targets)], hosts }
   }
   if (READ_IMAGE_TOOLS.has(tool)) return { ops: ['read-image'], targets: [], hosts: [] }
   if (INDEX_TOOLS.has(tool)) return { ops: ['index-doc'], targets: [], hosts: [] }

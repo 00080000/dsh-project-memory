@@ -34,6 +34,33 @@ const ok = (name) => {
   ok('classifyToolCall：写/读/索引/取网页各自归一，写目标取参数值')
 }
 
+// --- 1b. apply_patch：写目标只在补丁正文里（0.2.2 可选工具，参数只有 input） ---
+{
+  const patch = [
+    '*** Begin Patch',
+    '*** Update File: src/a.ts',
+    '*** Move to: src/b.ts',
+    '*** Add File: docs/new.md',
+    '*** Delete File: docs/old.md',
+    '*** End Patch',
+  ].join('\n')
+  const out = classifyToolCall('apply_patch', JSON.stringify({ input: patch }))
+  assert.deepEqual(out.ops, ['file-write'])
+  assert.ok(out.targets.includes('src/a.ts'), 'Update 目标进 targets')
+  assert.ok(out.targets.includes('src/b.ts'), 'Move 目标进 targets')
+  assert.ok(out.targets.includes('docs/new.md'), 'Add 目标进 targets')
+  assert.ok(out.targets.includes('docs/old.md'), 'Delete 目标进 targets')
+  assert.ok(!out.targets.includes('*** End Patch'), '补丁标记不是路径')
+  // 没有 input 或空补丁时不抛错：仍是一次 file-write，只是没有目标
+  assert.deepEqual(classifyToolCall('apply_patch', '{"input":""}').ops, ['file-write'])
+  assert.deepEqual(classifyToolCall('apply_patch', 'not json').targets, [])
+  // 同名工具若用 path/file_path（非 dsh 形状），退回通用路径，不能因为专门分支丢掉目标
+  const legacy = classifyToolCall('apply_patch', JSON.stringify({ path: 'src/legacy.ts' }))
+  assert.deepEqual(legacy.ops, ['file-write'])
+  assert.ok(legacy.targets.includes('src/legacy.ts'))
+  ok('classifyToolCall：apply_patch 从补丁正文取 Add/Update/Move/Delete 目标')
+}
+
 // --- 2. shell 命令 → op：只认渲染器，不认扩展名 ---
 {
   assert.ok(classifyShellCommand('npm publish --access public').ops.includes('npm-publish'))

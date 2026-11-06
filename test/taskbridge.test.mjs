@@ -128,6 +128,42 @@ const ev = (type, data) => ({ type, data })
   ok('tool/call：绑定后 files 并集；项目外/非文件工具/未绑定均忽略')
 }
 
+// --- 5d. apply_patch：目标文件从补丁正文取（Add/Update/Move/Delete） ---
+// 0.2.2 的 tool-fs 可挂载 apply_patch：参数只有 input（整段补丁），没有 file_path/path。
+// 只按 file_path/path 取路径时，跨文件补丁改过的文件全部漏出任务热点。
+{
+  const { root, store } = newProject()
+  const meta = new Map()
+  const session = sess('sessP', root)
+  onSessionEvent(config, session, ev('todo/write', { todos: [{ content: '跨文件改动', status: 'in_progress' }] }), meta)
+  const taskId = store.getBoundTaskId('sessP')
+  const patch = [
+    '*** Begin Patch',
+    '*** Update File: src/a.ts',
+    '@@',
+    '-old',
+    '+new',
+    '*** Move to: src/moved/a.ts',
+    '*** Add File: src/b.ts',
+    '+export {}',
+    '+*** Add File: not-a-header.ts',
+    '*** Delete File: docs/old.md',
+    '*** Update File: ../outside.ts',
+    '*** End Patch',
+  ].join('\n')
+  onSessionEvent(config, session, ev('tool/call', { name: 'apply_patch', arguments: JSON.stringify({ input: patch }) }), meta)
+  const task = store.getTask(taskId)
+  assert.deepEqual(task.files.slice().sort(), ['docs/old.md', 'src/a.ts', 'src/b.ts', 'src/moved/a.ts'])
+  assert.equal(task.fileMeta['src/b.ts'].writes, 1, '补丁写过的文件记为写')
+  // 同一文件同时出现在 Update 与 Move 目标里也只记一次（files 是并集）
+  onSessionEvent(config, session, ev('tool/call', { name: 'apply_patch', arguments: JSON.stringify({ input: patch }) }), meta)
+  assert.equal(store.getTask(taskId).files.length, 4, '重复补丁不重复登记')
+  // 同名工具若用 path/file_path（非 dsh 形状），仍按写记录，不能因为专门分支而丢
+  onSessionEvent(config, session, ev('tool/call', { name: 'apply_patch', arguments: JSON.stringify({ path: 'src/legacy.ts' }) }), meta)
+  assert.ok(store.getTask(taskId).files.includes('src/legacy.ts'))
+  ok('tool/call：apply_patch 记录 Add/Update/Move/Delete 目标，正文假文件头与项目外路径被忽略')
+}
+
 // --- 5c. 畸形任务缺 files / fileMeta：load 归一，tool/call 仍能记热点 ---
 // 回归：`touchTaskFile()` 直接 `task.files.includes(...)`，手改或旧版 tasks.json 缺集合时
 // 每次文件工具调用都抛错（外层 catch 只打日志），该任务的热点追踪永久失效。

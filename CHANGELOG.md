@@ -19,11 +19,21 @@
 - **面板记忆列表在 `root` / 绑定任务变化后重取**；编辑 procedure 不再把合成摘要写进 `body`。
 - **空提交不再创建空 store**；`save_lesson` 改 `kind` 时清掉旧 kind 专属字段；`truncate()` 的缺省上限与 `timeAgo()` 的非法时间不再输出 `undefined` / `NaN天前`。
 
-**测试**：新增 `test/audit-2026-11-05.test.mjs`（19 项：迁移保护/并发合并/畸形任务/global 缺失/锁超时/lazy 顺序/队列身份/reinject/ops/词边界/向量清理/watch/scan/kind/空提交/truncate）。`npm test` **975 项 / 58 个文件**全绿、`npm run typecheck` 通过；`npm run build:client` 后 `client/` 与源码一致。
+**测试**：新增 `test/audit-2026-11-05.test.mjs`（19 项：迁移保护/并发合并/畸形任务/global 缺失/锁超时/lazy 顺序/队列身份/reinject/ops/词边界/向量清理/watch/scan/kind/空提交/truncate）。`npm test` **977 项 / 58 个文件**全绿、`npm run typecheck` 通过；`npm run build:client` 后 `client/` 与源码一致。
 
 **工具描述统一为英文，并写清「改而不是新建」**：12 个工具的描述与参数说明此前中英混排（3 中 / 9 英），现在全部英文。两处措辞补上更新优先：`save_lesson` 直说「看到的记忆记错、过时或不够用时，带 id 再写一次就地覆盖，别另建一条」；`query_memory` 补一句「查询后顺手用 id 更新过时、记错的条目」。
 
 schema 预算守卫从「字符 ≤ 5600」改成「token 估算 ≤ 1800」（中文字符约 1 token/字，其余约 4 字符/token）。同一份内容实测：中文 4854 字符 / ~1772 token，英文 6734 字符 / ~1684 token——字符少不代表 token 少，按 token 判才选得对（这次英文略低，故取英文）。
+
+### 兼容 dsh 0.2.2-rc.1（2026-11-06）
+
+**开发依赖对齐新宿主**：`dsh-tools` / `dsh-llm` / 四个 client 包从 `0.2.1-rc.2` 升到 `0.2.2-rc.1`，`@deepseek-ai/cordis` 从 `^4.0.4`（实际装 4.0.5）升到 `^4.1.0` —— 0.2.2 的 client 包 peer 已是 `~4.1.0`，旧依赖下的全绿只证明了 0.2.1 兼容。`package-lock.json` 同步重新生成。
+
+**逐项核对 0.2.2 的接口变更**：`agent/pre-step`（dispatcher 仍注入 `agent`）、`session/event` / `session/disposed`、v4 消息 source 准入（仍拒 `kind: 'plugin'`、接受生产者自有 kind）、`ctx.tools.register`、`ctx.inject(['commands'])`、`workingDirectory.get(session)`、`sessions.list` 快照（`byId` + `retainedBy.mainView` + `blank`）、`shell.overlay` / `conversation.chat.commandview` 槽位、`remote.commands` 扁平服务、`ctx.configForms.get`、`inputTriggers.registerSource` —— 均未变；投影帧改 `changes[]`、已释放单元保留检查点、`session.list` 摘要去掉 contextPressure/contextBreakdown、LLM `purpose` 改为类型级声明、Loader 条目树改 `commit(change)` —— 插件都没读这些面。
+
+**补齐 `apply_patch` 的文件追踪**：这个 0.2.2 的可选工具只收整段补丁文本（`input`），路径写在 `*** Add/Update/Delete File:` 与 `*** Move to:` 行里。TaskBridge 与动作平面此前只认 `file_path`/`path`，开启该工具后跨文件补丁会漏记任务热点、审计也指不到具体文件；现在都从正文提取路径（相对会话当前工作目录再归一到项目根，项目外丢弃）。
+
+**实测**：`npm test` 全绿、`npm run typecheck` 通过、`npm run build:client` 产物与源码一致；0.2.2-rc.1 的 web profile 里工具注册、skill 注册与 pre-step 注入均正常。
 
 ## 0.6.10 (2026-11-04)
 

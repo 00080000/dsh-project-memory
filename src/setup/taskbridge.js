@@ -8,8 +8,10 @@ import { sessionWorkingDir } from '../util/session-dir.js'
 import { ProjectMemoryStore } from '../store.js'
 import { BoundedMap } from '../util/session-cache.js'
 import { stepContent, stepStatus } from '../util/task-view.js'
+import { patchFilePaths } from '../util/patch.js'
 
-const FS_FILE_TOOLS = new Set(['read', 'write', 'edit', 'read_image', 'str_replace_editor'])
+// apply_patch 的参数是整段补丁文本，路径在正文里（见 util/patch.js），单独分支处理。
+const FS_FILE_TOOLS = new Set(['read', 'write', 'edit', 'read_image', 'str_replace_editor', 'apply_patch'])
 const WRITE_TOOLS = new Set(['write', 'edit']) // 编辑/写入 = 高热点
 const READ_TOOLS = new Set(['read', 'read_image'])
 const MAX_FILES_PER_TASK = 100
@@ -266,6 +268,34 @@ export function onSessionEvent(config, session, event, meta, ctx) {
     } catch {
       return
     }
+    // 文件工具调用是最高频的写口：每次 commit 都落盘会把 tasks.json 写成“每读一个文件一次”。
+    // 这里只改内存 + 标脏，回合结束（turn/end）或会话销毁时统一 flush。
+    const record = (rels, kind) => store.commit((s) => {
+      const task = s.getTask(taskId)
+      if (!task || task.archived) return
+      for (const rel of rels) touchTaskFile(task, rel, kind, now)
+      task.lastActiveAt = now
+      s.markTasksDirty()
+    }, { save: false })
+
+    // 0.2.2 的 apply_patch：路径只在补丁正文的文件头里，没有 file_path / path。
+    // 相对路径以会话当前工作目录为基准（= 宿主文档约定的“Session working directory”），
+    // 再归一到项目根；项目外的路径由 normalizeRelFile 丢掉。
+    // Delete/Move 也记为写：任务卡片关心“这次任务碰过哪些文件”，而不是它们是否还存在。
+    // 正文里一个路径都取不到时**不返回**：同名工具若走 path/file_path 参数，交给下面的通用分支。
+    if (data.name === 'apply_patch') {
+      const base = typeof cwd === 'string' && cwd ? cwd : root
+      const rels = []
+      for (const target of patchFilePaths(args?.input)) {
+        const rel = normalizeRelFile(root, path.isAbsolute(target) ? target : path.resolve(base, target))
+        if (rel) rels.push(rel)
+      }
+      if (rels.length > 0) {
+        record(rels, 'write')
+        return
+      }
+    }
+
     // read/write/edit/read_image 用 file_path；宿主的 str_replace_editor 用 path。
     const raw = typeof args?.file_path === 'string'
       ? args.file_path
@@ -278,19 +308,13 @@ export function onSessionEvent(config, session, event, meta, ctx) {
       const cmd = typeof args?.command === 'string' ? args.command.toLowerCase() : ''
       if (cmd === 'view') kind = 'read'
       else if (['create', 'str_replace', 'insert'].includes(cmd)) kind = 'write'
+    } else if (data.name === 'apply_patch') {
+      kind = 'write' // 补丁没解析出文件头时的 path/file_path 变体：仍是写
     } else {
       kind = WRITE_TOOLS.has(data.name) ? 'write' : READ_TOOLS.has(data.name) ? 'read' : null
     }
     if (!kind) return
-    // 文件工具调用是最高频的写口：每次 commit 都落盘会把 tasks.json 写成“每读一个文件一次”。
-    // 这里只改内存 + 标脏，回合结束（turn/end）或会话销毁时统一 flush。
-    store.commit((s) => {
-      const task = s.getTask(taskId)
-      if (!task || task.archived) return
-      touchTaskFile(task, rel, kind, now)
-      task.lastActiveAt = now
-      s.markTasksDirty()
-    }, { save: false })
+    record([rel], kind)
   }
 }
 
