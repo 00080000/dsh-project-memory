@@ -2,17 +2,10 @@
 // chatText 是唯一的宿主调用出口：provider/model 必填，缺失时显式抛错，由调用方决定回退并记 degraded。
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { noteDegraded } from './llm-route.js'
+import { textOf } from './util/text.js'
 
 function systemMessage(text) {
   return { role: 'system', content: [{ type: 'text', text }] }
-}
-
-function textOf(message) {
-  const blocks = message.content || []
-  return blocks
-    .filter((b) => b.type === 'text' && typeof b.text === 'string')
-    .map((b) => b.text)
-    .join('\n')
 }
 
 export async function chatText(llm, system, user, { timeoutMs = 120000, route } = {}) {

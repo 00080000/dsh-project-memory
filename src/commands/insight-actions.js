@@ -8,6 +8,7 @@ import { memoryRootFor, normalizeCitationFiles } from '../util/fs.js'
 import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, recordDeleted, carryUsageFields, pruneItems, INSIGHT_KINDS } from '../insight-store.js'
 import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
+import { isoMs } from '../util/value.js'
 import { forgetVectorRows } from '../vector-index.js'
 
 /** 容量旋钮的防御性取值：cfg 可能只带显式测试字段。 */
@@ -82,16 +83,6 @@ function findTaskInsight(store, id) {
 }
 
 /**
- * 时间戳解析：非法/缺失一律 0，让排序键永远是可比较的数字。
- * @param {unknown} value - ISO 时间字符串。
- * @returns {number} 毫秒时间戳；不可解析时 0。
- */
-function tsOf(value) {
-  const t = Date.parse(value == null ? '' : String(value))
-  return Number.isFinite(t) ? t : 0
-}
-
-/**
  * 记忆列表的**全序**比较器：新 → 旧。
  *
  * 分页要求这个比较器给出**确定性全序**，否则相邻两页会重叠或漏条目：
@@ -103,11 +94,11 @@ function tsOf(value) {
  * @returns {number} 排序结果。
  */
 function compareInsightRecency(a, b) {
-  const ua = tsOf(a.raw?.updatedAt) || tsOf(a.raw?.createdAt)
-  const ub = tsOf(b.raw?.updatedAt) || tsOf(b.raw?.createdAt)
+  const ua = isoMs(a.raw?.updatedAt) || isoMs(a.raw?.createdAt)
+  const ub = isoMs(b.raw?.updatedAt) || isoMs(b.raw?.createdAt)
   if (ua !== ub) return ub - ua
-  const ca = tsOf(a.raw?.createdAt)
-  const cb = tsOf(b.raw?.createdAt)
+  const ca = isoMs(a.raw?.createdAt)
+  const cb = isoMs(b.raw?.createdAt)
   if (ca !== cb) return cb - ca
   return String(a.raw?.id ?? '').localeCompare(String(b.raw?.id ?? ''))
 }

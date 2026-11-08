@@ -13,6 +13,7 @@ import { trackDirty, untrackDirty } from './util/flush.js'
 import { backfillDerivedTriggers } from './readiness.js'
 import { vectorText } from './vector-index.js'
 import { tokenize } from './util/search.js'
+import { isRecord, isoMs, newerIso } from './util/value.js'
 
 export const INSIGHT_KINDS = ['lesson', 'decision', 'procedure', 'experience']
 export const INSIGHT_SCOPES = ['task', 'project', 'global']
@@ -39,19 +40,8 @@ export function containsSecretFields(ins, fields = ['title', 'body', 'pattern', 
   return null
 }
 
-function isRecord(value) {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
 function num(v, d) {
   return typeof v === 'number' && Number.isFinite(v) ? v : d
-}
-
-/** 两个 ISO 时间戳的先后；缺失/非法一律 0。 */
-function newerIso(a, b) {
-  const ta = Date.parse(a || '') || 0
-  const tb = Date.parse(b || '') || 0
-  return ta - tb
 }
 
 /** 合并配置（config.insight 之上补默认）。 */
@@ -423,13 +413,8 @@ function removeFromTask(store, insightId) {
 
 const DAY_MS = 86400000
 
-function tsOf(ins, field) {
-  const v = ins[field]
-  return v ? Date.parse(v) || 0 : 0
-}
-
 function activityOf(ins) {
-  return tsOf(ins, 'lastHitAt') || tsOf(ins, 'updatedAt') || tsOf(ins, 'createdAt') || 0
+  return isoMs(ins.lastHitAt) || isoMs(ins.updatedAt) || isoMs(ins.createdAt)
 }
 
 export function applyDecay(items, cfg, nowIso) {

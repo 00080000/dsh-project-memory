@@ -6,6 +6,7 @@ import { acquireDirLock, storeKey, unlinkWithRetry, writeJsonAtomic } from './ut
 import { debugPersistence } from './util/persist.js'
 import { trackDirty, untrackDirty } from './util/flush.js'
 import { backfillDerivedTriggers } from './readiness.js'
+import { isRecord, newerIso } from './util/value.js'
 
 const FORMAT_FILE = 'format.json'
 const INDEX_FILE = 'index.json'
@@ -235,18 +236,6 @@ export function _storeCacheKeysForTest() {
 
 /** 已就"无法迁移的旧 store"告警过的目录：避免每次 load() 都刷一行。 */
 const migrationWarned = new Set()
-
-/** 纯对象判定（排除 null / 数组）：磁盘读入的 JSON 形状校验统一走它。 */
-function isRecord(value) {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
-/** 两个 ISO 时间戳的先后；缺失/非法一律 0，保证可比较。 */
-function newerIso(a, b) {
-  const ta = Date.parse(a || '') || 0
-  const tb = Date.parse(b || '') || 0
-  return ta - tb
-}
 
 /**
  * 合并同一任务在两份快照里的 `insights`：以**上次落盘的 id 基线**做三方判断，基线没有、
