@@ -1,7 +1,6 @@
 ## 0.6.11 (2026-11-06)
 **兼容**：`format.json` 仅在成功从旧版 store 迁移时多一个可选的 `migratedFrom: 'legacy'` 标记（旧版本读到会忽略）；无新增配置键，无破坏性 store 变更。
 
-
 ### 修复（2026-11-05 审计）
 
 - **旧版 store 迁移不再删库**：`entries.json` 有数据、`index.json` 缺失/无 `files` 时，`load()` 保护性跳过后 `save()` 不再补写 `format.json`；成功迁移的标记带 `migratedFrom: 'legacy'`，没有标记的旧 `format.json` 也不会触发清理。
@@ -19,21 +18,13 @@
 - **面板记忆列表在 `root` / 绑定任务变化后重取**；编辑 procedure 不再把合成摘要写进 `body`。
 - **空提交不再创建空 store**；`save_lesson` 改 `kind` 时清掉旧 kind 专属字段；`truncate()` 的缺省上限与 `timeAgo()` 的非法时间不再输出 `undefined` / `NaN天前`。
 
-**测试**：新增 `test/audit-2026-11-05.test.mjs`（19 项：迁移保护/并发合并/畸形任务/global 缺失/锁超时/lazy 顺序/队列身份/reinject/ops/词边界/向量清理/watch/scan/kind/空提交/truncate）。`npm test` **977 项 / 58 个文件**全绿、`npm run typecheck` 通过；`npm run build:client` 后 `client/` 与源码一致。
-
-**工具描述统一为英文，并写清「改而不是新建」**：12 个工具的描述与参数说明此前中英混排（3 中 / 9 英），现在全部英文。两处措辞补上更新优先：`save_lesson` 直说「看到的记忆记错、过时或不够用时，带 id 再写一次就地覆盖，别另建一条」；`query_memory` 补一句「查询后顺手用 id 更新过时、记错的条目」。
-
-schema 预算守卫从「字符 ≤ 5600」改成「token 估算 ≤ 1800」（中文字符约 1 token/字，其余约 4 字符/token）。同一份内容实测：中文 4854 字符 / ~1772 token，英文 6734 字符 / ~1684 token——字符少不代表 token 少，按 token 判才选得对（这次英文略低，故取英文）。
+**工具描述统一为英文**：12 个工具的描述与参数说明此前中英混排，现全部英文，并写明记忆过时/记错时带 `id` 就地更新。
 
 ### 适配 dsh 0.2.2-rc.1
 
 **开发依赖对齐新宿主**：`dsh-tools` / `dsh-llm` / 四个 client 包从 `0.2.1-rc.2` 升到 `0.2.2-rc.1`，`@deepseek-ai/cordis` 从 `^4.0.4`（实际装 4.0.5）升到 `^4.1.0` —— 0.2.2 的 client 包 peer 已是 `~4.1.0`，旧依赖下的全绿只证明了 0.2.1 兼容。`package-lock.json` 同步重新生成。
 
-**逐项核对 0.2.2 的接口变更**：`agent/pre-step`（dispatcher 仍注入 `agent`）、`session/event` / `session/disposed`、v4 消息 source 准入（仍拒 `kind: 'plugin'`、接受生产者自有 kind）、`ctx.tools.register`、`ctx.inject(['commands'])`、`workingDirectory.get(session)`、`sessions.list` 快照（`byId` + `retainedBy.mainView` + `blank`）、`shell.overlay` / `conversation.chat.commandview` 槽位、`remote.commands` 扁平服务、`ctx.configForms.get`、`inputTriggers.registerSource` —— 均未变；投影帧改 `changes[]`、已释放单元保留检查点、`session.list` 摘要去掉 contextPressure/contextBreakdown、LLM `purpose` 改为类型级声明、Loader 条目树改 `commit(change)` —— 插件都没读这些面。
-
-**补齐 `apply_patch` 的文件追踪**：这个 0.2.2 的可选工具只收整段补丁文本（`input`），路径写在 `*** Add/Update/Delete File:` 与 `*** Move to:` 行里。TaskBridge 与动作平面此前只认 `file_path`/`path`，开启该工具后跨文件补丁会漏记任务热点、审计也指不到具体文件；现在都从正文提取路径（相对会话当前工作目录再归一到项目根，项目外丢弃）。
-
-**实测**：`npm test` 全绿、`npm run typecheck` 通过、`npm run build:client` 产物与源码一致；0.2.2-rc.1 的 web profile 里工具注册、skill 注册与 pre-step 注入均正常。
+**补齐 `apply_patch` 的文件追踪**：该工具只收整段补丁文本，路径写在 `*** Add/Update/Delete File:` 与 `*** Move to:` 行里；TaskBridge 与动作平面现在都从正文提取路径，跨文件补丁不再漏记任务热点。
 
 ## 0.6.10 (2026-11-04)
 
@@ -42,8 +33,7 @@ schema 预算守卫从「字符 ≤ 5600」改成「token 估算 ≤ 1800」（�
 ### 性能
 
 - **CJK 分词从「逐字符判断」改成「整段匹配」**：`tokenizeRaw` 此前对整篇文本逐码点调用 `CJK_RANGE.test()` 并累积字符串，纯英文文档也要跑满整篇。现在用一条从 `CJK_RANGE` 派生的正则一次取出所有连续段，再按原有规则结算（段长 1 产单字、≥2 产全部相邻二元组）。**输出逐字节一致**，所以 `TOKENIZER_VERSION` 不动、旧 store 不需要回填；等价性由 `test/tokenizer-equivalence.test.mjs` 差分守住（冻结旧实现当标尺 + 固定输出契约 + 18 个边界串 + 5 个真实文件 + 2000 组固定种子随机拼接 + `stem` 两态）。
-- **同会话 A/B**（Node 24.19 / WSL2 / 20 vCPU，同一小时内交替跑、每个版本两遍，引用页缓存已热的那遍）：TypeScript 整树（14,528 文件 / 95,316 条目）首次查询的 IDF 重建 **1.44–1.53 s → 0.94–0.96 s**（约 −35%），抽取 9.42–9.51 s → 8.79–8.95 s（−6%），冷索引 10.66 s → 10.00 s（−6%）；文档为主的语料（249 文件 / 889 条目）抽取 242–252 ms → 216–219 ms（−13%）、IDF 58–59 ms → 43–44 ms（−26%）。查询 p50 无可测变化（在噪声内）。
-- **已知代价**：极端构造输入（CJK 单字与拉丁字母逐字交替，如 `中a文a` 重复）实测 **0.97×**——段长恒为 1 时，正则产出的段数组比逐字累积多一层分配；真实代码与文档里不出现这个密度。README 的性能表是 2026-10-13 的历史测量口径，本轮未重测。
+- **同会话 A/B**：首次查询的 IDF 重建快约 35%，抽取与冷索引快约 6%；查询 p50 在噪声内。极端构造输入（CJK 单字与拉丁字母逐字交替）约 0.97×，真实语料不出现该密度。
 
 ### 修复
 
@@ -61,11 +51,9 @@ schema 预算守卫从「字符 ≤ 5600」改成「token 估算 ≤ 1800」（�
 - `save_lesson` 的 `scope` 描述改为与实现一致：绑定任务时默认 `task`，否则 `project`。
 - **体检脚本读不到自定义 `memoryDir`**：`skills/project-memory/scripts/pm-digest.mjs` 把 store 目录写死成 `<root>/.dsh-project-memory`，配了自定义 `memoryDir` 的项目只会得到「no memory store」。现在依次按 `--memory-dir <name>` / `DSH_PROJECT_MEMORY_DIR` / 默认名解析；都没命中时在项目根下一层按 `format.json` 标记找唯一候选并标注 `auto-detected`，多个候选不猜、报错点名怎么传参。
 
-**测试**：新增 `test/audit-2026-11-02.test.mjs`（13 项：save_lesson kind 保留、watch/lazy 超限摘旧条目、archive_task 解绑与注入/召回守卫、maxTokens 0 零注入、watch stop/poll 不重建缺失根、str_replace_editor 的 ops/TaskBridge、手工 promote 保留字段与容量、空任务 payload root、空 memoryDir 归一、POSIX 盘符路径丢弃）与 `test/tokenizer-equivalence.test.mjs`（5 项：固定输出契约、18 个边界串、5 个真实语料文件、2000 组固定种子随机拼接、`stem` 两态——全部与冻结的旧实现逐字节比对）与 `test/memorydir-guard.test.mjs`（4 项：空/`.`/`..`/含 `..` 段/绝对路径回落默认目录且不移动 store、嵌套相对目录仍允许、默认告警对同一坏值只发一次、`memoryDir: '.'` 不把 `*` 写进项目根）；`test/skill.test.mjs` 补 1 项（自定义 `memoryDir` 的三种解析路径 + 多候选不猜）。`npm test` **956 项 / 57 个文件**全绿、`npm run typecheck` 通过。
-
 ## 0.6.9 (2026-11-02)
 
-**兼容**：无新增配置键，无 store 格式变更（启动时会顺手把 `watch.json` 里大小写重复的根条目合并成一条；文件格式不变）。三个既有键——`watchInterval` / `autoIndexOnFirstUse` / `llmQueryExpansion`——在 `Config` 里标成 `.volatile()`：这是宿主设置表单的准入条件（只有 volatile 字段能被 settings 接口写入），也让它们在运行中原地更新而不重启插件。profile / 命令行的写法完全不变。插件内部读取统一走 `cfgValue()`：volatile 字段在运行时是 ref（`.get()`），直接把 ref 当布尔会读错。升级后**需要重启一次 dsh**——volatile 元数据只在装配期解析。两处**行为变化**：① 扫描与懒索引都跳过隐藏路径（任一段以 `.` 开头，如 `.env` / `.github/**`），显式 `index_doc` 仍可索引（已存在的隐藏路径条目会在下一次完整扫描被清理）；② `autoContext.maxTokens: 0` 现在真的零注入（此前被 `|| 400` 顶回默认值）。
+**兼容**：无新增配置键，无 store 格式变更（加载时合并 `watch.json` 里大小写重复的根条目）。三个既有键 `watchInterval` / `autoIndexOnFirstUse` / `llmQueryExpansion` 标为 `.volatile()`，可在插件设置页原地修改；升级后需重启一次 dsh。两处行为变化：① 扫描与懒索引跳过隐藏路径（显式 `index_doc` 仍可索引）；② `autoContext.maxTokens: 0` 现在真的零注入。
 
 ### 新增：插件页上的可视化设置（web）
 
@@ -92,8 +80,6 @@ schema 预算守卫从「字符 ≤ 5600」改成「token 估算 ≤ 1800」（�
 - **Electron 宿主里 PDF 索引全灭（issue #10）**：pdf.js 只在 `isNodeJS` 为真时兜底 `workerSrc`，而宿主进程是 Electron 且 `process.type !== 'browser'` → 默认值整块跳过，每次解析都抛 `No "GlobalWorkerOptions.workerSrc" specified`。现在 `loadPdfjs()` 在 worker 未配置时用 `import.meta.resolve`（老 Node 退回 `createRequire`）解析 `pdf.worker.mjs` 的 `file://` URL 兜底；显式 `configurePdfjsWorker()` 与 pdf.js 自己的默认值仍优先。原实现里的 `configuredWorkerSrc` 分支因无人调用恒为假，纯 Node 测试里 `isNodeJS` 又恰好为真，所以这个洞从首版起一直没人发现（0.6.3 与 0.6.8 上都能复现），且失败只写一条 W 级日志。
 - **大小写不同的同一目录不再被登记两次**：`watch_repo` 先以 `D:\proj`、后以 `d:\PROJ` 登记时，`watch.json` 会留两条、watch 每轮扫两遍，而 `watch_repo({watch:false})` 只删得掉其中一条（另一条下次启动复活）。`WatchManager` 与 watchlist 现在按 `storeKey()` 归一（保留第一次出现的写法；加载时顺手把老 store 里的重复条目合并）。
 
-**测试**：新增 `test/pdfjs-host.test.mjs`（2 项：纯 Node 对照组；子进程里把 `process.type` / `process.versions.electron` 改成 Electron 宿主形态后解析 PDF，并断言正文命中——只断言"没抛错"会放过空正文的假成功）。新增 `test/settings-card.test.mjs`（10 项：三个 volatile 键与默认值（并断言其余键不进命名空间）、`cfgValue()` 的 ref/普通值双形状、空路径 `[[]]` 读成"全部重读"、watch 关停/改间隔即重排、整份 `apply()` 在 ref 形状 Config 上装配、槽位注册的 key 与命名空间、默认收起与展开后 3 行、`Button` 以 forwardRef 对象形状参与注册、命名空间未提供与缺 settings 控件两种零注册）。本轮另补 7 项回归：`maxTokens: 0` 零注入、相对 root 按会话 cwd 解析、git / walk 两种扫描的隐藏路径口径一致、懒索引也跳过隐藏路径、畸形任务缺 `files` 的归一、`GlobalStore.markDirty()` 进入退出 flush、watch 根与 watch.json 的大小写归一（2 项）。新增 `test/index-failures.test.mjs`（3 项：账本按根隔离与上限、懒索引失败登记与成功清除、`index_repo` 报出后台失败）。`npm test` **930 项 / 54 个文件**全绿、`npm run typecheck` 通过；`npm run build:client` 后 `client/` 零 diff（CI 也会复核产物与源码一致）。
-
 ## 0.6.8 (2026-10-30)
 
 **兼容**：条目上多一个可选的 `mtimeMs`（旧条目缺省时按老行为整读 + 哈希）。无新增配置键，无破坏性 store 变更。懒索引不再对已有记录的文件问 gitignore，新文件仍问。
@@ -108,8 +94,6 @@ schema 预算守卫从「字符 ≤ 5600」改成「token 估算 ≤ 1800」（�
 - `watch` / `index_repo` / `index_doc` 也记录 `mtimeMs`。
 - 新增 `test/lazy-batch.test.mjs`。
 
-**实测**（同会话旧 vs 新）：12k 文件 / 48k 条目的 store、WSL 挂 `/mnt/c`（NTFS 悲观代理）下，重复读 66.0 → 0.9 ms p50、改一个文件后单独索引 96.5 → 32.7 ms p50；本机 ext4（200 文件 git 仓库）重复读 1.4 → 0.007 ms、改文件 1.7 → 0.19 ms。四个真实语料（vue / voice / harness 3k / 全树）同会话 A/B 的冷索引、查询与 watch 内核重索引都在 ±5% 噪声内（小语料冷加载本身抖动大，vue 7–11 ms）。
-
 ### 修复
 
 - 构建：产物改为跨平台确定。lightningcss 的 `[hash]` 会把 `filename` 算进类名，此前传的是绝对路径，换台机器构建就整套换类名；现改用相对 POSIX 路径。`.gitattributes` 统一 LF（sourcemap 的 `sourcesContent` 会原样嵌入源文件行尾），CI 增加产物一致性校验。
@@ -117,15 +101,13 @@ schema 预算守卫从「字符 ≤ 5600」改成「token 估算 ≤ 1800」（�
 - `index_doc`：先 stat 再读正文，记录里的 mtime 不会比内容新。
 - 懒索引的根缓存：会话根兜底不再入缓存（判据是 `findProjectRootWithSource()` 的 `source`，不靠 `root === sessionRoot` 猜）——子目录里 5s 内新建的 `.git` / `package.json` 立刻生效。
 
-**测试**：`npm test` **892 项 / 51 个文件**全绿；`npm run typecheck` 通过。新增 `test/lazy-batch.test.mjs`（7 项：mtime 快路径、touch 后回填 mtime、批内一次 save、批量 gitignore 与逐个判定一致、会话根兜底不缓存）。
-
 ## 0.6.7 (2026-10-28)
 
 **兼容**：无新增配置键，也没有破坏性的 store 变更——条目上只多一个可选的 `explicit` 标记（旧条目缺省即按非显式处理）。一处判据语义变化：原生 Windows 壳现在签 `windows` 而不是 `wsl`，写了 `guard.hosts: ['wsl']` 又想覆盖原生 Windows 命令的条目要改成 `windows`。老 profile 与旧 store 直接升级。
 
 ### 修复：Windows 上重启后的残留写锁把写入永久挡死（且默认静默）
 
-锁的"pid 复用"判定只读 `/proc/<pid>`（Linux-only），Windows 上 `processStartMs()` 恒为 `null`；而 `lockIsStale()` 对"同机 + pid 存活"是绝不回收。于是崩在写盘途中、或断电/强杀留下的 `.write.lock`，在重启后一旦旧 pid 被系统服务复用，就永远被当成"活锁"：`save()` 每次返回 `false`（`lastSaveOk=false`，但按设计默认不打印），重试 5 次（≈20s）后放弃，退出 flush 也拿不到锁——记忆静默丢失，只能手删 `.write.lock` 或重启 dsh。现在锁内容多一个 `boot`（`Date.now() - os.uptime()*1000`）；`at`/`boot` 早于本次开机即判残留。**这条只对同机锁生效**：跨机锁仍只按 mtime 判（网络盘上另一台机器的 `at` 早于本机开机是常态，套用会抢掉真正在写的机器——原作者"宁可等也不能双写"的取舍保留）。另加 `acquireDirLock({ maxHoldMs })` 兜"同一次启动内 pid 被复用"：`save()` 传 10 分钟，默认 `0` 表示不设上限、维持原契约。
+Windows 上崩溃/断电留下的 `.write.lock`，在旧 pid 被系统服务复用后会永远被当成“活锁”，`save()` 静默失败。锁内容现在多一个 `boot`，`at`/`boot` 早于本次开机即判残留（只对同机锁生效，跨机锁仍按 mtime 判）；另加 `acquireDirLock({ maxHoldMs })` 兜同一次启动内的 pid 复用，`save()` 传 10 分钟。
 
 ### 修复：`when.writes` / `guard.paths` 在 Windows 路径上永不命中
 
@@ -223,8 +205,6 @@ Snowball 词干不幂等（`память → памя → пам`）。`recallIt
 
 `GlobalStore.flushPending()` 返回 `commit()` 的 `fn` 返回值（通常 undefined），`flushDirtyStores()` 把已成功落盘的 global store 计成 0。现在显式返回 `lastCommitOk`。
 
-**测试**：`npm test` **885 项 / 50 个文件**全绿；`npm run typecheck` 通过。新增 `test/windows-compat.test.mjs`（11 项：跨开机残留锁、跨机锁不被误伤、`maxHoldMs`、反斜杠/绝对路径的 `writes` 与 `guard`、Windows 命令形态、`hosts`、路径 token、store 缓存键、BOM；判据都在字符串/时间层面，Linux CI 同样能跑，"同实例"那条按 `win32/darwin` 分支断言）与俄语词干固定样例 `test/fixtures/ru-stems.json`（200 个词形，与 snowballstemmer 3.1.1 一致）。
-
 ## 0.6.6 (2026-10-27)
 
 **升级注意**：这是一次**行为变更**——注入会变少。没有新增配置键、没有 store 格式变更，老 profile 直接升级。变化只在"什么时候允许全文注入"：子代理提示词、其它工具的参数、后台任务 / 子代理通知，以及人类消息里的删除 / 清理 / 渲染 / 基准类词，不再触发全文注入。
@@ -259,13 +239,9 @@ Snowball 词干不幂等（`память → памя → пам`）。`recallIt
 3. **跨进程删除被复活**。A 加载后持有旧快照，B `forget` 落盘，A 下一次 save 把"磁盘没有但内存有"当成"本地新增"写回——"真删、无撤销"的承诺失效（任务同形；global 层同形）。
    现在合并规则是：磁盘缺失的条目只有**本进程新建**的才补写，否则视为对方已删、从内存里丢掉。顺带修掉一个更直接的变体：`tasks` 合并从不清理 `_deletedTaskIds`，删任务会在**同一次 save 里**被自己刚读到的磁盘副本写回来。
 
-**测试**：新增 `test/store-lock.test.mjs`（10 条，含两个真子进程的删除复活回归、同步等锁与退出 flush）。`npm test` **835 项 / 48 个文件**全绿。
-
 ### 新增：把用法做成宿主 skill
 
 `skills/project-memory/`：`SKILL.md`（唯一事实源，frontmatter 提供 name / description，注册时剥掉）+ `scripts/pm-digest.mjs`（零依赖体检：store 大小、insight / 任务计数、trigger 覆盖、绑定数）。`apply()` 用 `ctx.inject(['skills'], …)` 注册，`resourceBase` 指向包内目录；没有 `skills` 服务的宿主静默跳过。`package.json files` 加 `skills`。
-
-**测试**：`npm test` **825 项 / 48 个文件**全绿；`npm run typecheck` 通过。新增 `test/signal-source.test.mjs`（端到端：通知不算人话 / 回退会话缓存、subagent 参数不产 op、目录名不产 `run-bench`、散文删除只记录）与 `test/skill.test.mjs`。
 
 ### 性能：Windows / NTFS 上大量小文件（不 OOM，但会被"每次 save 的文件操作数"拖慢）
 
@@ -332,8 +308,6 @@ Snowball 词干不幂等（`память → памя → пам`）。`recallIt
 **生效面**：判定收敛到 `util/fs.js` 的 `compileRootPolicy()` / `rootRejection()`，以下入口共用同一结论——显式工具调用（`index_repo` / `index_doc` / `remember` / `query_memory` / `stats` / 任务工具）、懒索引、watch 轮询、会话审计、TaskBridge。`listProjectFiles()` 的 walk 与 git 两条分支都应用 `roots.exclude`；父根的完整扫描会跳过被排除子树，并清掉之前索引过的条目。
 
 **自愈**：新增 `deny` / `exclude` 后，已经登记在 `watch.json` 里的根会在下次启动时自动摘掉，不需要手删。拒绝文案会说明命中的规则，并指出要改的字段（`- id: project-memory` 的 `config:` 下）。
-
-**测试**：新增 `test/root-policy.test.mjs`，覆盖精确/前缀语义、优先级、`~` 展开、相对路径告警、Windows 大小写、walk/git 两条扫描分支、watch 自愈与各入口的一致性。`npm test` **810 项 / 45 个文件**全绿；`npm run typecheck` 通过。
 
 ## 0.6.4 (2026-10-23)
 
@@ -465,8 +439,6 @@ Snowball 词干不幂等（`память → памя → пам`）。`recallIt
 
 README 双语与 CHANGELOG 里的具体框架名、硬件与机器信息、内部文件名换成中性写法；测试夹具里的内部文件名改成 `notes.md` 这类占位。零运行时行为变化。
 
-**测试**：`npm test` 720 → **756 项 / 44 个文件**（新增 `gitignore-index` / `store-concurrent` / `tool-schema-size`；`insight-store`、`recall`、`recall-vector-fusion`、`vector-index`、`auto-inject`、`client-toolview`、`client-task-sync` 等在既有 `ok` 块内补断言）；`npm run typecheck` 通过；`npm run build:client` 重建与提交产物零差异。
-
 ## 0.6.3 (2026-10-20)
 
 ### 新增：删除留痕——`forget` 仍真删，但最近 5 条可从 `deleted.json` 找回
@@ -504,11 +476,7 @@ README 双语与 CHANGELOG 里的具体框架名、硬件与机器信息、内�
 
 `ops.js` 的写盘判据里，重定向一支是 `>>?\s*\S`——它把**丢弃输出**也算成写文件。实测 `ls .agents 2>/dev/null | head` 抽出 `targets=['.agents']`、`cat package.json 2>&1` 抽出 `['package.json']`，而 `ops.targets` 正是 `when.writes` 的匹配面：列目录 / 看文件会误触发一条 `writes:['package.json']` 的教训。现在 `>` / `>>` / `2>` 之后是 `&`（合并 fd）或 `/dev/null`（丢弃）时不算写，`> file`、`2> file`、`1>> file` 照旧算。
 
-**测试**：`npm test` 705 → **720 项 / 41 个文件**（新增 `client-task-sync`；`insight-store` +1、`host-contract` +1、`taskbridge` +1、`root-guards` +8，其余在既有 `ok` 块内补断言），`npm run typecheck` 通过。
-
 ## 0.6.2 (2026-10-17)
-
-`npm test` **705 项 / 40 个文件**；`npm run typecheck` 通过。
 
 ### 兼容：dsh 0.2.1-rc.2
 
@@ -525,8 +493,6 @@ README 双语与 CHANGELOG 里的具体框架名、硬件与机器信息、内�
 - **动作后的重放不再超过宿主单页上限**：`reloadWindowRequest()` 返回 `limit = 已加载条数`（客户端注释还写着"正常永远走 PAGE_SIZE=30"），而宿主 `INSIGHT_PAGE_MAX=200` 是**静默**截断；重放又是替换式 `setRows`，于是滚到 500 条再点任意动作，列表被打回 200 条。改法：客户端用 `HOST_PAGE_MAX=200` 夹住 `limit`，载荷回报的 `nextOffset` 让哨兵继续把 200..N 追加回来。`client/client.js` 已同步重建。`test/insight-paging.test.mjs` 加一条交叉断言，把客户端常量与宿主 `INSIGHT_PAGE_MAX` 钉在一起（browser bundle 进不了服务端模块，只能靠测试防漂移）。
 - **`insight.*` 四个旋钮补进 Schema**：`autoMergeCos` / `autoMergeMargin` / `hintCos` / `maxForgetMatches` 在 `cfgInsight` 里读取、README 与 `types.js` 也写了，却没在 `src/index.js` 的 `Config` 里声明——与 0.5.8 给 `autoContext` 补声明是同一类问题：走 `cordis.patch.yml` 配它们，能不能活到代码取决于宿主是否按 `additionalProperties: false` 校验，但无论哪种，文档与 Schema 已经不一致。新增 `test/config-schema.test.mjs`：凡 `cfgInsight()` 会算出的数值键都必须在 `Config.insight` 声明，且 Schema 默认值等于运行时兜底值。
 
-**测试**：`npm test` 701 → 705 项 / 39 → 40 个文件（新增空根零副作用、客户端上限三条、契约交叉断言、Schema 一致性）；`npm run typecheck` 通过。
-
 ### 修改：统一存储——`experience.json` 退休，经验笔记成为 `kind:'experience'` 的 insight
 
 **问题**：同一个概念有两个真相源——`experience.json` 服务 `remember`/`forget`/`query_memory`，`insights.json` 里又躺着一份 `source:'migrate'` 的**影子副本**，靠 `visibleInsights` 里一个特判（排除 `kind:'experience' && source:'migrate'`）才不至于在 `## Insights` 与 `## Experience` 里各出现一次。写入、删除、容量、向量索引各维护一套，正是"结构有点乱"的来源。上一版把 `forget` 做成了全层一套，但底下仍然是两套存储。
@@ -541,8 +507,6 @@ README 双语与 CHANGELOG 里的具体框架名、硬件与机器信息、内�
 
 **升级路径**（至少覆盖 0.5.0，三种真实形态都有测试）：只有 `experience.json`、没有 `insights.json` 的 0.4/0.5.0 store；`migratedAt` 已存在但旧文件还在的 0.5.x/0.6.x store；v1/v2 `insights.json`。都能直接加载，导入幂等、不重复。
 **降级注意**：回到 ≤0.6.x 的老版本后，那些笔记在旧版里查不到——老版本从空的 `store.experience` 出发、又用特判排除 `source:'migrate'` 的影子。**数据没丢**（仍在 `insights.json`），只是旧版本不再展示。
-
-**测试**：新增迁移归档 / 已迁移老 store 也要归档 / 无 insights.json 的旧版形态 3 项；删掉随能力一起消失的用例（经验层容量与动态上限、`store-cache` 的"经验写入"失效探针、run-test 的 `addExperience` 系列），并把 `supersede boundary`（共享前缀不互相顶掉）改到新写路径上继续钉住。707 → 701 项。
 
 ### 修改：`forget` 通吃全层（教训 / 决策 / 流程 / 经验笔记，task / project / global）
 
@@ -572,8 +536,6 @@ README 双语与 CHANGELOG 里的具体框架名、硬件与机器信息、内�
 
 **`save_lesson` 新增 `id`**：给了 id 就是就地更新，只覆盖本次显式传的字段，忽略 `scope`——条目留在原来的层（global → project → 各任务，`findInsightAnywhere` 负责定位）。未知 id **显式失败**，绝不静默新建。带 id 时跳过向量加载（不需要比对）。
 
-**测试**：`test/insight-store.test.mjs` 新增两组（判定矩阵用注入的 fake cosine，不依赖 leanvec）+3 项：0.95 自动覆盖且旧值进 `prev`、0.80 只提示、0.50 不提示、0.95/0.93 领先不足不覆盖、跨层就地更新、未知 id 失败、`prev` 跨层保留，以及工具端到端的 id 更新/写回。
-
 ### 修复：dsh 0.2.1 起 `session.header.cwd` 不再是「当前工作目录」
 
 0.2.1 引入 `@deepseek-ai/dsh-working-directory`：`header.cwd` 变成**原始项目身份 / 权限根**，而 `working_directory({cd})` 改的是会话投影里的当前执行目录，**不写回 header**。本插件的根解析（索引 / 检索 / 懒索引 / 审计注入 / 任务桥）此前一律读 `header.cwd`，于是用户 cd 到另一个项目后，记忆仍然读写**原项目**的 store——不报错，只是静默错根。
@@ -594,8 +556,6 @@ README 双语与 CHANGELOG 里的具体框架名、硬件与机器信息、内�
 
 ## 0.6.1 (2026-10-15)
 
-`npm test` **650 → 675 项 / 36 个文件**；`npm run typecheck` 通过。
-
 ### 修复：物化后的 `searchText` 不在 storeCache 的上界里
 
 `residentBoundBytes` 只数 `_textChars`，而 `allEntries()` 物化 `searchText` 时只 bump 物化版本、不补这笔文本量。于是上界停在物化前的水位，门禁据此跳过精确计量与逐出——实测最多到预算的 **2.06 倍**（真实语料 1.07~1.15 倍）。现在物化按文件记进 `_textChars`，与写路径同一套替换语义。
@@ -609,8 +569,6 @@ README 双语与 CHANGELOG 里的具体框架名、硬件与机器信息、内�
 `/tasks rename|todos|switch|archive`、`select_task`、`archive_task` 与 TaskBridge 的三个事件写口都是直接改 task 对象：有的只置 `_dirtyTasks`（漏掉本次新增的内容版本，上界继续停在旧水位），有的连脏标记都不置——`save()` 于是早退，改名 / 归档只活在内存里。现在统一走 `markTasksDirty()`（标脏 + 内容版本），`test/taskbridge.test.mjs` 16 → **19** 项钉住这三条写路径的落盘与失效。
 
 ## 0.6.0 (2026-10-13)
-
-`npm test` **616 → 650 项 / 34 → 36 个文件**；`npm run typecheck` 通过。注入场景集 8 → **13** 个，另加 3 个 hint-only 场景。
 
 ### 新增：可选语义层（只重排经验 / 洞察两层）
 
@@ -657,8 +615,6 @@ README 双语与 CHANGELOG 里的具体框架名、硬件与机器信息、内�
 - `test/run-test.mjs` 读真实的全局 insight store，导致 `no-hit query shows store overview` 随经验条数变红（乱码查询被 `no` 片段命中）。现在 globalFile 指向临时文件，测试**密闭**。
 
 ## 0.5.16 (2026-10-11)
-
-`npm test` **592 → 616 项 / 30 → 34 个文件**；`npm run typecheck` 通过。
 
 ### 性能：`chunkText` 不再对整份正文物化（只对有 section 结构的文档有效）
 
@@ -816,7 +772,6 @@ fiber 里 `provide`）：读它不需要 inject 的**唯一**路径是 `ctx.get(
 
 ## 0.5.15 (2026-10-06)
 
-`npm test` **563 → 592 项 / 30 个文件**；`npm run eval:injection` 逐项不变
 （命中 14 / 假阳性 0 / 漏召 0，P/R 1.00/1.00，7 次注入 857 字符）。
 
 ### 变更：工具 schema 预算瘦身 —— 每次请求固定开销 -356 token（粗估）
@@ -931,7 +886,6 @@ README（英/中）的测试数此前停在 561，而 `npm test` 实测已是 56
 
 ## 0.5.14 (2026-10-02)
 
-`npm test` **540 → 561 项 / 28 → 30 个文件**；`npm run eval:injection` 逐项不变
 （命中 14 / 假阳性 0 / 漏召 0，P/R 1.00/1.00，7 次注入 857 字符）。
 
 ### 修复：`/` 菜单里「工作流」三行点了没反应
@@ -1659,84 +1613,75 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
 
 ### Fixed (the README promised a benchmark the npm package did not contain)
 
-- **`scripts/` was missing from `package.json`'s `files` whitelist, so the published tarball shipped a README that told users to run a script it did not include.** `README.md` / `README.zh-CN.md` are inside the package, and their *Performance → Reproduce it on your own project* section (plus the Development block) documents `npm run bench -- /path/to/your/project` and `node scripts/bench.mjs` — but `npm pack` contained only `src/`, `client/`, `cordis.patch.yml` and the three documents: no `scripts/bench.mjs`, no `scripts/bench-synthetic.mjs`. Anyone installing the plugin from npm and following the reproduce instructions found the file absent, which is exactly the "trust the numbers" position that section exists to avoid. `scripts` is now in `files`, so both harnesses ship with the package; they still need no dsh instance, no network and no model calls, since they import only `src/`. Verified with `npm pack --dry-run` (tarball now lists `scripts/bench.mjs`, `scripts/bench-synthetic.mjs`, `scripts/bench-store.mjs`).
-- **`bench/` stays local-only** — it is git-ignored and has never been tracked. It holds the raw measurement logs (`bench/results/`) and the scratch profilers; the synthetic harness it used to contain is `scripts/bench-synthetic.mjs`. Note this is a *packaging* fix only: those harnesses were already on GitHub, so "the README references a script that is not in the repository" was never true for the git remote — it was true only for the npm tarball.
-- **Both READMEs advertised a stale test count.** They still said `280 tests` (the pre-0.5.5 number) while the three unreleased fixes above took the suite to **286**; the figures are now the measured ones (core 180 → 184, host-contract 7 → 9, everything else unchanged).
+- **npm 包缺 `scripts/`**：`files` 补上 `scripts`，tarball 现在带 `bench.mjs` / `bench-synthetic.mjs` / `bench-store.mjs`，README 的复现命令可用。
+- `bench/` 保持本地忽略；合成基准移到 `scripts/bench-synthetic.mjs`。
+- 两份 README 的测试数从 280 更正为实测值。
 
 ### Fixed (silent injection re-sent memory that was already in context)
 
-- **Dedupe was whole-block, so a benign change anywhere re-sent every item.** The only guard was a fingerprint of the whole injected block, and that block changes for reasons that have nothing to do with the memory being new: the resident task card advances, the observed tool-call window slides, and `fitBody` re-truncates the last item whenever the remaining budget shifts. Measured on a real 66-step session: **20 injections carrying 41 item-sends for 9 unique items — 78% of them re-sends**, including the same 1732-char procedure three times and another 1008-char one six times.
-- **Items are now remembered per session** (`sessionId → insightId → { hash, step }`) and an unchanged, already-injected item is filtered out of `buildInjection` **before** budget scheduling, so the budget it used to occupy goes to new items instead. The hash is over the injected body, so editing an insight re-injects it immediately. Only items that actually made it into an appended message are recorded — a budget-dropped item was never seen and must stay eligible. Per-session memory is capped (600 items) like the other session tables.
-- **Why "once per session" is safe as the default:** the host session history is append-only — `agent-loop` has no compaction, and `agent/inbox/spliced` only touches the *pending* inbox. A re-send is therefore pure duplication. `autoContext.reinjectItemsAfter` (default `0`) exists for setups where history is trimmed outside the plugin: `N > 0` allows the same item again once `N` pre-steps have passed (it still has to change the block to be observable, since an identical block is already in history).
-- **Regression:** two handler-level checks drive one session across steps and assert that a task-card advance no longer re-sends the procedure, that a fully unchanged step injects nothing at all, and that `reinjectItemsAfter: 2` re-injects on the third step; plus one schema check for the default. Suite 283 → **286** checks.
+- **整块去重会把旧条目再发一遍**：改为按会话记住已注入条目（id + 正文 hash），未变的不再进入预算调度。
+- 只记录真正进入消息的条目；编辑条目会立即重发；每会话上限 600 条。
+- **为什么默认「每会话一次」安全**：宿主历史只追加，重发是纯重复；`autoContext.reinjectItemsAfter`（默认 0）供外部裁剪历史的场景。
 
 ### Changed (the budget-drop audit is now opt-in — the user's terminal stays clean)
 
-- **`auto-inject` no longer prints `degraded: … insights kept out by budget` unless the operator asks for it.** The line exists so a budget drop can never be *silent*, but the terminal is the **user's** surface, and a drop is **normal priority-based degradation, not a failure**: the resident task card and authored triggers take the 1200-char budget first, and lower-priority hints lose out. On a real host one `dsh web` start printed five such lines (four from a single busy project store, one global), which reads as "the plugin is broken" — exactly the first impression that gets a plugin uninstalled. New `autoContext.budgetLog` selects the level: `off` (**default**, never prints), `once` (at most one line per session, on the first drop), `all` (one line per changed dropped set — the previous behaviour). Accounting itself is unchanged in every mode: the per-session dedupe and the 200-session cap still run, so switching the log on later still reflects the current state. `README.md` / `README.zh-CN.md` document the key in both the `autoContext` row and the `cordis.patch.yml` example.
-- **Regression:** the degraded check now drives two steps of one session (two different dropped sets) and asserts: silent by default, silent for `off`, ≥2 lines for `all`, exactly 1 line for `once`. Three schema checks were added as well — the *resolved default* is `off`, an explicit `budgetLog` survives `Config` and reaches the engine, and an unknown value is rejected — because the last config-default bug in this file was exactly this class (a key the engine reads but the schema does not declare). Suite 280 → **283** checks.
+- **预算丢弃日志默认关闭**：新增 `autoContext.budgetLog`（`off` 默认 / `once` / `all`），记账逻辑不变。
 
 ### Fixed (the silent-injection hint gate was dead in production)
 
-- **A config schema default pinned the `legacy` hint gate on, making the shipped relative threshold dead code.** `autoContext.relevanceMin` carried `default(0.25)`, so `cfgEngine()` always saw a number and therefore always chose the legacy branch — `normalizedTokenOverlap >= 0.25`, the very judgement PR2 replaced because natural-language messages measure 0.014–0.057 against an insight and can never pass it. The documented default (`signalMinRatio: 0.5`, BM25 relative to the layer's top score) was unreachable in a real host, so only authored triggers could ever inject. The default is removed (the key remains, for explicitly opting back into the old behaviour), and `entryMaxInsights` / `signalMinRatio` / `editedMax` / `skipEchoSelfTodo` are now declared in the schema rather than being read by the engine but absent from it. The test suite could not catch this because every readiness test builds its config object by hand and never goes through `Config`.
-- **Regression:** 4 new checks asserting that the *resolved default* config yields `relevanceMin: null` and `signalMinRatio: 0.5`, that an explicit `relevanceMin` still restores the legacy gate, and that the engine-only keys round-trip through the schema. Suite 276 → **280**.
+- **相对阈值在生产里是死代码**：`autoContext.relevanceMin` 的 schema 默认值把 `signalMinRatio: 0.5` 挡在门外；现移除默认值，并补齐只读未声明的键。
 
 ### Added (standalone benchmark — `scripts/bench.mjs`)
 
-- **`npm run bench -- <projectPath>` measures the shipped index/query path on a real project, with no dsh instance, no network and no model calls.** It walks the project, builds its store in a temp directory (never the project's own `.dsh-project-memory`), and reports: cold index split into read+hash / extract / commit; cold load measured from a *copied* store (so the in-process store cache cannot fake it); IDF rebuild, cold and hot query latency through the real scorer (p50/p95/max over `--samples`, default 100); single-file hot re-index sampled **evenly across file sizes**; store size and bytes/entry; and whole-chunk `terms` versus the ≤300-char summary. Flags: `--json`, `--no-pdf`, `--keep`, `--max-files` (default 20000), `--queries <labeled-set.json>` (runs the hit@5 / hit@10 / MRR method on your own corpus).
-- **The READMEs now point at it** (`Performance → Reproduce it on your own project`, plus the Development block) instead of asking readers to trust the tables. The labeled-set figures in Design tradeoff #4 are scoped to their internal corpus, with the method shipped; the docs also state the two caveats found while building it — `read+hash` is OS-page-cache sensitive, and real projects score slower than the synthetic corpus.
-- **Retired the local-only harnesses it replaces** (`test/ablation*.mjs`, `test/doc-coverage*.mjs`, `test/gen-queries.mjs`, `test/simulate-agent.mjs`, `test/queries.json`) together with the dead `.gitignore` entries for them and for the August debug scaffolding.
-- **The synthetic harness ships too.** `bench/microbench.mjs` moved to `scripts/bench-synthetic.mjs` (`npm run bench:synthetic -- 5000`), so the synthetic table is reproducible as well; `bench/` itself stays local-only.
-- **Every published number re-measured on 2026-09-14** (Node 24.19): 5k-file cold index 269 ms avg (p50 267), cold load 40 ms, cached query over 20k entries p50 2.6 / p95 5.4 ms, hot single-file re-index p50 2.4 ms, 10k-file cold index 551 ms avg, cold load 90 ms, IDF rebuild 106 ms at 40k entries (57 ms at 20k, 12 ms at 4k), symbol scan 12.9–19.2 µs/file. Table captions now name the environment and the reproduce command; the real-project example quotes the warm-cache run and states the cold-cache first run (787 ms vs 253 ms) instead of hiding it. `README.md`, `README.zh-CN.md` and the local notes were updated together so no two documents quote different numbers.
+- **新增独立基准**：`npm run bench -- <projectPath>` 在真实项目上测冷索引、冷加载、查询、热重索引与体积，不需要 dsh / 网络 / 模型。
+- README 指向该脚本与复现命令，并写明页缓存敏感的已知口径。
+- 删除被它取代的本地 harness 脚本。
+- 合成基准移到 `scripts/bench-synthetic.mjs`。
+- 所有公开数字按 2026-09-14 重测，README 与环境、复现命令同步。
 
 ### Docs (README realigned with shipped behaviour)
 
-- **`README.md` / `README.zh-CN.md` re-synced with the code.** Removed claims that documented superseded behaviour: the client-plugin contract version (0.1.2-rc.1 → **0.1.5-rc.1**, bumped in v0.5.3); the auto-created task title rule (v0.5.3 reversed it to **first todo entry → first human message**, and added the subagent exception); and the write path (`O(1) version bump` → only a **dirty** write bumps the version, so the 15 s watch poll cannot clear the IDF cache). `blindSpots` is now described as always empty rather than "empty for newly indexed documents"; the IDF-rebuild note carries its scale; `index_repo` / `watch_repo` document the missing-root guards. De-duplicated two feature bullets that restated each other (document `terms`; L1 regex vs. symbol memory). The Chinese README no longer claims multi-instance writes are safe — it now carries the same in-process-only lock caveat as the English one.
-- **Two design-tradeoff entries corrected.** (a) "Subagent sessions never auto-create tasks" was stated as a feature; it is a deliberate non-goal, so it moved to a new tradeoff **§11 "Subagent sessions are out of scope for now"** ("not designed yet", with the cost stated) and the feature bullet now only points at it. (b) **§6 "Explicit `remember` over implicit learning" was factually wrong**: v0.5 ships `reflection-pipeline.js`, an opt-in LLM path that *does* infer lessons/decisions from the conversation on task switch-away/archive, and promotion runs automatically inside normal writes. §6 is now **"Model-facing memory: the agent writes, and no human has to be in the loop"** and states the actual policy: any scope writable by the agent at any time, promotion deterministic on `sourceTaskIds` corroboration (≥2 → project, ≥ `globalPromoteTasks` → global), and **`draft` described as a provenance label plus a corroboration threshold — not an approval queue** (a draft graduates on corroboration, which is intended; the panel is an optional inspection surface, not a step in the write path).
+- **README 与实现对齐**：修正客户端契约版本、任务标题规则、写入版本语义与 `blindSpots` 说明，中英文口径统一。
+- **设计取舍改正**：subagent 不建任务标为 §11 非目标；§6 改为「面向模型：agent 写入，无人工审批队列」。
 
 ### Fixed (console noise: watching the temp dir, PDF warnings, repeat failure logs)
 
-- **The shared temp directory is no longer watchable.** `WatchManager.addRoot()`, `restorePersisted()` and `watch_repo` now refuse a root that is the filesystem root or `os.tmpdir()` (`isUnwatchableRoot()` in `src/util/fs.js`), and a persisted entry for one is self-healed out of the watchlist on the next start. This was the root cause of a real spam loop: reading any file directly under `/tmp` made `findProjectRoot` fall back to `/tmp` as the project root, `src/lazy.js` then auto-registered it as a watch root, and every 15 s poll re-indexed every file left under `/tmp` — including the test suite's deliberately broken `pm-pdf-*/big.pdf` fixtures, which printed `Invalid PDF structure` on every poll and re-created `/tmp/.dsh-project-memory` forever. Subdirectories of the temp dir (a project that genuinely lives there) still work.
-- **pdf.js warnings are silenced** (`verbosity: 0` added to `PDFJS_OPTIONS`). `Warning: Indexing all PDF objects` is pdf.js's own recovery path for a broken or non-linearized PDF. It is not actionable from here, and a failed parse already reports its own error.
-- **A permanently failing file is reported once, not every poll.** `watch` still retries a failed index every interval by design (so a file that gets fixed is picked up), but it now remembers the last reported error per file (`state.failures`) and stays quiet until the message changes or the file indexes successfully.
-- **Tests:** suite 269 → **276** checks: a repeatedly failing file logs once, `watch_repo` / `addRoot` refuse the shared temp dir, the refusal is not persisted, `addRoot` refuses the filesystem root, and `restorePersisted` drops an unwatchable persisted root.
+- **共享临时目录不再可 watch**：根为文件系统根或 `os.tmpdir()` 一律拒绝，历史条目自愈剔除；临时目录的子目录仍可用。
+- pdf.js 告警静音（`verbosity: 0`）。
+- 永久失败的文件每个错误只报一次。
 
 ### Fixed (watch / save hot path)
 
-- **A no-op `save()` no longer rewrites the store.** `commit()` always called `save()`, and `save()` ran `mkdirSync`, bumped `_version` and cleared the IDF cache even when nothing had changed. Since `watch` calls `commit()` for every watched root every 15 s, this (a) wiped the query-side IDF cache on every poll — cancelling the v0.3.4 IDF-reuse optimization whenever `watch` was on — and (b) **re-created the memory directory of any persisted watch root that no longer existed**, so a deleted root came back every 15 s. `save()` now returns before touching the disk unless something is dirty; stale `*.tmp` cleanup still runs unconditionally.
-- **Dead watch roots are dropped instead of re-created.** `WatchManager.addRoot()` now refuses a root that does not exist, `restorePersisted()` removes such roots from the persisted watchlist on startup, and `watch_repo` rejects a non-existent root rather than persisting it.
-- **Tests:** suite 231 → **235** checks. New: `no-op save() keeps the IDF cache` / `dirty save() invalidates the IDF cache`, plus `restorePersisted skips a root that no longer exists`, `a dead root is dropped from the persisted watchlist` and `addRoot refuses a non-existent root`.
+- **无变化的 `save()` 不再重写 store**：不 mkdir、不 bump 版本、不清 IDF 缓存；不存在的 watch 根不再被每次复活。
+- 失效 watch 根在启动时从持久清单删除。
 
 ### Fixed (Task Panel / 「隐藏提示信息」开关)
 
-- **The hints toggle now hides every hover tooltip, not just two.** `showHints` was only wired to the step-edit hint and the drag-cancel button; the drag handle, panel-style / view-cycle / minimize / close buttons, card title rename hint, step status tooltip, file-path copy hint, mini-bar hint and the memory-view hints all ignored it — so clicking the button changed almost nothing. Every `title` hint in the panel now honours the switch (the toggle's own tooltip is kept so it stays discoverable).
-- **The preference lives in the UI store and persists.** `showHints` moved from component-local state to `dsh-pm-task-panel-ui` (localStorage, default on), so it survives refreshes and remounts instead of silently resetting to “show”; the button dims and sets `aria-pressed` while hints are off, giving feedback without hovering.
+- **「隐藏提示信息」覆盖面板全部 tooltip**，状态存进 UI store，刷新后保留；关闭时按钮变暗并设 `aria-pressed`。
 
 ### Fixed (index_repo root validation)
 
-- **`index_repo` no longer builds a store for a root that does not exist.** Both the tool and `autoIndexOnFirstUse` only ran `path.resolve()` first: on Linux/macOS a Windows-style path such as `D:\project\foo` resolved to the relative `<cwd>/D:\project\foo`, and the store's `mkdirSync` then created that literal directory together with its `.dsh-project-memory` (verified: `new ProjectMemoryStore(dir).load().commit(…)` creates every missing parent). `assertIndexRoot()` (`src/util/fs.js`) now rejects a missing or non-directory root before anything is written, and names the Windows-path case in the error message. `index_doc`'s file check and `watch_repo`'s `existsSync` guard are unchanged.
-- **Tests:** `test/doc-index.test.mjs` gains 1 check (suite 7 → 8, total 237 → **238**): a missing root and a Windows-style path are both rejected with zero filesystem side effects.
+- **`index_repo` 拒绝不存在的根 / Windows 盘符路径**，在建目录前返回错误。
 
 ### Added (unified recall: the insight layer becomes searchable — PR1)
 
-- **`query_memory` now searches insights.** `type: 'insight'` was added, and `type: 'all'` appends an `## Insights (lessons / decisions / procedures)` section. Before this, lessons/decisions/procedures had **no retrieval path at all**: `util/search.js` had no insight ranker and the tool's `type` enum had no insight value, so a lesson could only reach an agent through silent injection. Verified against this repository's own store: the "public face" lesson now returns at score 100 for a natural-language query.
-- **New `src/recall.js` — one retrieval core, ranked per layer.** Every layer gets an adapter to the same entry contract (`title` / `keywords` / `summary` / `terms` / `sourcePath` — the shape `weightedFieldText` already scores), its own top-k, and a layer prior. Cross-layer order is only ever a *hint* (`flat`); it is never spliced into one score, because the doc/symbol streamer and the in-memory BM25 have different scales. `query_memory` routes doc / symbol / experience / insight through this single call, so the experience layer no longer carries its own scoring path inside the tool.
-- **Scope visibility follows the session binding.** `project` / `global` insights are visible to every session; `task`-level insights only to a session bound to that task (`select_task`). Drafts stay out of recall. The v0.4 `experience.json` → `insights.json` migration shadow (`kind: 'experience'`, `source: 'migrate'`) is excluded from the insight layer so a note is not listed once as an insight and again as an experience — convergence the store's own comment had deferred to this PR.
-- **Normative-heading prior.** A doc chunk whose heading matches the multilingual normative set (必须 / 禁止 / 铁律 / rules / must / must not / do not …) is boosted ×1.5 within the doc layer: deterministic, model-free, no new dependency. This is the "「必须遵守」never surfaced" case — `test/recall.test.mjs` first pins today's term-frequency ordering, then asserts the prior flips it.
-- **Invariants held:** indexing still never calls a model (no index-time LLM), recall adds no LLM call (`llmQueryExpansion` remains opt-in, default off), and the plugin still has exactly one runtime dependency.
-- **Tests:** new `test/recall.test.mjs` (8 checks); suite 238 → **246**.
+- **`query_memory` 支持 insight**（`type: 'insight'`，`all` 追加洞察段）。
+- **新增 `src/recall.js`**：同一召回核按层适配、各层 top-k 与先验，跨层顺序只作提示。
+- 任务级 insight 只对绑定会话可见；草稿不进召回；迁移影子条目去重。
+- 规范标题（必须 / 禁止 / rules / must …）在文档层 ×1.5。
+- 索引与召回都不新增模型调用。
 
 ### Added (readiness: triggers for every insight kind, two windows — PR2)
 
-- **`trigger` is no longer procedure-only.** Any lesson / decision / procedure may carry `trigger: { keywords, symbols, actions, paths, scope }`. A hit injects the entry **before the action**, in full, at priority 1 — deterministic, auditable (`reasons[].why`), and independent of wording. `actions` are normalized ids (`git-commit`, `npm-publish`, `go-public`, …) matched by a small lexicon that also reads **human intent** ("提交 / 发包 / 公开"), so the block arrives while the model is still planning instead of after it acted.
-- **Two windows, one matcher.** The pre-emptive window matches the turn's human text; the reactive window matches `tool/call` arguments observed through `session/event`. DSH has no pre-tool interceptor (`tool/call` is appended after the call is decided), so these are the only two honest windows — both feed one `ReadinessContext`.
-- **The hint gate became scale-free.** It used to be `normalizedTokenOverlap(humanMessage, insight) >= 0.25`, normalized by the **larger** token set, so a real message measured 0.014–0.057 and could never fire. It is now the recall core's BM25 plus a **relative** threshold (`autoContext.signalMinRatio`, default `0.5` = at least half of the layer's top score), with zero-score candidates always dropped. The old judgement stays reachable only by explicitly setting `relevanceMin` (undocumented knob; profiles that set it keep the old behaviour).
-- **Budget is a schedule, not a number.** Resident task card → trigger hits (full) → hints (truncated). Every decision is recorded as `reasons` (why injected) or `dropped` (why not), so silence is never the only signal. Procedures still inject **only** through the trigger channel, so a statistical hit cannot bypass `trigger.scope` profile filtering.
+- **trigger 不再只属于 procedure**：任何 kind 可带 `when`，命中时在下一次动作前全文注入。
+- 两个匹配窗口（人类消息 / 观察到的 tool/call）共用一套 `ReadinessContext`。
+- 提示阈值改为相对分数（`signalMinRatio` 0.5），旧 `relevanceMin` 仅显式设置时保留。
+- 预算按「常驻任务卡 → trigger → hint」调度，决策记进 `reasons` / `dropped`。
 - **Measured against this repository's own store:** the original commit-turn message ("…你顺便提交一下…") now injects the public-face lesson via `hint:relative:1.00`; reworded and relying on an observed `git commit`, only an authored `trigger.actions` reaches it (`trigger:action:git-commit`) — the two channels are complementary, not redundant.
-- **Tests:** new `test/readiness.test.mjs` (10 checks); suite 246 → **256**.
 
 ### Added (write path + measurement: derived triggers, v1→v2, degraded, labeled eval — PR3)
 
-- **Derived triggers are additive and never force-inject.** `deriveTrigger()` builds `{ keywords, actions, paths }` from an entry's own text with the same deterministic lexicon and path scanner the readiness matcher uses (bounded: ≤ 6 / ≤ 4 / ≤ 6), and stores it as `triggerDerived`. It only feeds the entry's search text, so it improves recall; whether an entry is injected **deterministically** is still decided solely by the authored `trigger`. This is the "explicit over implicit" trade-off carried through to injection.
+- **派生 trigger 只增强召回、不强制注入**；`triggerDerived` 不写正文。
 - **`insights.json` v1 → v2, lazily and idempotently.** On load, entries without `triggerDerived` are back-filled in memory (pure, model-free, no field rewriting); the next commit writes `version: 2`. A second pass is a no-op.
 - **The write path accepts the full trigger.** `normalizeInsight` no longer whitelists `keywords`/`symbols`/`scope` only — it keeps `actions` and `paths` too, and a trigger consisting *only* of `actions`/`paths` is no longer dropped. `save_lesson`'s schema exposes both, and its descriptions now say "any kind", not "procedure".
 - **Silence is not the only signal.** When the budget keeps entries out, `installAutoInject` logs one `degraded` record per session and drop-set (`… kept out by budget — id(reason), …`) instead of silently shrinking the injection.
@@ -1750,7 +1695,6 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
   | 0.70 | 1.00 | 1.00 |
 
   The shipped default sits in the safe zone with margin, and 0.20 visibly admits weak matches — so the number is justified by data rather than chosen by feel. The table is the **9-case** set measured after the hint-precision fix below (the `0.20` figure was 0.86 on the earlier 8-case set; adding "缩写巧合（PR）不得命中" turns one more row into a genuine weak match, `7/9 = 0.78`). It lives under `test/` (CI-enforced, shipped) rather than the git-ignored `bench/`, deliberately: a threshold that only exists on one machine is not a threshold.
-- **Tests:** new `test/insight-derive.test.mjs` (6 checks) and `test/readiness-eval.test.mjs` (4 checks, including the sweep table); suite 256 → **266**.
 
 ### Fixed (readiness hint precision: query source, acronym noise, stub truncation)
 
@@ -1758,7 +1702,6 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
 - **A 1–2 character latin token is no longer hint evidence.** Measured on this repository's own store, the message "PR 干嘛…" put an unrelated "automatic security PR" lesson at the top of the insight layer on the strength of the acronym `PR` alone, i.e. `relative:1.00`. `hintQueryText()` drops *standalone* 1–2 character latin tokens; path-shaped tokens are preserved so `src/util/fs.js` still contributes `src`/`util`. Authored triggers are untouched: deterministic matching stays literal.
 - **No stub truncations.** A body that cannot fit its channel's useful minimum (trigger 48 chars, hint 120 chars) is dropped and recorded instead of emitting `- [ins_…] procedure ` — a fragment that costs tokens and conveys nothing.
 - **Eval set grew to 9 cases** (added "缩写巧合（PR）不得命中"). The shipped `signalMinRatio 0.5` still scores `precision 1.00 / recall 1.00`; the `0.20` column now shows two *genuine* weak matches (`h-weak`, and `a-pr` on 检查), which is precisely the evidence that 0.5 — not 0.2 — is the right shipped point. Measured after the fix on the real store, the same message yields `[trigger:重启, hint:提交]` instead of `[trigger:重启, hint:PR, hint:提交]`.
-- **Tests:** `test/readiness.test.mjs` 10 → 13 checks; suite 266 → **269**.
 
 ## 0.5.4 (2026-09-12)
 
@@ -1771,14 +1714,12 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
   - **Existing stores are back-filled automatically.** `index_repo`, `watch` and `lazy` treat a doc record whose entries lack `terms` as needing re-extraction even when the content hash is unchanged (`docEntriesNeedBackfill`), so the coverage fix reaches stores indexed before 0.5.4 without a manual `reindex: true`. It is a one-shot pass: once entries carry `terms`, the hash skip resumes.
 - **Rule-based keywords** (`extractKeywords`: title-weighted top terms) replace the previous placeholder 5–10 keywords, so `keywords` is deterministic and reproducible. Bilingual keyword expansion and self-reported blind spots are intentionally **not** produced at index time: the `blindSpots` field and its rendering are retained for compatibility, but new entries leave it empty.
 - **Recall-time opt-in LLM is routed explicitly and visibly.** `config.llmQueryExpansion` (default off) and `reflection.enabled` (default off) are the only remaining model calls, and both are recall-time and opt-in. They resolve `provider`/`model` through `src/llm-route.js` (config override → session `requestHeader().config` → agent options → last-seen `request/header` route). When no route is available or a call fails, search falls back explicitly and records a one-time `degraded` entry rather than failing silently.
-- **Tests:** `test/doc-index.test.mjs` (new) pins summary ≤300 / terms covering past char 300 / BM25 hitting a post-300 term / zero model calls at index time even with a routed `exec` / deterministic bounded `extractTerms` / the automatic back-fill. `test/llm-route.test.mjs` covers the recall-time routing contract. `test/run-test.mjs` asserts watch indexing makes **zero** model calls and that doc entries are structural.
 
 ### Changed (injection semantics + signals)
 
 - **The injected block now declares `form: 'snapshot'`, not `'notice'`.** The autocontext block is current state that a later injection supersedes; `notice` means "a one-off account of something that just happened", so the old declaration was semantically wrong for both the transcript UI and the model. The channel is untouched (still appended through `agent/pre-step` as a plugin `user/message`). The host's `ContextFormed` is a discriminated union (`packages/llm/llm/src/message.ts:81-96`), so `snapshot` carries `sections: [{ name, text }]` and must **not** carry `notice`'s `summary`; the section is named `project-memory` and its `text` is exactly the assembled block.
 - **Per-file `reads` / `writes` counters are now collected.** `task.fileMeta[rel]` gained `reads` and `writes` alongside the retained `n` (which stays the read+write total for old tasks). This is **collect-only**: `hotSortFiles`, the resident "editing now" list and the dedupe fingerprint still read only `lastWriteAt` / `lastReadAt`, so no ordering or injection behaviour changes. It starts collecting the one signal a full-index memory plugin cannot observe — what the model actually read.
 - **`query_memory` memory rows carry a status placeholder.** Each doc/symbol row now prints `- status: <value>`, defaulting to `exact` for every entry (the vocabulary is `exact | needs-verify | re-verified | refreshed | demoted`). No state machine is implemented yet; this is a forward-compatible output contract so real values can land later without changing the rendering again.
-- **Tests:** suite 227 → **231** checks. `test/host-contract.test.mjs` now drives a real injection and pins the source shape (`form: 'snapshot'`, `sections[0].name`, no `summary`); `test/taskbridge.test.mjs` pins `reads`/`writes`/`n`; `test/run-test.mjs` pins the `status` placeholder on doc and symbol rows.
 
 ### Files
 - src/doc-index.js (new), src/doc-pipeline.js, src/llm.js, src/llm-route.js (new), src/util/text.js, src/util/search.js, src/link.js, src/index.js, src/watch.js, src/lazy.js, src/reflection-pipeline.js, src/auto-inject.js, src/setup/taskbridge.js, src/tools/index-doc.js, src/tools/index-repo.js, src/tools/query-memory.js, src/tools/task-tools.js, src/commands/task-actions.js, test/doc-index.test.mjs (new), test/llm-route.test.mjs, test/host-contract.test.mjs, test/taskbridge.test.mjs, test/run-test.mjs, test/reflection-pipeline.test.mjs, package.json, CHANGELOG.md
@@ -1865,7 +1806,6 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
 ### Files
 - src/similarity.js, src/insight-store.js, src/global-seed.js, src/types.js, src/tools/lesson-tools.js, src/reflection-pipeline.js, src/auto-inject.js, src/project-profile.js, src/commands/insight-actions.js, src/client/MemoryView.tsx
 - Changed: src/store.js, src/index.js, src/tools/task-tools.js, src/commands/tasks.js, src/commands/task-actions.js, src/client/{TaskPanel,TaskComponents,task-data-store,locales}.ts(x), TaskPanel.module.css, package.json
-- Tests: insight-store 11 / reflection-pipeline 5 / auto-inject 9 / insight-actions 7 (total 209, exit 0)
 
 ### Notes
 - Design rationale, deviations (non-destructive migration; reflection triggers subset; auto-inject host verification) and the live-verification checklist live in the internal design notes.
@@ -1932,8 +1872,6 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
 - **测试与维护**
   - TaskBridge 测试增至 11 项（新增反向接管、空写语义等）；既有 166 项全绿
   - 清理：移除废弃 client 包依赖与死代码，样式收敛到 dsw token
-
-
 
 ## 0.4.1 (2026-09-03)
 
