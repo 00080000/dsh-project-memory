@@ -1,3 +1,11 @@
+## 0.6.12 (2026-11-09)
+
+**兼容**：无新增配置键，无 store 格式变更，`client/` 产物不变；直接覆盖升级即可。
+
+- **内部重构**：`isRecord`、ISO 时间比较与消息取文本收敛到 `src/util/value.js` / `src/util/text.js`；12 个工具共用 `TEXT_OUTPUT` 与项目上下文初始化。
+- **切 kind 的字段清理**统一到 `src/util/insight-fields.js`，`save_lesson` 与面板编辑共用同一判据。
+- **时间戳只接受非空字符串**：缺失、非法或非字符串一律按 0 处理（此前数字会走 `Date.parse`）。
+
 ## 0.6.11 (2026-11-06)
 **兼容**：`format.json` 仅在成功从旧版 store 迁移时多一个可选的 `migratedFrom: 'legacy'` 标记（旧版本读到会忽略）；无新增配置键，无破坏性 store 变更。
 
