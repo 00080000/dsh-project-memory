@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { TEXT_OUTPUT } from './output.js'
 import path from 'node:path'
 import { assertIndexRoot, memoryDirName, memoryRootFor, nestedStoreRoots, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
@@ -83,10 +84,7 @@ export function queryMemoryTool(ctx, config) {
         description: 'max results, default 8',
       },
     },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
+    output: TEXT_OUTPUT,
     async execute(args, exec) {
       const root = resolveSafeIndexRoot(exec, args.root, config)
       // 读路径也要验根存在。这条不是洁癖：可选的向量层（leanvec）在空 store 上会建

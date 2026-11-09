@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { TEXT_OUTPUT } from './output.js'
 import { assertIndexRoot, memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { cfgInsight, DELETED_KEEP, GlobalStore, defaultGlobalFile, removeMemory } from '../insight-store.js'
@@ -43,10 +44,7 @@ export function forgetTool(config) {
         description: 'project root (default: cwd)',
       },
     },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
+    output: TEXT_OUTPUT,
     async execute(args, exec) {
       const root = resolveSafeIndexRoot(exec, args.root, config)
       assertIndexRoot(root, args.root || root)

@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { TEXT_OUTPUT } from './output.js'
 import { assertIndexRoot, memoryRootFor, normalizeCitationFiles, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { cfgInsight, saveInsight, GlobalStore, defaultGlobalFile } from '../insight-store.js'
@@ -32,10 +33,7 @@ export function rememberTool(config) {
         description: 'related file (project-relative)',
       },
     },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
+    output: TEXT_OUTPUT,
     async execute(args, exec) {
       const root = resolveSafeIndexRoot(exec, args.root, config)
       // 写盘前校验根：否则一个拼错的 root 会被 mkdir 成字面量目录（连同 .dsh-project-memory）。

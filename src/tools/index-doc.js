@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { TEXT_OUTPUT } from './output.js'
 import path from 'node:path'
 import { statSync } from 'node:fs'
 import { assertIndexRoot, assertReadableFile, assertSafeRoot, excludedEntryForPath, findProjectRoot, memoryRootFor, resolveIndexRoot, sessionMemoryRootOrNull, sha256OfFile, storeKey } from '../util/fs.js'
@@ -22,10 +23,7 @@ export function indexDocTool(ctx, config) {
         description: 'project root (default: session project root)',
       },
     },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
+    output: TEXT_OUTPUT,
     async execute(args, exec) {
       const filePath = assertReadableFile(args.file_path, config.maxFileSizeMb)
       // roots.exclude 是"这棵子树里的文件一律不进索引"：显式 index_doc 也要服从。

@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { TEXT_OUTPUT } from './output.js'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { assertIndexRoot, assertSafeRoot, memoryRootFor, resolveIndexRoot, rootRejection, sessionMemoryRootOrNull, storeKey } from '../util/fs.js'
@@ -22,10 +23,7 @@ export function watchRepoTool(watchManager, config) {
         description: 'false = stop watching',
       },
     },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
+    output: TEXT_OUTPUT,
     async execute(args, exec) {
       const root = resolveIndexRoot(exec, args.root)
       // 不存在的根不写进 watchlist：watch 每轮会 commit → save → mkdirSync，把它重新造出来。

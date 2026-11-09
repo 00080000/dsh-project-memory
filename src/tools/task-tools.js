@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { TEXT_OUTPUT } from './output.js'
 import { assertIndexRoot, memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { truncate } from '../util/text.js'
@@ -23,7 +24,7 @@ export function listTasksTool(config) {
     parameters: {
       root: { type: 'string', description: 'project root (default: cwd)' },
     },
-    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
+    output: TEXT_OUTPUT,
     async execute(args, exec) {
       const root = resolveSafeIndexRoot(exec, args.root, config)
       assertIndexRoot(root, args.root || root)
@@ -51,7 +52,7 @@ export function selectTaskTool(config, host) {
       title: { type: 'string', description: 'exact title; creates if absent' },
       root: { type: 'string', description: 'project root (default: cwd)' },
     },
-    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
+    output: TEXT_OUTPUT,
     async execute(args, exec) {
       const root = resolveSafeIndexRoot(exec, args.root, config)
       assertIndexRoot(root, args.root || root)
@@ -150,7 +151,7 @@ export function showTaskPanelTool(config) {
     name: 'show_task_panel',
     description: 'Open the task panel in the UI.',
     parameters: {},
-    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
+    output: TEXT_OUTPUT,
     async execute() {
       // 开面板的动作在**客户端**：这个工具名被 src/client/ShowTaskPanelNode.tsx 认领，
       // 结果节点一渲染就由浏览器侧调 `taskUIStore.open()`。
@@ -172,7 +173,7 @@ export function archiveTaskTool(config, host) {
       taskId: { type: 'string', required: true, description: 'task id' },
       root: { type: 'string', description: 'project root (default: cwd)' },
     },
-    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
+    output: TEXT_OUTPUT,
     async execute(args, exec) {
       const root = resolveSafeIndexRoot(exec, args.root, config)
       assertIndexRoot(root, args.root || root)

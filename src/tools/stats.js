@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { TEXT_OUTPUT } from './output.js'
 import { assertIndexRoot, memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
 import { cfgInsight, defaultGlobalFile, GlobalStore } from '../insight-store.js'
@@ -20,10 +21,7 @@ export function statsTool(config) {
         description: 'project root (default: cwd)',
       },
     },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
+    output: TEXT_OUTPUT,
     async execute(args, exec) {
       const root = resolveSafeIndexRoot(exec, args.root, config)
       // 读路径也要验根存在：可选的向量层（leanvec）在索引空 store 时会落盘 vectors 缓存，

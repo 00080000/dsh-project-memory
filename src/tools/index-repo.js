@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { TEXT_OUTPUT } from './output.js'
 import path from 'node:path'
 import { statSync } from 'node:fs'
 import { assertIndexRoot, assertSafeRoot, listProjectFiles, memoryDirName, memoryRootFor, relativePath, resolveIndexRoot, scanLimits, storeKey } from '../util/fs.js'
@@ -157,10 +158,7 @@ export function indexRepoTool(ctx, config) {
         description: 'ignore hashes, force re-extraction',
       },
     },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
+    output: TEXT_OUTPUT,
     async execute(args, exec) {
       // 相对 root 按会话当前工作目录解析（不是宿主进程 cwd）——见 util/fs.js 的 resolveIndexRoot。
       const root = resolveIndexRoot(exec, args.root)

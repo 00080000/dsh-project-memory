@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { TEXT_OUTPUT } from './output.js'
 import { assertIndexRoot, memoryRootFor, normalizeCitationFiles, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { truncate } from '../util/text.js'
@@ -70,7 +71,7 @@ export function lessonTool(config) {
       confidence: { type: 'number', description: '0..1' },
       root: { type: 'string', description: 'project root' },
     },
-    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
+    output: TEXT_OUTPUT,
     async execute(args, exec) {
       const root = resolveSafeIndexRoot(exec, args.root, config)
       assertIndexRoot(root, args.root || root)
