@@ -1,7 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { TEXT_OUTPUT } from './output.js'
-import { assertIndexRoot, memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
-import { ProjectMemoryStore } from '../store.js'
+import { openProjectContext } from './context.js'
 import { truncate } from '../util/text.js'
 import { sessionIdOf, stepProgress, timeAgo } from '../util/task-view.js'
 import { genTaskId, hash8, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
@@ -26,9 +25,7 @@ export function listTasksTool(config) {
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {
-      const root = resolveSafeIndexRoot(exec, args.root, config)
-      assertIndexRoot(root, args.root || root)
-      const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+      const { store } = openProjectContext(exec, args, config)
       const tasks = store.getTasks()
       if (!tasks.length) {
         return '任务记录: 0 套（先做一步再建清单，或用 select_task 新建）'
@@ -54,9 +51,7 @@ export function selectTaskTool(config, host) {
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {
-      const root = resolveSafeIndexRoot(exec, args.root, config)
-      assertIndexRoot(root, args.root || root)
-      const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+      const { root, store } = openProjectContext(exec, args, config)
       const sid = sessionIdOf(exec)
       const now = new Date().toISOString()
       const error = (msg) => truncate(JSON.stringify({ success: false, error: msg }), config.maxOutputChars)
@@ -175,9 +170,7 @@ export function archiveTaskTool(config, host) {
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {
-      const root = resolveSafeIndexRoot(exec, args.root, config)
-      assertIndexRoot(root, args.root || root)
-      const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+      const { root, store } = openProjectContext(exec, args, config)
       const task = store.getTask(args.taskId)
       if (!task) return truncate(JSON.stringify({ success: false, error: 'Task not found' }), config.maxOutputChars)
       if (task.archived) return truncate(JSON.stringify({ success: false, error: 'Already archived' }), config.maxOutputChars)

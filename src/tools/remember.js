@@ -1,8 +1,8 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { TEXT_OUTPUT } from './output.js'
-import { assertIndexRoot, memoryRootFor, normalizeCitationFiles, resolveSafeIndexRoot } from '../util/fs.js'
-import { ProjectMemoryStore } from '../store.js'
-import { cfgInsight, saveInsight, GlobalStore, defaultGlobalFile } from '../insight-store.js'
+import { openProjectContext } from './context.js'
+import { normalizeCitationFiles } from '../util/fs.js'
+import { saveInsight, GlobalStore, defaultGlobalFile } from '../insight-store.js'
 import { ensureGlobalInit } from '../global-seed.js'
 import { vectorItemsFrom } from '../vector-index.js'
 import { createWriteCosine } from '../auto-inject.js'
@@ -35,12 +35,7 @@ export function rememberTool(config) {
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {
-      const root = resolveSafeIndexRoot(exec, args.root, config)
-      // 写盘前校验根：否则一个拼错的 root 会被 mkdir 成字面量目录（连同 .dsh-project-memory）。
-      assertIndexRoot(root, args.root || root)
-      const memoryDir = memoryRootFor(root, config.memoryDir)
-      const store = new ProjectMemoryStore(memoryDir).load()
-      const cfg = cfgInsight(config)
+      const { root, memoryDir, store, cfg } = openProjectContext(exec, args, config)
       // 与 save_lesson 同一条约束：files 只收项目内相对路径，项目外/逃出根的丢弃并回报。
       const citation = normalizeCitationFiles(args.source_file ? [args.source_file] : [], root)
       ensureGlobalInit(config) // 幂等：project 写入可能被自动提升到 global

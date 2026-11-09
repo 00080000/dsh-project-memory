@@ -1,9 +1,9 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { TEXT_OUTPUT } from './output.js'
-import { assertIndexRoot, memoryRootFor, normalizeCitationFiles, resolveSafeIndexRoot } from '../util/fs.js'
-import { ProjectMemoryStore } from '../store.js'
+import { openProjectContext } from './context.js'
+import { normalizeCitationFiles } from '../util/fs.js'
 import { truncate } from '../util/text.js'
-import { cfgInsight, saveInsight, defaultGlobalFile, GlobalStore } from '../insight-store.js'
+import { saveInsight, defaultGlobalFile, GlobalStore } from '../insight-store.js'
 import { ensureGlobalInit } from '../global-seed.js'
 import { INSIGHT_KINDS, INSIGHT_SCOPES } from '../insight-store.js'
 import { sessionIdOf } from '../util/task-view.js'
@@ -73,13 +73,9 @@ export function lessonTool(config) {
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {
-      const root = resolveSafeIndexRoot(exec, args.root, config)
-      assertIndexRoot(root, args.root || root)
+      const { root, memoryDir, store, cfg } = openProjectContext(exec, args, config)
       // 写入期约束：files 只收项目内相对路径（schema 早就这么承诺，此前没有校验）。
       const citationFiles = normalizeCitationFiles(args.files, root)
-      const memoryDir = memoryRootFor(root, config.memoryDir)
-      const store = new ProjectMemoryStore(memoryDir).load()
-      const cfg = cfgInsight(config)
       const sid = sessionIdOf(exec)
       const boundTaskId = sid ? store.getBoundTaskId(sid) : undefined
       const taskId = args.task_id || boundTaskId

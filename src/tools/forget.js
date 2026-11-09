@@ -1,8 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { TEXT_OUTPUT } from './output.js'
-import { assertIndexRoot, memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
-import { ProjectMemoryStore } from '../store.js'
-import { cfgInsight, DELETED_KEEP, GlobalStore, defaultGlobalFile, removeMemory } from '../insight-store.js'
+import { openProjectContext } from './context.js'
+import { DELETED_KEEP, GlobalStore, defaultGlobalFile, removeMemory } from '../insight-store.js'
 import { forgetVectorRows } from '../vector-index.js'
 
 /** 回报用的一行：`ins_xxx《标题》(project)`。标题已在 removeMemory 里截断。 */
@@ -46,11 +45,7 @@ export function forgetTool(config) {
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {
-      const root = resolveSafeIndexRoot(exec, args.root, config)
-      assertIndexRoot(root, args.root || root)
-      const memoryDir = memoryRootFor(root, config.memoryDir)
-      const store = new ProjectMemoryStore(memoryDir).load()
-      const cfg = cfgInsight(config)
+      const { memoryDir, store, cfg } = openProjectContext(exec, args, config)
       const globalStore = new GlobalStore(cfg.globalFile || defaultGlobalFile()).load()
       let res
       store.commit((s) => {
