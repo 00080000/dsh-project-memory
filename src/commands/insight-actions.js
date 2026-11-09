@@ -9,6 +9,7 @@ import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsig
 import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
 import { isoMs } from '../util/value.js'
+import { pruneKindFields } from '../util/insight-fields.js'
 import { forgetVectorRows } from '../vector-index.js'
 
 /** 容量旋钮的防御性取值：cfg 可能只带显式测试字段。 */
@@ -314,17 +315,6 @@ export function saveMemoryItem({ store, gs, cfg, scope, fields }) {
 
 const EDIT_FIELDS = new Set(['title', 'kind', 'body', 'pattern', 'fix', 'problem', 'solution', 'choice', 'reason', 'confidence', 'steps', 'trigger', 'tags', 'files', 'symbols'])
 
-// kind 各自的“内容字段”；切 kind 时清掉不再属于它的旧字段（否则旧经验文本会残留显示）
-const KIND_CONTENT = {
-  lesson: ['pattern', 'fix'],
-  decision: ['choice', 'reason'],
-  procedure: ['steps', 'trigger'],
-  experience: ['problem', 'solution'],
-}
-// 切 kind 时要清掉的内容字段。**不含 trigger**：任何 kind 都可以带 authored trigger，
-// 放进这里会在 lesson↔decision 之间切换时把自动注入能力一并删掉。
-const ALL_CONTENT = ['body', 'pattern', 'fix', 'problem', 'solution', 'choice', 'reason', 'steps']
-
 /** 编辑既有条目（title/kind/正文/trigger 等白名单字段）。任务级按 id 在任务池定位。 */
 export function editMemoryItem({ store, gs, scope, id, fields, root }) {
   if (!fields || typeof fields !== 'object') return { ok: false, text: 'edit 需要字段对象' }
@@ -376,16 +366,7 @@ export function editMemoryItem({ store, gs, scope, id, fields, root }) {
       item[key] = s
       changed = true
     }
-    // 切 kind → 清理不再属于新 kind 的旧内容字段
-    if (changed && item.kind !== oldKind && KIND_CONTENT[item.kind]) {
-      const keep = new Set(KIND_CONTENT[item.kind])
-      const isProcedure = item.kind === 'procedure'
-      for (const f of ALL_CONTENT) {
-        if (keep.has(f)) continue
-        if (isProcedure && f === 'body') continue // procedure 保留通用 body
-        delete item[f]
-      }
-    }
+    pruneKindFields(item, oldKind)
     if (changed) item.updatedAt = new Date().toISOString()
     return changed
   }

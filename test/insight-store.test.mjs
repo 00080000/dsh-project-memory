@@ -26,6 +26,7 @@ import { normalizedTokenOverlap } from '../src/similarity.js'
 import { lessonTool } from '../src/tools/lesson-tools.js'
 import { forgetTool } from '../src/tools/forget.js'
 import { _pendingDirtyCountForTest } from '../src/util/flush.js'
+import { pruneKindFields } from '../src/util/insight-fields.js'
 
 let passed = 0
 const ok = (name) => {
@@ -789,6 +790,30 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
   gs.markDirty()
   assert.ok(_pendingDirtyCountForTest() > before, 'markDirty 后必须进入 exit-flush 集合')
   ok('GlobalStore.markDirty 登记退出 flush（query 路径的命中记账不会丢）')
+}
+
+// --- 16. kind 字段归属：save_lesson 与面板编辑共用的清理判据 ---
+{
+  const toProc = { kind: 'procedure', body: '通用正文', pattern: '旧坑', fix: '旧改法', trigger: { keywords: ['k'] } }
+  pruneKindFields(toProc, 'lesson')
+  assert.equal(toProc.body, '通用正文', 'procedure 保留通用 body')
+  assert.equal(toProc.pattern, undefined)
+  assert.equal(toProc.fix, undefined)
+  assert.deepEqual(toProc.trigger, { keywords: ['k'] }, 'trigger 不随 kind 切换清掉')
+
+  const toDecision = { kind: 'decision', body: 'b', fix: 'f', choice: 'c', reason: 'r' }
+  pruneKindFields(toDecision, 'lesson')
+  assert.deepEqual(toDecision, { kind: 'decision', choice: 'c', reason: 'r' })
+
+  const same = { kind: 'lesson', body: 'b', fix: 'f' }
+  pruneKindFields(same, 'lesson')
+  assert.equal(same.body, 'b', 'kind 未变不清任何字段')
+
+  const unknown = { kind: 'nope', body: 'b', fix: 'f' }
+  pruneKindFields(unknown, 'lesson')
+  assert.deepEqual(unknown, { kind: 'nope', body: 'b', fix: 'f' }, '未知 kind 不清字段')
+  assert.doesNotThrow(() => pruneKindFields(null, 'lesson'))
+  ok('切 kind 清理：procedure 留 body / trigger 永不清 / 同 kind 与未知 kind 不动')
 }
 
 console.log(`\ninsight-store tests: ${passed} passed`)

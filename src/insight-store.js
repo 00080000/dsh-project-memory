@@ -14,6 +14,7 @@ import { backfillDerivedTriggers } from './readiness.js'
 import { vectorText } from './vector-index.js'
 import { tokenize } from './util/search.js'
 import { isRecord, isoMs, newerIso } from './util/value.js'
+import { pruneKindFields } from './util/insight-fields.js'
 
 export const INSIGHT_KINDS = ['lesson', 'decision', 'procedure', 'experience']
 export const INSIGHT_SCOPES = ['task', 'project', 'global']
@@ -218,16 +219,6 @@ export function mergeInto(existing, base, cfg, nowIso) {
 const UPDATE_FIELDS = ['title', 'kind', 'body', 'pattern', 'fix', 'problem', 'solution', 'choice', 'reason', 'steps', 'trigger', 'files', 'symbols', 'tags', 'confidence']
 const UPDATE_ARRAYS = ['steps', 'files', 'symbols', 'tags']
 
-// 切 kind 时要保留的专属字段；其余内容字段清掉（与 commands/insight-actions 的 editMemoryItem 同语义）。
-// 两条写入路径必须一致：同一次“改 kind”，面板会清、save_lesson 不清就是两套数据形状。
-const KIND_CONTENT = {
-  lesson: ['pattern', 'fix'],
-  decision: ['choice', 'reason'],
-  procedure: ['steps', 'trigger'],
-  experience: ['problem', 'solution'],
-}
-const ALL_CONTENT = ['body', 'pattern', 'fix', 'problem', 'solution', 'choice', 'reason', 'steps']
-
 /** 显式就地更新（`save_lesson` 带 id）：只动调用方给的字段，其余原样，旧值进 `prev`。 */
 export function applyUpdate(item, raw, nowIso) {
   const now = nowIso || new Date().toISOString()
@@ -258,15 +249,7 @@ export function applyUpdate(item, raw, nowIso) {
   }
   // 改 kind 时清掉旧 kind 的专属字段（procedure 保留通用 body）：否则 lesson→decision 后
   // `fix` 会盖在 `choice` 前面进入正文/摘要（insightBodyText 的优先级是 fix > choice > …）。
-  if (item.kind !== oldKind && KIND_CONTENT[item.kind]) {
-    const keep = new Set(KIND_CONTENT[item.kind])
-    const isProcedure = item.kind === 'procedure'
-    for (const f of ALL_CONTENT) {
-      if (keep.has(f)) continue
-      if (isProcedure && f === 'body') continue
-      delete item[f]
-    }
-  }
+  pruneKindFields(item, oldKind)
   item.updatedAt = now
   if (item.archived) item.archived = false
   // 显式编辑一条草稿 = 作者确认：reflection 产出的 draft 可被 save_lesson 带 id 直接改正文并转正。
