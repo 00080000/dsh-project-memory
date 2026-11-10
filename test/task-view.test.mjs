@@ -8,6 +8,7 @@
 //   2. 非法状态归一到 pending —— 宿主 todo 只认三个值，脏数据不该穿透到注入/投影。
 import assert from 'node:assert/strict'
 import { STEP_STATUSES, sessionIdOf, stepContent, stepProgress, stepStatus, timeAgo } from '../src/util/task-view.js'
+import { readFileSync } from 'node:fs'
 import { adoptStepsToSession } from '../src/setup/taskbridge.js'
 import { showTaskPanelTool } from '../src/tools/task-tools.js'
 
@@ -55,6 +56,23 @@ assert.equal(timeAgo(ago(5 * 60 * 1000)), '5分钟前')
 assert.equal(timeAgo(ago(3 * 60 * 60 * 1000)), '3小时前')
 assert.equal(timeAgo(ago(2 * 24 * 60 * 60 * 1000)), '2天前')
 ok('timeAgo：刚刚 / 分钟 / 小时 / 天')
+
+// ---- timeAgo：坏时间走 fallback，而不是让 NaN 穿透到文案 ----
+// 服务端默认 '未知'（省略会让模型以为"没有时间信息"）；面板传 ''（留空，不显示脏字）。
+// 客户端旧副本用 new Date().getTime() 直接算，非法 ISO 会渲染成 "NaN天前" —— 这两条钉住它。
+assert.equal(timeAgo(undefined), '未知')
+assert.equal(timeAgo(null), '未知')
+assert.equal(timeAgo(''), '未知')
+assert.equal(timeAgo('not-a-date'), '未知')
+assert.equal(timeAgo(undefined, ''), '')
+assert.equal(timeAgo('not-a-date', ''), '')
+assert.ok(!timeAgo('not-a-date').includes('NaN'))
+{
+  const panel = readFileSync(new URL('../src/client/TaskComponents.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /from '\.\.\/util\/relative-time\.js'/, '面板必须 import 共享实现')
+  assert.ok(!/\bfunction timeAgo\b/.test(panel), '面板不得再定义第二份 timeAgo')
+}
+ok('timeAgo：非法/缺失时间走 fallback（服务端 未知 / 面板空串），面板复用同一实现')
 
 // ---- sessionIdOf：agent.session 优先，退化到 ctx.session ----
 assert.equal(sessionIdOf({ agent: { session: { id: 's-agent' } }, ctx: { session: { id: 's-ctx' } } }), 's-agent')

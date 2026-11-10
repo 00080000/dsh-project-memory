@@ -1,7 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "rootDir": "src/client",
+    "rootDir": "src",
     "outDir": "lib/types/client",
     "jsx": "react-jsx",
     "jsxImportSource": "react",

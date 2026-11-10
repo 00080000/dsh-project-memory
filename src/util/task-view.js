@@ -2,7 +2,7 @@
  * 任务步骤的读取与展示（纯函数，零依赖，commands/ 与 tools/ 共用）。
  *
  * 步骤在数据里出现过三种形状：早期裸字符串、`{ text }` 时代、现在的 `{ content, status }`。
- * 「取文本 / 归一状态 / 数完成度 / 相对时间 / 取 exec 会话 id」这几件事原本在
+ * 「取文本 / 归一状态 / 数完成度 / 取 exec 会话 id」这几件事原本在
  * commands/tasks.js、commands/task-actions.js、tools/query-memory.js、tools/task-tools.js、
  * tools/lesson-tools.js、setup/taskbridge.js、auto-inject.js、reflection-pipeline.js 里各抄了一份，
  * 并且已经漂移成两种取文本语义（`??` 与 `||`）和三种状态归一（无校验 / Set 白名单 / 数组白名单）。
@@ -49,18 +49,9 @@ export function stepProgress(task) {
   return { done, total: steps.length }
 }
 
-/** 相对时间（中文）：面板、list_tasks、/tasks 三处文案共用同一套阈值。 */
-export function timeAgo(iso) {
-  const t = Date.parse(iso ?? '')
-  if (!Number.isFinite(t)) return '未知'
-  const diff = Date.now() - t
-  const m = Math.floor(diff / 60000)
-  if (m < 1) return '刚刚'
-  if (m < 60) return `${m}分钟前`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}小时前`
-  return `${Math.floor(h / 24)}天前`
-}
+// 相对时间已移到 ./relative-time.js：客户端面板也要用同一份实现（原先是第二份副本，
+// 非法时间在面板渲染成 "NaN天前"）。这里转出以保持 commands/ 与 tools/ 的既有导入不变。
+export { timeAgo } from './relative-time.js'
 
 /** 工具执行上下文里的会话 id：agent.session 优先，退化到 ctx.session。 */
 export function sessionIdOf(exec) {

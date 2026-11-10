@@ -15,6 +15,7 @@ import {
 import { createTranslate } from './locales.ts'
 import { useTaskDrag } from './task-hooks.ts'
 import { type Task, type TaskInsight, type TaskStep } from './task-data-store.ts'
+import { timeAgo } from '../util/relative-time.js'
 import css from './TaskPanel.module.css'
 
 function insightKindLabel(kind: string, t: ReturnType<typeof createTranslate>): string {
@@ -28,17 +29,6 @@ function insightKindLabel(kind: string, t: ReturnType<typeof createTranslate>): 
 }
 
 type InsightAction = 'confirm' | 'promote' | 'delete'
-
-function timeAgo(iso?: string) {
-  if (!iso) return ''
-  const diff = Date.now() - new Date(iso).getTime()
-  const m = Math.floor(diff / 60000)
-  if (m < 1) return '刚刚'
-  if (m < 60) return `${m}分钟前`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}小时前`
-  return `${Math.floor(h / 24)}天前`
-}
 
 function StepIcon({ status }: { status: TaskStep['status'] }) {
   if (status === 'completed') return <IconCheckOutline16 className={css.stepDone} />
@@ -323,7 +313,7 @@ export function TaskCard({
         </div>
         <div className={css.cardMeta}>
           {steps.length > 0 && <span className={css.progressText}>{done}/{steps.length}</span>}
-          <span className={css.updated}>{timeAgo(task.updatedAt || task.lastActiveAt)}</span>
+          <span className={css.updated}>{timeAgo(task.updatedAt || task.lastActiveAt, '')}</span>
           <span className={css.chevron}>{expanded ? <IconChevronUpOutline14 /> : <IconChevronDownOutline14 />}</span>
         </div>
       </div>
