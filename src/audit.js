@@ -110,6 +110,7 @@ export function shadowRecordFrom(input) {
     // 触发通道的丢弃不在 candidates 里（候选只收提示通道），单列；有界，避免长候选池撑爆一行。
     dropped: dropped.slice(0, 40),
     silence: input.silence || null,
+    ...(input.reconcile ? { reconcile: input.reconcile } : {}),
   }
 }
 
@@ -188,6 +189,7 @@ export function auditRecordFrom(input) {
     // 会话级额度快照与"本轮为什么沉默"：注入频率本身是可观测指标，不该只能靠感觉。
     budget: input.budget || null,
     silence: input.silence || null,
+    ...(input.reconcile ? { reconcile: input.reconcile } : {}),
   }
 }
 

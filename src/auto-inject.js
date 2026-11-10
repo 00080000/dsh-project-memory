@@ -11,6 +11,7 @@ import { stepContent } from './util/task-view.js'
 import { insightMatchText, normalizedTokenOverlap } from './similarity.js'
 import { createVectorCosine, createVectorRerank, vectorItemsFrom } from './vector-index.js'
 import { BoundedMap, SessionCache } from './util/session-cache.js'
+import { createVisibleState, ensureVisible, isBlockVisible, isItemVisible, onSessionEvent, provenanceOf, recordInjected } from './inject-visible.js'
 import { sessionWorkingDir } from './util/session-dir.js'
 import { cfgInsight, GlobalStore, defaultGlobalFile, recordHit } from './insight-store.js'
 import { projectTags } from './project-profile.js'
@@ -576,6 +577,8 @@ class InjectionSessions {
     this.humanText = cache()
     // 本会话是否已通告"记忆根是推定的"（会话工作目录，无项目标记）。状态声明只发一次。
     this.rootNoticed = cache(() => false)
+    // 注入可见性（D3-2）：surface 是真相源，缓存只做 fallback。
+    this.visible = cache(() => createVisibleState())
     this._all = Object.values(this)
   }
 
@@ -596,12 +599,18 @@ function installCallObserver(ctx, sessions) {
     try {
       const sessionId = session && session.id
       if (!sessionId || !event) return
+      if (typeof event.type === 'string' && event.type.startsWith('compaction/')) {
+        sessions.visible.ensure(sessionId).dirty = true
+        return
+      }
       if (event.type === 'user/message') {
         const data = event.data || {}
         const source = data.source
-        // 自注入块（包括迁移前的旧形状）不是人话：放进 humanText 会让下一步拿注入正文再检索（自激）。
-        // 与 lastUserText 共用同一判据。
-        if (isOwnInjection(source)) return
+        // 自注入块不是人话：登记可见性后返回，避免下一步拿注入正文再检索（自激）。
+        if (isOwnInjection(source)) {
+          onSessionEvent(sessions.visible.ensure(sessionId), event)
+          return
+        }
         const kind = source && source.kind
         // 通知 / relay / job / 时间快照都不是人说的；无 source 的老宿主按人话处理（与 lastUserText 同口径）。
         if (kind && kind !== 'user') return
@@ -677,6 +686,13 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   const cwd = sessionWorkingDir(session, { agent: payload?.agent })
   const sessionId = session && session.id
   if (!cwd || !sessionId) return null
+  const visibleState = sessions.visible.ensure(sessionId)
+  const surfaceReady = ensureVisible(session, visibleState)
+  const reconcile = {
+    source: surfaceReady ? 'surface' : 'cache',
+    visibleItems: visibleState.items.size,
+    visibleBlocks: visibleState.blocks.size,
+  }
   // 会话 cwd 命中内置名单 / roots.deny / roots.exclude 时整条链路停在这里：不读 store（历史遗留的
   // 超大 store 光是 load() 就能 OOM），也不写审计——`appendShadowAudit` 里的 mkdirSync 正是把
   // `.dsh-project-memory` 造进家目录、进而触发"目录自标记 → 家目录被锁成项目"的那一步。
@@ -716,9 +732,14 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   const stepNo = sessions.step.ensure(sessionId) + 1
   sessions.step.set(sessionId, stepNo)
   const quota = sessions.quota.ensure(sessionId)
-  const silence = sessionSilence({ cfg, quota, stepNo })
-  // 条目级去重：本会话已注入过、且正文未变的条目不再参与排程（正文被编辑过 → 立刻允许重发）。
-  const skipItem = makeSkipItem(sessions.items.ensure(sessionId), stepNo, cfg.reinjectItemsAfter || 0)
+  // 压缩/历史丢失时跳过冷却：否则注入消息刚被替换掉，还要再等 N 步才补回来。
+  const historyLost = surfaceReady && !visibleState.blocks.size && !visibleState.items.size
+  const silence = sessionSilence({ cfg, quota, stepNo, ignoreCooldown: historyLost })
+  // 条目级去重：surface 可用时看"是否仍在可见上下文里"，否则退回进程缓存。
+  const seenItems = sessions.items.ensure(sessionId)
+  const skipItem = surfaceReady
+    ? makeVisibleSkipItem(visibleState, seenItems, stepNo, cfg.reinjectItemsAfter || 0)
+    : makeSkipItem(seenItems, stepNo, cfg.reinjectItemsAfter || 0)
 
   const built = buildInjection({
     query: query || '',
@@ -766,6 +787,7 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     scoreQuery: built.scoreQuery,
     dropped: built.dropped,
     silence: silence.reason,
+    reconcile,
   }), shadow, root)
 
   // 记忆根通告：根是**推定**的（会话工作目录且无任何项目标记）时，第一次注入前告诉模型"记忆存在哪、
@@ -777,12 +799,13 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   const injectedText = notice ? (built.text ? `${notice}\n${built.text}` : notice) : built.text
   // 条目级冷却（reinjectItemsAfter>0）与块级指纹必须对齐：条目级已放行、块正文没变时，
   // 块级 fp 会把“该重发”判成“没变化”。宿主外部裁剪历史时，这个开关本来就是为了重发。
-  const seen = sessions.items.ensure(sessionId)
+  const seen = seenItems
   const reinjectDue = cfg.reinjectItemsAfter > 0 && built.reasons.some((r) => {
     const rec = seen.get(r.id)
     return rec && Number.isFinite(rec.step) && stepNo - rec.step >= cfg.reinjectItemsAfter
   })
-  if (!injectedText || (!reinjectDue && fp === sessions.lastText.peek(sessionId))) return null
+  const blockSeen = surfaceReady ? isBlockVisible(visibleState, fp) : fp === sessions.lastText.peek(sessionId)
+  if (!injectedText || (!reinjectDue && blockSeen)) return null
   sessions.lastText.set(sessionId, fp)
   const itemCount = built.reasons.length
   const summary = itemCount
@@ -826,9 +849,12 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     dropped: built.dropped,
     budget: { items: quota.items, chars: quota.chars, lastStep: Number.isFinite(quota.lastStep) ? quota.lastStep : null },
     silence: silence.reason,
+    reconcile,
   }), audit, root)
 
-  return { ...decision, messages: [...decision.messages, injectionMessage(injectedText, summary)] }
+  const message = injectionMessage(injectedText, summary, provenanceOf(fp, built.reasons))
+  if (surfaceReady) recordInjected(visibleState, message)
+  return { ...decision, messages: [...decision.messages, message] }
 }
 
 /**
@@ -855,14 +881,24 @@ function rootNotice({ root, sessionId, sessions, config }) {
  * 会话级限流：冷却步数 / 条目条数 / 条目字符。三个任一触顶 → 条目通道整体沉默，
  * 但本轮"本该注入什么"仍会进 dropped（不做静默降级）。
  */
-function sessionSilence({ cfg, quota, stepNo }) {
-  const cooling = Number.isFinite(quota.lastStep) && stepNo - quota.lastStep < cfg.gateCooldownSteps
+function sessionSilence({ cfg, quota, stepNo, ignoreCooldown = false }) {
+  const cooling = !ignoreCooldown && Number.isFinite(quota.lastStep) && stepNo - quota.lastStep < cfg.gateCooldownSteps
   const itemsLeft = Math.max(0, cfg.maxItemsPerSession - quota.items)
   const charsLeft = Math.max(0, cfg.maxItemCharsPerSession - quota.chars)
   const reason = cooling ? 'cooldown'
     : itemsLeft === 0 ? 'session-items'
       : charsLeft === 0 ? 'session-chars' : null
   return { reason, itemsLeft, charsLeft }
+}
+
+/** surface 可见时的条目去重；cooldown 到期仍允许重发。 */
+function makeVisibleSkipItem(state, seen, stepNo, cooldown) {
+  return (it) => {
+    if (!isItemVisible(state, it.id, insightItemHash(it))) return false
+    if (cooldown === 0) return true
+    const rec = seen.get(it.id)
+    return !rec || stepNo - rec.step < cooldown
+  }
 }
 
 /** 条目级去重判据：会话里注入过且正文未变 → 跳过。cooldown=0 永久有效，>0 走步数冷却。 */
@@ -890,15 +926,13 @@ function recordDropped({ sessions, sessionId, dropped, budgetLog }) {
 }
 
 /** 追加的注入消息：必须是带 source 的完整消息——裸 {role,content} 会让宿主读 message.source 时崩。 */
-function injectionMessage(text, summary) {
+function injectionMessage(text, summary, memory) {
+  const source = { kind: SOURCE_KIND, form: 'notice', summary }
+  if (memory) source.memory = memory
   return createUserMessage({
     content: [{ type: 'text', text: `\n\n${INJECT_MARK} ${PLUGIN_NAME} · auto-context\n${text}` }],
     // 宿主对第三方生产者的 `snapshot` 只做追加，不会用后一条替换前一条（只有它自己的 runtime-context
     // 走 replace）。所以这里声明 `notice`：如实表示“这一步注入了什么”，不让 UI 承诺取代先前快照。
-    source: {
-      kind: SOURCE_KIND,
-      form: 'notice',
-      summary,
-    },
+    source,
   })
 }
