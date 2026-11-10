@@ -431,6 +431,19 @@ const DEFAULT_IGNORE = new Set([
   'Pods', 'bower_components', 'jspm_packages', 'logs',
 ])
 
+/**
+ * 项目相对路径是否落在默认忽略的**目录**下（`listProjectFiles` 与懒索引共用的唯一判据）。
+ *
+ * 只检查目录段：最后一段是文件名，根目录下一个叫 `build` 的普通文件仍然要收——否则
+ * `git init` 前后同一棵树的语料会变。按 `/` 或 `\` 分段，Windows 相对路径也能判。
+ * @param {string} rel 项目相对路径（`/` 或 `\` 分隔）
+ * @returns {boolean}
+ */
+export function isDefaultIgnoredRel(rel) {
+  const segs = String(rel || '').split(/[\\/]/)
+  return segs.slice(0, -1).some((seg) => DEFAULT_IGNORE.has(seg))
+}
+
 /** 单次扫描的默认上限。0 / 负数 / 非数字 = 不限制。 */
 export const DEFAULT_SCAN_FILES = 20000
 export const DEFAULT_SCAN_DEPTH = 12
@@ -616,7 +629,7 @@ export function listProjectFiles(root, opts = {}) {
     if (segs.some((s) => s.startsWith('.'))) continue
     // 与 walkDir 同口径：`DEFAULT_IGNORE` 只作用于**目录段**，根目录下一个叫 `build`
     // 的普通文件仍然要收（此前对文件名也判，`git init` 前后语料会变）。
-    if (segs.slice(0, -1).some((s) => DEFAULT_IGNORE.has(s))) continue
+    if (isDefaultIgnoredRel(rel)) continue
     const abs = path.join(root, rel)
     // 与 walkDir 同一判据：exclude 是子树级前缀。必须在 maxDepth 之前——被排除文件不该把
     // 扫描标成 truncated（否则本轮不清理"未见到的旧条目"）。
@@ -647,9 +660,33 @@ export function listProjectFiles(root, opts = {}) {
   return { files, truncated: capped, capped, skipped: [...skipped].sort(), unreadable: [] }
 }
 
+/**
+ * 从 `dir` 向上找最近的 git 工作区（`.git` 目录，或 worktree/submodule 的 `.git` 文件）。
+ * 项目根是某个仓库的子目录时，`.git` 不在 root 上；但 `git -C root check-ignore` 本身会
+ * 向上找到仓库，所以这里只负责回答"值不值得起 git 进程"。纯 fs 查找，非 git 根不 spawn。
+ * 到文件系统根为止；`dirname(dir) === dir` 同时覆盖 Windows 盘符根（`C:\`），不会死循环。
+ * @param {string} dir
+ * @returns {string|null} 含 `.git` 的目录（不一定是仓库顶层，但足够判断"在仓库里"）
+ */
+function findGitWorkTree(dir) {
+  if (typeof dir !== 'string' || !dir) return null
+  let cur
+  try {
+    cur = path.resolve(dir)
+  } catch {
+    return null
+  }
+  for (;;) {
+    if (existsSync(path.join(cur, '.git'))) return cur
+    const parent = path.dirname(cur)
+    if (parent === cur) return null
+    cur = parent
+  }
+}
+
 /** 单个文件是否被 git 忽略（仅 git 仓库；非 git 目录返回 false）。 */
 export function isGitIgnored(root, filePath) {
-  if (!root || !filePath || !existsSync(path.join(root, '.git'))) return false
+  if (!root || !filePath || !findGitWorkTree(root)) return false
   try {
     execFileSync('git', ['-C', root, 'check-ignore', '-q', '--', relativePath(root, filePath)], {
       stdio: 'ignore',
@@ -673,7 +710,9 @@ export function isGitIgnored(root, filePath) {
 export function isGitIgnoredBatch(root, rels) {
   const ignored = new Set()
   if (!root || !rels || rels.length === 0) return ignored
-  if (!existsSync(path.join(root, '.git'))) return ignored
+  // 只判 `.git` 在不在：项目根可能是仓库的子目录（`.gitignore` 在父仓），此时
+  // `git -C root` 会向上找仓库；先做纯 fs 的向上查找，避免非 git 目录每批起一个进程。
+  if (!findGitWorkTree(root)) return ignored
   if (rels.length === 1) {
     if (isGitIgnored(root, path.join(root, rels[0]))) ignored.add(rels[0])
     return ignored

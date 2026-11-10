@@ -72,6 +72,11 @@ export class WatchManager {
     this._unreadableWarned = new Set()
     /** 已就「跳过了嵌套项目根」告警过的根，只提示一次。 */
     this._nestedStoreWarned = new Set()
+    /**
+     * 已就「根在运行期消失」告警过的根，只提示一次。根回来时从这里删掉，
+     * 这样它**下一次**再消失还会再告警一次（长期挂着的根不该每轮刷屏）。
+     */
+    this._missingWarned = new Set()
     /** 正在跑回合的会话 id 集合：**多会话**下任一在跑就算活跃（见 setSessionActive）。 */
     this._activeSessions = new Set()
     this._active = false
@@ -281,7 +286,20 @@ export class WatchManager {
     // 根可能在运行期被删除/rename。这里**不能**继续走到 storeFor() → save()：
     // save() 会把 !formatWritten 当脏并 mkdirSync，把删掉的根重新创建成一个空目录。
     // 暂时读不到的挂载点同样跳过本轮；它回来后会继续按原逻辑扫描。
-    if (!existsSync(root)) return false
+    if (!existsSync(root)) {
+      // 只告警、不清理：snapshot / store entries / watch.json 全部保留（根回来即恢复）。
+      // 同一根只提示一次，避免长期挂着的根每轮刷屏；它回来时（见下方）会从集合里移除。
+      if (!this._missingWarned.has(root)) {
+        this._missingWarned.add(root)
+        console.warn(
+          `[dsh-project-memory] watch root ${root} does not exist; keeping its existing index and waiting for it to come back. ` +
+            'The directory and its store are not recreated; polling continues.',
+        )
+      }
+      return false
+    }
+    // 根回来了：清掉「已告警」标记，下一次再消失会重新提示一次。
+    this._missingWarned.delete(root)
     const seen = new Set()
     const updates = []
     // rel → 本轮采集的 mtime:size。提交成功后才落进快照；CAS 失败的条目下轮重试。

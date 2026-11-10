@@ -7,6 +7,7 @@ import {
   findProjectRootWithSource,
   isGitIgnored,
   isGitIgnoredBatch,
+  isDefaultIgnoredRel,
   isHiddenPath,
   memoryRootFor,
   relativePath,
@@ -104,14 +105,16 @@ export async function indexObservedBatch(config, items, watchManager = null) {
         results.set(filePath, false)
         continue
       }
-      const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
-      const rel = storeKey(relativePath(root, filePath))
-      // 隐藏路径与扫描口径一致：`.env` / `.github/**` 这类默认是配置/状态/密钥，不因模型
-      // 偶然读了一次就进语料；要索引就显式 `index_doc`。
-      if (isHiddenPath(rel)) {
+      const relRaw = relativePath(root, filePath)
+      // 与 index_repo / watch 的扫描口径完全一致：隐藏路径与内置忽略目录（`node_modules` /
+      // `dist` / `vendor` …）都不因"模型偶然读了一次"就进语料；要索引就显式 `index_doc`。
+      // 判在 store 读盘与 statSync 之前：被忽略的文件连快路径都不该走（省掉无谓 IO）。
+      if (isHiddenPath(relRaw) || isDefaultIgnoredRel(relRaw)) {
         results.set(filePath, false)
         continue
       }
+      const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+      const rel = storeKey(relRaw)
       const record = store.fileRecord(rel)
       const st = statSync(filePath)
       // 快路径：mtime + size 都没动 → 连 git 都不用问。这是"重复读同一个文件"的主路径。
@@ -120,7 +123,7 @@ export async function indexObservedBatch(config, items, watchManager = null) {
         results.set(filePath, false)
         continue
       }
-      candidates.push({ store, root, rel, filePath, kind, record, size: st.size, mtimeMs: st.mtimeMs, gitRel: relativePath(root, filePath) })
+      candidates.push({ store, root, rel, filePath, kind, record, size: st.size, mtimeMs: st.mtimeMs, gitRel: relRaw })
       results.set(filePath, false)
     } catch {
       results.set(filePath, false)
