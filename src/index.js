@@ -14,6 +14,7 @@ import { setupTaskbridge } from './setup/taskbridge.js'
 import { listTasksTool, selectTaskTool, archiveTaskTool, showTaskPanelTool } from './tools/task-tools.js'
 import { lessonTool } from './tools/lesson-tools.js'
 import { installAutoInject } from './auto-inject.js'
+import { installProjectMemoryService } from './project-memory-service.js'
 import { rememberRoute } from './llm-route.js'
 import { workflowCommandDefinition } from './commands/workflow.js'
 import { setupSkill } from './skill.js'
@@ -237,6 +238,10 @@ export function apply(ctx, config) {
   ctx.tools.register(lessonTool(config))
   ctx.tools.register(watchRepoTool(watchManager, config))
   ctx.tools.register(statsTool(config))
+
+  // 原生服务 seam（D3-1）：宿主/其他插件可通过 `ctx.get('projectMemory')` 消费召回与写入。
+  // 老宿主没有 `ctx.provide` 时 install 返回 null 并安全跳过，不影响其余注册与 apply 的返回值。
+  installProjectMemoryService(ctx, config)
 
   // 注册 agent/pre-step 监听，向每步请求追加记忆消息（默认开；异常/无会话 cwd → 交回默认决策）。
   installAutoInject(ctx, config)
