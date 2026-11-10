@@ -10,7 +10,7 @@ import { normalizedTokenOverlap, findBestOverlapMatch, insightMatchText } from '
 import { acquireDirLock, storeKey, writeJsonAtomic } from './util/fs.js'
 import { debugPersistence } from './util/persist.js'
 import { trackDirty, untrackDirty } from './util/flush.js'
-import { backfillDerivedTriggers } from './readiness.js'
+import { backfillDerivedTriggers, deriveTrigger } from './readiness.js'
 import { vectorText } from './vector-index.js'
 import { tokenize } from './util/search.js'
 import { isRecord, isoMs, newerIso } from './util/value.js'
@@ -189,12 +189,42 @@ function putField(item, key, next, replaced) {
 const MERGE_FIELDS = ['title', 'pattern', 'fix', 'choice', 'reason', 'problem', 'solution', 'body']
 
 /**
+ * `deriveTrigger` 实际读取、且 store 能改写的正文字段。派生词只是提示通道的检索词缓存：
+ * 正文一变就必须重算，否则改完标题还拿旧关键词召回。元数据（confidence/files/tags/hitCount…）
+ * 不在其中——只动它们时派生词保持原样。
+ */
+const DERIVED_SOURCE_FIELDS = [...MERGE_FIELDS, 'steps']
+
+/** 派生源字段快照：用值的序列化判"真的改了"，避免把同值写入当成正文变更。 */
+function derivedSourceSnapshot(item) {
+  return JSON.stringify(DERIVED_SOURCE_FIELDS.map((f) => item[f]))
+}
+
+/**
+ * 正文变更后重算派生词（只写 `triggerDerived`，绝不碰作者手写的 `trigger`）。
+ * 重算结果为空时**删除**而不是保留旧值：宁可不召回，也不用过期词召回。
+ * @param {object} item 条目（原地修改）
+ * @returns {boolean} 是否留下了非空派生词
+ */
+function refreshDerivedTrigger(item) {
+  const derived = deriveTrigger(item)
+  if (!derived.keywords.length && !derived.actions.length && !derived.paths.length) {
+    // 旧值一律清掉：空派生继续留着就是审计 #17 的过期召回。
+    delete item.triggerDerived
+    return false
+  }
+  item.triggerDerived = derived
+  return true
+}
+
+/**
  * 把 base 合并进既有条目：**正文取新值**（旧值进 `prev`），成员/文件/符号并集，置信取高，记命中。
  * 提升路径只传成员/文件/符号/置信，不传正文字段，语义未变。
  * @returns {{item: object, replaced: string[]}} 被改动的字段名（供调用方回报）
  */
 export function mergeInto(existing, base, cfg, nowIso) {
   const now = nowIso || new Date().toISOString()
+  const before = derivedSourceSnapshot(existing)
   existing.sourceTaskIds = unionStrings(existing.sourceTaskIds, base.sourceTaskIds)
   existing.files = unionStrings(existing.files, base.files)
   existing.symbols = unionStrings(existing.symbols, base.symbols)
@@ -206,6 +236,8 @@ export function mergeInto(existing, base, cfg, nowIso) {
     putField(existing, f, String(b), replaced)
   }
   if (Array.isArray(base.steps) && base.steps.length) putField(existing, 'steps', base.steps.map(String), replaced)
+  // 正文变了就重算派生词（作者手写的 trigger 不动）；只并成员/文件/置信时快照不变，跳过。
+  if (derivedSourceSnapshot(existing) !== before) refreshDerivedTrigger(existing)
   if (base.trigger && typeof base.trigger === 'object') putField(existing, 'trigger', base.trigger, replaced)
   existing.confidence = Math.max(num(existing.confidence, 0.5), num(base.confidence, 0.5))
   existing.hitCount = (existing.hitCount || 0) + 1
@@ -223,6 +255,7 @@ const UPDATE_ARRAYS = ['steps', 'files', 'symbols', 'tags']
 export function applyUpdate(item, raw, nowIso) {
   const now = nowIso || new Date().toISOString()
   const replaced = []
+  const before = derivedSourceSnapshot(item)
   const oldKind = item.kind
   for (const f of UPDATE_FIELDS) {
     const v = raw[f]
@@ -250,6 +283,8 @@ export function applyUpdate(item, raw, nowIso) {
   // 改 kind 时清掉旧 kind 的专属字段（procedure 保留通用 body）：否则 lesson→decision 后
   // `fix` 会盖在 `choice` 前面进入正文/摘要（insightBodyText 的优先级是 fix > choice > …）。
   pruneKindFields(item, oldKind)
+  // 正文（含 steps、切 kind 时被清掉的旧字段）真的变了才重算派生词；改 confidence 等元数据不碰。
+  if (derivedSourceSnapshot(item) !== before) refreshDerivedTrigger(item)
   item.updatedAt = now
   if (item.archived) item.archived = false
   // 显式编辑一条草稿 = 作者确认：reflection 产出的 draft 可被 save_lesson 带 id 直接改正文并转正。
