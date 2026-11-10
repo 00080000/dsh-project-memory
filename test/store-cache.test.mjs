@@ -24,6 +24,7 @@ import {
   _storeCacheKeysForTest as cacheKeys,
   _stripPersistedDerivedForTest as stripDerived,
 } from '../src/store.js'
+import { shardItem } from './shard-format.mjs'
 import { WatchManager } from '../src/watch.js'
 import { memoryRootFor } from '../src/util/fs.js'
 
@@ -318,7 +319,7 @@ console.log('\n== 剥离派生字段：按非派生键重建，不用 delete（0
   check('加载即剥离（内存里没有派生字段）', !('linkedSymbols' in loaded) && !('searchText' in loaded) && !('typeSig' in loaded))
   check('加载后事实字段可读', loaded.id === 'f.ts#1' && loaded.text === 'export function f() {}')
   legacyStore.save()
-  const onDisk = JSON.parse(readFileSync(shardFile, 'utf8')).entries[0]
+  const onDisk = shardItem(legacyDir, 'f.ts').entries[0]
   check('下一次 save 把磁盘上的派生字段也压实', !('linkedSymbols' in onDisk) && !('searchText' in onDisk) && !('typeSig' in onDisk))
   check('压实后磁盘条目仍保有事实字段', onDisk.id === 'f.ts#1' && onDisk.title === 'f (function)')
 

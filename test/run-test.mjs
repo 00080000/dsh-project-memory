@@ -5,6 +5,7 @@ import path from 'node:path'
 import { chunkText } from '../src/chunker.js'
 import { scanSymbols } from '../src/symbols.js'
 import { ProjectMemoryStore } from '../src/store.js'
+import { shardItem, shardItems } from './shard-format.mjs'
 import { memoryRootFor, resolveIndexRoot, sha256OfFile } from '../src/util/fs.js'
 import { indexDocTool } from '../src/tools/index-doc.js'
 import { indexRepoTool } from '../src/tools/index-repo.js'
@@ -34,10 +35,7 @@ function linkedIdsOf(store, docId, limit = 50) {
 /** 直接从磁盘 shard 聚合 entry，模拟"另一个进程重新加载"（绕过进程内 storeCache）。 */
 function storeLikeFromShards(memDir) {
   const entries = []
-  for (const name of readdirSync(path.join(memDir, 'shards'))) {
-    const shard = JSON.parse(readFileSync(path.join(memDir, 'shards', name), 'utf8'))
-    if (Array.isArray(shard.entries)) entries.push(...shard.entries)
-  }
+  for (const item of shardItems(memDir)) if (Array.isArray(item.entries)) entries.push(...item.entries)
   return { allEntries: () => entries, entriesVersion: 1 }
 }
 
@@ -284,9 +282,9 @@ console.log('\n== sharded store layout & migration ==')
   check('migration keeps files and entries in memory', migrated.fileRecord('docs/a.md')?.sha256 === 'aa' && (migrated.entries['docs/a.md'] || []).length === 1)
   check('migration writes format marker', existsSync(path.join(migDir, 'format.json')))
   check('migration removes legacy entries.json / index.json', !existsSync(path.join(migDir, 'entries.json')) && !existsSync(path.join(migDir, 'index.json')))
-  const shardFiles = readdirSync(path.join(migDir, 'shards')).filter((n) => n.endsWith('.json'))
-  check('migration writes one shard per file', shardFiles.length === 1)
-  const shard = JSON.parse(readFileSync(path.join(migDir, 'shards', shardFiles[0]), 'utf8'))
+  const migratedShards = shardItems(migDir)
+  check('migration keeps one record per file', migratedShards.length === 1)
+  const shard = migratedShards[0]
   check('shard is self-describing', shard.relPath === 'docs/a.md' && shard.record.sha256 === 'aa' && shard.entries.length === 1)
 
   migrated.removeFile('docs/a.md')
@@ -623,9 +621,8 @@ console.log('\n== links are resolved at read time, not persisted ==')
   // 落盘只留事实：链接、searchText、typeSig 都是派生/中间量，不应出现在任何 shard 里。
   let sawEntries = 0
   let derivedOnDisk = 0
-  for (const name of readdirSync(shardDir)) {
-    const shard = JSON.parse(readFileSync(path.join(shardDir, name), 'utf8'))
-    for (const e of Array.isArray(shard.entries) ? shard.entries : []) {
+  for (const item of shardItems(lpMemDir)) {
+    for (const e of Array.isArray(item.entries) ? item.entries : []) {
       sawEntries++
       if ('linkedSymbols' in e || 'searchText' in e || 'typeSig' in e) derivedOnDisk++
     }
@@ -653,10 +650,8 @@ console.log('\n== derived fields live in memory, not on disk ==')
   st.markFile('docs/a.md', { sha256: 'h', size: 1, type: 'doc', indexedAt: new Date().toISOString() })
   st.save()
   let onDisk = null
-  for (const name of readdirSync(path.join(dir, 'shards'))) {
-    const shard = JSON.parse(readFileSync(path.join(dir, 'shards', name), 'utf8'))
-    if (shard.relPath === 'docs/a.md') onDisk = shard.entries[0]
-  }
+  const found = shardItem(dir, 'docs/a.md')
+  if (found) onDisk = found.entries[0]
   check('searchText 不写盘', Boolean(onDisk) && !('searchText' in onDisk))
   // 内存里按需物化（供 rankEntriesStreaming 用）
   delete st.entries['docs/a.md'][0].searchText
@@ -699,8 +694,8 @@ console.log('\n== legacy shards compact themselves over saves ==')
   const st = new ProjectMemoryStore(dir).load()
   check('加载即剥离内存里的派生字段并排队', !('searchText' in st.entries[rel][0]) && st.pendingCompaction === 1)
   st.save()
-  const onDisk = JSON.parse(readFileSync(path.join(dir, 'shards', shardName), 'utf8'))
-  check('下一次 save 自动压实该分片', !('searchText' in onDisk.entries[0]) && !('linkedSymbols' in onDisk.entries[0]))
+  const onDisk = shardItem(dir, rel)
+  check('下一次 save 自动压实该分片', onDisk && !('searchText' in onDisk.entries[0]) && !('linkedSymbols' in onDisk.entries[0]))
   check('压实队列清空', st.pendingCompaction === 0)
 }
 

@@ -8,6 +8,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { pathToFileURL } from 'node:url'
 import { ProjectMemoryStore } from '../src/store.js'
+import { shardItem } from './shard-format.mjs'
 
 const run = promisify(execFile)
 const root = mkdtempSync(path.join(tmpdir(), 'pm-concurrent-'))
@@ -46,10 +47,10 @@ await run(process.execPath, ['--input-type=module', '-e', shardChild, shardRoot,
 parent.markFile('a.js', { sha256: 'local-old', size: 1, type: 'code', indexedAt: '2026-05-01T00:00:00.000Z' })
 parent.save()
 assert.equal(parent.files['a.js'].sha256, 'remote', '磁盘版本更新时必须采用对方，而不是本地静默覆盖')
-assert.equal(JSON.parse(readFileSync(path.join(shardRoot, 'shards', createHash('sha256').update('a.js').digest('hex') + '.json'), 'utf8')).record.sha256, 'remote')
+assert.equal(shardItem(shardRoot, 'a.js').record.sha256, 'remote')
 parent.markFile('a.js', { sha256: 'local-new', size: 1, type: 'code', indexedAt: '2026-07-01T00:00:00.000Z' })
 parent.save()
 assert.equal(parent.files['a.js'].sha256, 'local-new', '本地版本更新时必须写入')
-assert.equal(JSON.parse(readFileSync(path.join(shardRoot, 'shards', createHash('sha256').update('a.js').digest('hex') + '.json'), 'utf8')).record.sha256, 'local-new')
+assert.equal(shardItem(shardRoot, 'a.js').record.sha256, 'local-new')
 console.log('  ok concurrent shard conflict converges by indexedAt')
 console.log('ALL CHECKS PASSED (2 passed)')

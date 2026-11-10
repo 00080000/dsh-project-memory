@@ -85,8 +85,8 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 
 ```
 .dsh-project-memory/
-  format.json      布局标记（v2，分片式）
-  shards/          每个被索引源文件一个自描述 JSON —— 写入只落脏分片
+  format.json      布局标记（v3，32KB 桶）
+  shards/          bucket-*.json，每桶约 32KB —— 写入只重写受影响的那一个桶
   watch.json       被监听根目录
   tasks.json       TaskBridge 任务实体（跨会话）
   binding.json     当前会话 ↔ 任务绑定
@@ -269,7 +269,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 - **短时文件锁，而不是嵌入式数据库** — 每次保存只在读改写期间持有排他的 `.write.lock`（解析在锁外完成），对方忙时最多**同步等 15s**（写路径的正确性靠等到锁，不靠后台重试）；仍失败会登记进退出 flush，关 dsh / 卸载插件时再同步写一次。全程**默认不打扰用户**——记忆写入幂等、失败成本低；需要排查时设 `DSH_PROJECT_MEMORY_DEBUG=1` 才会打印一行。锁内容带 `pid` / `host` / `token`：同机持有者活着就绝不抢，release 校验所有权、不删别人的锁；崩溃残留的同机死锁按 pid 立即回收。两个 dsh 实例因此可以共用一个存储。没有 WAL、没有常驻进程、没有原生依赖。
 - **Watch：事务外计算，事务内提交** — 不持锁解析，也不用 `fs.watch`：轮询 + mtime/内容哈希在网络盘、Docker 卷、WSL 上行为一致，没有 `fs.watch` 的重复触发/漏事件问题。
-- **损坏分片隔离，不自动修复** — 解析失败的分片改名、只重索引该文件；不引入 WAL 或嵌入式数据库，那会带来原生依赖、锁竞争与它们自己的新故障模式。
+- **损坏桶隔离，不自动修复** — 解析失败的桶改名、桶内文件重新索引；不引入 WAL 或嵌入式数据库，那会带来原生依赖、锁竞争与它们自己的新故障模式。
 - **向量只重排，不做排序主力** — 在**改写成不含原词**的查询集上，纯向量替换差于 BM25（hit@10 **53% vs 69%**），加权融合只在**小 k** 上更好（hit@3 **53% vs 50%**），所以可选层只重排经验/洞察两层、绝不参与闸门。词法检索在本插件针对的查询上依然够用：真实项目 29 条标注查询的文件级 hit@5 为 **96.6%**，整 chunk 词项把文档词项覆盖从 **27.3% 提到 100%** 且 MRR 不变（**0.958** vs **0.955**）。
 - **索引确定且不调用模型** — 索引期不调模型、查询期也不翻译：前者会让同一份文档两次索引结果不同，后者有一个硬失败模式（译错 = 零召回）；规则 + 符号链接已经覆盖常见情况，且离线可用。
 - **面向模型的记忆：agent 自己写，不把人放进回路** — 记忆的消费方是 agent，而 agent 通常是无头的，只在有人点卡片时才升级的记忆等于永远不会升级。`draft` 是「来源标记 + 佐证门槛」而不是审批队列。
@@ -283,7 +283,7 @@ node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] 
 
 ```bash
 npm install
-npm test                    # 1041 项测试
+npm test                    # 1045 项测试
 npm run eval:injection      # 合成池 P/R：精确率 0.93 / 召回率 1.00，另有 3 个 hint-only 场景
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # 用你自己的 store 重放；对照组是硬闸门
 npm run selfcheck:triggers  # 哪些条目还推得动、哪些声明是死的（读你本地的 store）

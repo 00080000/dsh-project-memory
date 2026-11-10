@@ -87,8 +87,8 @@ Project- and task-scope memory is stored per project and follows the codebase: c
 
 ```
 .dsh-project-memory/
-  format.json      layout marker (v2, sharded)
-  shards/          one self-describing JSON per indexed source file — writes touch only dirty shards
+  format.json      layout marker (v3, 32KB buckets)
+  shards/          bucket-*.json, ≈32KB each — a write rewrites only the affected bucket(s)
   watch.json       watched roots
   tasks.json       TaskBridge task entities (cross-session)
   binding.json     current session ↔ task binding
@@ -271,7 +271,7 @@ Pass `--queries your-queries.json` to run the labeled-set method (hit@5 / hit@10
 
 - **A short filesystem lock, not an embedded database** — each save holds an exclusive `.write.lock` only for the read-modify-write (parsing stays outside it) and waits synchronously for up to 15 s for a busy peer (correctness comes from acquiring the lock, not from background retries); a write that still cannot land is registered for a synchronous flush when the process exits or the plugin is disposed, **without interrupting the user** — memory writes are idempotent and cheap to redo; set `DSH_PROJECT_MEMORY_DEBUG=1` for a one-line diagnostic. The lock carries `pid` / `host` / `token`: a live same-host holder is never preempted, release verifies ownership, and a crashed same-host lock is reclaimed immediately. Two dsh instances can share one store. No WAL, no daemon, no native dependency.
 - **Watch: compute outside, commit inside** — no lock is held during parsing, and polling with mtime + content hash is used instead of `fs.watch`: it behaves identically on network drives, Docker volumes and WSL, without duplicate-trigger or missed-event failure modes.
-- **Corrupt shards are quarantined, not repaired** — a shard that fails to parse is renamed and only that file is re-indexed, so there is no WAL or embedded database adding native dependencies, lock contention and failure modes of their own.
+- **Corrupt buckets are quarantined, not repaired** — a bucket that fails to parse is renamed and its files are re-indexed, so there is no WAL or embedded database adding native dependencies, lock contention and failure modes of their own.
 - **Vectors re-rank, they do not rank** — on a paraphrased-query set, pure vector replacement is worse than BM25 (hit@10 **53% vs 69%**) while weighted fusion helps at small k (hit@3 **53% vs 50%**), so the optional layer only re-orders the experience/insight layers and never gates. Lexical retrieval still answers the queries this plugin targets: on a real project with 29 labelled queries, file-level hit@5 is **96.6%**, and whole-chunk terms raise document term coverage from **27.3% to 100%** with MRR unchanged (**0.958** vs **0.955**).
 - **Indexing is deterministic and model-free** — a model at index time would make two indexings of one document differ, and a wrong translation at query time means zero recall; rules plus symbol links cover the common cases and work offline.
 - **Model-facing memory: the agent writes, no human in the loop** — the consumer is the agent, usually headless, so memory that only promotes when someone clicks a card would never promote at all. `draft` is a provenance marker plus an evidence threshold, not an approval queue.
@@ -285,7 +285,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 1041 tests
+npm test                    # 1045 tests
 npm run eval:injection      # synthetic pool P/R: precision 0.93 / recall 1.00, + a 3-scenario hint-only group
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)

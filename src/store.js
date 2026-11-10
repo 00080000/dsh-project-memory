@@ -349,6 +349,35 @@ function shardRelPath(dir, rel) {
   return path.join(dir, SHARDS_DIR, createHash('sha256').update(rel).digest('hex') + '.json')
 }
 
+const BUCKET_TARGET_BYTES = 32 * 1024
+const BUCKET_COUNT_MAX = 4096
+
+/** 目标尺寸桶的路径；`bucketCount` 变化时索引会整体重排。 */
+function bucketRelPath(dir, index) {
+  return path.join(dir, SHARDS_DIR, `bucket-${String(index).padStart(5, '0')}.json`)
+}
+
+/** 源文件 → 唯一桶：sha256(relPath) 前 8 字节 mod bucketCount。 */
+function bucketIndexOf(rel, count) {
+  if (count <= 1) return 0
+  const digest = createHash('sha256').update(rel).digest()
+  return digest.readUInt32BE(0) % count
+}
+
+function chooseBucketCount(bytes) {
+  return Math.max(1, Math.min(BUCKET_COUNT_MAX, Math.ceil(bytes / BUCKET_TARGET_BYTES)))
+}
+
+/** 全量重排时的体积估计（只在迁移/扩容时跑一次，不进出日常 save）。 */
+function estimateShardBytes(files, entries) {
+  let total = 0
+  for (const rel of Object.keys(files)) {
+    total += 96 + rel.length + JSON.stringify(files[rel]).length
+    total += JSON.stringify((entries[rel] || []).map(withoutPersistedDerived)).length
+  }
+  return total
+}
+
 /**
  * watch.json 去重：Windows/macOS 上 `D:\proj` 与 `d:\PROJ` 是同一个物理目录，字符串却不同。
  * 同一目录写两条会让 watch 每轮扫两遍、`watch_repo({watch:false})` 也只删掉其中一条（另一条
@@ -390,6 +419,13 @@ export class ProjectMemoryStore {
     this.watchlist = []
     this._dirtyShards = new Set()
     this._removedShards = new Set()
+    /** 分片布局：v3 = 目标尺寸哈希桶；v2 = 一文件一 shard（迁移期）。 */
+    this._layout = 'v3'
+    this._bucketCount = 0
+    this._bucketSize = BUCKET_TARGET_BYTES
+    this._needsShardRewrite = false
+    this._formatDoc = null
+    this._formatDirty = false
     /** 加载时的分片 hash：跨进程写冲突检测的基准。 */
     this._baseFileSha = new Map()
     /** 本地删除留痕：合并另一进程的磁盘状态时不能把它们复活。 */
@@ -633,24 +669,50 @@ export class ProjectMemoryStore {
   }
 
   _loadSharded() {
+    const formatDoc = loadJson(path.join(this.dir, FORMAT_FILE), null)
+    this._formatDoc = formatDoc
+    if (formatDoc && typeof formatDoc.version === 'number' && formatDoc.version >= 3) {
+      this._layout = 'v3'
+      this._bucketCount = Number.isFinite(formatDoc.bucketCount)
+        ? Math.max(1, Math.min(BUCKET_COUNT_MAX, Math.floor(formatDoc.bucketCount)))
+        : 0
+      this._bucketSize = Number.isFinite(formatDoc.bucketSize) ? formatDoc.bucketSize : BUCKET_TARGET_BYTES
+    } else {
+      this._layout = formatDoc ? 'v2' : 'v3'
+      this._bucketCount = 0
+      this._needsShardRewrite = formatDoc !== null
+    }
     let shardNames = []
     try {
       shardNames = readdirSync(path.join(this.dir, SHARDS_DIR)).filter((n) => n.endsWith('.json'))
     } catch {
       shardNames = []
     }
+    let sawLegacy = false
     for (const name of shardNames) {
       const counter = { chars: 0 }
-      const shard = loadJson(path.join(this.dir, SHARDS_DIR, name), null, counter)
-      if (!shard || typeof shard.relPath !== 'string' || !isRecord(shard.record)) continue
-      this._setFileTextChars(shard.relPath, counter.chars)
-      this.files[shard.relPath] = shard.record
-      this._baseFileSha.set(shard.relPath, shard.record.sha256 ?? null)
-      // 畸形 shard（entries 不是数组）不能让 `for…of` 抛错，否则一个坏文件会拖垮每次读取。
-      const list = Array.isArray(shard.entries) ? shard.entries.filter(isRecord) : []
-      // 老分片带着派生字段：内存里立刻剥掉，并排队等 save() 把磁盘上也压实。
-      if (list.some((e) => PERSISTED_DERIVED.some((k) => k in e))) this._compactQueue.add(shard.relPath)
-      this.entries[shard.relPath] = list.map(stripPersistedDerived)
+      const doc = loadJson(path.join(this.dir, SHARDS_DIR, name), null, counter)
+      if (!doc) continue
+      // v3 是 { items: [...] }；v2 是一文件一 shard 的 { relPath, record, entries }。
+      const items = Array.isArray(doc.items) ? doc.items : [doc]
+      for (const item of items) {
+        if (!item || typeof item.relPath !== 'string' || !isRecord(item.record)) continue
+        // 迁移崩溃窗口里同一 rel 可能同时出现在旧分片与新桶：取 indexedAt 更新的一份。
+        const prev = this.files[item.relPath]
+        if (prev && (Date.parse(prev.indexedAt || '') || 0) > (Date.parse(item.record.indexedAt || '') || 0)) continue
+        this.files[item.relPath] = item.record
+        this._baseFileSha.set(item.relPath, item.record.sha256 ?? null)
+        // 畸形 shard（entries 不是数组）不能让 `for…of` 抛错，否则一个坏文件会拖垮每次读取。
+        const list = Array.isArray(item.entries) ? item.entries.filter(isRecord) : []
+        this._setFileTextChars(item.relPath, Array.isArray(doc.items) ? JSON.stringify(item).length : counter.chars)
+        if (list.some((e) => PERSISTED_DERIVED.some((k) => k in e))) this._compactQueue.add(item.relPath)
+        this.entries[item.relPath] = list.map(stripPersistedDerived)
+      }
+      if (!Array.isArray(doc.items)) sawLegacy = true
+    }
+    // v2/混合布局/桶数缺失：下一次 save 做一次全量重排。
+    if (sawLegacy || this._layout !== 'v3' || this._bucketCount === 0) {
+      if (Object.keys(this.files).length > 0) this._needsShardRewrite = true
     }
     this._entriesVersion++
     this.experience = this._loadJson(path.join(this.dir, EXPERIENCE_FILE), [])
@@ -909,6 +971,7 @@ export class ProjectMemoryStore {
   /** 是否有待落盘的变更；逐出缓存前用它避免为干净 store 触发 save 的旁路副作用。 */
   hasDirty() {
     return this._compactQueue.size > 0
+      || this._needsShardRewrite
       || this._dirtyShards.size > 0
       || this._removedShards.size > 0
       || this._dirtyInsights
@@ -932,6 +995,7 @@ export class ProjectMemoryStore {
     const hasContent = this.hasContent
     const dirty =
       compacting ||
+      this._needsShardRewrite ||
       this._dirtyShards.size > 0 ||
       this._removedShards.size > 0 ||
       this._dirtyInsights ||
@@ -994,72 +1058,7 @@ export class ProjectMemoryStore {
     try {
       // 先合并另一进程已落盘的小文档，再写；分片按“加载时 hash”做冲突检测。
       this._mergeAuxFromDisk()
-      if (!this._formatWritten && !this._legacyBlocked) {
-        writeJsonAtomic(path.join(this.dir, FORMAT_FILE), { version: 2, layout: 'sharded' }, { ensureDir: false })
-        this._formatWritten = true
-      }
-      // 存量压实：≤0.5.10 的分片带派生字段，只有重写才消失。每轮最多 COMPACT_BATCH 个，
-      // 让升级后的 store 在后续任意一次 save 里自动收敛。
-      let compactBudget = COMPACT_BATCH
-      for (const rel of this._compactQueue) {
-        if (compactBudget <= 0) break
-        compactBudget--
-        this._compactQueue.delete(rel)
-        if (this.files[rel]) this._dirtyShards.add(rel)
-      }
-      for (const rel of this._dirtyShards) {
-        if (this.files[rel]) {
-          const nextSha = this.files[rel].sha256 ?? null
-          const base = this._baseFileSha.get(rel) ?? null
-          const disk = this._shardDiskRecord(rel)
-          // 磁盘分片加载后被别的进程改过：按 indexedAt 收敛，本地更新则覆盖，对方更新则读回内存。
-          if (disk.exists && disk.sha !== base && disk.sha !== nextSha) {
-            const localAt = Date.parse(this.files[rel].indexedAt || '') || 0
-            const diskAt = Date.parse(disk.record?.indexedAt || '') || 0
-            if (localAt > diskAt) {
-              this._ensureShardsDir()
-              writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: this.files[rel], entries: (this.entries[rel] || []).map(withoutPersistedDerived) }, { ensureDir: false })
-              this._baseFileSha.set(rel, nextSha)
-              continue
-            }
-            this._adoptDiskShard(rel, disk)
-            this._warnConflict(rel)
-            continue
-          }
-          this._ensureShardsDir()
-          writeJsonAtomic(shardRelPath(this.dir, rel), { relPath: rel, record: this.files[rel], entries: (this.entries[rel] || []).map(withoutPersistedDerived) }, { ensureDir: false })
-          this._baseFileSha.set(rel, nextSha)
-        } else {
-          this._removedShards.add(rel)
-        }
-      }
-      this._dirtyShards.clear()
-      for (const rel of this._removedShards) {
-        const base = this._baseFileSha.get(rel) ?? null
-        const disk = this._shardDiskRecord(rel)
-        if (disk.exists && disk.sha !== base) {
-          // 删除与另一进程的更新撞车：没有删除时间戳可比，保守采用对方版本，让内存与磁盘一致。
-          this._adoptDiskShard(rel, disk)
-          this._warnConflict(rel)
-          this._removedShards.delete(rel)
-          continue
-        }
-        try {
-          // 删除也要对 Windows 瞬时占用重试；失败时**保留删除意图**，否则下一次 load 会把
-          // 这个 shard 里的旧条目复活（`unlinkSync` 的 EPERM 曾经被 catch 成"已经没了"）。
-          unlinkWithRetry(shardRelPath(this.dir, rel))
-        } catch (err) {
-          if (err?.code !== 'ENOENT') {
-            removalFailed = true
-            console.error(
-              `[dsh-project-memory] could not delete shard for ${rel}: ${err?.message || err}; will retry`,
-            )
-            continue
-          }
-        }
-        this._removedShards.delete(rel)
-        this._baseFileSha.delete(rel)
-      }
+      if (!this._saveShards()) removalFailed = true
       if (this._dirtyInsights) {
         // v2 → v3 是纯语义升级，形状不变；老版本读到 v3 仍按 v2 字段解析。
         if (this.insights && this.insights.version !== 3) this.insights.version = 3
@@ -1105,42 +1104,262 @@ export class ProjectMemoryStore {
     return !removalFailed
   }
 
-  /**
-   * 冲突时采用另一进程的分片：内存 record/entries 与磁盘对齐，并让 IDF/驻留账失效。
-   * 磁盘 entries 可能损坏或来自旧版本，和 `_loadSharded` 一样只收合法项。
-   */
-  _adoptDiskShard(rel, disk) {
-    const entries = (disk.entries || []).filter(isRecord).map(stripPersistedDerived)
-    this.files[rel] = disk.record
-    this.entries[rel] = entries
-    this._setFileTextChars(rel, entryTextChars(entries))
-    this._entriesVersion++
-    this._baseFileSha.set(rel, disk.sha)
-  }
-
-  /** 读磁盘分片（不存在/损坏都返回 exists:false）。 */
-  _shardDiskRecord(rel) {
-    try {
-      const doc = JSON.parse(readFileSync(shardRelPath(this.dir, rel), 'utf8'))
-      if (!isRecord(doc) || typeof doc.relPath !== 'string' || !isRecord(doc.record)) {
-        return { exists: false, sha: null, record: null, entries: [] }
-      }
-      return {
-        exists: true,
-        sha: doc.record.sha256 ?? null,
-        record: doc.record,
-        entries: Array.isArray(doc.entries) ? doc.entries : [],
-      }
-    } catch {
-      return { exists: false, sha: null, record: null, entries: [] }
-    }
-  }
-
   /** 首次写分片前建一次 shards/；之后每次 save 都省掉一次 mkdir。 */
   _ensureShardsDir() {
     if (this._shardsDirReady) return
     mkdirSync(path.join(this.dir, SHARDS_DIR), { recursive: true })
     this._shardsDirReady = true
+  }
+
+  _readBucket(index) {
+    const map = new Map()
+    const doc = loadJson(bucketRelPath(this.dir, index), null)
+    if (!doc || !Array.isArray(doc.items)) return map
+    for (const item of doc.items) {
+      if (!item || typeof item.relPath !== 'string' || !isRecord(item.record)) continue
+      map.set(item.relPath, { record: item.record, entries: Array.isArray(item.entries) ? item.entries : [] })
+    }
+    return map
+  }
+
+  _writeBucket(index, map) {
+    if (!map.size) {
+      try {
+        unlinkWithRetry(bucketRelPath(this.dir, index))
+      } catch (err) {
+        if (err?.code !== 'ENOENT') throw err
+      }
+      return
+    }
+    this._ensureShardsDir()
+    const items = [...map.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([relPath, item]) => ({ relPath, record: item.record, entries: (item.entries || []).map(withoutPersistedDerived) }))
+    writeJsonAtomic(bucketRelPath(this.dir, index), {
+      version: 3,
+      bucket: index,
+      bucketSize: this._bucketSize,
+      items,
+    }, { ensureDir: false })
+  }
+
+  _writeFormat() {
+    if (this._legacyBlocked) return
+    const doc = {
+      version: 3,
+      layout: 'bucket',
+      bucketSize: this._bucketSize,
+      bucketCount: this._bucketCount,
+    }
+    if (this._formatDoc?.migratedFrom) doc.migratedFrom = this._formatDoc.migratedFrom
+    writeJsonAtomic(path.join(this.dir, FORMAT_FILE), doc, { ensureDir: false })
+    this._formatDoc = doc
+    this._formatWritten = true
+    this._formatDirty = false
+  }
+
+  _adoptBucketItem(rel, item) {
+    this.files[rel] = item.record
+    this.entries[rel] = (item.entries || []).filter(isRecord).map(stripPersistedDerived)
+    this._setFileTextChars(rel, JSON.stringify({ record: item.record, entries: this.entries[rel] }).length)
+    this._entriesVersion++
+    this._baseFileSha.set(rel, item.record?.sha256 ?? null)
+  }
+
+  /** 全量重写前把磁盘上其他进程的新版本合并进内存（按 sha + indexedAt 收敛）。 */
+  _mergeShardDiskForRewrite() {
+    let names = []
+    try {
+      names = readdirSync(path.join(this.dir, SHARDS_DIR)).filter((n) => n.endsWith('.json'))
+    } catch {
+      return
+    }
+    for (const name of names) {
+      const doc = loadJson(path.join(this.dir, SHARDS_DIR, name), null)
+      if (!doc) continue
+      const items = Array.isArray(doc.items) ? doc.items : [doc]
+      for (const item of items) {
+        if (!item || typeof item.relPath !== 'string' || !isRecord(item.record)) continue
+        const rel = item.relPath
+        const base = this._baseFileSha.get(rel) ?? null
+        const diskSha = item.record.sha256 ?? null
+        if (this._removedShards.has(rel)) {
+          if (diskSha !== base) {
+            this._adoptBucketItem(rel, item)
+            this._removedShards.delete(rel)
+          }
+          continue
+        }
+        if (this._dirtyShards.has(rel)) {
+          const local = this.files[rel]
+          if (!local) continue
+          const localSha = local.sha256 ?? null
+          if (diskSha === base || diskSha === localSha) continue
+          const localAt = Date.parse(local.indexedAt || '') || 0
+          const diskAt = Date.parse(item.record.indexedAt || '') || 0
+          if (localAt > diskAt) continue
+          this._adoptBucketItem(rel, item)
+          this._dirtyShards.delete(rel)
+          this._warnConflict(rel)
+          continue
+        }
+        if (diskSha !== base || !(rel in this.files)) this._adoptBucketItem(rel, item)
+      }
+    }
+  }
+
+  _rewriteAllBuckets() {
+    const groups = new Map()
+    for (const rel of Object.keys(this.files)) {
+      const index = bucketIndexOf(rel, this._bucketCount)
+      let map = groups.get(index)
+      if (!map) {
+        map = new Map()
+        groups.set(index, map)
+      }
+      map.set(rel, { record: this.files[rel], entries: this.entries[rel] || [] })
+    }
+    for (const [index, map] of groups) this._writeBucket(index, map)
+    // 全量重排后重建冲突基线：否则后续 removeFile 会拿不到 base、误判成"对方更新"。
+    this._baseFileSha = new Map(Object.keys(this.files).map((rel) => [rel, this.files[rel].sha256 ?? null]))
+    // 清掉旧布局：v2 的 64 位 hash 分片与重排后不再使用的 bucket 文件。
+    const keep = new Set([...groups.keys()].map((i) => path.basename(bucketRelPath(this.dir, i))))
+    let names = []
+    try {
+      names = readdirSync(path.join(this.dir, SHARDS_DIR))
+    } catch {
+      names = []
+    }
+    for (const name of names) {
+      if (!name.endsWith('.json') || keep.has(name)) continue
+      try {
+        unlinkWithRetry(path.join(this.dir, SHARDS_DIR, name))
+      } catch (err) {
+        if (err?.code !== 'ENOENT') throw err
+      }
+    }
+  }
+
+  /** 写分片。返回 false 表示删除/写入有失败（保持脏状态，留给重试）。 */
+  _saveShards() {
+    // 存量压实：≤0.5.10 的分片带派生字段，每轮有界地把它们标脏重写。
+    let compactBudget = COMPACT_BATCH
+    for (const rel of this._compactQueue) {
+      if (compactBudget-- <= 0) break
+      this._compactQueue.delete(rel)
+      if (this.files[rel]) this._dirtyShards.add(rel)
+    }
+    const hasFiles = Object.keys(this.files).length > 0
+    let rewrite = this._needsShardRewrite || this._layout !== 'v3' || this._bucketCount === 0 || (!this._formatWritten && hasFiles)
+    if (!rewrite && this._layout === 'v3') {
+      // 先用 O(1) 的文本量上界判断要不要精确估算：桶数固定后，逐文件懒索引增长也要能扩桶。
+      const approx = this._textChars * 3 + Object.keys(this.files).length * 128
+      const target = this._bucketCount * this._bucketSize
+      if (approx > target * 1.5 || approx < target * 0.5) {
+        const bytes = estimateShardBytes(this.files, this.entries)
+        const next = chooseBucketCount(bytes)
+        if (next !== this._bucketCount) {
+          this._bucketCount = next
+          rewrite = true
+        } else {
+          // 桶数合适就把目标调到实际均值，避免每次 save 都为同一比例跑 O(N) 估算。
+          this._bucketSize = Math.max(BUCKET_TARGET_BYTES, Math.ceil(bytes / this._bucketCount))
+          this._formatDirty = true
+        }
+      }
+    }
+    const needsFormat = (!this._formatWritten || this._formatDirty) && !this._legacyBlocked
+    if (!rewrite && !hasFiles && this._dirtyShards.size === 0 && this._removedShards.size === 0) {
+      if (needsFormat) {
+        if (this._bucketCount === 0) this._bucketCount = 1
+        this._writeFormat()
+      }
+      return true
+    }
+    if (rewrite) {
+      this._mergeShardDiskForRewrite()
+      if (this._layout !== 'v3' || this._bucketCount === 0) {
+        this._bucketCount = chooseBucketCount(estimateShardBytes(this.files, this.entries))
+      }
+      this._rewriteAllBuckets()
+      this._writeFormat()
+      this._layout = 'v3'
+      this._needsShardRewrite = false
+      this._compactQueue.clear()
+      this._dirtyShards.clear()
+      this._removedShards.clear()
+      return true
+    }
+
+    const touched = new Map()
+    const add = (rel, kind) => {
+      const index = bucketIndexOf(rel, this._bucketCount)
+      let group = touched.get(index)
+      if (!group) {
+        group = { dirty: new Set(), removed: new Set() }
+        touched.set(index, group)
+      }
+      group[kind].add(rel)
+    }
+    for (const rel of this._removedShards) add(rel, 'removed')
+    for (const rel of this._dirtyShards) if (!this._removedShards.has(rel)) add(rel, 'dirty')
+
+    let ok = true
+    for (const [index, group] of touched) {
+      const disk = this._readBucket(index)
+      // 先采用磁盘上其他进程对“未触碰文件”的更新，避免整桶重写把它们覆盖掉。
+      for (const [rel, item] of disk) {
+        if (group.dirty.has(rel) || group.removed.has(rel)) continue
+        const base = this._baseFileSha.get(rel) ?? null
+        const diskSha = item.record?.sha256 ?? null
+        if (diskSha !== base || !(rel in this.files)) this._adoptBucketItem(rel, item)
+      }
+      for (const rel of group.dirty) {
+        const local = this.files[rel]
+        if (!local) continue
+        const diskItem = disk.get(rel)
+        const base = this._baseFileSha.get(rel) ?? null
+        const nextSha = local.sha256 ?? null
+        const diskSha = diskItem?.record?.sha256 ?? null
+        if (diskItem && diskSha !== base && diskSha !== nextSha) {
+          const localAt = Date.parse(local.indexedAt || '') || 0
+          const diskAt = Date.parse(diskItem.record?.indexedAt || '') || 0
+          if (localAt <= diskAt) {
+            this._adoptBucketItem(rel, diskItem)
+            this._warnConflict(rel)
+            disk.set(rel, diskItem)
+            continue
+          }
+        }
+        disk.set(rel, { record: local, entries: this.entries[rel] || [] })
+        this._baseFileSha.set(rel, nextSha)
+      }
+      for (const rel of group.removed) {
+        const diskItem = disk.get(rel)
+        const base = this._baseFileSha.get(rel) ?? null
+        if (diskItem && (diskItem.record?.sha256 ?? null) !== base) {
+          this._adoptBucketItem(rel, diskItem)
+          this._warnConflict(rel)
+          continue
+        }
+        disk.delete(rel)
+        this._baseFileSha.delete(rel)
+      }
+      try {
+        this._writeBucket(index, disk)
+      } catch (err) {
+        ok = false
+        console.error(`[dsh-project-memory] bucket ${index} write failed: ${err?.message || err}`)
+        continue
+      }
+      for (const rel of group.dirty) this._dirtyShards.delete(rel)
+      for (const rel of group.removed) this._removedShards.delete(rel)
+    }
+    if ((!this._formatWritten || this._formatDirty) && !this._legacyBlocked) {
+      if (this._bucketCount === 0) this._bucketCount = 1
+      this._writeFormat()
+    }
+    return ok
   }
 
   /** 退出/卸载路径的同步兜底（见 util/flush.js）。 */
