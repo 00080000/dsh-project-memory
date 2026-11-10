@@ -407,21 +407,30 @@ function classifyCommand(command, depth) {
   const targets = []
   for (const segment of unquotedSegments(stripHeredocBodies(raw))) {
     const { head, rest } = commandHead(tokenizeWords(segment))
+    // 每段单独收 op，最后再合并：写段要不要补 file-write 取决于**本段**是不是删除，
+    // 不能看已累计的 ops（否则 `rm a && touch b` 里的 touch 会被前一段的 file-delete 吞掉）。
+    const segmentOps = []
     if (SHELLS.has(head) && depth < 2) {
       // POSIX 的 `-c` / `-lc` / `-ec`；PowerShell 的 `-Command`；cmd 的 `/c`。
       const ci = rest.findIndex((a) => /^-[A-Za-z]{0,4}c$/.test(a) || /^-command$/i.test(a) || /^\/c$/i.test(a))
       if (ci >= 0 && rest[ci + 1]) {
         const inner = classifyCommand(rest.slice(ci + 1).join(' '), depth + 1)
-        for (const op of inner.ops) if (op !== 'shell-run') pushUnique(ops, op)
+        for (const op of inner.ops) if (op !== 'shell-run') pushUnique(segmentOps, op)
         for (const t of inner.targets) pushUnique(targets, t)
       }
     } else {
-      for (const op of opsOfHead(head, rest)) pushUnique(ops, op)
+      for (const op of opsOfHead(head, rest)) pushUnique(segmentOps, op)
     }
     const redirects = redirectTargets(segment)
     if (isWriteSegment(head, rest, redirects)) {
       for (const t of extractPathTokens(segment)) pushUnique(targets, t)
+      // 写段补 `file-write`：`touch` / `cp` / `mv` / `tee` / `truncate` / `mkdir`、`sed -i`
+      // 与重定向都是写盘，但 opsOfHead() 只映射删除和 Windows 写命令，之前它们只剩兜底
+      // shell-run，`when.ops: ['file-write']` 的 trigger 因此永远命不中。
+      // 删除段（rm / git rm / del …）保持 file-delete，不升级成写。
+      if (!segmentOps.includes('file-delete')) pushUnique(segmentOps, 'file-write')
     }
+    for (const op of segmentOps) pushUnique(ops, op)
   }
   if (!ops.length) ops.push('shell-run')
   // 主机面：`/mnt/c/…` 是 WSL 的路径签名；`pwsh.exe` / `powershell.exe` / `cmd.exe` 是**原生

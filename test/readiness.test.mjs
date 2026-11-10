@@ -169,9 +169,9 @@ const PUBLIC_FACE = {
   const ctx = readiness.buildReadinessContext({ humanText: '', actionText: 'rm -f .gitignore' })
   assert.ok(ctx.targets.includes('.gitignore'), `shell 写目标应含 .gitignore：${JSON.stringify(ctx.targets)}`)
   assert.equal(readiness.matchTrigger({ when: { writes: ['.gitignore'] } }, ctx), 'write:.gitignore')
-  // 结构化调用行 + 无 op 规则命中（echo >> 不是删除）：写目标仍须到达 writes 判据
+  // 结构化调用行 + 写重定向（echo >> 不是删除）：写目标是具体事实，写目标仍须到达 writes 判据
   const echo = readiness.buildReadinessContext({ humanText: '', actionText: 'bash {"command":"echo x >> .gitignore"}' })
-  assert.deepEqual(echo.ops, [], '不产出 shell-run 噪音 op')
+  assert.deepEqual(echo.ops, ['file-write'], '写重定向是具体动作，不再按 shell-run 噪音丢弃')
   assert.equal(readiness.matchTrigger({ when: { writes: ['.gitignore'] } }, echo), 'write:.gitignore')
   ok('点开头写目标贯通：rm -f .gitignore 与 bash 写 .gitignore 都命中 when.writes')
 }

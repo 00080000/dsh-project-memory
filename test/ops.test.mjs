@@ -196,11 +196,14 @@ const ok = (name) => {
   // 丢掉噪音 op ≠ 丢掉整行的事实：写目标要靠路径 token 这种具体签名才抽得出，
   // 泛泛散文产不出来，所以 shell-run-only 的行仍要留下写目标。
   // 结构化行更明显：`bash {"command":"echo x >> .gitignore"}` 曾连写目标一起被吞。
+  // 刻意的语义变更（审计 #16 修复后）：写命令不再退化成兜底 shell-run，而是具体动作
+  // file-write；activityFromText 只把「唯一 op 是 shell-run」当噪音丢，file-write 是事实，
+  // 所以保留。targets 断言不变。
   const structured = activityFromText('bash {"command":"echo x >> .gitignore"}')
-  assert.deepEqual(structured.ops, [], '没有 shell 动作规则命中时不产出 shell-run')
+  assert.deepEqual(structured.ops, ['file-write'], '写重定向是具体动作，不再按噪音丢弃')
   assert.deepEqual(structured.targets, ['.gitignore'], '结构化调用行的写目标不得连带丢失')
   const bare = activityFromText('cp .env .env.bak')
-  assert.deepEqual(bare.ops, [])
+  assert.deepEqual(bare.ops, ['file-write'], '写命令产具体 op，不再丢成空')
   assert.deepEqual(bare.targets.sort(), ['.env', '.env.bak'])
   ok('activityFromText：工具调用行与裸命令都能读；噪音 op 不带走写目标')
 }
