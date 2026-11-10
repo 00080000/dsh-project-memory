@@ -106,9 +106,7 @@ export async function indexObservedBatch(config, items, watchManager = null) {
         continue
       }
       const relRaw = relativePath(root, filePath)
-      // 与 index_repo / watch 的扫描口径完全一致：隐藏路径与内置忽略目录（`node_modules` /
-      // `dist` / `vendor` …）都不因"模型偶然读了一次"就进语料；要索引就显式 `index_doc`。
-      // 判在 store 读盘与 statSync 之前：被忽略的文件连快路径都不该走（省掉无谓 IO）。
+      // 与 index_repo/watch 同口径；判在 store 读盘与 stat 之前，省掉无谓 IO。
       if (isHiddenPath(relRaw) || isDefaultIgnoredRel(relRaw)) {
         results.set(filePath, false)
         continue

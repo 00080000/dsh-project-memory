@@ -18,16 +18,7 @@ function capOf(value, fallback) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
 
-/**
- * 手工移动（promote/demote）的**落点去重**：目标池已有同 id → 合并进它；否则近重复且重叠分
- * ≥ `cfg.dedupOverlap`（默认 0.7）→ 合并进命中的那条；都不命中才按原逻辑 push。
- *
- * 与自动提升的差别只在"谁赢"：自动提升合并时只并成员/文件/置信，不动正文；手工移动是用户的
- * 明确意图，所以整条 `copy` 交给 {@link mergeInto}——正文取本次移动的版本，被挤掉的旧值进 `prev`。
- * 合并后来源条目的删除、容量收口、markDirty 仍由各调用方负责（与移动成功时一致）。
- * @param {{targetPool: object[], copy: object, cfg?: object, nowIso: string}} args
- * @returns {{merged: boolean, target: object}} `merged` 为 true 时 `target` 是既有条目，否则是新放入的副本
- */
+/** 落点去重：同 id 或近重复（≥ dedupOverlap）合并，否则 push；来源删除/容量收口由调用方做。 */
 function mergeOrPushInto({ targetPool, copy, cfg, nowIso }) {
   // 同 id 必须比 id 而不是相似度：'ins_dup' 已在 global 时再提升同 id，指纹类字段可能因后来编辑
   // 而分叉，靠相似度会漏判——同 id 是确定事实，直接合并。

@@ -188,24 +188,15 @@ function putField(item, key, next, replaced) {
 /** 自动合并会改写的正文字段（title 也在内：0.90 以上的两条标题本就近乎同一句）。 */
 const MERGE_FIELDS = ['title', 'pattern', 'fix', 'choice', 'reason', 'problem', 'solution', 'body']
 
-/**
- * `deriveTrigger` 实际读取、且 store 能改写的正文字段。派生词只是提示通道的检索词缓存：
- * 正文一变就必须重算，否则改完标题还拿旧关键词召回。元数据（confidence/files/tags/hitCount…）
- * 不在其中——只动它们时派生词保持原样。
- */
+/** `deriveTrigger` 读取且 store 可改写的正文字段；元数据变化不触发重算。 */
 const DERIVED_SOURCE_FIELDS = [...MERGE_FIELDS, 'steps']
 
-/** 派生源字段快照：用值的序列化判"真的改了"，避免把同值写入当成正文变更。 */
+/** 序列化快照：区分“同值写入”与真正的正文变更。 */
 function derivedSourceSnapshot(item) {
   return JSON.stringify(DERIVED_SOURCE_FIELDS.map((f) => item[f]))
 }
 
-/**
- * 正文变更后重算派生词（只写 `triggerDerived`，绝不碰作者手写的 `trigger`）。
- * 重算结果为空时**删除**而不是保留旧值：宁可不召回，也不用过期词召回。
- * @param {object} item 条目（原地修改）
- * @returns {boolean} 是否留下了非空派生词
- */
+/** 重算派生词（只写 triggerDerived）；空结果删除，避免用过期词召回。 */
 function refreshDerivedTrigger(item) {
   const derived = deriveTrigger(item)
   if (!derived.keywords.length && !derived.actions.length && !derived.paths.length) {

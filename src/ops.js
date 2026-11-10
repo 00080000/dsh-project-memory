@@ -407,8 +407,7 @@ function classifyCommand(command, depth) {
   const targets = []
   for (const segment of unquotedSegments(stripHeredocBodies(raw))) {
     const { head, rest } = commandHead(tokenizeWords(segment))
-    // 每段单独收 op，最后再合并：写段要不要补 file-write 取决于**本段**是不是删除，
-    // 不能看已累计的 ops（否则 `rm a && touch b` 里的 touch 会被前一段的 file-delete 吞掉）。
+    // 每段单独收 op：写段是否补 file-write 只看本段是否为删除（`rm a && touch b` 不能吞 touch）。
     const segmentOps = []
     if (SHELLS.has(head) && depth < 2) {
       // POSIX 的 `-c` / `-lc` / `-ec`；PowerShell 的 `-Command`；cmd 的 `/c`。
@@ -424,10 +423,8 @@ function classifyCommand(command, depth) {
     const redirects = redirectTargets(segment)
     if (isWriteSegment(head, rest, redirects)) {
       for (const t of extractPathTokens(segment)) pushUnique(targets, t)
-      // 写段补 `file-write`：`touch` / `cp` / `mv` / `tee` / `truncate` / `mkdir`、`sed -i`
-      // 与重定向都是写盘，但 opsOfHead() 只映射删除和 Windows 写命令，之前它们只剩兜底
-      // shell-run，`when.ops: ['file-write']` 的 trigger 因此永远命不中。
-      // 删除段（rm / git rm / del …）保持 file-delete，不升级成写。
+      // 写段补 file-write：之前这些命令只剩 shell-run，`when.ops:['file-write']` 永不命中。
+      // 删除段保持 file-delete，不升级成写。
       if (!segmentOps.includes('file-delete')) pushUnique(segmentOps, 'file-write')
     }
     for (const op of segmentOps) pushUnique(ops, op)

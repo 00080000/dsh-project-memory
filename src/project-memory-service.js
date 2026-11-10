@@ -1,17 +1,7 @@
 /**
- * 原生服务 seam（施工图 D3-1）：把本插件的记忆能力以 `ctx.provide('projectMemory', api)` 暴露给
- * 宿主/其他插件，**纯加法**——不注册新工具、不改既有工具行为、不新增顶层 `inject`。
- *
- * v1 契约只有四个动词（api 一旦公开就是契约，所以刻意不复制 `save_lesson` 的全参数面）：
- *   recall(query, { root, limit = 8, layers }) -> { results: [{ id, title, snippet, citation }] }
- *   remember(entry, { root, scope = 'project', taskId }) -> { id, action }
- *   forget(idOrQuery, { root }) -> { deleted: string[] }
- *   stats({ root }) -> { files, entries, experience, latest, insights, global }
- *
- * 全部同步、不调 LLM；根解析只做 `path.resolve(opts.root || process.cwd())`，走与本插件工具
- * 同一套 store 路径（`memoryRootFor` + `defaultGlobalFile`），不另写一套存储。
- * 读写边界：`recall` / `stats` 只读；`remember` / `forget` 是写盘入口，先过 `assertSafeRoot`
- * （与 index_repo / watch_repo / save_lesson 同一条护栏，家目录/系统根直接抛 UnsafeRootError）。
+ * 原生服务 seam（D3-1）：`ctx.provide('projectMemory', api)`，v1 只有四个动词
+ * `recall / remember / forget / stats`。纯加法、全同步、零 LLM；
+ * `remember/forget` 是写入口，先过 `assertSafeRoot`，`recall/stats` 只读。
  */
 import path from 'node:path'
 import { assertSafeRoot, memoryRootFor, normalizeCitationFiles } from './util/fs.js'
@@ -30,7 +20,7 @@ function resolveRoot(root) {
   return path.resolve(root || process.cwd())
 }
 
-/** 一次调用打开项目/global 两个 store；`ProjectMemoryStore.load()` / `GlobalStore.load()` 自带进程内缓存。 */
+/** 项目/global 两个 store 都由各自类做进程内缓存。 */
 function openStores(root, config) {
   const cfg = cfgInsight(config)
   const memoryDir = memoryRootFor(root, config && config.memoryDir)
@@ -49,7 +39,7 @@ function sourcePathOf(item) {
   return ''
 }
 
-/** 来源字段拼成 `path:line`（没有行号时只有路径；没有来源时为空串）。 */
+/** `path:line`；无行号只有路径，无来源为空串。 */
 function citationOf(root, item) {
   const rel = sourcePathOf(item)
   if (!rel) return ''
@@ -64,19 +54,12 @@ function snippetOf(item) {
   return String(text).slice(0, SNIPPET_CHARS)
 }
 
-/**
- * 构造 api（不负责 provide）。`ctx` 目前不参与实现，保留签名是为了将来服务需要宿主能力时
- * 不必改公开函数名。
- * @param {object} ctx - cordis 上下文（可缺省）
- * @param {object} config - 插件 Config
- * @returns {{recall: Function, remember: Function, forget: Function, stats: Function}}
- */
+/** 只构造 api，不负责 provide；`ctx` 留给将来需要宿主能力时用。 */
 export function createProjectMemoryService(ctx, config) {
   return {
     recall(query, opts = {}) {
       const q = String(query ?? '')
-      // 与 `query_memory` 的护栏一致：空查询不是"全部"——底层 ranker 在空查询下会原样返回
-      // 前 limit 条（分数 0），那会把任意条目当成命中。这里显式返回空结果。
+      // 空查询不是“全部”：ranker 会把前 limit 条当命中（分数 0）。
       if (!q.trim()) return { results: [] }
       const root = resolveRoot(opts.root)
       const limit = Number.isFinite(opts.limit) && opts.limit > 0 ? Math.floor(opts.limit) : 8
@@ -108,20 +91,18 @@ export function createProjectMemoryService(ctx, config) {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
         throw new Error('projectMemory.remember: entry must be an object')
       }
-      // 任务级写入没有 taskId 是调用方错误，不是数据错误：在打开 store 之前就明确报出来。
+      // 调用方错误：在打开 store 之前就报。
       if (scope === 'task' && !taskId) {
         throw new Error("projectMemory.remember: scope='task' requires taskId")
       }
-      // 写入口一律先过根护栏（与 index_repo / watch_repo / save_lesson 相同）：家目录/系统根
-      // 不能整体当项目记忆根，拒绝发生在 store 目录被建出来之前。
+      // 写入口先过根护栏，拒绝发生在 store 目录被建出来之前。
       assertSafeRoot(root, { config })
-      // 写入期路径约束与 save_lesson 一致：files 只收项目内相对路径；项目外、盘符路径、绝对路径
-      // 一律丢弃。少了这一步，服务 API 会成为绕过 `normalizeCitationFiles()` 的写入后门。
+      // 与 save_lesson 同一条写入期路径约束：只收项目内相对路径。
       const citations = normalizeCitationFiles(entry.files, root)
       const raw = { ...entry, files: citations.files }
       const { cfg, store, globalStore } = openStores(root, config)
       let saved
-      // 与 save_lesson 同一条写入路径与落盘时机（store.commit + globalStore.commit）。
+      // 与 save_lesson 同一条写入路径与落盘时机。
       store.commit((s) => {
         saved = saveInsight({ store: s, globalStore, raw, scope, taskId, cfg, source: 'api' })
         return saved

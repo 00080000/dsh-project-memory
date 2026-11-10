@@ -172,14 +172,8 @@ export function touchTaskFile(task, rel, kind, now) {
   }
 }
 
-/**
- * 这条 `user/message` 是不是真人说的？判据与 auto-inject 的 `lastUserText()` / 事件观察器逐条一致：
- * 只认 `source` 缺失（老宿主/测试没有生产者字段）或 `source.kind === 'user'`。有 source 但 kind 是
- * `agent-message` / `subagent-settled` / `tool-jobs` / `time-context` / `runtime-context`，或本插件
- * 注入的 `plugin:dsh-project-memory` 时都不是人话；迁移前 `{ plugin: 'dsh-project-memory' }` 的旧形状
- * 没有 kind，也要单独排除，否则自注入会刷新人类戳记。
- * `role` 缺失按老宿主的 user/message 处理；显式给了非 user 的 role 则不是人话。
- */
+/** 判据与 auto-inject 的 lastUserText 一致：缺 source 或 kind==='user' 才是人话；
+ * 本插件注入（含旧 {plugin} 形状）与 agent-message 等一律排除。 */
 function isHumanUserMessage(data) {
   if (!data || typeof data !== 'object') return false
   if (data.role != null && data.role !== 'user') return false

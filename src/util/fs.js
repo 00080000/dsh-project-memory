@@ -431,14 +431,7 @@ const DEFAULT_IGNORE = new Set([
   'Pods', 'bower_components', 'jspm_packages', 'logs',
 ])
 
-/**
- * 项目相对路径是否落在默认忽略的**目录**下（`listProjectFiles` 与懒索引共用的唯一判据）。
- *
- * 只检查目录段：最后一段是文件名，根目录下一个叫 `build` 的普通文件仍然要收——否则
- * `git init` 前后同一棵树的语料会变。按 `/` 或 `\` 分段，Windows 相对路径也能判。
- * @param {string} rel 项目相对路径（`/` 或 `\` 分隔）
- * @returns {boolean}
- */
+/** 项目相对路径是否落在默认忽略目录下；只查目录段（根下的 `build` 文件仍收）。 */
 export function isDefaultIgnoredRel(rel) {
   const segs = String(rel || '').split(/[\\/]/)
   return segs.slice(0, -1).some((seg) => DEFAULT_IGNORE.has(seg))
@@ -660,14 +653,7 @@ export function listProjectFiles(root, opts = {}) {
   return { files, truncated: capped, capped, skipped: [...skipped].sort(), unreadable: [] }
 }
 
-/**
- * 从 `dir` 向上找最近的 git 工作区（`.git` 目录，或 worktree/submodule 的 `.git` 文件）。
- * 项目根是某个仓库的子目录时，`.git` 不在 root 上；但 `git -C root check-ignore` 本身会
- * 向上找到仓库，所以这里只负责回答"值不值得起 git 进程"。纯 fs 查找，非 git 根不 spawn。
- * 到文件系统根为止；`dirname(dir) === dir` 同时覆盖 Windows 盘符根（`C:\`），不会死循环。
- * @param {string} dir
- * @returns {string|null} 含 `.git` 的目录（不一定是仓库顶层，但足够判断"在仓库里"）
- */
+/** 向上找最近的 .git（目录或 worktree 文件）；纯 fs，非 git 根不 spawn。 */
 function findGitWorkTree(dir) {
   if (typeof dir !== 'string' || !dir) return null
   let cur

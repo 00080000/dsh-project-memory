@@ -283,9 +283,8 @@ export class WatchManager {
   }
 
   async pollRoot(root, state) {
-    // 根可能在运行期被删除/rename。这里**不能**继续走到 storeFor() → save()：
-    // save() 会把 !formatWritten 当脏并 mkdirSync，把删掉的根重新创建成一个空目录。
-    // 暂时读不到的挂载点同样跳过本轮；它回来后会继续按原逻辑扫描。
+    // 根可能被删除/rename：不能走到 storeFor()→save()，否则会把删掉的根重建出来。
+    // 保留索引等待恢复；首次消失告警一次。
     if (!existsSync(root)) {
       // 只告警、不清理：snapshot / store entries / watch.json 全部保留（根回来即恢复）。
       // 同一根只提示一次，避免长期挂着的根每轮刷屏；它回来时（见下方）会从集合里移除。
