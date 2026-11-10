@@ -5,16 +5,45 @@
 import path from 'node:path'
 import { ProjectMemoryStore } from '../store.js'
 import { memoryRootFor, normalizeCitationFiles } from '../util/fs.js'
-import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, recordDeleted, carryUsageFields, pruneItems, INSIGHT_KINDS } from '../insight-store.js'
+import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, recordDeleted, carryUsageFields, mergeInto, pruneItems, INSIGHT_KINDS } from '../insight-store.js'
 import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
 import { isoMs } from '../util/value.js'
 import { pruneKindFields } from '../util/insight-fields.js'
+import { findBestOverlapMatch, insightMatchText } from '../similarity.js'
 import { forgetVectorRows } from '../vector-index.js'
 
 /** 容量旋钮的防御性取值：cfg 可能只带显式测试字段。 */
 function capOf(value, fallback) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+/**
+ * 手工移动（promote/demote）的**落点去重**：目标池已有同 id → 合并进它；否则近重复且重叠分
+ * ≥ `cfg.dedupOverlap`（默认 0.7）→ 合并进命中的那条；都不命中才按原逻辑 push。
+ *
+ * 与自动提升的差别只在"谁赢"：自动提升合并时只并成员/文件/置信，不动正文；手工移动是用户的
+ * 明确意图，所以整条 `copy` 交给 {@link mergeInto}——正文取本次移动的版本，被挤掉的旧值进 `prev`。
+ * 合并后来源条目的删除、容量收口、markDirty 仍由各调用方负责（与移动成功时一致）。
+ * @param {{targetPool: object[], copy: object, cfg?: object, nowIso: string}} args
+ * @returns {{merged: boolean, target: object}} `merged` 为 true 时 `target` 是既有条目，否则是新放入的副本
+ */
+function mergeOrPushInto({ targetPool, copy, cfg, nowIso }) {
+  // 同 id 必须比 id 而不是相似度：'ins_dup' 已在 global 时再提升同 id，指纹类字段可能因后来编辑
+  // 而分叉，靠相似度会漏判——同 id 是确定事实，直接合并。
+  const sameId = targetPool.find((it) => it && it.id === copy.id)
+  if (sameId) {
+    mergeInto(sameId, copy, cfg, nowIso)
+    return { merged: true, target: sameId }
+  }
+  const hit = findBestOverlapMatch(insightMatchText(copy), targetPool)
+  const threshold = cfg?.dedupOverlap ?? 0.7
+  if (hit && hit.score >= threshold) {
+    mergeInto(hit.item, copy, cfg, nowIso)
+    return { merged: true, target: hit.item }
+  }
+  targetPool.push(copy)
+  return { merged: false, target: copy }
 }
 
 /**
@@ -192,12 +221,15 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       copy.movedFrom = { scope: 'task', id, at: now }
       copy.createdAt = insight.createdAt || copy.createdAt
       copy.hitCount = insight.hitCount || 0
-      items.push(copy)
+      const { merged, target } = mergeOrPushInto({ targetPool: items, copy, cfg, nowIso: now })
       pruneItems(items, capOf(cfg?.maxProject, 100), now)
       store.replaceInsightItems(items)
       task.insights = (task.insights || []).filter((i) => i.id !== id)
       store.markTasksDirty()
-      return { ok: true, text: `已提升到 project：${copy.title}` }
+      return {
+        ok: true,
+        text: merged ? `已提升并合并到 project 既有条目：${target.title}` : `已提升到 project：${copy.title}`,
+      }
     }
     return { ok: false, text: `task 级不支持动作: ${act}` }
   }
@@ -233,12 +265,15 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       copy.movedFrom = { scope: 'project', id, at: now }
       copy.createdAt = ins.createdAt || copy.createdAt
       copy.hitCount = ins.hitCount || 0
-      gs.items().push(copy)
+      const { merged, target } = mergeOrPushInto({ targetPool: gs.items(), copy, cfg, nowIso: now })
       pruneItems(gs.items(), capOf(cfg?.maxGlobalProcedures, 200), now)
       gs.markDirty()
       items.splice(idx, 1)
       store.replaceInsightItems(items)
-      return { ok: true, text: `已提升到 global：${copy.title}` }
+      return {
+        ok: true,
+        text: merged ? `已提升并合并到 global 既有条目：${target.title}` : `已提升到 global：${copy.title}`,
+      }
     }
     if (act === 'demote') {
       // project → task（需目标任务）
@@ -253,11 +288,16 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       copy.movedFrom = { scope: 'project', id, at: now }
       copy.createdAt = ins.createdAt || copy.createdAt
       if (!Array.isArray(task.insights)) task.insights = []
-      task.insights.push(copy)
+      const { merged, target } = mergeOrPushInto({ targetPool: task.insights, copy, cfg, nowIso: now })
       store.markTasksDirty()
       items.splice(idx, 1)
       store.replaceInsightItems(items)
-      return { ok: true, text: `已降级到任务 ${task.title}` }
+      return {
+        ok: true,
+        text: merged
+          ? `已降级并合并到任务 ${task.title} 的既有条目：${target.title}`
+          : `已降级到任务 ${task.title}`,
+      }
     }
     return { ok: false, text: `project 级不支持动作: ${act}` }
   }
@@ -292,12 +332,15 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       copy.id = `${id}_d${Date.now().toString(36)}`
       copy.movedFrom = { scope: 'global', id, at: now }
       copy.createdAt = ins.createdAt || copy.createdAt
-      pjItems.push(copy)
+      const { merged, target } = mergeOrPushInto({ targetPool: pjItems, copy, cfg, nowIso: now })
       pruneItems(pjItems, capOf(cfg?.maxProject, 100), now)
       store.replaceInsightItems(pjItems)
       items.splice(idx, 1)
       gs.markDirty()
-      return { ok: true, text: `已降级到 project：${copy.title}` }
+      return {
+        ok: true,
+        text: merged ? `已降级并合并到 project 既有条目：${target.title}` : `已降级到 project：${copy.title}`,
+      }
     }
     return { ok: false, text: `global 级不支持动作: ${act}` }
   }
