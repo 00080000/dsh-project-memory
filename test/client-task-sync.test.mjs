@@ -50,11 +50,12 @@ ok('载荷取根：非空字符串才算，其余归一为 null')
   ok('面板刷新不写会话历史：refresh 只发 /tasks')
 }
 
-// 5) 切页不得再发 /tasks；列表型命令节点不再渲染
+// 5) 记忆页也要取 /tasks（boundTaskId/root）；列表型命令节点不再渲染
 {
   const panel = readFileSync(new URL('../src/client/TaskPanel.tsx', import.meta.url), 'utf8')
-  assert.ok(panel.includes("ui.view !== 'task'"), '只有任务页才补 /tasks；记忆页不刷任务')
-  assert.ok(panel.includes('}, [ui.closed, ui.view, sessionId])'), '切回任务页要能刷新')
+  assert.ok(!panel.includes("ui.view !== 'task'"), '记忆页也要补 /tasks，否则降级按钮永远禁用')
+  assert.ok(panel.includes('if (ui.closed || !sessionId) return'), '打开面板即补一次数据')
+  assert.ok(panel.includes('}, [ui.closed, ui.view, sessionId])'), '切页要能刷新')
   const node = readFileSync(new URL('../src/client/TaskCommandNode.tsx', import.meta.url), 'utf8')
   assert.match(node, /isTasks && verb === 'insight'/, '必须识别合并后的 /tasks insight …')
   assert.match(node, /sub === 'list'/, '必须识别 /tasks insight list')

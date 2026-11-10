@@ -19,7 +19,22 @@
 export function broadcastAppliesTo(localRoot, incomingRoot) {
   if (typeof incomingRoot !== 'string' || incomingRoot === '') return false
   if (typeof localRoot !== 'string' || localRoot === '') return false
-  return localRoot === incomingRoot
+  return rootKey(localRoot) === rootKey(incomingRoot)
+}
+
+/** Windows/macOS 的文件系统大小写不敏感；Linux 上不能把两个只差大小写的根当成一个。 */
+function caseInsensitiveFs() {
+  const platform = typeof navigator !== 'undefined' ? String(navigator.platform || '') : ''
+  if (/win/i.test(platform) || /mac/i.test(platform)) return true
+  const ua = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : ''
+  return /Windows|Macintosh/i.test(ua)
+}
+
+/** 根的规范键：统一分隔符、去掉末尾分隔符；大小写不敏感平台再折叠大小写。 */
+function rootKey(root) {
+  let key = String(root).replace(/\\/g, '/')
+  if (key.length > 1) key = key.replace(/\/+$/, '')
+  return caseInsensitiveFs() ? key.toLowerCase() : key
 }
 
 /**

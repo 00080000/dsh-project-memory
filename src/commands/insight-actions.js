@@ -5,7 +5,7 @@
 import path from 'node:path'
 import { ProjectMemoryStore } from '../store.js'
 import { memoryRootFor, normalizeCitationFiles } from '../util/fs.js'
-import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, recordDeleted, carryUsageFields, mergeInto, pruneItems, INSIGHT_KINDS } from '../insight-store.js'
+import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, recordDeleted, carryUsageFields, mergeInto, pruneItems, refreshDerivedTrigger, INSIGHT_KINDS } from '../insight-store.js'
 import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
 import { isoMs } from '../util/value.js'
@@ -43,9 +43,8 @@ function mergeOrPushInto({ targetPool, copy, cfg, nowIso }) {
  */
 function forgetVectorsForDeleted({ store, gs, home, ids }) {
   try {
-    const dir = home === 'global'
-      ? (gs && typeof gs.file === 'string' ? path.dirname(gs.file) : null)
-      : (store && typeof store.dir === 'string' ? store.dir : null)
+    // 所有 home 的向量行都在 project store 目录（query_memory/auto-inject 都传 memoryDir）。
+    const dir = store && typeof store.dir === 'string' ? store.dir : null
     if (dir && ids.length) forgetVectorRows({ dir, ids })
   } catch {
     /* 缓存删除失败不影响删除承诺 */
@@ -213,7 +212,7 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       copy.createdAt = insight.createdAt || copy.createdAt
       copy.hitCount = insight.hitCount || 0
       const { merged, target } = mergeOrPushInto({ targetPool: items, copy, cfg, nowIso: now })
-      pruneItems(items, capOf(cfg?.maxProject, 100), now)
+      pruneItems(items, capOf(cfg?.maxProject, 100), now, { protectedIds: new Set([target.id]) })
       store.replaceInsightItems(items)
       task.insights = (task.insights || []).filter((i) => i.id !== id)
       store.markTasksDirty()
@@ -257,7 +256,7 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       copy.createdAt = ins.createdAt || copy.createdAt
       copy.hitCount = ins.hitCount || 0
       const { merged, target } = mergeOrPushInto({ targetPool: gs.items(), copy, cfg, nowIso: now })
-      pruneItems(gs.items(), capOf(cfg?.maxGlobalProcedures, 200), now)
+      pruneItems(gs.items(), capOf(cfg?.maxGlobalProcedures, 200), now, { protectedIds: new Set([target.id]) })
       gs.markDirty()
       items.splice(idx, 1)
       store.replaceInsightItems(items)
@@ -278,6 +277,7 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       copy.id = `${id}_d${Date.now().toString(36)}`
       copy.movedFrom = { scope: 'project', id, at: now }
       copy.createdAt = ins.createdAt || copy.createdAt
+      copy.promoteHold = true
       if (!Array.isArray(task.insights)) task.insights = []
       const { merged, target } = mergeOrPushInto({ targetPool: task.insights, copy, cfg, nowIso: now })
       store.markTasksDirty()
@@ -323,8 +323,9 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       copy.id = `${id}_d${Date.now().toString(36)}`
       copy.movedFrom = { scope: 'global', id, at: now }
       copy.createdAt = ins.createdAt || copy.createdAt
+      copy.promoteHold = true
       const { merged, target } = mergeOrPushInto({ targetPool: pjItems, copy, cfg, nowIso: now })
-      pruneItems(pjItems, capOf(cfg?.maxProject, 100), now)
+      pruneItems(pjItems, capOf(cfg?.maxProject, 100), now, { protectedIds: new Set([target.id]) })
       store.replaceInsightItems(pjItems)
       items.splice(idx, 1)
       gs.markDirty()
@@ -401,10 +402,14 @@ export function editMemoryItem({ store, gs, scope, id, fields, root }) {
       changed = true
     }
     pruneKindFields(item, oldKind)
-    if (changed) item.updatedAt = new Date().toISOString()
+    if (changed) {
+      item.updatedAt = new Date().toISOString()
+      refreshDerivedTrigger(item)
+    }
     return changed
   }
   const s = scope || 'project'
+  if (!['task', 'project', 'global'].includes(s)) return { ok: false, text: `未知 scope: ${s}（只认 task/project/global）` }
   if (s === 'task') {
     const found = findTaskInsight(store, id)
     if (!found) return { ok: false, text: `insight ${id} 不在任务层` }
@@ -449,7 +454,10 @@ export function insightCommandDefinition(config, ctx) {
         if (!raw[0]) return { kind: 'error', text: '[insight] 用法见面板' }
         const verb = raw[0]
         if (verb === 'list') {
-          const scope = raw[1] === 'task' || raw[1] === 'global' || raw[1] === 'project' ? raw[1] : 'project'
+          if (raw[1] !== undefined && !['task', 'global', 'project'].includes(raw[1])) {
+            return { kind: 'error', text: `[insight] 未知 scope: ${raw[1]}（只认 task/project/global）` }
+          }
+          const scope = raw[1] || 'project'
           // 分页参数可选：省略即维持"返回全部"的旧行为（老客户端 bundle 仍按此调用）。
           // 显式给 limit 时封顶 INSIGHT_PAGE_MAX，避免一次请求把整个池子拉成超大载荷。
           let offset = 0
@@ -485,6 +493,10 @@ export function insightCommandDefinition(config, ctx) {
           }
           if (!fields || typeof fields !== 'object' || (!fields.title && !fields.pattern && !fields.topic)) {
             return { kind: 'error', text: '[insight] save JSON 需要 title/pattern/topic' }
+          }
+          // 面板来的 files 也要走同一套写入期路径约束：项目外/绝对路径丢弃，不写进条目。
+          if (Array.isArray(fields.files)) {
+            fields = { ...fields, files: normalizeCitationFiles(fields.files, root).files }
           }
           const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
           const gs = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()

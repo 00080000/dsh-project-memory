@@ -67,7 +67,9 @@ export function extractKeywords(title, text, { max = MAX_KEYWORDS } = {}) {
  * 只对 doc 条目判断，code 条目（符号表）不需要 terms。
  */
 export function docEntriesNeedBackfill(entries) {
-  if (!Array.isArray(entries) || entries.length === 0) return true
+  // 零条目不是“旧条目缺 terms”：空文档本来就没有 chunk；返回 true 会让 mtime 快路径永远失效。
+  if (!Array.isArray(entries)) return true
+  if (entries.length === 0) return false
   return entries.some((e) => e && e.type === 'doc' &&
     (typeof e.terms !== 'string' || e.termsVersion !== TOKENIZER_VERSION))
 }

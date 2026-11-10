@@ -160,6 +160,7 @@ function fakeHost({ services = [], nested = false, bare = false, activeLocale = 
   if (services.includes('remote.commands') && !nested) registry['remote.commands'] = commandsStub(calls)
   if (services.includes('locale')) registry.locale = localeStub(activeLocale)
   if (services.includes('inputTriggers')) registry.inputTriggers = inputTriggersStub(sources)
+  if (services.includes('configForms')) registry.configForms = { get: () => null, whileServed: () => {} }
 
   // 老宿主：服务以普通属性暴露，没有 ctx.get，属性路径是唯一读法。
   if (bare) Object.assign(props, registry)
@@ -268,6 +269,17 @@ const client = loadClient()
   assert.ok(host.regs.some((r) => r.name === 'shell.overlay'), '面板注册')
   assert.equal(host.sources.length, 1, '/ 菜单源注册')
   ok('服务齐全：无告警（不误报），面板与 slash 源照常注册')
+}
+
+// ---- 3b. 部分设置服务：configForms 在、locale 缺 → 一条点名告警（不再静默） ----
+{
+  const host = fakeHost({ services: ['slots', 'configForms'] })
+  const warns = captureWarnings(() => { client.apply(host.ctx) })
+  const line = warns.find((w) => w.includes('settings card unavailable'))
+  assert.ok(line, `设置服务不齐必须告警：${warns.join(' | ')}`)
+  assert.ok(line.includes('locale'), `告警要点名缺的 locale：${line}`)
+  assert.ok(!line.includes('configForms'), `configForms 明明在，不该被点名：${line}`)
+  ok('设置服务部分缺失：点名告警，不静默')
 }
 
 // ---- 4. 缺数据通道：面板把原因渲染在界面上（不只是 console） ----

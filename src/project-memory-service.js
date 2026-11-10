@@ -61,8 +61,14 @@ export function createProjectMemoryService(ctx, config) {
       const q = String(query ?? '')
       // 空查询不是“全部”：ranker 会把前 limit 条当命中（分数 0）。
       if (!q.trim()) return { results: [] }
+      if (opts.layers !== undefined && !Array.isArray(opts.layers)) {
+        throw new Error('projectMemory.recall: layers must be an array')
+      }
       const root = resolveRoot(opts.root)
-      const limit = Number.isFinite(opts.limit) && opts.limit > 0 ? Math.floor(opts.limit) : 8
+      // 只读动词也要过根护栏：被 deny 的根不能借 recall 加载（超大 store 的 load 本身就危险），
+      // 更不能在加载时顺手建出 `.dsh-project-memory` / `.gitignore`。
+      assertSafeRoot(root, { config })
+      const limit = Number.isFinite(opts.limit) && opts.limit > 0 ? Math.min(50, Math.floor(opts.limit)) : 8
       const layers = Array.isArray(opts.layers) && opts.layers.length ? opts.layers : DEFAULT_LAYERS
       const { store, globalStore } = openStores(root, config)
       const recalled = recallItems({
@@ -71,6 +77,8 @@ export function createProjectMemoryService(ctx, config) {
         queries: [q],
         layers,
         limit,
+        // task 级条目只在绑定任务时可见；remember(scope:'task') 写进去的必须能读回来。
+        boundTaskId: opts.taskId || null,
       })
       const results = (recalled.flat || []).map((hit) => {
         const item = hit.item || {}
@@ -111,7 +119,11 @@ export function createProjectMemoryService(ctx, config) {
       if (!saved || !saved.ok) {
         throw new Error(`projectMemory.remember failed: ${saved && saved.error ? saved.error : 'unknown error'}`)
       }
-      return { id: saved.id, action: saved.action }
+      return {
+        id: saved.id,
+        action: saved.action,
+        ...(store.lastSaveOk === false ? { persisted: false } : {}),
+      }
     },
 
     // v1 契约只返回 `{ deleted }`：关键词命中数超过 `maxForgetMatches` 时 `removeMemory` 会返回
@@ -136,11 +148,12 @@ export function createProjectMemoryService(ctx, config) {
       } catch {
         /* ignore：vectors.json 是缓存，不是真相源 */
       }
-      return { deleted }
+      return { deleted, ...(store.lastSaveOk === false ? { persisted: false } : {}) }
     },
 
     stats(opts = {}) {
       const root = resolveRoot(opts.root)
+      assertSafeRoot(root, { config })
       const { store, globalStore } = openStores(root, config)
       const overview = storeOverview(store)
       return {

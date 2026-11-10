@@ -12,6 +12,7 @@ import { insightMatchText, normalizedTokenOverlap } from './similarity.js'
 import { createVectorCosine, createVectorRerank, vectorItemsFrom } from './vector-index.js'
 import { BoundedMap, SessionCache } from './util/session-cache.js'
 import { createVisibleState, ensureVisible, isBlockVisible, isItemVisible, onSessionEvent, provenanceOf, recordInjected } from './inject-visible.js'
+import { SOURCE_KIND, isOwnInjection } from './util/message-source.js'
 import { sessionWorkingDir } from './util/session-dir.js'
 import { cfgInsight, GlobalStore, defaultGlobalFile, recordHit } from './insight-store.js'
 import { projectTags } from './project-profile.js'
@@ -37,21 +38,7 @@ export const PLUGIN_NAME = 'dsh-project-memory'
  * 值取 `plugin:<包名>`：这正是宿主 v3→v4 迁移改写本插件历史消息的结果，新写与迁移后是同一个
  * 生产者身份，自激闸门（isOwnInjection）不必按新旧分叉。
  */
-export const SOURCE_KIND = 'plugin:dsh-project-memory'
-
-/**
- * 这条消息是不是本插件自己注入的？三种写法都要认，因为同一条历史消息在不同阶段形状不同：
- * `plugin:dsh-project-memory`（现在写的，也是迁移结果）、`project-memory`（保留的别名，将来换 kind
- * 时自激闸门不失效）、`plugin: 'dsh-project-memory'`（迁移前尚未落盘的旧形状）。
- * @param {object|undefined|null} source - message.source
- * @returns {boolean}
- */
-export function isOwnInjection(source) {
-  if (!source || typeof source !== 'object') return false
-  return source.kind === SOURCE_KIND
-    || source.kind === 'project-memory'
-    || source.plugin === 'dsh-project-memory'
-}
+export { SOURCE_KIND, isOwnInjection }
 
 /** 注入正文的最小可用长度：预算塞不下就宁可不注入（记 dropped）——stub 只消耗 token 不传递信息。 */
 const MIN_BODY_CHARS = { trigger: 48, hint: 120 }
@@ -692,6 +679,8 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     source: surfaceReady ? 'surface' : 'cache',
     visibleItems: visibleState.items.size,
     visibleBlocks: visibleState.blocks.size,
+    degraded: visibleState.degraded,
+    genSupported: visibleState.genSupported,
   }
   // 会话 cwd 命中内置名单 / roots.deny / roots.exclude 时整条链路停在这里：不读 store（历史遗留的
   // 超大 store 光是 load() 就能 OOM），也不写审计——`appendShadowAudit` 里的 mkdirSync 正是把
@@ -734,6 +723,14 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   const quota = sessions.quota.ensure(sessionId)
   // 压缩/历史丢失时跳过冷却：否则注入消息刚被替换掉，还要再等 N 步才补回来。
   const historyLost = surfaceReady && !visibleState.blocks.size && !visibleState.items.size
+  // 压缩把注入消息换掉了：额度也必须跟着归零。只跳过冷却不够——quota 只增不减，打满
+  // maxItemsPerSession 的会话压缩后会永久失明（条目通道一直沉默）。
+  if (historyLost) {
+    quota.items = 0
+    quota.chars = 0
+    quota.lastStep = null
+  }
+  reconcile.historyLost = historyLost
   const silence = sessionSilence({ cfg, quota, stepNo, ignoreCooldown: historyLost })
   // 条目级去重：surface 可用时看"是否仍在可见上下文里"，否则退回进程缓存。
   const seenItems = sessions.items.ensure(sessionId)
@@ -852,7 +849,7 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     reconcile,
   }), audit, root)
 
-  const message = injectionMessage(injectedText, summary, provenanceOf(fp, built.reasons))
+  const message = injectionMessage(injectedText, summary, provenanceOf(fp, built.reasons, cfg.maxItemsPerSession))
   if (surfaceReady) recordInjected(visibleState, message)
   return { ...decision, messages: [...decision.messages, message] }
 }

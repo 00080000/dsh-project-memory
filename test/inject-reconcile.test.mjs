@@ -19,7 +19,7 @@ const ITEM = {
   confidence: 1, archived: false,
 }
 
-function fixture({ surface = true } = {}) {
+function fixture({ surface = true, autoContext = {} } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'inject-reconcile-'))
   writeFileSync(path.join(root, 'package.json'), '{"name":"fixture"}')
   const globalFile = path.join(root, 'global.json')
@@ -53,7 +53,7 @@ function fixture({ surface = true } = {}) {
   }
   installAutoInject(ctx, {
     memoryDir: '.dsh-project-memory',
-    autoContext: { enabled: true, maxTokens: 400, auditLog: false, shadowLog: false },
+    autoContext: { enabled: true, maxTokens: 400, auditLog: false, shadowLog: false, ...autoContext },
     insight: { globalFile },
   })
   const run = async (messages = []) => handlers['agent/pre-step'][0](
@@ -120,6 +120,18 @@ function fixture({ surface = true } = {}) {
   const second = await f.run([HUMAN])
   assert.equal(f.injected(second), 0, '老宿主仍靠缓存去重')
   ok('老宿主：无 surface 时退回缓存')
+}
+
+// 5. 会话条目额度打满后压缩：额度必须归零，否则压缩后永久失明
+{
+  const f = fixture({ autoContext: { maxItemsPerSession: 1 } })
+  const first = await f.run([HUMAN])
+  assert.equal(first.messages.some((m) => m?.source?.memory?.i?.length > 0), true)
+  f.append(first.messages.find((m) => String(m?.source?.kind || '').startsWith('plugin:dsh-project-memory')))
+  f.compact({ role: 'user', content: [{ type: 'text', text: 'summary' }], source: { kind: 'compaction' } })
+  const after = await f.run([HUMAN])
+  assert.equal(f.injected(after), 1, '压缩后条目额度归零，应重新注入')
+  ok('压缩：会话条目额度随历史重建归零')
 }
 
 console.log(`\ninject-reconcile tests: ${passed} passed`)

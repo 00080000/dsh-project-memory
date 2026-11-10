@@ -240,13 +240,13 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     window.addEventListener('mouseup', onUp)
   }
 
-  // 只在面板打开、或切回任务页时补一次数据；切到记忆页不发任务命令。
-  // 命令节点本身由 TaskCommandNode 隐藏，所以这次补数据不会在对话里留下可见行；
-  // 但切回任务页必须刷新，否则刚在记忆页确认/提升的草稿状态会一直显示旧值。
+  // 面板打开/切页时补一次数据。记忆页也发：它要 `boundTaskId`（降级按钮）与 `root`
+  // 都从 `/tasks` 载荷来，只在任务页发会让记忆页拿到 null，降级按钮永远禁用。
+  // 命令节点本身由 TaskCommandNode 隐藏，所以这次补数据不会在对话里留下可见行。
   const refreshRef = useRef<() => void>(() => {})
   refreshRef.current = () => { void refresh() }
   useEffect(() => {
-    if (ui.closed || !sessionId || ui.view !== 'task') return
+    if (ui.closed || !sessionId) return
     if (Date.now() - Math.max(data.lastUpdate, syncedAt) < 5_000) return
     refreshRef.current()
   }, [ui.closed, ui.view, sessionId])

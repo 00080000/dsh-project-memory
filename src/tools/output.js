@@ -15,6 +15,19 @@ export const TEXT_OUTPUT = {
  * @param {{ required?: boolean, description?: string }} [opts]
  * @returns {{ type: 'string', description: string, required?: true }}
  */
-export function rootParam({ required = false, description = 'project root (default: cwd)' } = {}) {
+export function rootParam({ required = false, description = 'project root (session cwd, or its nearest project marker)' } = {}) {
   return required ? { type: 'string', required: true, description } : { type: 'string', description }
+}
+
+/**
+ * 写盘失败的统一提示。`save()` / `commit()` 在锁竞争、只读挂载、ENOSPC、目录不可建时返回 false
+ * 而不抛（重试与退出 flush 仍会尝试），但工具不能因此报"已保存"。调用方把它拼在成功文案后面。
+ * @param {...(object|null|undefined)} stores 可能带 lastSaveOk / lastCommitOk 的 store
+ * @returns {string} 需要提示时以两个换行开头
+ */
+export function persistenceNote(...stores) {
+  const failed = stores.some((s) => s && (s.lastSaveOk === false || s.lastCommitOk === false))
+  if (!failed) return ''
+  return '\n\n⚠ Not persisted to disk (permissions, disk space, or another dsh process holds the lock). '
+    + 'The change is still in memory and will be retried; check the store directory before relying on it.'
 }

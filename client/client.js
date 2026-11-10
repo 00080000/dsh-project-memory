@@ -500,7 +500,20 @@ window.__ModuleLoader__.load({
 		function broadcastAppliesTo(localRoot, incomingRoot) {
 			if (typeof incomingRoot !== "string" || incomingRoot === "") return false;
 			if (typeof localRoot !== "string" || localRoot === "") return false;
-			return localRoot === incomingRoot;
+			return rootKey(localRoot) === rootKey(incomingRoot);
+		}
+		/** Windows/macOS 的文件系统大小写不敏感；Linux 上不能把两个只差大小写的根当成一个。 */
+		function caseInsensitiveFs() {
+			const platform = typeof navigator !== "undefined" ? String(navigator.platform || "") : "";
+			if (/win/i.test(platform) || /mac/i.test(platform)) return true;
+			const ua = typeof navigator !== "undefined" ? String(navigator.userAgent || "") : "";
+			return /Windows|Macintosh/i.test(ua);
+		}
+		/** 根的规范键：统一分隔符、去掉末尾分隔符；大小写不敏感平台再折叠大小写。 */
+		function rootKey(root) {
+			let key = String(root).replace(/\\/g, "/");
+			if (key.length > 1) key = key.replace(/\/+$/, "");
+			return caseInsensitiveFs() ? key.toLowerCase() : key;
 		}
 		/**
 		* 从 `/tasks` 载荷里取项目根（旧宿主没有该键）。
@@ -540,7 +553,7 @@ window.__ModuleLoader__.load({
 				return null;
 			}
 		}
-		const SYNC_CHANNEL = typeof window !== "undefined" ? new BroadcastChannel("dsh-pm-tasks-data") : null;
+		const SYNC_CHANNEL = typeof window !== "undefined" && typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("dsh-pm-tasks-data") : null;
 		let dataState = {
 			tasks: [],
 			boundTaskId: null,
@@ -1773,6 +1786,7 @@ window.__ModuleLoader__.load({
 		function MemoryView({ ctx, sessionId, scope, root, boundTaskId, showHints, t }) {
 			const [rows, setRows] = (0, react.useState)([]);
 			const [total, setTotal] = (0, react.useState)(0);
+			const totalRef = (0, react.useRef)(0);
 			const [nextOffset, setNextOffset] = (0, react.useState)(null);
 			const [error, setError] = (0, react.useState)(null);
 			const [loading, setLoading] = (0, react.useState)(false);
@@ -1792,29 +1806,14 @@ window.__ModuleLoader__.load({
 			const scrollRef = (0, react.useRef)(null);
 			const sentinelRef = (0, react.useRef)(null);
 			const runLine = (0, react.useCallback)(async (line) => {
-				const commands = service(ctx, "remote.commands");
-				if (!sessionId || !commands || typeof commands.execute !== "function") return {
+				const result = await invokeCommand(ctx, sessionId, line);
+				return result.ok ? {
+					ok: true,
+					text: result.text
+				} : {
 					ok: false,
-					text: "data channel unavailable (missing client service)"
+					text: result.error || "command failed"
 				};
-				try {
-					const envelope = await commands.execute(sessionId, line, []);
-					const execution = envelope && typeof envelope === "object" && "value" in envelope ? envelope.value : envelope;
-					const result = execution?.result ?? execution;
-					if (result?.kind === "error") return {
-						ok: false,
-						text: result.text ?? "command error"
-					};
-					return {
-						ok: true,
-						text: result?.text ?? ""
-					};
-				} catch (err) {
-					return {
-						ok: false,
-						text: String(err?.message ?? err)
-					};
-				}
 			}, [ctx, sessionId]);
 			const gateRef = (0, react.useRef)(null);
 			if (gateRef.current === null) gateRef.current = createRequestGate();
@@ -1822,6 +1821,22 @@ window.__ModuleLoader__.load({
 			(0, react.useEffect)(() => {
 				scopeRef.current = scope;
 			}, [scope]);
+			(0, react.useEffect)(() => {
+				setShowNew(false);
+				setEditingId(null);
+				setForm({
+					title: "",
+					kind: "lesson",
+					body: "",
+					steps: "",
+					trigger: ""
+				});
+				setSavedTip(null);
+			}, [
+				scope,
+				sessionId,
+				root
+			]);
 			/**
 			* 取一页并落到状态里。
 			* @param offset 起始下标。
@@ -1857,6 +1872,12 @@ window.__ModuleLoader__.load({
 						setError("unparsable payload");
 						return;
 					}
+					if (append && parsed.total !== totalRef.current) {
+						totalRef.current = parsed.total;
+						loadRef.current(0, 30, false);
+						return;
+					}
+					totalRef.current = parsed.total;
 					setRows((prev) => {
 						const next = append ? appendUnique(prev, parsed.items) : parsed.items;
 						writeInsightCache(sessionId, requestedScope, root, boundTaskId, next, parsed.total, parsed.nextOffset);
@@ -1885,6 +1906,7 @@ window.__ModuleLoader__.load({
 			(0, react.useEffect)(() => {
 				setRows([]);
 				setTotal(0);
+				totalRef.current = 0;
 				setNextOffset(null);
 				setError(null);
 				if (!sessionId) return;
@@ -2603,7 +2625,7 @@ window.__ModuleLoader__.load({
 				refresh();
 			};
 			(0, react.useEffect)(() => {
-				if (ui.closed || !sessionId || ui.view !== "task") return;
+				if (ui.closed || !sessionId) return;
 				if (Date.now() - Math.max(data.lastUpdate, syncedAt) < 5e3) return;
 				refreshRef.current();
 			}, [
@@ -3389,6 +3411,14 @@ window.__ModuleLoader__.load({
 		*/
 		function registerSettingsCard(ctx) {
 			if (typeof ctx?.inject !== "function") return;
+			if (service(ctx, "configForms")) {
+				const missing = [
+					"slots",
+					"configForms",
+					"locale"
+				].filter((name) => !service(ctx, name));
+				if (missing.length) console.warn(`[${SETTINGS_NS}] settings card unavailable: missing client service(s) ${missing.join(", ")}`);
+			}
 			try {
 				ctx.inject([
 					"slots",

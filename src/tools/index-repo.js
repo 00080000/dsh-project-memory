@@ -78,8 +78,9 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
         indexed++
       }
       if (batch.length >= COMMIT_BATCH) flushBatch()
-    } catch {
-      failures.push(rel)
+    } catch (err) {
+      // 带上原因：只有路径的报告无法区分"没权限"和"解析器崩了"。
+      failures.push(`${rel} (${err?.message || err})`)
     }
   }
 

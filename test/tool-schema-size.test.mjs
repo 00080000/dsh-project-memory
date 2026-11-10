@@ -46,12 +46,12 @@ assert.ok(tokens <= 1800, `tool schema budget exceeded: ~${tokens} tokens (${cha
 // 十一份手写副本收敛成 rootParam() 之后，这里把每个工具的 root 契约钉死：
 // 可选根必须写明默认值（否则模型只能猜），必填根必须真的标 required。
 {
-  assert.deepEqual(rootParam(), { type: 'string', description: 'project root (default: cwd)' })
-  assert.deepEqual(rootParam({ required: true }), { type: 'string', required: true, description: 'project root (default: cwd)' })
+  assert.deepEqual(rootParam(), { type: 'string', description: 'project root (session cwd, or its nearest project marker)' })
+  assert.deepEqual(rootParam({ required: true }), { type: 'string', required: true, description: 'project root (session cwd, or its nearest project marker)' })
   assert.deepEqual(rootParam({ description: 'custom' }), { type: 'string', description: 'custom' })
   assert.notEqual(rootParam(), rootParam(), '每次返回新对象：工具之间不共享可变的 schema 声明')
 
-  const ROOT_DEFAULT = 'project root (default: cwd)'
+  const ROOT_DEFAULT = 'project root (session cwd, or its nearest project marker)'
   const ROOT_REQUIRED = { required: true, description: 'project root (relative: session cwd)' }
   // 描述文本是参数而不是统一句式：index_doc 从 file_path 反推根，index_repo/watch_repo 必须显式给根。
   const expected = {

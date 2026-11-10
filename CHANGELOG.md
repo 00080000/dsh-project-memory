@@ -1,5 +1,13 @@
 ## Unreleased
 
+- **全量审计修复（存储 / 注入对账 / 工具 / 客户端）**，不新增配置键，`client/` 产物已重建。
+  - **注入对账**：正文回退只认本插件自己的消息（压缩摘要/recall 里的 `- [ins_…]` 不再永久压制条目）；乐观登记下一步与 surface 对账（宿主 abort 时不再整会话失明）；`historyLost` 把会话额度一并归零；provenance 上限与 `maxItemsPerSession` 对齐；`reconcile` 增加 `degraded / genSupported / historyLost`。
+  - **旁路日志**：审计建目录后立即补 `.gitignore`；主审计 `dropped` 截断到 40 并记 `droppedTotal`（1000 条候选的单行从 113KB 降到 KB 级）。
+  - **持久化**：读失败（EACCES/EISDIR）进入只读模式、不覆盖读不出的分片；重写不复活跨进程删除；扩桶按摊还计数；任务跨进程合并按字段（steps / files / fileMeta）而不是整条二选一。
+  - **工具/命令**：`save_lesson` / `remember` / `forget` / `select_task` / `archive_task` / `/tasks` 在未落盘时给出 `persisted:false` 或明确警告；`roots.deny/exclude` 对 symlink 别名生效；原生服务的 `recall/stats` 也过根护栏；TaskBridge 相对路径按会话 cwd 解析；显式切换任务/清空步骤会推空宿主清单；`/insight edit|list` 校验 scope；services `recall` 支持 `taskId`。
+  - **客户端**：记忆页打开时也取 `/tasks`（降级按钮不再永远禁用）；记忆页命令走统一 `invokeCommand`（超时/取消/错误信封）；分页发现 total 变化时回到第一页重取；`BroadcastChannel` 缺失时软降级；根比较归一大小写/分隔符；切换 scope 关闭编辑表单；设置服务部分缺失时点名告警。
+  - **文档/打包**：README 性能表标注 v2 基线并补 v3 实测；`pm-digest` 区分桶数与源文件数；删除过时的 `client/client.d.ts`，构建前清理 `client/` 产物。
+
 - **store 布局 v3：目标尺寸哈希桶**。`shards/` 从“一文件一 shard”改为 `bucket-*.json`（目标 32KB，按 `sha256(relPath) % bucketCount` 分配，桶数随体积伸缩）。全量索引的文件操作数约降一个量级；单文件更新只重写它所属的一个桶。旧 `format.json` v2 / 逐文件分片在首次 `save()` 时自动迁移，迁移后删除旧分片。
   - 兼容性：新版本能读 v2 并自动迁移；**旧版本读不懂 v3 桶**（会看到空 store），确认要回退时请先备份 `.dsh-project-memory/`。
   - 损坏隔离粒度从“单文件”变为“单桶”：一个桶损坏会影响桶内文件，它们会在下一次扫描时重新索引。

@@ -1,6 +1,6 @@
 import {
   accessSync, closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync,
-  unlinkSync, writeFileSync,
+  realpathSync, unlinkSync, writeFileSync,
 } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
@@ -437,6 +437,15 @@ export function isDefaultIgnoredRel(rel) {
   return segs.slice(0, -1).some((seg) => DEFAULT_IGNORE.has(seg))
 }
 
+/** git 清单可疑为空 / git 不可用：每个根只告警一次。 */
+const warnedGitListing = new Set()
+
+function warnGitListing(root, message) {
+  if (warnedGitListing.has(root)) return
+  warnedGitListing.add(root)
+  console.error(`[dsh-project-memory] ${message}`)
+}
+
 /** 单次扫描的默认上限。0 / 负数 / 非数字 = 不限制。 */
 export const DEFAULT_SCAN_FILES = 20000
 export const DEFAULT_SCAN_DEPTH = 12
@@ -587,6 +596,27 @@ function gitListedFiles(root) {
   }
 }
 
+/** git 清单里所有“自带 store 的祖先目录”（相对路径）；不再受 nestedStoreRoots 的深度/300 目录预算限制。 */
+function nestedStoreDirsFor(root, rels, memoryDirName) {
+  const found = new Set()
+  const checked = new Map()
+  const isStore = (dir) => {
+    if (!checked.has(dir)) checked.set(dir, hasOwnStore(path.join(root, dir), memoryDirName))
+    return checked.get(dir)
+  }
+  for (const rel of rels) {
+    let dir = path.posix.dirname(String(rel).split(path.sep).join('/'))
+    while (dir && dir !== '.' && dir !== '/') {
+      if (isStore(dir)) {
+        found.add(dir)
+        break
+      }
+      dir = path.posix.dirname(dir)
+    }
+  }
+  return found
+}
+
 /**
  * 项目文件清单：git 仓库走 `git ls-files`（尊重 `.gitignore`），非 git 目录回退 {@link walkDir}；
  * 返回形状与 walkDir 一致，调用方无需分支。
@@ -601,13 +631,23 @@ export function listProjectFiles(root, opts = {}) {
       ? opts.config
       : opts.config ? compileRootPolicy(opts.config) : null
   const listed = opts.gitAware === false ? null : gitListedFiles(root)
-  if (listed === null) return walkDir(root, opts)
+  const workTree = findGitWorkTree(root)
+  if (listed === null) {
+    if (workTree) {
+      warnGitListing(root, `${root}: git could not list the work tree (${workTree}); .gitignore is not applied this pass and deletions are suppressed`)
+      return { ...walkDir(root, opts), truncated: true }
+    }
+    return walkDir(root, opts)
+  }
+  // 祖先仓的 .gitignore 可能把整棵子树全忽略：空清单不等于“文件都被删了”，不能触发 unseen 清理。
+  if (listed.length === 0 && workTree && path.resolve(workTree) !== path.resolve(root) && opts.maxFiles !== 0) {
+    warnGitListing(root, `${root}: git listed no files but a parent work tree exists (${workTree}); .gitignore may hide everything — deletions suppressed`)
+    return { files: [], truncated: true, capped: false, skipped: [], unreadable: [] }
+  }
   const maxFiles = Number.isFinite(opts.maxFiles) && opts.maxFiles > 0 ? opts.maxFiles : Infinity
   const maxDepth = Number.isFinite(opts.maxDepth) && opts.maxDepth > 0 ? opts.maxDepth : Infinity
   const nestedName = opts.nestedStoreName || null
-  const nested = nestedName
-    ? nestedStoreRoots(root, nestedName).map((p) => relativePath(root, p))
-    : []
+  const nested = nestedName ? nestedStoreDirsFor(root, listed, nestedName) : new Set()
   const files = []
   const skipped = new Set()
   let capped = false
@@ -633,7 +673,13 @@ export function listProjectFiles(root, opts = {}) {
       capped = true
       continue
     }
-    const under = nested.find((n) => rel === n || rel.startsWith(`${n}/`))
+    let under
+    for (const n of nested) {
+      if (rel === n || rel.startsWith(`${n}/`)) {
+        under = n
+        break
+      }
+    }
     if (under) {
       skipped.add(path.join(root, under))
       continue
@@ -847,6 +893,26 @@ export function safeMemoryDirName(raw, warn = defaultMemoryDirWarning) {
     return DEFAULT_MEMORY_DIR
   }
   return value
+}
+
+/**
+ * store 目录的自我忽略。目录不存在时不创建（是否建目录由调用方决定），存在则保证 `.gitignore` 在。
+ * 审计日志会先建目录再写盘，若不在这里补自我忽略，全新项目里 `git add -A` 会把含人类消息原文的
+ * 影子日志一起提交。
+ * @param {string} dir store 目录
+ * @returns {boolean} 本次是否新写了 `.gitignore`
+ */
+export function ensureSelfIgnoreDir(dir) {
+  if (!dir || !existsSync(dir)) return false
+  const file = path.join(dir, '.gitignore')
+  if (existsSync(file)) return false
+  try {
+    writeFileSync(file, '# dsh-project-memory: local by default. `git add -f` to commit it.\n*\n')
+    return true
+  } catch {
+    // 旁路：写不进去不影响存储本身
+    return false
+  }
 }
 
 /**
@@ -1136,6 +1202,19 @@ function policyFor(configOrPolicy, opts) {
   return compileRootPolicy(configOrPolicy, opts)
 }
 
+/**
+ * 根判定的物理键：符号链接别名必须和被 deny/exclude 的目录同键，否则 `ln -s denied safe` 就能绕过。
+ * 只在真实平台 + 真实 path 模块上做 realpath；参数化模拟（Windows 语义测试）没有真实文件系统。
+ */
+function physicalKey(abs, policy) {
+  if (policy.platform !== process.platform || policy.pathApi !== path) return null
+  try {
+    return storeKey(realpathSync(abs), policy.platform)
+  } catch {
+    return null
+  }
+}
+
 /** `parent` 是否等于 `child` 或它的祖先（按路径分隔符，含子树）。 */
 function isInsideKey(parentKey, childKey, sep) {
   if (parentKey === childKey) return true
@@ -1219,11 +1298,14 @@ export function rootRejection(root, configOrPolicy, opts) {
   }
   const platform = policy.platform
   const key = storeKey(abs, platform)
+  const physical = physicalKey(abs, policy)
+  const keys = physical && physical !== key ? new Set([key, physical]) : new Set([key])
   const parsed = policy.pathApi.parse(abs)
   if (!parsed.dir || key === storeKey(parsed.root, platform)) {
     return { kind: 'filesystem-root', abs, field: null, entry: null, reason: 'the filesystem root' }
   }
   const excluded = excludedEntryForAbs(abs, policy)
+    || (physical ? excludedEntryForAbs(physical, policy) : null)
   if (excluded) {
     return {
       kind: 'exclude',
@@ -1233,16 +1315,17 @@ export function rootRejection(root, configOrPolicy, opts) {
       reason: `inside the subtree excluded by ${JSON.stringify(excluded.raw)}`,
     }
   }
-  if (policy.deny.has(key)) {
+  const denied = [...keys].find((k) => policy.deny.has(k))
+  if (denied) {
     return {
       kind: 'deny',
       abs,
       field: 'roots.deny',
-      entry: policy.denyEntries.get(key) || null,
+      entry: policy.denyEntries.get(denied) || null,
       reason: 'listed in roots.deny',
     }
   }
-  if (policy.builtin.has(key) && !policy.allowUnsafeRoots && !policy.allow.has(key)) {
+  if ([...keys].some((k) => policy.builtin.has(k)) && !policy.allowUnsafeRoots && ![...keys].some((k) => policy.allow.has(k))) {
     return { kind: 'builtin', abs, field: 'roots.allow', entry: null, reason: unsafeReason(abs, policy) }
   }
   return null

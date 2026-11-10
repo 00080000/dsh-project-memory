@@ -78,24 +78,38 @@ const days = (iso) => {
   return Number.isFinite(t) ? Math.max(0, Math.round((Date.now() - t) / 86_400_000)) : null
 }
 
+/**
+ * v3 的 shards/ 是**桶**文件（bucket-NNNNN.json），不是"一个源文件一个分片"。
+ * `buckets` 是落盘文件数，`indexedFiles` 是桶里唯一的源文件数；混进来的 v2 旧分片单独计数，
+ * 不能当成 v3 桶（旧实现把两者混在 `files` 里，统计口径会随遗留文件漂移）。
+ */
 function shardStats(dir) {
   try {
-    let files = 0
+    let buckets = 0
+    let legacy = 0
     let bytes = 0
+    const indexed = new Set()
     for (const name of readdirSync(dir)) {
       if (!name.endsWith('.json')) continue
+      const file = path.join(dir, name)
       try {
-        const st = statSync(path.join(dir, name))
+        const st = statSync(file)
         if (!st.isFile()) continue
-        files++
         bytes += st.size
+        if (/^bucket-\d+\.json$/.test(name)) buckets++
+        else legacy++
+        const doc = readJson(file, null)
+        for (const item of Array.isArray(doc?.items) ? doc.items : []) {
+          if (typeof item?.relPath === 'string' && item.relPath) indexed.add(item.relPath)
+        }
+        if (typeof doc?.relPath === 'string' && doc.relPath) indexed.add(doc.relPath)
       } catch {
         /* 分片在统计途中消失：跳过 */
       }
     }
-    return { files, bytes }
+    return { buckets, legacyFiles: legacy, indexedFiles: indexed.size, bytes }
   } catch {
-    return { files: 0, bytes: 0 }
+    return { buckets: 0, legacyFiles: 0, indexedFiles: 0, bytes: 0 }
   }
 }
 
@@ -185,7 +199,7 @@ line('project', root)
 if (resolved.name !== DEFAULT_MEMORY_DIR || resolved.detected) {
   line('location', `${resolved.name}${resolved.detected ? ' (auto-detected)' : ''}`)
 }
-line('store', `${shards.files} shards · ${kb(shards.bytes)} · ${insights.total} insights · ${tasks.total} tasks`)
+line('store', `${shards.buckets ? `${shards.buckets} buckets` : `${shards.legacyFiles} shards`} · ${shards.indexedFiles} indexed files · ${kb(shards.bytes)} · ${insights.total} insights · ${tasks.total} tasks`)
 if (insights.total) {
   const kinds = Object.entries(insights.kinds).map(([k, n]) => `${k} ${n}`).join(' · ')
   line('insights', `${kinds}${insights.archived ? ` · archived ${insights.archived}` : ''}`)

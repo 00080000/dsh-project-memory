@@ -31,11 +31,11 @@ export const SECRET_PATTERNS = [
 ]
 
 /** 检测疑似密钥/token/私钥形态内容；命中返回第一个命中字段名，否则 null。 */
-export function containsSecretFields(ins, fields = ['title', 'body', 'pattern', 'fix', 'problem', 'solution', 'choice', 'reason', 'steps']) {
+export function containsSecretFields(ins, fields = ['title', 'body', 'pattern', 'fix', 'problem', 'solution', 'choice', 'reason', 'steps', 'trigger']) {
   for (const f of fields) {
     const v = ins && ins[f]
     if (!v) continue
-    const text = Array.isArray(v) ? v.join('\n') : String(v)
+    const text = typeof v === 'object' ? JSON.stringify(v) : Array.isArray(v) ? v.join('\n') : String(v)
     for (const re of SECRET_PATTERNS) if (re.test(text)) return f
   }
   return null
@@ -89,6 +89,7 @@ const ARRAY_FIELDS = ['steps', 'files', 'symbols', 'tags', 'sourceTaskIds']
 
 /** 由工具/测试传入的 raw 构造规范 insight（scope/source/timestamps 由调用方定）。 */
 export function normalizeInsight(raw, extra = {}) {
+  raw = isRecord(raw) ? raw : {}
   const kind = INSIGHT_KINDS.includes(raw.kind) ? raw.kind : 'lesson'
   const now = extra.nowIso || new Date().toISOString()
   const ins = {
@@ -163,6 +164,8 @@ export function carryUsageFields(copy, src) {
   if (src.lastHitAt) copy.lastHitAt = src.lastHitAt
   if (src.createdAt) copy.createdAt = src.createdAt
   if (src.triggerDerived) copy.triggerDerived = src.triggerDerived
+  if (src.archived) copy.archived = true
+  if (src.promoteHold) copy.promoteHold = true
   // `prev` 是被覆盖挤掉的那一版，必须跟着条目走：promote/demote 走白名单，漏了它就丢了"还能还原"。
   if (src.prev && typeof src.prev === 'object') copy.prev = src.prev
   return copy
@@ -185,6 +188,19 @@ function putField(item, key, next, replaced) {
   replaced.push(key)
 }
 
+/** 局部 trigger 更新与面板编辑同语义：只改传入成员，when/guard/prevents 等 authored 面保留。 */
+function mergeAuthoredTrigger(existing, incoming) {
+  if (!incoming || typeof incoming !== 'object') return existing
+  const next = { ...(existing || {}) }
+  for (const f of ['keywords', 'scope', 'actions', 'paths', 'symbols']) {
+    if (Array.isArray(incoming[f])) next[f] = incoming[f].map(String)
+  }
+  if (incoming.when && typeof incoming.when === 'object') next.when = incoming.when
+  if (incoming.guard && typeof incoming.guard === 'object') next.guard = incoming.guard
+  if (typeof incoming.prevents === 'string') next.prevents = incoming.prevents
+  return next
+}
+
 /** 自动合并会改写的正文字段（title 也在内：0.90 以上的两条标题本就近乎同一句）。 */
 const MERGE_FIELDS = ['title', 'pattern', 'fix', 'choice', 'reason', 'problem', 'solution', 'body']
 
@@ -197,7 +213,7 @@ function derivedSourceSnapshot(item) {
 }
 
 /** 重算派生词（只写 triggerDerived）；空结果删除，避免用过期词召回。 */
-function refreshDerivedTrigger(item) {
+export function refreshDerivedTrigger(item) {
   const derived = deriveTrigger(item)
   if (!derived.keywords.length && !derived.actions.length && !derived.paths.length) {
     // 旧值一律清掉：空派生继续留着就是审计 #17 的过期召回。
@@ -229,7 +245,7 @@ export function mergeInto(existing, base, cfg, nowIso) {
   if (Array.isArray(base.steps) && base.steps.length) putField(existing, 'steps', base.steps.map(String), replaced)
   // 正文变了就重算派生词（作者手写的 trigger 不动）；只并成员/文件/置信时快照不变，跳过。
   if (derivedSourceSnapshot(existing) !== before) refreshDerivedTrigger(existing)
-  if (base.trigger && typeof base.trigger === 'object') putField(existing, 'trigger', base.trigger, replaced)
+  if (base.trigger && typeof base.trigger === 'object') putField(existing, 'trigger', mergeAuthoredTrigger(existing.trigger, base.trigger), replaced)
   existing.confidence = Math.max(num(existing.confidence, 0.5), num(base.confidence, 0.5))
   existing.hitCount = (existing.hitCount || 0) + 1
   existing.lastHitAt = now
@@ -266,7 +282,7 @@ export function applyUpdate(item, raw, nowIso) {
       continue
     }
     if (f === 'trigger') {
-      if (typeof v === 'object') putField(item, 'trigger', v, replaced)
+      if (typeof v === 'object') putField(item, 'trigger', mergeAuthoredTrigger(item.trigger, v), replaced)
       continue
     }
     putField(item, f, String(v), replaced)
@@ -449,19 +465,19 @@ export function applyDecay(items, cfg, nowIso) {
  * 注意：没有归档可删时，本轮归档的条目会在同一次调用的后续循环里被删掉——
  * `archived` 计数是"先归档、随即被删"，不是"留下了软删副本"。
  */
-export function pruneItems(items, max, nowIso) {
+export function pruneItems(items, max, nowIso, { protectedIds = new Set() } = {}) {
   const now = nowIso || new Date().toISOString()
   let removed = 0
   let archivedNow = 0
   while (items.length > max) {
-    const arch = items.filter((i) => i.archived).sort((a, b) => activityOf(a) - activityOf(b))
+    const arch = items.filter((i) => i && i.archived && !protectedIds.has(i.id)).sort((a, b) => activityOf(a) - activityOf(b))
     if (arch.length) {
       const victim = arch[0]
       const idx = items.indexOf(victim)
       if (idx !== -1) items.splice(idx, 1)
       removed++
     } else {
-      const sorted = [...items].sort((a, b) => activityOf(a) - activityOf(b) || num(a.confidence, 0) - num(b.confidence, 0))
+      const sorted = items.filter((i) => i && !protectedIds.has(i.id)).sort((a, b) => activityOf(a) - activityOf(b) || num(a.confidence, 0) - num(b.confidence, 0))
       const victim = sorted[0]
       if (!victim) break
       victim.archived = true
@@ -865,6 +881,7 @@ function removeEntries({ store, globalStore }, entries) {
  * 返回 { ok, action, id, replaced, near, hint }。
  */
 export function saveInsight({ store, globalStore, raw, scope, taskId, cfg, source = 'agent', nowIso, cosine = null }) {
+  if (!isRecord(raw)) return { ok: false, error: '内容必须是对象（不能是 null/数组/字符串）' }
   const cfg2 = cfg || cfgInsight({})
   const now = nowIso || new Date().toISOString()
   const secretField = containsSecretFields(raw)
@@ -896,7 +913,7 @@ export function saveInsight({ store, globalStore, raw, scope, taskId, cfg, sourc
   if (s === 'global') {
     if (!globalStore) return { ok: false, error: 'global 存储未初始化' }
     const res = upsertIntoPool(globalStore.items(), raw, cfg2, now, { source, scope: 'global', cosine })
-    if (res.action === 'created') pruneItems(globalStore.items(), cfg2.maxGlobalProcedures, now)
+    if (res.action === 'created') pruneItems(globalStore.items(), cfg2.maxGlobalProcedures, now, { protectedIds: new Set([res.id]) })
     globalStore.markDirty()
     return { ok: true, ...res, scope: 'global', hint: res.hint || buildHint(res) }
   }
@@ -932,6 +949,7 @@ function upsertIntoPool(items, raw, cfg, nowIso, extra = {}) {
     return { action: 'reinforced', id: hit.item.id }
   }
   const ins = normalizeInsight(base, { scope: extra.scope || 'project', source: extra.source, nowIso })
+  refreshDerivedTrigger(ins)
   items.push(ins)
   const hint = hintOf(near, cfg)
   return hint ? { action: 'created', id: ins.id, near: hint } : { action: 'created', id: ins.id }
@@ -944,7 +962,7 @@ function saveProjectInsight(store, globalStore, raw, cfg, now, source, cosine) {
   const res = upsertIntoPool(items, raw, cfg, now, { source, scope: 'project', cosine })
   store.replaceInsightItems(items) // 一律标脏（created/merged/auto-merged/reinforced 都改了数组）
   applyDecay(items, cfg, now)
-  const pruned = pruneItems(items, cfg.maxProject, now)
+  const pruned = pruneItems(items, cfg.maxProject, now, { protectedIds: new Set([res.id]) })
   const promoted = promoteProjectToGlobal(store, globalStore, cfg, now)
   return { ok: true, ...res, scope: 'project', hint: buildHint(res, pruned, promoted) }
 }
@@ -983,7 +1001,7 @@ function saveTaskInsight(store, globalStore, task, raw, cfg, now, source, cosine
       const { replaced } = mergeInto(pjTarget.item, base, cfg, now)
       store.replaceInsightItems(pjItems)
       applyDecay(pjItems, cfg, now)
-      pruneItems(pjItems, cfg.maxProject, now)
+      pruneItems(pjItems, cfg.maxProject, now, { protectedIds: new Set([pjTarget.item.id]) })
       const promoted = promoteProjectToGlobal(store, globalStore, cfg, now)
       return { ok: true, action: 'auto-merged', id: pjTarget.item.id, scope: 'project', replaced, cos: Number(pjTarget.top1.toFixed(3)), hint: `相似度 ${pjTarget.top1.toFixed(3)}，已自动覆盖 project 级既有条目${replaced.length ? `（覆盖字段 ${replaced.join('/')}）` : ''}${promoted ? '；已自动提升 global' : ''}` }
     }
@@ -992,7 +1010,7 @@ function saveTaskInsight(store, globalStore, task, raw, cfg, now, source, cosine
       const { replaced } = mergeInto(pjHit.item, base, cfg, now)
       store.replaceInsightItems(pjItems)
       applyDecay(pjItems, cfg, now)
-      pruneItems(pjItems, cfg.maxProject, now)
+      pruneItems(pjItems, cfg.maxProject, now, { protectedIds: new Set([pjHit.item.id]) })
       const promoted = promoteProjectToGlobal(store, globalStore, cfg, now)
       return { ok: true, action: 'linked-project', id: pjHit.item.id, scope: 'project', replaced, hint: `该知识已在 project 级，累计第 ${(pjHit.item.sourceTaskIds || []).length} 个任务命中${promoted ? '；已自动提升 global' : ''}` }
     }
@@ -1074,22 +1092,25 @@ function saveTaskInsight(store, globalStore, task, raw, cfg, now, source, cosine
 export function promoteAllTasksToProject(store, globalStore, cfg, now) {
   const tasks = store.getTasks() || []
   let promoted = 0
+  const promotedIds = new Set()
   for (const task of tasks) {
     const list = task.insights || []
     for (const ins of [...list]) {
       if (ins.scope && ins.scope !== 'task') continue
       // 草稿必须先被确认；自动提升绕过审核就等于把 reflection 的猜测变成项目资产。
-      if (ins.draft === true) continue
+      if (ins.draft === true || ins.archived || ins.promoteHold) continue
       const members = new Set(ins.sourceTaskIds || [])
       if (members.size < 2) continue
       if (num(ins.confidence, 0) < cfg.promoteConfidence) continue
-      // 与 project 已有资产去重：重复 → 并成员，删 task 副本
+      // 与 project 已有资产去重：同 id 先合并（历史脏数据），再按相似度；正文随移动带走。
       const pjItems = store.insightItems()
-      const pjHit = findBestOverlapMatch(insightMatchText(ins), pjItems)
+      const sameId = pjItems.find((it) => it && it.id === ins.id)
+      const pjHit = sameId ? { item: sameId, score: 1 } : findBestOverlapMatch(insightMatchText(ins), pjItems)
       if (pjHit && pjHit.score >= cfg.dedupOverlap) {
-        mergeInto(pjHit.item, { sourceTaskIds: ins.sourceTaskIds, files: ins.files, symbols: ins.symbols, tags: ins.tags, confidence: ins.confidence }, cfg, now)
+        mergeInto(pjHit.item, ins, cfg, now)
         store.replaceInsightItems(pjItems)
         removeFromTask(store, ins.id)
+        promotedIds.add(pjHit.item.id)
         promoted++
         continue
       }
@@ -1099,18 +1120,20 @@ export function promoteAllTasksToProject(store, globalStore, cfg, now) {
       )
       moved.id = ins.id
       moved.draft = false
+      moved.lastHitAt = now
       moved.confidence = num(ins.confidence, cfg.promoteConfidence)
       moved.movedFrom = { scope: 'task', id: ins.id, at: now }
       pjItems.push(moved)
       store.replaceInsightItems(pjItems)
       removeFromTask(store, ins.id)
+      promotedIds.add(moved.id)
       promoted++
     }
   }
   if (promoted) {
     const items = store.insightItems()
     applyDecay(items, cfg, now)
-    pruneItems(items, cfg.maxProject, now)
+    pruneItems(items, cfg.maxProject, now, { protectedIds: promotedIds.size === 1 ? promotedIds : new Set() })
     promoteProjectToGlobal(store, globalStore, cfg, now)
   }
   return promoted
@@ -1121,15 +1144,17 @@ export function promoteProjectToGlobal(store, globalStore, cfg, now) {
   if (!globalStore) return 0
   const items = store.insightItems()
   let moved = 0
+  const movedIds = new Set()
   for (const ins of [...items]) {
     if (ins.scope && ins.scope !== 'project') continue
-    if (ins.draft === true) continue
+    if (ins.draft === true || ins.archived || ins.promoteHold) continue
     const members = new Set(ins.sourceTaskIds || [])
     if (members.size < cfg.globalPromoteTasks) continue
     const glItems = globalStore.items()
-    const glHit = findBestOverlapMatch(insightMatchText(ins), glItems)
+    const sameId = glItems.find((it) => it && it.id === ins.id)
+    const glHit = sameId ? { item: sameId, score: 1 } : findBestOverlapMatch(insightMatchText(ins), glItems)
     if (glHit && glHit.score >= cfg.dedupOverlap) {
-      mergeInto(glHit.item, { sourceTaskIds: ins.sourceTaskIds, files: ins.files, symbols: ins.symbols, tags: ins.tags, confidence: ins.confidence }, cfg, now)
+      mergeInto(glHit.item, ins, cfg, now)
     } else {
       const movedIns = carryUsageFields(
         normalizeInsight(ins, { scope: 'global', source: ins.source, nowIso: now }),
@@ -1137,17 +1162,19 @@ export function promoteProjectToGlobal(store, globalStore, cfg, now) {
       )
       movedIns.id = ins.id
       movedIns.draft = false
+      movedIns.lastHitAt = now
       movedIns.confidence = num(ins.confidence, cfg.promoteConfidence)
       movedIns.movedFrom = { scope: 'project', id: ins.id, at: now }
       glItems.push(movedIns)
     }
     items.splice(items.indexOf(ins), 1)
+    movedIds.add(ins.id)
     moved++
   }
   if (moved) {
     store.replaceInsightItems(items)
     // 提升只增不减 global：不在这里收口，maxGlobalProcedures 就形同虚设。
-    pruneItems(globalStore.items(), cfg.maxGlobalProcedures, now)
+    pruneItems(globalStore.items(), cfg.maxGlobalProcedures, now, { protectedIds: movedIds.size === 1 ? movedIds : new Set() })
     globalStore.markDirty()
   }
   return moved
@@ -1165,9 +1192,11 @@ export function demoteToProject(store, globalStore, id, nowIso, cfg = cfgInsight
   const copy = carryUsageFields(normalizeInsight(ins, { scope: 'project', nowIso: now }), ins)
   copy.id = `${ins.id}_d${Date.now().toString(36)}`
   copy.movedFrom = { scope: 'global', id: ins.id, at: now }
+  copy.lastHitAt = now
+  copy.promoteHold = true
   items.push(copy)
-  // 降级只增不减 project：同样要收口 maxProject。
-  pruneItems(items, cfg.maxProject, now)
+  // 降级只增不减 project：同样要收口 maxProject；被移动的条目必须豁免。
+  pruneItems(items, cfg.maxProject, now, { protectedIds: new Set([copy.id]) })
   store.replaceInsightItems(items)
   globalStore.items().splice(idx, 1)
   globalStore.markDirty()
@@ -1186,6 +1215,8 @@ export function demoteToTask(store, taskId, id, nowIso) {
   const copy = carryUsageFields(normalizeInsight(ins, { scope: 'task', nowIso: now }), ins)
   copy.id = `${ins.id}_d${Date.now().toString(36)}`
   copy.movedFrom = { scope: 'project', id: ins.id, at: now }
+  copy.lastHitAt = now
+  copy.promoteHold = true
   task.insights.push(copy)
   items.splice(idx, 1)
   store.replaceInsightItems(items)

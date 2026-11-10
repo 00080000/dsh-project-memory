@@ -78,7 +78,7 @@ export function queryMemoryTool(ctx, config) {
       },
       limit: {
         type: 'number',
-        description: 'max results, default 8',
+        description: 'max results, default 8, capped at 20; use the smallest useful number',
       },
     },
     output: TEXT_OUTPUT,

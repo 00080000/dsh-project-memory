@@ -198,6 +198,22 @@ const ev = (type, data) => ({ type, data })
   ok('tool/call 延迟落盘：flush 前不写，flush 后写入')
 }
 
+// --- 5b2. 相对 file_path 以会话 cwd 为基准（不是项目根） ---
+{
+  const { root, store } = newProject()
+  writeFileSync(path.join(root, 'package.json'), '{}')
+  mkdirSync(path.join(root, 'packages', 'foo'), { recursive: true })
+  const meta = new Map()
+  const session = sess('sessNested', path.join(root, 'packages', 'foo'))
+  onSessionEvent(config, session, ev('todo/write', { todos: [{ content: '嵌套 cwd', status: 'pending' }] }), meta)
+  const taskId = store.getBoundTaskId('sessNested')
+  onSessionEvent(config, session, ev('tool/call', { name: 'read', arguments: JSON.stringify({ file_path: 'src/a.ts' }) }), meta)
+  assert.deepEqual(store.getTask(taskId).files, ['packages/foo/src/a.ts'], '相对路径要按会话 cwd 解析')
+  onSessionEvent(config, session, ev('tool/call', { name: 'read', arguments: JSON.stringify({ file_path: path.join(root, 'src', 'b.ts') }) }), meta)
+  assert.ok(store.getTask(taskId).files.includes('src/b.ts'), '绝对路径仍按项目根归一')
+  ok('tool/call：相对 file_path 按会话 cwd 解析，绝对路径按项目根')
+}
+
 // --- 5c. 归档/加载清理绑定：binding.json 不再永久指向已归档任务 ---
 {
   const { root, store } = newProject()

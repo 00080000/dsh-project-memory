@@ -22,7 +22,12 @@ export function indexDocTool(ctx, config) {
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {
-      const filePath = assertReadableFile(args.file_path, config.maxFileSizeMb)
+      // 相对路径按会话当前工作目录解析；直接用会落到宿主进程 cwd（web profile 里可能是 /）。
+      const rawPath = typeof args.file_path === 'string' ? args.file_path : ''
+      const filePath = assertReadableFile(
+        path.isAbsolute(rawPath) ? rawPath : path.resolve(resolveIndexRoot(exec), rawPath),
+        config.maxFileSizeMb,
+      )
       // roots.exclude 是"这棵子树里的文件一律不进索引"：显式 index_doc 也要服从。
       const excluded = excludedEntryForPath(filePath, config)
       if (excluded) {

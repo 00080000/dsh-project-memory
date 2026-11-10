@@ -82,13 +82,13 @@ function fakeSession() {
   ok('无 surface 时降级；注入当下可立即登记')
 }
 
-// 5. provenance 紧凑格式：只有 id+hash，上限 40
+// 5. provenance 紧凑格式：只有 id+hash，默认容纳 maxItemsPerSession 的 60 条
 {
   const p = provenanceOf('blk', [{ id: 'a', hash: '1' }, { id: 'b', hash: '2' }, { id: 'c' }])
   assert.deepEqual(p, { v: 1, b: 'blk', i: [['a', '1'], ['b', '2']] })
-  const many = Array.from({ length: 50 }, (_, i) => ({ id: `i${i}`, hash: `h${i}` }))
-  assert.equal(provenanceOf('b', many).i.length, 40)
-  ok('provenance：id+hash 数组、无正文、上限 40')
+  const many = Array.from({ length: 60 }, (_, i) => ({ id: `i${i}`, hash: `h${i}` }))
+  assert.equal(provenanceOf('b', many).i.length, 60, '默认 maxItemsPerSession=60 必须全部记下')
+  ok('provenance：id+hash 数组、无正文、覆盖默认条数')
 }
 
 // 6. 畸形 provenance 上限 + eventAt 抛错降级
@@ -96,13 +96,51 @@ function fakeSession() {
   const state = createVisibleState()
   const many = Array.from({ length: 100 }, (_, i) => [`i${i}`, 'h'])
   recordInjected(state, { source: { kind: 'plugin:dsh-project-memory', memory: { v: 1, b: 'b', i: many } } })
-  assert.equal(state.items.size, 40, '单条消息的 provenance 最多收 40 条')
+  assert.equal(state.items.size, 100, '正常 provenance 不截断（只防异常长数组）')
 
   const bad = { id: 'bad', surface: { nodes: [1], replaceGeneration: 0 }, eventAt() { throw new Error('boom') } }
   const s2 = createVisibleState()
   assert.equal(ensureVisible(bad, s2), false)
   assert.equal(s2.degraded, true, '宿主读取抛错后该会话降级回缓存')
-  ok('畸形 provenance 截断；eventAt 抛错时降级')
+  ok('provenance 全量登记；eventAt 抛错时降级')
+}
+
+// 7. 只有本插件自己的消息能走正文回退：压缩摘要/recall 里的 `- [ins_x]` 不能毒化索引
+{
+  const { session, append } = fakeSession()
+  append({
+    role: 'user',
+    content: [{ type: 'text', text: '- [ins_poison] lesson: 压缩摘要里抄来的注入块' }],
+    source: { kind: 'compaction', form: 'checkpoint' },
+  })
+  append({
+    role: 'user',
+    content: [{ type: 'text', text: '- [ins_recall] decision: session-reference 召回' }],
+    source: { kind: 'session-reference', form: 'recall' },
+  })
+  const state = createVisibleState()
+  ensureVisible(session, state)
+  assert.equal(isItemVisible(state, 'ins_poison', 'h'), false, '压缩摘要不是注入证据')
+  assert.equal(isItemVisible(state, 'ins_recall', 'h'), false, 'recall 不是注入证据')
+  ok('非本插件消息的 `- [ins_x]` 不进入可见索引')
+}
+
+// 8. 乐观登记要对账：宿主没把消息 append 进 surface 时撤销，否则整会话被抑制
+{
+  const { session, inject } = fakeSession()
+  const state = createVisibleState()
+  ensureVisible(session, state)
+  recordInjected(state, {
+    source: { kind: 'plugin:dsh-project-memory', memory: { v: 1, b: 'blk_lost', i: [['ins_lost', 'h9']] } },
+  })
+  assert.equal(isItemVisible(state, 'ins_lost', 'h9'), true, '注入当下先乐观登记')
+  ensureVisible(session, state)
+  assert.equal(isItemVisible(state, 'ins_lost', 'h9'), false, 'surface 里没有 → 撤销登记')
+  assert.equal(isBlockVisible(state, 'blk_lost'), false)
+  inject('blk_lost', [['ins_lost', 'h9']])
+  ensureVisible(session, state)
+  assert.equal(isItemVisible(state, 'ins_lost', 'h9'), true)
+  ok('乐观登记在下一步与 surface 对账')
 }
 
 console.log(`\ninject-visible tests: ${passed} passed`)

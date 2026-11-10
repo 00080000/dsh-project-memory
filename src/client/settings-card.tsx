@@ -16,6 +16,7 @@
 import {
   Button, SettingsFormModel, Switch, settingsNumberField,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { service } from './services.ts'
 import type {
   SettingsFieldSpec, SettingsFieldState, SettingsFormActions, SettingsFormScope, SettingsFormShell,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -286,6 +287,14 @@ export function SettingsCard(props: SettingsCardProps) {
  */
 export function registerSettingsCard(ctx: any): void {
   if (typeof ctx?.inject !== 'function') return
+  // 没有 configForms = 这个宿主根本没有设置卡片能力（老宿主），静默跳过是正确降级。
+  // 但它存在、slots/locale 却缺一个时，嵌套 inject 会永远不回调且不报错——这时必须点名。
+  if (service(ctx, 'configForms')) {
+    const missing = ['slots', 'configForms', 'locale'].filter((name) => !service(ctx, name))
+    if (missing.length) {
+      console.warn(`[${SETTINGS_NS}] settings card unavailable: missing client service(s) ${missing.join(', ')}`)
+    }
+  }
   try {
     ctx.inject(['slots', 'configForms', 'locale'], (scope: any) => {
       try {

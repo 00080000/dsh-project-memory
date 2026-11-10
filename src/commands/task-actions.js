@@ -38,6 +38,7 @@ function withTaskSnapshot(config, cwd, sid, store, note) {
   const boundId = sid ? store.getBoundTaskId(sid) : null
   const root = projectRootFor(cwd, config)
   const human = `项目 ${root}\n${note}\n任务: ${active.length} 套${archived ? `（归档 ${archived}）` : ''}`
+    + (store.lastSaveOk === false ? '\n⚠ tasks.json 未落盘（权限/磁盘/锁）；内存已变更，退出前会重试。' : '')
   const payload = buildTaskPayload(active, boundId, archived, root)
   return { kind: 'success', text: fencedJson(human, payload) }
 }
@@ -110,8 +111,9 @@ export function taskCommandDefinition(config, ctx) {
           } else if (verb === 'step-move') {
             const from = Number(rest[0])
             const to = Number(rest[1])
-            if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || from >= task.steps.length) {
-              return { kind: 'error', text: '[task] step-move 需要合法的 from/to' }
+            if (!Number.isInteger(from) || !Number.isInteger(to)
+              || from < 0 || from >= task.steps.length || to < 0 || to > task.steps.length) {
+              return { kind: 'error', text: '[task] step-move 需要合法的 from/to（0 ≤ to ≤ 步骤数）' }
             }
             const [moved] = task.steps.splice(from, 1)
             const target = to > from ? to - 1 : to
@@ -194,7 +196,7 @@ export function taskCommandDefinition(config, ctx) {
           store.markTasksDirty()
           store.save()
           if (shouldAdoptToHost(config)) {
-            adoptStepsToSession(session, task)
+            adoptStepsToSession(session, task, { force: true })
           }
           const note = `已更新「${task.title}」步骤（${norm.length} 条）`
           return withTaskSnapshot(config, cwd, sid, store, note)
@@ -216,9 +218,9 @@ export function taskCommandDefinition(config, ctx) {
           if (prevBound && prevBound !== task.id) {
             fireReflect(config, { llm: ctx?.llm }, root, prevBound, 'switch-away', resolveRoute(session ? { agent: { session } } : undefined, config))
           }
-          // 反向接管：切换成功后把任务步骤推成宿主 todo/write（dsh 清单跟随）
+          // 反向接管：切换成功后把任务步骤推成宿主 todo/write（dsh 清单跟随）；空步骤也要推空。
           if (shouldAdoptToHost(config)) {
-            adoptStepsToSession(session, task)
+            adoptStepsToSession(session, task, { force: true })
           }
           const note = `已切换绑定: ${describeTask(task)}${sid ? '' : '（拿不到会话 id，未持久绑定）'}`
           return withTaskSnapshot(config, cwd, sid, store, note)

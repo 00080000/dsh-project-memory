@@ -69,6 +69,19 @@ const dir = () => {
   ok('budget 掉落的 remaining / need 穿过审计面落盘；无纲掉落不长出 null')
 }
 
+// --- 1b. 行体积有界 + 审计目录自我忽略 ---
+{
+  const root = dir()
+  const memDir = path.join(root, '.dsh-project-memory')
+  const dropped = Array.from({ length: 1000 }, (_, i) => ({ id: `d${i}`, channel: 'hint', reason: 'budget' }))
+  const rec = auditRecordFrom({ sessionId: 's', step: 1, text: 'x', reasons: [], dropped })
+  assert.equal(rec.dropped.length, 40, '单行 dropped 截断到 40')
+  assert.equal(rec.droppedTotal, 1000, '截断量必须可读')
+  assert.equal(appendInjectionAudit(memDir, rec, cfgAudit({ autoContext: {} }), root), true)
+  assert.equal(existsSync(path.join(memDir, '.gitignore')), true, '审计先建目录时必须补自我忽略')
+  ok('dropped 截断 + droppedTotal；审计目录自带 .gitignore')
+}
+
 // --- 2. 追加写：两次注入 → 两行可解析 JSON ---
 {
   const d = dir()

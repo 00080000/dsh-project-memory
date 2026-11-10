@@ -5,7 +5,7 @@
 //   2. 入口：每个会写盘/扫描的入口都真的被挡住（工具、watch、auto-index、auto-inject、任务桥）；
 //   3. 自愈：历史遗留（家目录已写进 watch.json）会在下次启动被摘掉；
 //   4. 有界：扫描超限只截断，绝不把"没扫到"当成"已删除"。
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import os from 'node:os'
 import path from 'node:path'
@@ -538,6 +538,22 @@ console.log('\n== walkDir stays bounded ==')
   check('maxFiles caps the result', capped.files.length === 3 && capped.truncated === true)
   const full = walkDir(dir)
   check('without a cap the whole (small) tree is returned', full.files.length === 10 && full.truncated === false)
+}
+
+console.log('\n== symlink aliases cannot bypass deny ==')
+if (process.platform !== 'win32') {
+  const base = mkdtempSync(path.join(TMP, 'pm-guard-link-'))
+  const denied = path.join(base, 'denied')
+  mkdirSync(denied)
+  writeFileSync(path.join(denied, 'package.json'), '{}')
+  const alias = path.join(base, 'alias')
+  symlinkSync(denied, alias, 'dir')
+  const cfg = { roots: { deny: [denied] } }
+  check('the denied path itself is rejected', isUnsafeRoot(denied, cfg) === true)
+  check('a symlink alias of the denied path is rejected', isUnsafeRoot(alias, cfg) === true)
+  let threw = false
+  try { assertSafeRoot(alias, { config: cfg }) } catch { threw = true }
+  check('assertSafeRoot refuses the alias', threw === true)
 }
 
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECKS FAILED`} (${passed} passed)`)

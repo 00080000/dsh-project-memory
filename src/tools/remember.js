@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { TEXT_OUTPUT, rootParam } from './output.js'
+import { TEXT_OUTPUT, persistenceNote, rootParam } from './output.js'
 import { openProjectContext } from './context.js'
 import { normalizeCitationFiles } from '../util/fs.js'
 import { saveInsight, GlobalStore, defaultGlobalFile } from '../insight-store.js'
@@ -59,7 +59,7 @@ export function rememberTool(config) {
       const dropped = citation.dropped.length
         ? `\n（${citation.dropped.length} 个 source_file 不是项目内路径，已丢弃）`
         : ''
-      return `${verb} experience note (${result.id}).${result.hint ? ` ${result.hint}` : ''}${dropped}`
+      return `${verb} experience note (${result.id}).${result.hint ? ` ${result.hint}` : ''}${dropped}${persistenceNote(store, globalStore)}`
     },
   })
 }

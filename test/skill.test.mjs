@@ -73,7 +73,12 @@ const dir = () => mkdtempSync(path.join(tmpdir(), 'skill-'))
   const root = dir()
   const store = path.join(root, '.dsh-project-memory')
   mkdirSync(path.join(store, 'shards'), { recursive: true })
-  writeFileSync(path.join(store, 'shards', 'a.json'), '{}')
+  writeFileSync(path.join(store, 'shards', 'bucket-00000.json'), JSON.stringify({
+    version: 3, bucket: 0, bucketSize: 32768,
+    items: [{ relPath: 'a.js', record: {}, entries: [] }, { relPath: 'b.js', record: {}, entries: [] }],
+  }))
+  // 遗留 v2 分片：单独计数，不能混进 v3 桶数或源文件数。
+  writeFileSync(path.join(store, 'shards', 'legacy.json'), JSON.stringify({ relPath: 'old.js', record: {}, entries: [] }))
   writeFileSync(path.join(store, 'insights.json'), JSON.stringify({
     items: [
       { id: 'i1', kind: 'lesson', scope: 'project', title: 'a', trigger: { when: { intents: ['x'] } }, files: ['a.js'], updatedAt: new Date().toISOString() },
@@ -90,7 +95,9 @@ const dir = () => mkdtempSync(path.join(tmpdir(), 'skill-'))
   assert.equal(run.status, 0, run.stderr)
   const out = JSON.parse(run.stdout)
   assert.equal(out.store, true)
-  assert.equal(out.shards.files, 1)
+  assert.equal(out.shards.buckets, 1)
+  assert.equal(out.shards.legacyFiles, 1)
+  assert.equal(out.shards.indexedFiles, 3)
   assert.equal(out.insights.total, 2)
   assert.equal(out.insights.archived, 1)
   assert.equal(out.insights.withTrigger, 1)
@@ -166,7 +173,8 @@ const dir = () => mkdtempSync(path.join(tmpdir(), 'skill-'))
   writeFileSync(path.join(docsStore, 'format.json'), JSON.stringify({ version: 2, layout: 'sharded' }))
   const docsOut = JSON.parse(run(docsOnly, ['--json']).stdout)
   assert.equal(docsOut.store, true, 'format.json 存在即算有 store')
-  assert.equal(docsOut.shards.files, 1)
+  assert.equal(docsOut.shards.buckets, 0)
+  assert.equal(docsOut.shards.legacyFiles, 1)
   assert.equal(docsOut.insights.total, 0)
   ok('体检脚本：自定义 memoryDir（--memory-dir / 环境变量 / 唯一候选自动识别、多候选不猜、docs-only store）')
 }

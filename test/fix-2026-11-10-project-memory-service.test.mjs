@@ -183,6 +183,35 @@ try {
   assert.ok(storedWithFiles, '带 files 的条目应已落盘')
   assert.deepEqual(storedWithFiles.files, ['src/inside.ts'], '项目外 / 绝对 / 盘符路径必须被丢弃')
   ok('remember 的 files 走 normalizeCitationFiles：项目外路径被丢弃')
+  // ---- 10. recall/stats 也过根护栏；task 级写入能用 taskId 读回来 ----
+  const deniedRoot = mkdtempSync(path.join(tmpdir(), 'pm-service-denied-'))
+  try {
+    writeFileSync(path.join(deniedRoot, 'package.json'), '{}')
+    const deniedApi = installProjectMemoryService({ provide() {} }, { ...config, roots: { deny: [deniedRoot] } })
+    assert.throws(() => deniedApi.stats({ root: deniedRoot }), UnsafeRootError, 'stats 必须拒绝 deny 根')
+    assert.throws(() => deniedApi.recall('anything', { root: deniedRoot }), UnsafeRootError, 'recall 必须拒绝 deny 根')
+    assert.equal(existsSync(path.join(deniedRoot, '.dsh-project-memory')), false, '只读动词不得顺手建 store')
+  } finally {
+    rmSync(deniedRoot, { recursive: true, force: true })
+  }
+  const now = new Date().toISOString()
+  const taskStore = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+  taskStore.addTask({
+    id: 'tsk_service_task', projectHash: 'x', projectRoot: root, title: 'service task',
+    steps: [], files: [], fileMeta: {}, archived: false, insights: [],
+    createdAt: now, updatedAt: now, lastActiveAt: now,
+  })
+  taskStore.save()
+  const taskSaved = api.remember(
+    { kind: 'lesson', title: 'task scoped quokka', pattern: 'task-only memory is readable with taskId' },
+    { root, scope: 'task', taskId: 'tsk_service_task' },
+  )
+  assert.ok(taskSaved.id)
+  assert.equal(api.recall('quokka', { root }).results.length, 0, '未绑定任务时不召回 task 条目')
+  assert.ok(api.recall('quokka', { root, taskId: 'tsk_service_task' }).results.length >= 1, '传 taskId 能读回 task 条目')
+  assert.throws(() => api.recall('quokka', { root, layers: 'doc' }), /layers must be an array/)
+  ok('recall/stats 过根护栏；task 级写入可通过 taskId 召回；layers 非法即报错')
+
 } finally {
   rmSync(root, { recursive: true, force: true })
 }

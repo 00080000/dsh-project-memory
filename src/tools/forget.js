@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { TEXT_OUTPUT, rootParam } from './output.js'
+import { TEXT_OUTPUT, persistenceNote, rootParam } from './output.js'
 import { openProjectContext } from './context.js'
 import { DELETED_KEEP, GlobalStore, defaultGlobalFile, removeMemory } from '../insight-store.js'
 import { forgetVectorRows } from '../vector-index.js'
@@ -62,7 +62,7 @@ export function forgetTool(config) {
       }
       if (!res || !res.ok || !res.removed.length) return 'No matching memory found.'
       return `Removed ${res.removed.length} memory entries:\n`
-        + res.removed.map((e) => `- ${line(e)}`).join('\n')
+        + res.removed.map((e) => `- ${line(e)}`).join('\n') + persistenceNote(store, globalStore)
         + keptHint(res)
     },
   })

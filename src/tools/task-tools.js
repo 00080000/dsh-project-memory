@@ -42,8 +42,9 @@ export function selectTaskTool(config, host) {
   return defineTool({
     name: 'select_task',
     description:
-      'Bind the session to a task (its todo list and files read afterwards sync into it). Exact taskId, or an exact title match'
-      + '(creates one if absent); returns the task card used to rebuild the checklist.',
+      'Bind the session to a task (its todo list and files read afterwards sync into it). Exact taskId '
+      + '(optionally renames/unarchives via title), or an exact title match (creates one if absent); '
+      + 'returns the task card used to rebuild the checklist.',
     parameters: {
       taskId: { type: 'string', description: 'exact task id' },
       title: { type: 'string', description: 'exact title; creates if absent' },
@@ -120,7 +121,7 @@ export function selectTaskTool(config, host) {
 
       // 反向接管：绑定成功后，把任务步骤推成宿主 todo/write（dsh 清单跟随我们的任务）
       if (shouldAdoptToHost(config)) {
-        adoptStepsToSession(exec?.agent?.session || exec?.ctx?.session, task)
+        adoptStepsToSession(exec?.agent?.session || exec?.ctx?.session, task, { force: true })
       }
 
       // 反思钩子：切走旧任务时异步收割（默认关，零成本；失败只记日志）
@@ -135,6 +136,7 @@ export function selectTaskTool(config, host) {
         files: task.files,
         insights: task.insights || [], // v0.5：任务级 lessons/decisions/procedures
         hint: hint + '；请据此用 todo_write 重建本会话清单',
+        ...(store.lastSaveOk === false ? { persisted: false, warning: '内存已绑定，但 tasks.json 未落盘（权限/磁盘/锁）；退出前会重试。' } : {}),
       }
       return truncate(JSON.stringify(card), config.maxOutputChars)
     },
@@ -184,7 +186,12 @@ export function archiveTaskTool(config, host) {
       store.save()
       // 反思钩子：归档即收割最终教训（默认关）
       fireReflect(config, host, root, args.taskId, 'archive', resolveRoute(exec, config))
-      return truncate(JSON.stringify({ success: true, archived: true, hint: '已归档，select_task 可恢复' }), config.maxOutputChars)
+      return truncate(JSON.stringify({
+        success: true,
+        archived: true,
+        hint: '已归档，select_task 可恢复',
+        ...(store.lastSaveOk === false ? { persisted: false, warning: '内存已归档，但 tasks.json 未落盘（权限/磁盘/锁）；退出前会重试。' } : {}),
+      }), config.maxOutputChars)
     },
   })
 }

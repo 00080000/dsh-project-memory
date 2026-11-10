@@ -17,11 +17,13 @@ export const STEP_STATUSES = new Set(['pending', 'in_progress', 'completed'])
 /**
  * 步骤文本。字符串步骤原样返回；对象步骤按 `content ?? text ?? ''` 读。
  * @param {string | { content?: unknown, text?: unknown } | null | undefined} step
- * @returns {string}
+ * @returns {string} 非字符串的 content/text（手改 tasks.json 的脏数据）也转成字符串
  */
 export function stepContent(step) {
   if (typeof step === 'string') return step
-  return step?.content ?? step?.text ?? ''
+  const value = step?.content ?? step?.text
+  if (typeof value === 'string') return value
+  return value == null ? '' : String(value)
 }
 
 /**

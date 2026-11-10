@@ -43,9 +43,11 @@ export default defineConfig([
     format: 'cjs',
     platform: 'browser',
     target: 'es2022',
+    // client 的公开入口是运行时插件（宿主只 apply），没有对外类型面；`dts:false` 时
+    // 旧产物里的 client.d.ts 会一直撒谎，所以输出目录必须每次清干净。
     dts: false,
     sourcemap: true,
-    clean: false,
+    clean: true,
     external: [...CLIENT_EXTERNALS],
     noExternal: (source) => (CLIENT_EXTERNALS.includes(source) ? undefined : true),
     define: {

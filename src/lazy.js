@@ -88,27 +88,38 @@ export async function indexObservedBatch(config, items, watchManager = null) {
   const candidates = []
 
   for (const item of items) {
-    const { filePath, sessionRoot } = item
+    const { filePath: rawPath, sessionRoot } = item
+    const key = rawPath
     try {
+      if (typeof rawPath !== 'string' || !rawPath) {
+        results.set(key, false)
+        continue
+      }
+      // FsTarget.displayPath 可能是工作区相对路径；按会话 cwd 解析，不能落到宿主进程 cwd。
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(rawPath) || (/^[a-z][a-z0-9+.-]*:/i.test(rawPath) && !/^[a-z]:[\\/]/i.test(rawPath))) {
+        results.set(key, false)
+        continue
+      }
+      const filePath = path.isAbsolute(rawPath) ? rawPath : path.resolve(sessionRoot || process.cwd(), rawPath)
       const kind = fileKind(path.extname(filePath).toLowerCase())
       if (!kind) {
-        results.set(filePath, false)
+        results.set(key, false)
         continue
       }
       // roots.exclude 是子树级否定：被排除的文件连根都不推导，直接不落任何记忆。
       if (excludedEntryForPath(filePath, config)) {
-        results.set(filePath, false)
+        results.set(key, false)
         continue
       }
       const root = cachedProjectRoot(config, filePath, watchManager, sessionRoot)
       if (!root || rootRejection(root, config)) {
-        results.set(filePath, false)
+        results.set(key, false)
         continue
       }
       const relRaw = relativePath(root, filePath)
       // 与 index_repo/watch 同口径；判在 store 读盘与 stat 之前，省掉无谓 IO。
       if (isHiddenPath(relRaw) || isDefaultIgnoredRel(relRaw)) {
-        results.set(filePath, false)
+        results.set(key, false)
         continue
       }
       const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
@@ -118,13 +129,13 @@ export async function indexObservedBatch(config, items, watchManager = null) {
       // 快路径：mtime + size 都没动 → 连 git 都不用问。这是"重复读同一个文件"的主路径。
       // doc 不走这条捷径：旧 store 的 terms 回填条件要看 entries，交给 planFileIndex 判。
       if (kind === 'code' && record && typeof record.mtimeMs === 'number' && record.mtimeMs === st.mtimeMs && record.size === st.size) {
-        results.set(filePath, false)
+        results.set(key, false)
         continue
       }
-      candidates.push({ store, root, rel, filePath, kind, record, size: st.size, mtimeMs: st.mtimeMs, gitRel: relRaw })
-      results.set(filePath, false)
+      candidates.push({ store, root, rel, filePath, key, kind, record, size: st.size, mtimeMs: st.mtimeMs, gitRel: relRaw })
+      results.set(key, false)
     } catch {
-      results.set(filePath, false)
+      results.set(key, false)
     }
   }
 
@@ -184,17 +195,17 @@ export async function indexObservedBatch(config, items, watchManager = null) {
         if (plan.key === OVERSIZE) {
           // 与 index_repo 同一语义：文件涨过阈值后，旧条目必须摘掉，而不是只跳过本轮。
           updates.push({ rel: cand.rel, drop: true })
-          results.set(cand.filePath, false)
+          results.set(cand.key, false)
           continue
         }
         updates.push(toFileUpdate(cand.rel, plan, cand.record))
         if (plan.key !== DROP && plan.type === 'code') codeToEnhance.push([cand.rel, cand.filePath])
-        results.set(cand.filePath, plan.key !== DROP)
+        results.set(cand.key, plan.key !== DROP)
       } catch (err) {
         // 单文件读盘 / 解析失败不影响同批其它文件；但要登记，否则"读了却没索引成"
         // 在界面上完全不可见（过去这里连日志都没有）。
         recordIndexFailure(cand.root, cand.rel, err.message)
-        results.set(cand.filePath, false)
+        results.set(cand.key, false)
       }
     }
 

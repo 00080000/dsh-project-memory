@@ -203,7 +203,7 @@ Settings live in the plugin's config object. To change them, add an override ent
 
 Only list the keys you want to change; the rest fall back to the plugin defaults. Verify the result with `dsh --profile web --dump-config`.
 
-**On the web profile, three of these keys also have a visual card.** It sits at **Plugins → Project memory → detail page → Common settings** (`plugins.bundle.config`, keyed by package name): `autoIndexOnFirstUse`, `watchInterval` (seconds) and `llmQueryExpansion`. Saving goes through the host's `settings` interface — the card is a projection of the same config the profile override above feeds, not a separate file. `watchInterval` and `llmQueryExpansion` take effect immediately (the poll timer is re-armed, the expansion flag is read per query); `autoIndexOnFirstUse` is a one-off startup action, so the card says "effective next start". Everything else — `memoryDir`, `roots.*`, scan caps, insight / reflection / autoContext — deliberately stays in the profile: those either move the store or need context a three-row card cannot carry, and there is no switch for background watching (turning it off only lets memory go stale). On a host that does not offer the `slots` / `configForms` / `locale` services the card registers nothing and logs one warning naming the missing piece, rather than disappearing silently. These three are resolved when the plugin is assembled, so **restart dsh once after upgrading** (saving the card itself needs no restart).
+**On the web profile, three of these keys also have a visual card.** It sits at **Plugins → Project memory → detail page → Common settings** (`plugins.bundle.config`, keyed by package name): `autoIndexOnFirstUse`, `watchInterval` (seconds) and `llmQueryExpansion`. Saving goes through the host's `settings` interface — the card is a projection of the same config the profile override above feeds, not a separate file. `watchInterval` and `llmQueryExpansion` take effect immediately (the poll timer is re-armed, the expansion flag is read per query); `autoIndexOnFirstUse` is a one-off startup action, so the card says "effective next start". Everything else — `memoryDir`, `roots.*`, scan caps, insight / reflection / autoContext — deliberately stays in the profile: those either move the store or need context a three-row card cannot carry, and there is no switch for background watching (turning it off only lets memory go stale). Without the `configForms` service the host simply has no settings-card capability, so the card is skipped silently (old hosts). If `configForms` exists but `slots` or `locale` is missing, the card logs one warning naming the missing piece instead of disappearing silently. These three are resolved when the plugin is assembled, so **restart dsh once after upgrading** (saving the card itself needs no restart).
 
 For a one-off run without editing the profile, pass the override as a CLI patch overlay:
 
@@ -215,7 +215,7 @@ where `config.yml` contains the same override block.
 
 ## Performance
 
-### Measured on real projects (2026-10-13)
+### Measured on real projects (v2 per-file shards, 2026-10-13)
 
 Four corpora, one Linux machine (Node 24.19), each run twice with the **second, warm-cache run** quoted. "Cold index" is a full index pass (walk + hash + extract + commit); "query" runs the shipped scorer over 100 sampled queries; "re-index 1 file" is the watch re-index core (read + extract + commit), which excludes the lazy path's root-resolution / `.gitignore` overhead.
 
@@ -226,7 +226,9 @@ Four corpora, one Linux machine (Node 24.19), each run twice with the **second, 
 | TypeScript monorepo, 3,000-file slice | 3,000 / 17,576 | 1.9 s | 70 ms | 9.2 / 18.9 ms | 1.9 ms | 10.9 MB / 18.9 MB | 22.7 MB |
 | TypeScript monorepo, whole tree | 12,634 / 80,231 | 7.8 s | 278 ms | 40.6 / 74.8 ms | 7.2 ms | 42.0 MB / 75.7 MB | 75.2 MB |
 
-**How it scales.** Re-indexing a changed file costs O(file), not O(corpus) — 0.3–7.2 ms across every corpus above. Cold load (≈22 µs/file), query (≈0.5 µs/entry on the largest corpus) and resident heap (≈1.5 KB/entry once queried) grow linearly with the index, which keeps small and mid-size projects in the single-digit-millisecond range. Re-reading a file that is already indexed costs ≈0.01 ms: it stops after one `stat` plus a cached record lookup, with no read, no hash and no `git check-ignore`.
+> The table above was measured on the **v2 per-file shard layout**. v3 packs files into ~32 KB hash buckets, so on-disk file count and per-file overhead drop sharply; cold-load time stays in the same range. On this repository (v3, 223 files / 1,894 entries) `npm run bench`: **cold load 22 ms** in a fresh process, **0.65 MB content / 0.70 MB on disk**, and the 5,000-file synthetic store loads in **129 ms (205 buckets)**. Absolute numbers move with the corpus; use `npm run bench` on your own project rather than extrapolating the 2026-10-13 rows.
+
+**How it scales.** Re-indexing a changed file costs O(file), not O(corpus) — 0.3–7.2 ms across every corpus above. Query time (≈0.5 µs/entry on the largest corpus) and resident heap (≈1.5 KB/entry once queried) grow linearly with the index; cold load is tens of µs per file (22 ms for 223 files, 129 ms for 5,000 synthetic files), which keeps small and mid-size projects in the single-digit-millisecond range. Re-reading a file that is already indexed costs ≈0.01 ms: it stops after one `stat` plus a cached record lookup, with no read, no hash and no `git check-ignore`.
 
 > `read+hash` depends on the OS page cache — 2.3 s cold vs 0.27 s warm on the 12,634-file tree — so the table quotes the warm figure.
 
@@ -271,7 +273,7 @@ Pass `--queries your-queries.json` to run the labeled-set method (hit@5 / hit@10
 
 - **A short filesystem lock, not an embedded database** — each save holds an exclusive `.write.lock` only for the read-modify-write (parsing stays outside it) and waits synchronously for up to 15 s for a busy peer (correctness comes from acquiring the lock, not from background retries); a write that still cannot land is registered for a synchronous flush when the process exits or the plugin is disposed, **without interrupting the user** — memory writes are idempotent and cheap to redo; set `DSH_PROJECT_MEMORY_DEBUG=1` for a one-line diagnostic. The lock carries `pid` / `host` / `token`: a live same-host holder is never preempted, release verifies ownership, and a crashed same-host lock is reclaimed immediately. Two dsh instances can share one store. No WAL, no daemon, no native dependency.
 - **Watch: compute outside, commit inside** — no lock is held during parsing, and polling with mtime + content hash is used instead of `fs.watch`: it behaves identically on network drives, Docker volumes and WSL, without duplicate-trigger or missed-event failure modes.
-- **Corrupt buckets are quarantined, not repaired** — a bucket that fails to parse is renamed and its files are re-indexed, so there is no WAL or embedded database adding native dependencies, lock contention and failure modes of their own.
+- **Corrupt buckets are quarantined, not repaired** — a bucket that fails to parse is renamed and its files are re-indexed **on the next scan**, so there is no WAL or embedded database adding native dependencies, lock contention and failure modes of their own.
 - **Vectors re-rank, they do not rank** — on a paraphrased-query set, pure vector replacement is worse than BM25 (hit@10 **53% vs 69%**) while weighted fusion helps at small k (hit@3 **53% vs 50%**), so the optional layer only re-orders the experience/insight layers and never gates. Lexical retrieval still answers the queries this plugin targets: on a real project with 29 labelled queries, file-level hit@5 is **96.6%**, and whole-chunk terms raise document term coverage from **27.3% to 100%** with MRR unchanged (**0.958** vs **0.955**).
 - **Indexing is deterministic and model-free** — a model at index time would make two indexings of one document differ, and a wrong translation at query time means zero recall; rules plus symbol links cover the common cases and work offline.
 - **Model-facing memory: the agent writes, no human in the loop** — the consumer is the agent, usually headless, so memory that only promotes when someone clicks a card would never promote at all. `draft` is a provenance marker plus an evidence threshold, not an approval queue.
@@ -285,7 +287,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 1045 tests
+npm test                    # 1066 tests
 npm run eval:injection      # synthetic pool P/R: precision 0.93 / recall 1.00, + a 3-scenario hint-only group
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)

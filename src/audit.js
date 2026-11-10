@@ -3,7 +3,7 @@
 // 绝不影响宿主请求；单文件超限就地轮转一份 `.1`，不引入后台任务。
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { hasProjectMarker } from './util/fs.js'
+import { ensureSelfIgnoreDir, hasProjectMarker } from './util/fs.js'
 
 export const AUDIT_FILE = 'injection-audit.jsonl'
 const DEFAULT_MAX_BYTES = 256 * 1024
@@ -109,6 +109,7 @@ export function shadowRecordFrom(input) {
     candidatesTotal: candidates.length,
     // 触发通道的丢弃不在 candidates 里（候选只收提示通道），单列；有界，避免长候选池撑爆一行。
     dropped: dropped.slice(0, 40),
+    droppedTotal: dropped.length,
     silence: input.silence || null,
     ...(input.reconcile ? { reconcile: input.reconcile } : {}),
   }
@@ -138,6 +139,9 @@ function appendJsonlRecord({ memoryDir, record, cfg, root, fileFor, defaultMaxBy
   if (!auditDirReady(memoryDir, root)) return false
   try {
     mkdirSync(memoryDir, { recursive: true })
+    // 审计会在 load() 之前建目录；补这一行，否则新 store 的首个进程生命周期里
+    // `.gitignore` 缺席，影子日志可能被 `git add -A` 带走。
+    ensureSelfIgnoreDir(memoryDir)
     const file = fileFor(memoryDir)
     rotateIfOversized(file, c.maxBytes || defaultMaxBytes)
     appendFileSync(file, `${JSON.stringify(record)}\n`)
@@ -179,13 +183,15 @@ export function auditRecordFrom(input) {
     })),
     // `budget` 掉落带量纲（remaining / need），必须原样落地，否则"细缝可诊断"只活在内存里。
     // 只对带数字的条目落键——多数掉落没有量纲，不该为它们付两个 null。
-    dropped: dropped.map((d) => ({
+    // 与 shadow 同口径截断：1000 条候选时整行可到 113KB，单行就能吃掉审计窗口的一半。
+    dropped: dropped.slice(0, 40).map((d) => ({
       id: d.id,
       channel: d.channel,
       reason: d.reason,
       ...(typeof d.remaining === 'number' ? { remaining: d.remaining } : {}),
       ...(typeof d.need === 'number' ? { need: d.need } : {}),
     })),
+    droppedTotal: dropped.length,
     // 会话级额度快照与"本轮为什么沉默"：注入频率本身是可观测指标，不该只能靠感觉。
     budget: input.budget || null,
     silence: input.silence || null,

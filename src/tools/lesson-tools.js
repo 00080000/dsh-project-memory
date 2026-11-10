@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { TEXT_OUTPUT, rootParam } from './output.js'
+import { TEXT_OUTPUT, persistenceNote, rootParam } from './output.js'
 import { openProjectContext } from './context.js'
 import { normalizeCitationFiles } from '../util/fs.js'
 import { truncate } from '../util/text.js'
@@ -38,8 +38,8 @@ export function lessonTool(config) {
             type: 'object',
             additionalProperties: false,
             properties: {
-              ops: { type: 'array', items: { type: 'string' }, description: 'file-write|file-delete|shell-run|git-commit|git-push|release|npm-publish|deploy|migrate|render-doc|index-doc|read-image|fetch-web|run-bench|query-memory' },
-              writes: { type: 'array', items: { type: 'string' }, description: 'project-relative paths, no glob' },
+              ops: { type: 'array', items: { type: 'string' }, description: 'file-write|file-delete|shell-run|git-commit|git-push|release|npm-publish|go-public|deploy|migrate|render-doc|index-doc|read-image|fetch-web|run-bench|query-memory' },
+              writes: { type: 'array', items: { type: 'string' }, description: 'project-relative paths; `*` wildcards are allowed' },
               intents: { type: 'array', items: { type: 'string' }, description: 'intent words (CJK ≥2, latin ≥5)' },
             },
             description: 'the only trigger surface: any of the three; without it the entry is retrieval-only.',
@@ -133,7 +133,7 @@ export function lessonTool(config) {
       const note = citationFiles.dropped.length
         ? `\n（${citationFiles.dropped.length} 个 files 既不是项目内相对路径也不是项目内绝对路径，已丢弃：${citationFiles.dropped.slice(0, 3).join(', ')}${citationFiles.dropped.length > 3 ? ' …' : ''}）`
         : ''
-      return truncate(body + note, config.maxOutputChars || 8000)
+      return truncate(body + note + persistenceNote(store, globalStore), config.maxOutputChars || 8000)
     },
   })
 }

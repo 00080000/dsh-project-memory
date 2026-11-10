@@ -8,7 +8,7 @@
  */
 import { useEffect, useCallback, useRef, useState } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
-import { service } from './services.ts'
+import { invokeCommand } from './commands.ts'
 import { PAGE_SIZE, PREFETCH_MARGIN, SPINNER_DELAY_MS, appendUnique, createRequestGate, insightListLine, normalizeWindow, progressCounts, reloadWindowRequest } from './paging.js'
 import css from './TaskPanel.module.css'
 
@@ -151,6 +151,9 @@ export function MemoryView({
 }) {
   const [rows, setRows] = useState<InsightRow[]>([])
   const [total, setTotal] = useState(0)
+  // 分页期间列表可能被别处改动（删除/提升）：offset 窗口会整体前移，appendUnique 只能去重、
+  // 补不回漏掉的行。记住服务端 total，发现变化就回到第一页重取。
+  const totalRef = useRef(0)
   const [nextOffset, setNextOffset] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -169,21 +172,9 @@ export function MemoryView({
 
   const runLine = useCallback(
     async (line: string): Promise<{ ok: boolean; text: string }> => {
-      // 软探测（services.ts）：`remote.commands` 是独立注册的扁平服务，按整名读（见 services.ts）。
-      const commands = service(ctx, 'remote.commands')
-      if (!sessionId || !commands || typeof commands.execute !== 'function') {
-        return { ok: false, text: 'data channel unavailable (missing client service)' }
-      }
-      try {
-        const response = await commands.execute(sessionId, line, [])
-        const envelope = response as { ok?: boolean; value?: any } | null | undefined
-        const execution = envelope && typeof envelope === 'object' && 'value' in envelope ? envelope.value : envelope
-        const result = execution?.result ?? execution
-        if (result?.kind === 'error') return { ok: false, text: result.text ?? 'command error' }
-        return { ok: true, text: result?.text ?? '' }
-      } catch (err) {
-        return { ok: false, text: String((err as Error)?.message ?? err) }
-      }
+      // 与任务面板同一条命令层：超时/取消、`{ok:false,error}` 信封、错误归一都只在这里做一次。
+      const result = await invokeCommand(ctx, sessionId, line)
+      return result.ok ? { ok: true, text: result.text } : { ok: false, text: result.error || 'command failed' }
     },
     [ctx, sessionId],
   )
@@ -198,6 +189,14 @@ export function MemoryView({
   useEffect(() => {
     scopeRef.current = scope
   }, [scope])
+  // 切 scope / 会话 / 项目时关掉编辑表单：否则在 project 页点开的 Edit 会把 project id
+  // 发到 global 层（新建表单更会把内容写进另一层）。
+  useEffect(() => {
+    setShowNew(false)
+    setEditingId(null)
+    setForm({ title: '', kind: 'lesson', body: '', steps: '', trigger: '' })
+    setSavedTip(null)
+  }, [scope, sessionId, root])
 
   /**
    * 取一页并落到状态里。
@@ -238,6 +237,13 @@ export function MemoryView({
           setError('unparsable payload')
           return
         }
+        if (append && parsed.total !== totalRef.current) {
+          // 列表在翻页时变了：丢掉这一页，从 0 重新取，避免永久漏行。
+          totalRef.current = parsed.total
+          void loadRef.current(0, PAGE_SIZE, false)
+          return
+        }
+        totalRef.current = parsed.total
         setRows((prev) => {
           const next = append ? appendUnique(prev, parsed.items) : parsed.items
           writeInsightCache(sessionId, requestedScope, root, boundTaskId, next, parsed.total, parsed.nextOffset)
@@ -270,6 +276,7 @@ export function MemoryView({
     // 换 scope / 换会话 = 换了一个列表：先看 30 秒缓存，命中就不发命令。
     setRows([])
     setTotal(0)
+    totalRef.current = 0
     setNextOffset(null)
     setError(null)
     if (!sessionId) return

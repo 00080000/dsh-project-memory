@@ -75,7 +75,11 @@ interface TaskDataState {
   lastUpdate: number
 }
 
-const SYNC_CHANNEL = typeof window !== 'undefined' ? new BroadcastChannel('dsh-pm-tasks-data') : null
+// 不是所有宿主都有 BroadcastChannel（SSR / 老 WebView / 测试替身）。缺它只关闭跨标签页同步，
+// 不能让整个 client 半边在 apply 之前就 ReferenceError。
+const SYNC_CHANNEL = typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined'
+  ? new BroadcastChannel('dsh-pm-tasks-data')
+  : null
 
 let dataState: TaskDataState = {
   tasks: [],

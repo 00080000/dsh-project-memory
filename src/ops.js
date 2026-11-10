@@ -72,6 +72,11 @@ const QUERY_TOOLS = new Set(['query_memory', 'recall'])
  * 参数、路径、引号里的词都只是**提及**（`find … bench …` 的目录名、`grep -rn "migrate" docs`）。
  * 命令头才是"这个 shell 到底在做什么"的唯一可靠位置。
  */
+/** git 子命令里会改工作区/索引的写族：op 映射与 targets 抽取必须同一口径。 */
+const GIT_WRITE_SUBCOMMANDS = new Set([
+  'rm', 'checkout', 'restore', 'reset', 'apply', 'merge', 'rebase', 'cherry-pick', 'stash', 'mv', 'clean',
+])
+
 const WRITE_HEADS = new Set(['rm', 'rmdir', 'unlink', 'shred', 'mv', 'cp', 'touch', 'tee', 'truncate', 'mkdir'])
 /**
  * Windows / PowerShell 的写盘命令。与 POSIX 同名命令并列而不是另开分支：`isWriteSegment()` 与
@@ -280,8 +285,8 @@ function opsOfHead(head, rest) {
       if (gsub === 'commit' || gsub === 'add') return ['git-commit']
       if (gsub === 'push') return ['git-push']
       if (gsub === 'tag') return ['release']
-      if (gsub === 'rm') return ['file-delete']
-      if (gsub === 'checkout' || gsub === 'restore' || gsub === 'reset') return ['file-write']
+      if (gsub === 'rm' || gsub === 'clean') return ['file-delete']
+      if (GIT_WRITE_SUBCOMMANDS.has(gsub)) return ['file-write']
       return []
     }
     case 'rm': case 'rmdir': case 'unlink': case 'shred':
@@ -347,7 +352,7 @@ function isWriteSegment(head, rest, redirects) {
   if (redirects.length) return true
   if (WRITE_HEADS.has(head) || WINDOWS_WRITE_HEADS.has(head)) return true
   if (head === 'sed' && rest.includes('-i')) return true
-  if (head === 'git' && String(rest[0] || '').toLowerCase() === 'rm') return true
+  if (head === 'git' && GIT_WRITE_SUBCOMMANDS.has(String(rest[0] || '').toLowerCase())) return true
   return false
 }
 

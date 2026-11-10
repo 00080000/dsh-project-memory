@@ -9,6 +9,7 @@ import { ProjectMemoryStore } from '../store.js'
 import { BoundedMap } from '../util/session-cache.js'
 import { stepContent, stepStatus } from '../util/task-view.js'
 import { patchFilePaths } from '../util/patch.js'
+import { flushDirtyStores } from '../util/flush.js'
 
 // apply_patch 的参数是整段补丁文本，路径在正文里（见 util/patch.js），单独分支处理。
 const FS_FILE_TOOLS = new Set(['read', 'write', 'edit', 'read_image', 'str_replace_editor', 'apply_patch'])
@@ -83,11 +84,13 @@ export function firstTextOf(content) {
  * 规则：任务没有步骤时不推（避免误清模型手头正在用的宿主清单）。
  * @returns {boolean} 是否实际推送
  */
-export function adoptStepsToSession(session, task) {
+export function adoptStepsToSession(session, task, { force = false } = {}) {
   if (!session || typeof session.append !== 'function') return false
   const steps = Array.isArray(task?.steps) ? task.steps : null
-  if (!steps || steps.length === 0) return false
-  const todos = steps.map((s) => ({ content: String(stepContent(s)), status: stepStatus(s) }))
+  // 隐式路径（例如工具顺手更新文件热点）不推空，避免清掉模型手头的清单；显式切换/清空必须推，
+  // 否则面板绑到 B、输入框里仍是 A 的步骤。
+  if ((!steps || steps.length === 0) && !force) return false
+  const todos = (steps || []).map((s) => ({ content: String(stepContent(s)), status: stepStatus(s) }))
   session.append('todo/write', { todos })
   return true
 }
@@ -314,7 +317,9 @@ export function onSessionEvent(config, session, event, meta, ctx) {
       ? args.file_path
       : typeof args?.path === 'string' ? args.path : null
     if (!raw) return
-    const rel = normalizeRelFile(root, raw)
+    // 相对路径以会话当前工作目录为基准，与宿主 read/write 一致；项目根只在 cwd 缺失时兜底。
+    const base = typeof cwd === 'string' && cwd ? cwd : root
+    const rel = normalizeRelFile(root, path.isAbsolute(raw) ? raw : path.resolve(base, raw))
     if (!rel) return
     let kind = null
     if (data.name === 'str_replace_editor') {
@@ -364,6 +369,8 @@ export function setupTaskbridge(ctx, config) {
     // 文件热点/人类消息戳记是延迟写：回合结束补一次落盘，崩溃时最多丢一个回合的计数。
     if (event?.type === 'turn/end') {
       flushSessionTaskStore(session, config, ctx)
+      // 本回合可能 cd 过：按“当时的 cwd”找根会漏掉绑定根。把所有标脏的 store 一起落盘。
+      flushDirtyStores({ timeoutMs: 1500 })
     }
   })
   ctx.on('session/disposed', (session) => {
