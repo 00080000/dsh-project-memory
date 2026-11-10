@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { TEXT_OUTPUT } from './output.js'
+import { TEXT_OUTPUT, rootParam } from './output.js'
 import { assertIndexRoot, memoryRootFor, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
 import { cfgInsight, defaultGlobalFile, GlobalStore } from '../insight-store.js'
@@ -16,10 +16,7 @@ export function statsTool(config) {
     description:
       'Show store totals, last index time and the per-file index list.',
     parameters: {
-      root: {
-        type: 'string',
-        description: 'project root (default: cwd)',
-      },
+      root: rootParam(),
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {

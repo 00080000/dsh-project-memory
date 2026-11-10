@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { TEXT_OUTPUT } from './output.js'
+import { TEXT_OUTPUT, rootParam } from './output.js'
 import { openProjectContext } from './context.js'
 import { normalizeCitationFiles } from '../util/fs.js'
 import { truncate } from '../util/text.js'
@@ -69,7 +69,7 @@ export function lessonTool(config) {
       files: { type: 'array', items: { type: 'string' }, description: 'related files (project-relative)' },
       symbols: { type: 'array', items: { type: 'string' }, description: 'related symbols' },
       confidence: { type: 'number', description: '0..1' },
-      root: { type: 'string', description: 'project root' },
+      root: rootParam(),
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {

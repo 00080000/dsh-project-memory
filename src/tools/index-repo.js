@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { TEXT_OUTPUT } from './output.js'
+import { TEXT_OUTPUT, rootParam } from './output.js'
 import path from 'node:path'
 import { statSync } from 'node:fs'
 import { assertIndexRoot, assertSafeRoot, listProjectFiles, memoryDirName, memoryRootFor, relativePath, resolveIndexRoot, scanLimits, storeKey } from '../util/fs.js'
@@ -148,11 +148,7 @@ export function indexRepoTool(ctx, config) {
       'Index a project into memory (docs + code symbols), incremental by content hash. '
       + 'Call once per project, then query_memory.',
     parameters: {
-      root: {
-        type: 'string',
-        required: true,
-        description: 'project root (relative: session cwd)',
-      },
+      root: rootParam({ required: true, description: 'project root (relative: session cwd)' }),
       reindex: {
         type: 'boolean',
         description: 'ignore hashes, force re-extraction',

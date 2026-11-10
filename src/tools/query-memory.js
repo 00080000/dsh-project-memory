@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { TEXT_OUTPUT } from './output.js'
+import { TEXT_OUTPUT, rootParam } from './output.js'
 import path from 'node:path'
 import { assertIndexRoot, memoryDirName, memoryRootFor, nestedStoreRoots, resolveSafeIndexRoot } from '../util/fs.js'
 import { ProjectMemoryStore, storeOverview } from '../store.js'
@@ -70,10 +70,7 @@ export function queryMemoryTool(ctx, config) {
         required: true,
         description: 'what to look for',
       },
-      root: {
-        type: 'string',
-        description: 'project root (default: cwd)',
-      },
+      root: rootParam(),
       type: {
         type: 'string',
         enum: ['all', 'doc', 'symbol', 'experience', 'insight', 'task'],

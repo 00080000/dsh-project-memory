@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { TEXT_OUTPUT } from './output.js'
+import { TEXT_OUTPUT, rootParam } from './output.js'
 import { openProjectContext } from './context.js'
 import { DELETED_KEEP, GlobalStore, defaultGlobalFile, removeMemory } from '../insight-store.js'
 import { forgetVectorRows } from '../vector-index.js'
@@ -38,10 +38,7 @@ export function forgetTool(config) {
         required: true,
         description: 'exact id or keywords; id takes priority',
       },
-      root: {
-        type: 'string',
-        description: 'project root (default: cwd)',
-      },
+      root: rootParam(),
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {

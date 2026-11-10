@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { TEXT_OUTPUT } from './output.js'
+import { TEXT_OUTPUT, rootParam } from './output.js'
 import path from 'node:path'
 import { statSync } from 'node:fs'
 import { assertIndexRoot, assertReadableFile, assertSafeRoot, excludedEntryForPath, findProjectRoot, memoryRootFor, resolveIndexRoot, sessionMemoryRootOrNull, sha256OfFile, storeKey } from '../util/fs.js'
@@ -18,10 +18,7 @@ export function indexDocTool(ctx, config) {
         required: true,
         description: 'absolute path of the document',
       },
-      root: {
-        type: 'string',
-        description: 'project root (default: session project root)',
-      },
+      root: rootParam({ description: 'project root (default: session project root)' }),
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {

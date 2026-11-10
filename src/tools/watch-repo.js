@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { TEXT_OUTPUT } from './output.js'
+import { TEXT_OUTPUT, rootParam } from './output.js'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { assertIndexRoot, assertSafeRoot, memoryRootFor, resolveIndexRoot, rootRejection, sessionMemoryRootOrNull, storeKey } from '../util/fs.js'
@@ -13,11 +13,7 @@ export function watchRepoTool(watchManager, config) {
     description:
       'Auto-refresh a project on change; watch=false stops.',
     parameters: {
-      root: {
-        type: 'string',
-        required: true,
-        description: 'project root (relative: session cwd)',
-      },
+      root: rootParam({ required: true, description: 'project root (relative: session cwd)' }),
       watch: {
         type: 'boolean',
         description: 'false = stop watching',

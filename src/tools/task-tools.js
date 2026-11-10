@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { TEXT_OUTPUT } from './output.js'
+import { TEXT_OUTPUT, rootParam } from './output.js'
 import { openProjectContext } from './context.js'
 import { truncate } from '../util/text.js'
 import { sessionIdOf, stepProgress, timeAgo } from '../util/task-view.js'
@@ -21,7 +21,7 @@ export function listTasksTool(config) {
     description:
       'List this project\'s task records (archived included). Look here first in a new or resumed session, then select_task to pick one.',
     parameters: {
-      root: { type: 'string', description: 'project root (default: cwd)' },
+      root: rootParam(),
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {
@@ -47,7 +47,7 @@ export function selectTaskTool(config, host) {
     parameters: {
       taskId: { type: 'string', description: 'exact task id' },
       title: { type: 'string', description: 'exact title; creates if absent' },
-      root: { type: 'string', description: 'project root (default: cwd)' },
+      root: rootParam(),
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {
@@ -166,7 +166,7 @@ export function archiveTaskTool(config, host) {
     description: 'Archive a task (restore by selecting it again).',
     parameters: {
       taskId: { type: 'string', required: true, description: 'task id' },
-      root: { type: 'string', description: 'project root (default: cwd)' },
+      root: rootParam(),
     },
     output: TEXT_OUTPUT,
     async execute(args, exec) {

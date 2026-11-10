@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { TEXT_OUTPUT } from './output.js'
+import { TEXT_OUTPUT, rootParam } from './output.js'
 import { openProjectContext } from './context.js'
 import { normalizeCitationFiles } from '../util/fs.js'
 import { saveInsight, GlobalStore, defaultGlobalFile } from '../insight-store.js'
@@ -24,10 +24,7 @@ export function rememberTool(config) {
         required: true,
         description: 'concrete fix',
       },
-      root: {
-        type: 'string',
-        description: 'project root (default: cwd)',
-      },
+      root: rootParam(),
       source_file: {
         type: 'string',
         description: 'related file (project-relative)',
