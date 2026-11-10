@@ -173,6 +173,25 @@ export function touchTaskFile(task, rel, kind, now) {
 }
 
 /**
+ * 这条 `user/message` 是不是真人说的？判据与 auto-inject 的 `lastUserText()` / 事件观察器逐条一致：
+ * 只认 `source` 缺失（老宿主/测试没有生产者字段）或 `source.kind === 'user'`。有 source 但 kind 是
+ * `agent-message` / `subagent-settled` / `tool-jobs` / `time-context` / `runtime-context`，或本插件
+ * 注入的 `plugin:dsh-project-memory` 时都不是人话；迁移前 `{ plugin: 'dsh-project-memory' }` 的旧形状
+ * 没有 kind，也要单独排除，否则自注入会刷新人类戳记。
+ * `role` 缺失按老宿主的 user/message 处理；显式给了非 user 的 role 则不是人话。
+ */
+function isHumanUserMessage(data) {
+  if (!data || typeof data !== 'object') return false
+  if (data.role != null && data.role !== 'user') return false
+  const source = data.source
+  if (!source || typeof source !== 'object') return true
+  if (source.plugin === 'dsh-project-memory') return false
+  const kind = source.kind
+  // 空 kind 与缺 kind 同义：auto-inject 的判据是 `if (kind && kind !== 'user') continue`。
+  return !kind || kind === 'user'
+}
+
+/**
  * 单条会话事件处理（导出便于测试）：user/message 记首条真人文本并刷新 lastHumanAt；
  * todo/write → 已绑定则覆盖 steps，未绑定则自动新建任务并绑定（子代理会话除外，
  * 由 isSubagentSession 判定）；tool/call（fs 工具）→ 绑定任务 files 并集。
@@ -189,7 +208,7 @@ export function onSessionEvent(config, session, event, meta, ctx) {
 
   // 人类消息：记首条真人文本 + 若已绑定任务则刷新 lastHumanAt（供“模型自维护不回声任务卡”判断）
   if (type === 'user/message') {
-    if (event.data?.source?.kind === 'user') {
+    if (isHumanUserMessage(event.data)) {
       const text = firstTextOf(event.data?.content)
       const m = meta.get(sessionId) || {}
       if (!m.firstHuman && text) m.firstHuman = text
