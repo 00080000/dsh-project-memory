@@ -26,6 +26,15 @@ for (const def of defs) {
 // 之前只看字符，导致"中文描述省字符"被当成省预算——同样的信息换成英文，字符 +25%、token 反而更少。
 // 基线（2026-11）：含工具名 7232 字符 / 0 汉字 ≈ 1813 token。旧断言漏算名字，实际余量比显示的小。
 assert.equal(defs.length, 12, '工具数量变化必须同步检查 schema 预算与注册表')
+// 回归（2026-11-11）：`dsh-memory-tiers` 也注册 `memory_stats`，同进程同时启用时
+// 后注册方会整条 fiber 失败（tool "memory_stats" is already registered）。
+// 本插件的统计工具因此改名为 `pm_stats`；这两个断言防止改名被回退或被再抄回去。
+{
+  const names = defs.map((def) => def.name)
+  assert.ok(names.includes('pm_stats'), 'pm_stats 必须已注册')
+  assert.ok(!names.includes('memory_stats'), 'memory_stats 不得再注册（会与 dsh-memory-tiers 撞名）')
+  assert.equal(new Set(names).size, names.length, '工具名必须唯一')
+}
 console.log(`  tool schema: ${chars} chars · ${cjk} CJK · ~${tokens} tokens (${defs.length} tools)`)
 assert.ok(tokens <= 1850, `tool schema budget exceeded: ~${tokens} tokens (${chars} chars, limit ~1850 tokens)`)
 
@@ -46,7 +55,7 @@ assert.ok(tokens <= 1850, `tool schema budget exceeded: ~${tokens} tokens (${cha
     forget: { required: false, description: ROOT_DEFAULT },
     remember: { required: false, description: ROOT_DEFAULT },
     save_lesson: { required: false, description: ROOT_DEFAULT },
-    memory_stats: { required: false, description: ROOT_DEFAULT },
+    pm_stats: { required: false, description: ROOT_DEFAULT },
     list_tasks: { required: false, description: ROOT_DEFAULT },
     select_task: { required: false, description: ROOT_DEFAULT },
     archive_task: { required: false, description: ROOT_DEFAULT },
@@ -69,4 +78,4 @@ assert.ok(tokens <= 1850, `tool schema budget exceeded: ~${tokens} tokens (${cha
   for (const name of Object.keys(expected)) assert.ok(seen.has(name), `${name}: 应当声明 root 参数`)
 }
 
-console.log('ALL CHECKS PASSED (2 passed)')
+console.log('ALL CHECKS PASSED (3 passed)')

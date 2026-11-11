@@ -12,7 +12,7 @@ const TOP_N = 30
 
 export function statsTool(config) {
   return defineTool({
-    name: 'memory_stats',
+    name: 'pm_stats',
     description:
       'Show store totals, last index time and the per-file index list.',
     parameters: {

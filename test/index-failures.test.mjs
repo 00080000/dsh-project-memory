@@ -1,6 +1,6 @@
 // 后台索引失败的可见性（node test/index-failures.test.mjs）：
 // watch 的失败过去只有一行日志、懒索引的单文件失败甚至被 `catch {}` 吞掉，于是
-// "某些文件一直没进语料"在界面上不可见。账本 + index_repo / memory_stats 必须能报出来。
+// "某些文件一直没进语料"在界面上不可见。账本 + index_repo / pm_stats 必须能报出来。
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

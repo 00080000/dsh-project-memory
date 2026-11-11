@@ -92,7 +92,7 @@ export function queryMemoryTool(ctx, config) {
       // 空查询不是"全部"：recallItems 会过滤空串，rankEntriesStreaming 随即返回
       // entries.slice(0, limit)（任意条目、分数 0），task 分支的 includes('') 更是命中所有任务。
       if (!String(args.query ?? '').trim()) {
-        return 'query must not be empty. Use memory_stats to see what the store contains.'
+        return 'query must not be empty. Use pm_stats to see what the store contains.'
       }
       const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
       const type = args.type || 'all'
@@ -289,8 +289,8 @@ export function queryMemoryTool(ctx, config) {
           overview.files === 0
             ? '. The store has never been indexed.'
             : overview.latest
-              ? `, last indexed at ${overview.latest}. Use memory_stats to see what the store contains.`
-              : '. Use memory_stats to see what the store contains.'
+              ? `, last indexed at ${overview.latest}. Use pm_stats to see what the store contains.`
+              : '. Use pm_stats to see what the store contains.'
         const nestedNote = wantMemory && memHitCount === 0 ? nestedIndexNote(root, config) : ''
         return (
           `No memory matches for "${args.query}" in ${root}. ${hint}\n` +
