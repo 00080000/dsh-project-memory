@@ -1152,7 +1152,15 @@ export class ProjectMemoryStore {
     let removalFailed = false
     try {
       // 先合并另一进程已落盘的小文档，再写；分片按“加载时 hash”做冲突检测。
-      this._mergeAuxFromDisk()
+      // 合并中读到坏文件（EACCES/EISDIR）时绝不能继续写：那会用本进程旧快照覆盖读不出来的
+      // 文件，恰好丢掉另一进程刚写的条目。
+      if (!this._mergeAuxFromDisk()) {
+        this.lastSaveOk = false
+        trackDirty(this)
+        this._warnReadOnly()
+        this._scheduleSaveRetry()
+        return false
+      }
       const shardWork = this._dirtyShards.size > 0
         || this._removedShards.size > 0
         || this._needsShardRewrite
@@ -1214,8 +1222,13 @@ export class ProjectMemoryStore {
 
   /** 锁内刷新磁盘布局：另一进程可能已迁移/扩桶，按持久化的 count 重排，避免写回旧桶号。 */
   _refreshLayoutFromDisk() {
-    const doc = loadJson(path.join(this.dir, FORMAT_FILE), null)
-    if (!doc) return
+    const before = this._readErrors.size
+    const doc = loadJson(path.join(this.dir, FORMAT_FILE), null, undefined, this._readErrors)
+    if (this._readErrors.size > before) {
+      this._readOnly = true
+      return false
+    }
+    if (!doc) return true
     const count = Number.isFinite(doc.bucketCount) ? Math.max(1, Math.min(BUCKET_COUNT_MAX, Math.floor(doc.bucketCount))) : 0
     if (doc.version >= 3 && count > 0) {
       if (this._layout !== 'v3' || count !== this._bucketCount) {
@@ -1247,17 +1260,20 @@ export class ProjectMemoryStore {
       this._layout = 'v2'
       this._needsShardRewrite = true
     }
+    return true
   }
 
   /** 清掉旧布局/越界/崩溃遗留的 shard 文件（当前 bucketCount 之外的 bucket-* 与 v2 的 64 位 hash 文件）。 */
-  _cleanupShardFiles() {
+  _cleanupShardFiles(writtenNames = null) {
     let names = []
     try {
       names = readdirSync(path.join(this.dir, SHARDS_DIR))
     } catch {
       return
     }
-    const keep = new Set(Array.from({ length: this._bucketCount }, (_, i) => `bucket-${String(i).padStart(5, '0')}.json`))
+    // 全量重排必须用“实际写过的桶名”做 keep：缩桶后新下标收到 0 条目的同名旧桶不会被重写，
+    // 按范围保留会让它活下来并在下次 load 把已删条目读回来。
+    const keep = writtenNames || new Set(Array.from({ length: this._bucketCount }, (_, i) => `bucket-${String(i).padStart(5, '0')}.json`))
     for (const name of names) {
       if (!name.endsWith('.json') || keep.has(name)) continue
       try {
@@ -1417,15 +1433,20 @@ export class ProjectMemoryStore {
       }
       map.set(rel, { record: this.files[rel], entries: this.entries[rel] || [] })
     }
-    for (const [index, map] of groups) this._writeBucket(index, map)
+    const written = new Set()
+    for (const [index, map] of groups) {
+      this._writeBucket(index, map)
+      written.add(`bucket-${String(index).padStart(5, '0')}.json`)
+    }
     // 全量重排后重建冲突基线：否则后续 removeFile 会拿不到 base、误判成"对方更新"。
     this._baseFileSha = new Map(Object.keys(this.files).map((rel) => [rel, this.files[rel].sha256 ?? null]))
+    return written
   }
 
   /** 写分片。返回 false 表示删除/写入有失败（保持脏状态，留给重试）。 */
   _saveShards() {
     if (this._readOnly) return false
-    this._refreshLayoutFromDisk()
+    if (!this._refreshLayoutFromDisk()) return false
     // 存量压实：≤0.5.10 的分片带派生字段，每轮有界地把它们标脏重写。
     let compactBudget = COMPACT_BATCH
     for (const rel of this._compactQueue) {
@@ -1472,7 +1493,7 @@ export class ProjectMemoryStore {
       if (this._layout !== 'v3' || this._bucketCount === 0) {
         this._bucketCount = chooseBucketCount(estimateShardBytes(this.files, this.entries))
       }
-      this._rewriteAllBuckets()
+      const written = this._rewriteAllBuckets()
       this._writeFormat()
       this._layout = 'v3'
       this._needsShardRewrite = false
@@ -1480,7 +1501,7 @@ export class ProjectMemoryStore {
       this._dirtyShards.clear()
       this._removedShards.clear()
       this._shardOpsSinceResize = 0
-      this._cleanupShardFiles()
+      this._cleanupShardFiles(written)
       return true
     }
 
@@ -1594,6 +1615,7 @@ export class ProjectMemoryStore {
    * 用墓碑挡住，避免"删了又被对方的旧副本复活"。分片不走这里（按 hash 冲突检测）。
    */
   _mergeAuxFromDisk() {
+    const before = this._readErrors.size
     if (this._dirtyInsights) {
       // 先按“上次落盘基线”记墓碑：prune/applyDecay 等原地 splice 不经过 replaceInsightItems。
       const current = new Set(this.insights.items.map((it) => it?.id).filter(Boolean))
@@ -1644,9 +1666,13 @@ export class ProjectMemoryStore {
           const mergedInsights = mergeTaskInsights(t, prev, base)
           // 步骤/标题以 `updatedAt` 为准（todo/write 与显式编辑都会刷新它）；文件热点只刷新
           // `lastActiveAt`，不能让它把另一进程刚写的步骤盖回旧值。
-          const semantic = newerIso(t.updatedAt, prev.updatedAt) >= 0 ? t : prev
+          const semanticLocal = newerIso(t.updatedAt, prev.updatedAt) >= 0
+          const semantic = semanticLocal ? t : prev
           const merged = {
             ...semantic,
+            // 归档：本进程更新更晚时尊重显式解归档；否则任一侧归档即归档（prune 不改 updatedAt，
+            // 不能让另一进程的普通更新把它的归档回滚）。
+            archived: semanticLocal ? t.archived === true : (t.archived === true || prev.archived === true),
             insights: mergedInsights,
             ...mergeTaskFileState(t, prev),
             updatedAt: newerIso(t.updatedAt, prev.updatedAt) >= 0 ? t.updatedAt : prev.updatedAt,
@@ -1680,6 +1706,7 @@ export class ProjectMemoryStore {
         this._auxVersion++
       }
     }
+    return this._readErrors.size === before
   }
 
   getIdfCache() {

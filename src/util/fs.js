@@ -175,11 +175,15 @@ function lockIsStale(state, { staleMs, hardLimit, maxHoldMs = 0 }) {
     return ageMs > staleMs || ageMs > hardLimit
   }
   const boot = bootTimeMs()
-  // 写于本机上一次开机之前：持有者早已随重启消失，无论 pid 是否存活都是残留。Windows 上没有
-  // /proc，`processStartMs()` 恒为 null，这是"重启后 pid 被复用"唯一能识破的证据。
-  if (Number.isFinite(at) && at < boot - BOOT_SLACK_MS) return true
-  // 锁自带的开机标记与本次不符：系统时钟被改过时 `at` 不可信，`boot` 仍可判。
-  if (Number.isFinite(meta.boot) && Math.abs(boot - meta.boot) > BOOT_MATCH_TOLERANCE_MS) return true
+  // 新锁带 uptime：重启后当前 uptime 会小于锁里记录的 uptime。这个判据不受墙钟步进影响。
+  if (Number.isFinite(meta.up)) {
+    if (meta.up > os.uptime() + 5) return true
+  } else {
+    // 旧锁没有 up：保留原来的墙钟判断（时钟被改时会误判，但旧格式本来就没有更强的证据）。
+    // 写于本机上一次开机之前：持有者早已随重启消失，无论 pid 是否存活都是残留。
+    if (Number.isFinite(at) && at < boot - BOOT_SLACK_MS) return true
+    if (Number.isFinite(meta.boot) && Math.abs(boot - meta.boot) > BOOT_MATCH_TOLERANCE_MS) return true
+  }
   if (!pidAlive(meta.pid)) return true
   // 活着：正常绝不回收；例外是 pid 被复用（新进程启动晚于旧锁）。
   // 没有 `at` 的旧锁无法判断 → 信任存活，宁可等也不能双写。
@@ -220,6 +224,8 @@ export function acquireDirLock(dir, { timeoutMs = 2000, staleMs = 10000, hardSta
     at: new Date().toISOString(),
     // 本次开机时刻：跨重启的残留锁靠它识破（Windows 没有 /proc，pid 存活不足以证明持有者还在）。
     boot: bootTimeMs(),
+    // 开机至今的秒数：墙钟被改也不变，比 `boot` 更可靠；新锁用它判重启。
+    up: os.uptime(),
   })
   const deadline = Date.now() + timeoutMs
   const sleeper = new Int32Array(new SharedArrayBuffer(4))

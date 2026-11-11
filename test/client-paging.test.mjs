@@ -5,7 +5,7 @@
 // "滚到底 → 追加渲染"。所以分页的**决策**被抽到 src/client/paging.js，
 // 边界在这里直接钉住；组件只负责把结果接到渲染上。
 import assert from 'node:assert/strict'
-import { PAGE_SIZE, HOST_PAGE_MAX, PREFETCH_MARGIN, SPINNER_DELAY_MS, appendUnique, createRequestGate, insightListLine, normalizeWindow, progressCounts, reloadWindowRequest } from '../src/client/paging.js'
+import { PAGE_SIZE, HOST_PAGE_MAX, PREFETCH_MARGIN, SPINNER_DELAY_MS, appendUnique, createRequestGate, insightListLine, normalizeWindow, progressCounts } from '../src/client/paging.js'
 
 let passed = 0
 const ok = (name) => {
@@ -49,22 +49,6 @@ const ok = (name) => {
   assert.equal(appendUnique(prev, []), prev, '空页应原样返回')
   assert.equal(appendUnique(prev, null), prev, '畸形页不得抛错')
   ok('无新增/空页/畸形页时原样返回同一引用，不触发无意义重渲染')
-}
-
-// ---- 5. 动作后的重放窗口：重取前缀，不重置成第一页；且不得超过宿主单页上限 ----
-{
-  assert.deepEqual(reloadWindowRequest(0), { offset: 0, limit: PAGE_SIZE }, '还没加载时要至少取一页')
-  assert.deepEqual(reloadWindowRequest(30), { offset: 0, limit: 30 })
-  assert.deepEqual(reloadWindowRequest(75), { offset: 0, limit: 75 }, '已加载 75 条就重放 75 条')
-  assert.deepEqual(reloadWindowRequest(-5), { offset: 0, limit: PAGE_SIZE }, '负数是畸形输入')
-  assert.deepEqual(reloadWindowRequest(NaN), { offset: 0, limit: PAGE_SIZE })
-  // 宿主对超限 limit 静默夹到 200；重放是"替换"，所以请求值必须自己先夹。
-  // 回归：修前 reloadWindowRequest(500).limit === 500，列表会被打回 200 条。
-  assert.deepEqual(reloadWindowRequest(HOST_PAGE_MAX), { offset: 0, limit: HOST_PAGE_MAX })
-  assert.deepEqual(reloadWindowRequest(500), { offset: 0, limit: HOST_PAGE_MAX }, '已加载超过单页上限时夹到上限')
-  assert.deepEqual(reloadWindowRequest(5000), { offset: 0, limit: HOST_PAGE_MAX })
-  assert.deepEqual(reloadWindowRequest(10, 999), { offset: 0, limit: HOST_PAGE_MAX }, '调用方给的下界也一并夹住')
-  ok('动作后重放 0..已加载条数 的前缀，且 limit 始终 ≤ 宿主单页上限')
 }
 
 // ---- 6. 载荷归一：新宿主分页 / 省略 limit / 老宿主"一次给全" ----

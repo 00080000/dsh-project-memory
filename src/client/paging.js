@@ -34,7 +34,7 @@ export function insightListLine(scope, offset, limit) {
 }
 
 /**
- * 追加一页并**按 id 去重**。去重是必需的：前缀重放（见 {@link reloadWindowRequest}）与并发
+ * 追加一页并**按 id 去重**。去重是必需的：前缀重放（见 MemoryView.loadPrefix）与并发
  * 刷新都可能让同一 id 出现两次，重复行带重复按钮，点错一个就是误删。
  * @param {ReadonlyArray<{id?: string}>} prev - 已渲染条目。
  * @param {ReadonlyArray<{id?: string}>} page - 新到的一页。
@@ -46,19 +46,6 @@ export function appendUnique(prev, page) {
   const fresh = page.filter((row) => row && !seen.has(row.id))
   if (fresh.length === 0) return prev
   return [...prev, ...fresh]
-}
-
-/**
- * 动作（archive/delete/promote…）之后的重载窗口：刷新**已加载的整个前缀**而非重置成第一页（否则
- * 会把正在看第 5 页的用户弹回顶部）；用 offset 分页而非 keyset 游标正是为了让"把 0..N 重取一遍"
- * 可行。**上限**：宿主单页最多 {@link HOST_PAGE_MAX} 条且静默截断，`limit` 在这里夹住，余下的由 `nextOffset` 追加。
- * @param {number} loadedCount - 当前已渲染条数。
- * @param {number} [pageSize] - 每页条数下界，保证至少取一页。
- * @returns {{offset: number, limit: number}} 重放请求窗口（limit ≤ HOST_PAGE_MAX）。
- */
-export function reloadWindowRequest(loadedCount, pageSize = PAGE_SIZE) {
-  const count = Number.isFinite(loadedCount) && loadedCount > 0 ? Math.floor(loadedCount) : 0
-  return { offset: 0, limit: Math.min(HOST_PAGE_MAX, Math.max(pageSize, count)) }
 }
 
 /**

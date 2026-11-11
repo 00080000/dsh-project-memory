@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 import { ProjectMemoryStore } from '../src/store.js'
 import { GlobalStore } from '../src/insight-store.js'
 import { workflowCommandDefinition } from '../src/commands/workflow.js'
+import { buildTaskPayload } from '../src/commands/tasks.js'
 
 let passed = 0
 const ok = (name) => {
@@ -134,6 +135,22 @@ function fixture() {
   reread = new ProjectMemoryStore(path.join(root, config.memoryDir)).load()
   assert.deepEqual(reread.getTask('tsk_a').steps.map((s) => s.content), ['b', 'a', 'c'], 'step-move 按拖拽语义落点')
   ok('/tasks step|step-text|step-move：单步原子写，不再回写整份 steps')
+}
+
+// ---- 4b. 快照载荷有大小上限：超长 steps/files/insights 截断并回报总量 ----
+{
+  const payload = JSON.parse(buildTaskPayload([{
+    id: 'tsk_big', title: 'big', lastActiveAt: 'x', updatedAt: 'x',
+    steps: Array.from({ length: 200 }, (_, i) => ({ content: `s${i}`, status: 'pending' })),
+    files: Array.from({ length: 120 }, (_, i) => `src/f${i}.ts`),
+    insights: Array.from({ length: 30 }, (_, i) => ({ id: `ins_${i}`, kind: 'lesson', title: `i${i}` })),
+  }], null, 0, '/repo'))
+  const task = payload.tasks[0]
+  assert.equal(task.steps.length, 50)
+  assert.equal(task.files.length, 50)
+  assert.equal(task.insights.length, 20)
+  assert.deepEqual(task.totals, { steps: 200, files: 120, insights: 30, completedSteps: 0 })
+  ok('/tasks 快照：steps/files/insights 有界，总量由 totals 回报')
 }
 
 // ---- 5. 唯一注册点：index.js 只能注册一条命令 ----

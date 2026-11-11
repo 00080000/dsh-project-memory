@@ -4,7 +4,7 @@
  * `remember/forget` 是写入口，先过 `assertSafeRoot`，`recall/stats` 只读。
  */
 import path from 'node:path'
-import { assertSafeRoot, memoryRootFor, normalizeCitationFiles } from './util/fs.js'
+import { assertIndexRoot, assertSafeRoot, memoryRootFor, normalizeCitationFiles } from './util/fs.js'
 import { ProjectMemoryStore, storeOverview } from './store.js'
 import { cfgInsight, defaultGlobalFile, GlobalStore, removeMemory, saveInsight } from './insight-store.js'
 import { insightBodyText, recallItems } from './recall.js'
@@ -68,6 +68,7 @@ export function createProjectMemoryService(ctx, config) {
       // 只读动词也要过根护栏：被 deny 的根不能借 recall 加载（超大 store 的 load 本身就危险），
       // 更不能在加载时顺手建出 `.dsh-project-memory` / `.gitignore`。
       assertSafeRoot(root, { config })
+      assertIndexRoot(root, opts.root)
       const limit = Number.isFinite(opts.limit) && opts.limit > 0 ? Math.min(50, Math.floor(opts.limit)) : 8
       const layers = Array.isArray(opts.layers) && opts.layers.length ? opts.layers : DEFAULT_LAYERS
       const { store, globalStore } = openStores(root, config)
@@ -105,6 +106,8 @@ export function createProjectMemoryService(ctx, config) {
       }
       // 写入口先过根护栏，拒绝发生在 store 目录被建出来之前。
       assertSafeRoot(root, { config })
+      // 只过 assertSafeRoot 不够：拼错的 root（不存在）也会被 store 的 mkdir 建出来。
+      assertIndexRoot(root, opts.root)
       // 与 save_lesson 同一条写入期路径约束：只收项目内相对路径。
       const citations = normalizeCitationFiles(entry.files, root)
       const raw = { ...entry, files: citations.files }
@@ -133,6 +136,7 @@ export function createProjectMemoryService(ctx, config) {
       const root = resolveRoot(opts.root)
       // 删除也是写盘入口：先过根护栏，拒绝发生在 store / 删除留痕文件被写出之前。
       assertSafeRoot(root, { config })
+      assertIndexRoot(root, opts.root)
       const { cfg, memoryDir, store, globalStore } = openStores(root, config)
       let removed
       store.commit((s) => {
@@ -148,12 +152,18 @@ export function createProjectMemoryService(ctx, config) {
       } catch {
         /* ignore：vectors.json 是缓存，不是真相源 */
       }
-      return { deleted, ...(store.lastSaveOk === false ? { persisted: false } : {}) }
+      return {
+        deleted,
+        // 命中超 cap 时没有任何删除：调用方需要能区分“没命中”与“命中太多、拒绝删”。
+        ...(removed && removed.tooMany ? { tooMany: true, matched: (removed.matches || []).length } : {}),
+        ...(store.lastSaveOk === false ? { persisted: false } : {}),
+      }
     },
 
     stats(opts = {}) {
       const root = resolveRoot(opts.root)
       assertSafeRoot(root, { config })
+      assertIndexRoot(root, opts.root)
       const { store, globalStore } = openStores(root, config)
       const overview = storeOverview(store)
       return {
@@ -162,6 +172,8 @@ export function createProjectMemoryService(ctx, config) {
         experience: overview.experience,
         latest: overview.latest,
         insights: store.insightItems().length,
+        // task 级条目不在 insights.json 里：不单列会让 remember(scope:'task') 的写入在 stats 里消失。
+        taskInsights: store.getTasks().reduce((n, t) => n + (Array.isArray(t?.insights) ? t.insights.length : 0), 0),
         global: globalStore.items().length,
       }
     },

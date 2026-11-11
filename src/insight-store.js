@@ -378,17 +378,21 @@ function autoMergeTarget(near, cfg) {
  * 只记非归档条目。返回实际加一的条数，调用方据此决定是否落盘。
  * @returns {number} 被加一的条目数
  */
-export function recordHit({ store, globalStore, ids, nowIso } = {}) {
+export function recordHit({ store, globalStore, ids, nowIso, delta = 1 } = {}) {
   const want = new Set((ids || []).filter(Boolean))
   if (!want.size) return 0
   const now = nowIso || new Date().toISOString()
+  const step = Number(delta) || 0
+  if (!step) return 0
   let n = 0
   const touch = (items) => {
     let c = 0
     for (const it of items || []) {
       if (!it || it.archived || !want.has(it.id)) continue
-      it.hitCount = num(it.hitCount, 0) + 1
-      it.lastHitAt = now
+      const next = Math.max(0, num(it.hitCount, 0) + step)
+      if (next === num(it.hitCount, 0)) continue
+      it.hitCount = next
+      if (step > 0) it.lastHitAt = now
       c++
     }
     n += c
@@ -921,6 +925,9 @@ export function saveInsight({ store, globalStore, raw, scope, taskId, cfg, sourc
     if (!store || !taskId) return { ok: false, error: 'task 级写入需要 taskId' }
     const task = store.getTask(taskId)
     if (!task) return { ok: false, error: `任务不存在: ${taskId}` }
+    // 归档任务 = 已停止续做：写进去的条目在 recall（visibleInsights）里永远不可见，
+    // 必须让调用方先 select_task 解归档，而不是报“Saved”后石沉大海。
+    if (task.archived) return { ok: false, error: `任务已归档: ${taskId}（先 select_task 解归档再写入）` }
     return saveTaskInsight(store, globalStore, task, raw, cfg2, now, source, cosine)
   }
   return saveProjectInsight(store, globalStore, raw, cfg2, now, source, cosine)

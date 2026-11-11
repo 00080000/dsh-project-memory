@@ -1,7 +1,7 @@
 // D3-2 可见性索引单元测试：node test/inject-visible.test.mjs
 // 覆盖：surface 扫描 / 增量事件 / 压缩后重建 / 旧消息正文回退 / 无 surface 降级 / provenance 紧凑格式。
 import assert from 'node:assert/strict'
-import { createVisibleState, ensureVisible, isAvailable, isBlockVisible, isItemVisible, onSessionEvent, provenanceOf, recordInjected } from '../src/inject-visible.js'
+import { createVisibleState, ensureVisible, isAvailable, isBlockVisible, isItemVisible, lineHash, onSessionEvent, provenanceOf, recordInjected } from '../src/inject-visible.js'
 
 let passed = 0
 const ok = (name) => { passed++; console.log('  ok', name) }
@@ -68,8 +68,10 @@ function fakeSession() {
   append({ role: 'user', content: [{ type: 'text', text: '- [ins_old] lesson: old' }], source: { kind: 'plugin:dsh-project-memory' } })
   const state = createVisibleState()
   ensureVisible(session, state)
-  assert.equal(isItemVisible(state, 'ins_old', 'whatever'), true)
-  ok('旧注入消息从正文解析 id（hash 未知仍算可见）')
+  const same = lineHash('- [ins_old] lesson: old')
+  assert.equal(isItemVisible(state, 'ins_old', 'whatever', [same]), true, '整行没变才算仍可见')
+  assert.equal(isItemVisible(state, 'ins_old', 'whatever', [lineHash('- [ins_old] lesson: edited')]), false, '正文改了必须允许重发')
+  ok('旧注入消息按整行文本 hash 对账（编辑后不再永久压制）')
 }
 
 // 4. 无 surface / 注入即登记
@@ -141,6 +143,38 @@ function fakeSession() {
   ensureVisible(session, state)
   assert.equal(isItemVisible(state, 'ins_lost', 'h9'), true)
   ok('乐观登记在下一步与 surface 对账')
+}
+
+// 9. 无 replaceGeneration 的旧宿主：等长中间替换靠周期全量重建兜底
+{
+  const events = new Map()
+  let seq = 0
+  const session = {
+    id: 'old',
+    surface: { nodes: [] }, // 没有 replaceGeneration
+    eventAt: (s) => events.get(s),
+  }
+  const append = (data) => {
+    seq++
+    events.set(seq, { seq, type: 'user/message', data })
+    session.surface.nodes.push(seq)
+    return seq
+  }
+  append({
+    role: 'user',
+    content: [{ type: 'text', text: '- [ins_oldhost] lesson: A' }],
+    source: { kind: 'plugin:dsh-project-memory', memory: { v: 1, b: 'blk', i: [['ins_oldhost', 'h1']] } },
+  })
+  const state = createVisibleState()
+  ensureVisible(session, state)
+  assert.equal(isItemVisible(state, 'ins_oldhost', 'h1'), true)
+  // 等长替换：节点数不变、首节点也不变，只能靠周期重建发现。
+  seq++
+  events.set(seq, { seq, type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: 'summary' }], source: { kind: 'compaction' } } })
+  session.surface.nodes = [seq]
+  for (let i = 0; i < 32; i++) ensureVisible(session, state)
+  assert.equal(isItemVisible(state, 'ins_oldhost', 'h1'), false, '32 次兜底重建内必须发现替换')
+  ok('旧宿主等长替换：周期全量重建兜底')
 }
 
 console.log(`\ninject-visible tests: ${passed} passed`)

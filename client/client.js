@@ -559,6 +559,8 @@ window.__ModuleLoader__.load({
 			boundTaskId: null,
 			archivedCount: 0,
 			root: null,
+			sessionId: null,
+			lastSyncAt: 0,
 			lastUpdate: 0
 		};
 		const dataListeners = /* @__PURE__ */ new Set();
@@ -569,30 +571,38 @@ window.__ModuleLoader__.load({
 				boundTaskId: patch?.boundTaskId ?? null,
 				archivedCount: typeof patch?.archivedCount === "number" ? patch.archivedCount : 0,
 				root: payloadRoot(patch?.root),
+				sessionId: typeof patch?.sessionId === "string" && patch.sessionId ? patch.sessionId : null,
+				lastSyncAt: typeof patch?.lastSyncAt === "number" ? patch.lastSyncAt : 0,
 				lastUpdate: typeof patch?.lastUpdate === "number" ? patch.lastUpdate : 0
 			};
 			for (const listener of dataListeners) listener();
 		}
-		function broadcastDataUpdate(tasks, archivedCount, root) {
+		function broadcastDataUpdate(tasks, archivedCount, root, boundTaskId, sessionId, sentAt) {
 			if (!SYNC_CHANNEL) return;
 			SYNC_CHANNEL.postMessage({
 				type: "PROJECT_TASKS_UPDATED",
 				payload: {
 					tasks: Array.isArray(tasks) ? tasks : [],
 					archivedCount,
-					root
+					root,
+					boundTaskId,
+					sessionId,
+					sentAt
 				}
 			});
 		}
 		if (SYNC_CHANNEL) SYNC_CHANNEL.onmessage = (event) => {
 			const msg = event.data;
 			if (msg?.type !== "PROJECT_TASKS_UPDATED" || !msg.payload) return;
-			const { tasks, archivedCount, root } = msg.payload;
+			const { tasks, archivedCount, root, boundTaskId, sessionId, sentAt } = msg.payload;
 			if (!broadcastAppliesTo(dataState.root, root)) return;
+			if (typeof sentAt === "number" && sentAt < dataState.lastSyncAt) return;
 			setDataState((prev) => ({
 				...prev,
 				tasks: Array.isArray(tasks) ? tasks : [],
 				archivedCount: typeof archivedCount === "number" ? archivedCount : prev.archivedCount,
+				...sessionId && prev.sessionId && sessionId === prev.sessionId ? { boundTaskId: typeof boundTaskId === "string" ? boundTaskId : null } : {},
+				lastSyncAt: typeof sentAt === "number" ? sentAt : prev.lastSyncAt,
 				lastUpdate: Date.now()
 			}));
 		};
@@ -611,14 +621,18 @@ window.__ModuleLoader__.load({
 					const nextTasks = payload.tasks || [];
 					const nextArchived = payload.archivedCount ?? 0;
 					const nextRoot = payloadRoot(payload.root);
+					const nextSession = payload.sessionId === void 0 ? dataState.sessionId : typeof payload.sessionId === "string" && payload.sessionId ? payload.sessionId : null;
+					const sentAt = Date.now();
 					setDataState({
 						tasks: nextTasks,
 						boundTaskId: payload.boundTaskId ?? null,
 						archivedCount: nextArchived,
 						root: nextRoot,
-						lastUpdate: Date.now()
+						sessionId: nextSession,
+						lastSyncAt: sentAt,
+						lastUpdate: sentAt
 					});
-					broadcastDataUpdate(nextTasks, nextArchived, nextRoot);
+					broadcastDataUpdate(nextTasks, nextArchived, nextRoot, payload.boundTaskId ?? null, nextSession, sentAt);
 				},
 				reset() {
 					setDataState({
@@ -626,6 +640,8 @@ window.__ModuleLoader__.load({
 						boundTaskId: null,
 						archivedCount: 0,
 						root: null,
+						sessionId: null,
+						lastSyncAt: 0,
 						lastUpdate: 0
 					});
 				}
@@ -1585,6 +1601,8 @@ window.__ModuleLoader__.load({
 				]
 			});
 		}
+		//#endregion
+		//#region src/client/paging.js
 		/** 预取提前量：哨兵进入视口**下方 600px** 就开始取下一页，数据在滚到底之前到位。 */
 		const PREFETCH_MARGIN = "600px 0px";
 		/**
@@ -1598,7 +1616,7 @@ window.__ModuleLoader__.load({
 			return `/tasks insight list ${scope} ${offset} ${limit}`;
 		}
 		/**
-		* 追加一页并**按 id 去重**。去重是必需的：前缀重放（见 {@link reloadWindowRequest}）与并发
+		* 追加一页并**按 id 去重**。去重是必需的：前缀重放（见 MemoryView.loadPrefix）与并发
 		* 刷新都可能让同一 id 出现两次，重复行带重复按钮，点错一个就是误删。
 		* @param {ReadonlyArray<{id?: string}>} prev - 已渲染条目。
 		* @param {ReadonlyArray<{id?: string}>} page - 新到的一页。
@@ -1610,20 +1628,6 @@ window.__ModuleLoader__.load({
 			const fresh = page.filter((row) => row && !seen.has(row.id));
 			if (fresh.length === 0) return prev;
 			return [...prev, ...fresh];
-		}
-		/**
-		* 动作（archive/delete/promote…）之后的重载窗口：刷新**已加载的整个前缀**而非重置成第一页（否则
-		* 会把正在看第 5 页的用户弹回顶部）；用 offset 分页而非 keyset 游标正是为了让"把 0..N 重取一遍"
-		* 可行。**上限**：宿主单页最多 {@link HOST_PAGE_MAX} 条且静默截断，`limit` 在这里夹住，余下的由 `nextOffset` 追加。
-		* @param {number} loadedCount - 当前已渲染条数。
-		* @param {number} [pageSize] - 每页条数下界，保证至少取一页。
-		* @returns {{offset: number, limit: number}} 重放请求窗口（limit ≤ HOST_PAGE_MAX）。
-		*/
-		function reloadWindowRequest(loadedCount, pageSize = 30) {
-			return {
-				offset: 0,
-				limit: Math.min(200, Math.max(pageSize, Number.isFinite(loadedCount) && loadedCount > 0 ? Math.floor(loadedCount) : 0))
-			};
 		}
 		/**
 		* 把宿主载荷归一成窗口状态，兼容三种形态：新宿主分页（有 `total` + `nextOffset`）、新宿主不
@@ -1734,6 +1738,11 @@ window.__ModuleLoader__.load({
 			}
 			return hit;
 		}
+		/** 动作会跨 scope 改变列表：整份失效本 session/root 的缓存，否则目标页 30s 内仍显示旧列表。 */
+		function invalidateInsightCache(sessionId, root) {
+			const prefix = `${sessionId || ""}|${root || ""}|`;
+			for (const key of [...insightCache.keys()]) if (key.startsWith(prefix)) insightCache.delete(key);
+		}
 		function writeInsightCache(sessionId, scope, root, boundTaskId, rows, total, nextOffset) {
 			const key = insightCacheKey(sessionId, scope, root, boundTaskId);
 			insightCache.delete(key);
@@ -1842,40 +1851,42 @@ window.__ModuleLoader__.load({
 			* @param offset 起始下标。
 			* @param limit 本页条数。
 			* @param append true=追加到已渲染列表；false=替换成这一页（首屏或前缀重放）。
+			* @param opts.prefix 前缀重放时忽略 total 变化（由调用方连续取页直到目标条数）。
+			* @returns 本页条数与下一页 offset；请求被取代/失败时为 null。
 			*/
-			const load = (0, react.useCallback)(async (offset, limit, append) => {
+			const load = (0, react.useCallback)(async (offset, limit, append, opts = {}) => {
 				if (!sessionId) {
 					setRows([]);
 					setTotal(0);
 					setNextOffset(null);
 					setError(null);
 					setLoading(false);
-					return;
+					return null;
 				}
 				const requestedScope = scopeRef.current;
 				const key = `${requestedScope}|${offset}|${limit}|${append}`;
 				const ticket = gateRef.current.begin(key);
-				if (ticket === false) return;
+				if (ticket === false) return null;
 				if (!append) setLoading(true);
 				setLoadingMore(append);
 				setError(null);
 				const spinner = window.setTimeout(() => setShowSpinner(true), 150);
 				try {
 					const res = await runLine(insightListLine(requestedScope, offset, limit));
-					if (gateRef.current.isStale(ticket, requestedScope, scopeRef.current)) return;
+					if (gateRef.current.isStale(ticket, requestedScope, scopeRef.current)) return null;
 					if (!res.ok) {
 						setError(res.text);
-						return;
+						return null;
 					}
 					const parsed = parseInsightPayloadText(res.text);
 					if (!parsed) {
 						setError("unparsable payload");
-						return;
+						return null;
 					}
-					if (append && parsed.total !== totalRef.current) {
+					if (append && !opts.prefix && parsed.total !== totalRef.current) {
 						totalRef.current = parsed.total;
 						loadRef.current(0, 30, false);
-						return;
+						return null;
 					}
 					totalRef.current = parsed.total;
 					setRows((prev) => {
@@ -1885,6 +1896,10 @@ window.__ModuleLoader__.load({
 					});
 					setTotal(parsed.total);
 					setNextOffset(parsed.nextOffset);
+					return {
+						count: parsed.items.length,
+						nextOffset: parsed.nextOffset
+					};
 				} finally {
 					window.clearTimeout(spinner);
 					if (gateRef.current.end(key, ticket)) {
@@ -1914,6 +1929,7 @@ window.__ModuleLoader__.load({
 				if (cached) {
 					setRows(cached.rows);
 					setTotal(cached.total);
+					totalRef.current = cached.total;
 					setNextOffset(cached.nextOffset);
 					setLoading(false);
 					setLoadingMore(false);
@@ -1942,11 +1958,25 @@ window.__ModuleLoader__.load({
 			}, [nextOffset, rows.length]);
 			/**
 			* 重载**已加载的整个前缀**（不是重置成第一页）：动作之后用户的位置不该跳回顶部。
+			* 宿主单页上限是 HOST_PAGE_MAX，超过它时必须连续拉多页，否则一次动作会把 500 条
+			* 已加载列表截回 200 条（旧实现说的“余下由 nextOffset 追加”，
+			* 但替换式加载不会自动追加）。
 			*/
+			const loadPrefix = (0, react.useCallback)(async (desired) => {
+				const target = Math.max(30, desired || 0);
+				let offset = 0;
+				let loaded = 0;
+				for (let guard = 0; guard < 100 && loaded < target; guard++) {
+					const win = await loadRef.current(offset, Math.min(200, target - loaded), offset !== 0, { prefix: true });
+					if (!win) break;
+					loaded += win.count;
+					if (win.nextOffset === null) break;
+					offset = win.nextOffset;
+				}
+			}, []);
 			const reloadWindow = (0, react.useCallback)(async () => {
-				const { offset, limit } = reloadWindowRequest(rows.length);
-				await loadRef.current(offset, limit, false);
-			}, [rows.length]);
+				await loadPrefix(rows.length);
+			}, [loadPrefix, rows.length]);
 			const act = async (action, id) => {
 				if (busy) return;
 				setBusy(true);
@@ -1955,7 +1985,10 @@ window.__ModuleLoader__.load({
 					const line = `/tasks insight ${action} ${scope} ${id}${action === "demote" && scope === "project" && boundTaskId ? ` ${boundTaskId}` : ""}`;
 					const res = await runLine(line);
 					if (!res.ok) setError(res.text);
-					else await reloadWindow();
+					else {
+						invalidateInsightCache(sessionId, root);
+						await reloadWindow();
+					}
 				} finally {
 					setBusy(false);
 				}
@@ -2020,14 +2053,15 @@ window.__ModuleLoader__.load({
 					if (form.kind === "lesson") fields.pattern = title;
 					if (form.kind === "decision") fields.choice = title;
 					if (form.kind === "experience") fields.problem = title;
-					if (form.kind !== "procedure" && form.body.trim()) {
-						if (form.kind === "lesson") fields.fix = form.body.trim();
-						else if (form.kind === "decision") fields.reason = form.body.trim();
-						else if (form.kind === "experience") fields.solution = form.body.trim();
-						else fields.body = form.body.trim();
+					if (form.kind !== "procedure" && (editingId || form.body.trim())) {
+						const body = form.body.trim();
+						if (form.kind === "lesson") fields.fix = body;
+						else if (form.kind === "decision") fields.reason = body;
+						else if (form.kind === "experience") fields.solution = body;
+						else fields.body = body;
 					}
-					if (form.kind === "procedure" && form.steps.trim()) fields.steps = form.steps.split("\n").map((s) => s.trim()).filter(Boolean);
-					if (form.kind === "procedure" && form.trigger.trim()) fields.trigger = { keywords: form.trigger.split(/[,，]/).map((s) => s.trim()).filter(Boolean) };
+					if (form.kind === "procedure" && (editingId || form.steps.trim())) fields.steps = form.steps.split("\n").map((s) => s.trim()).filter(Boolean);
+					if (form.kind === "procedure" && (editingId || form.trigger.trim())) fields.trigger = { keywords: form.trigger.split(/[,，]/).map((s) => s.trim()).filter(Boolean) };
 					const line = editingId ? `/tasks insight edit ${scope} ${editingId} ${JSON.stringify(fields)}` : `/tasks insight save ${scope} ${JSON.stringify(fields)}`;
 					const res = await runLine(line);
 					if (!res.ok) setError(res.text);
@@ -2035,6 +2069,7 @@ window.__ModuleLoader__.load({
 						setSavedTip(t("mem.saved"));
 						closeForm();
 						window.setTimeout(() => setSavedTip(null), 2500);
+						invalidateInsightCache(sessionId, root);
 						await reloadWindow();
 					}
 				} finally {
@@ -2492,7 +2527,8 @@ window.__ModuleLoader__.load({
 					tasks: parsed.tasks,
 					boundTaskId: parsed.boundId,
 					archivedCount: parsed.archived,
-					root: parsed.root
+					root: parsed.root,
+					sessionId
 				});
 				setSyncedAt(Date.now());
 				setSyncError(null);
@@ -2536,7 +2572,7 @@ window.__ModuleLoader__.load({
 			};
 			const handleInsightTask = async (action, id) => {
 				await withLock(async () => {
-					await runLine(`/tasks insight ${action} task ${id}`);
+					if (!await runLine(`/tasks insight ${action} task ${id}`)) return;
 					await runLine("/tasks");
 				});
 			};
@@ -2624,8 +2660,15 @@ window.__ModuleLoader__.load({
 			refreshRef.current = () => {
 				refresh();
 			};
+			const syncedSessionRef = (0, react.useRef)(null);
 			(0, react.useEffect)(() => {
 				if (ui.closed || !sessionId) return;
+				if (syncedSessionRef.current !== sessionId) {
+					syncedSessionRef.current = sessionId;
+					dataActions.reset();
+					refreshRef.current();
+					return;
+				}
 				if (Date.now() - Math.max(data.lastUpdate, syncedAt) < 5e3) return;
 				refreshRef.current();
 			}, [
@@ -2648,7 +2691,9 @@ window.__ModuleLoader__.load({
 			}
 			const doneCount = activeTasks.filter((task) => {
 				const steps = task.steps || [];
-				return steps.length > 0 && steps.every((s) => s.status === "completed");
+				const totalSteps = task.totals?.steps ?? steps.length;
+				const done = task.totals?.completedSteps ?? steps.filter((s) => s.status === "completed").length;
+				return totalSteps > 0 && done === totalSteps;
 			}).length;
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: TaskPanel_module_css_default.panel,

@@ -161,6 +161,31 @@ export const Config = Schema.object({
   }).default({}),
 })
 
+/**
+ * 12 个工具的唯一定义处：apply 与 schema 预算测试共用，避免测试里手抄一份列表
+ *（新增第 13 个工具不会因为漏抄而绕过预算）。
+ * @param {object} config 插件配置
+ * @param {object} ctx 宿主上下文（仅部分工具构造时需要）
+ * @param {object} watchManager watch 管理器
+ * @returns {object[]} defineTool 的产物
+ */
+export function toolDefinitions(config, ctx, watchManager) {
+  return [
+    listTasksTool(config),
+    selectTaskTool(config, { llm: ctx?.llm, ctx }),
+    archiveTaskTool(config, { llm: ctx?.llm, ctx }),
+    showTaskPanelTool(config),
+    indexDocTool(ctx, config),
+    indexRepoTool(ctx, config),
+    queryMemoryTool(ctx, config),
+    rememberTool(config),
+    forgetTool(config),
+    lessonTool(config),
+    watchRepoTool(watchManager, config),
+    statsTool(config),
+  ]
+}
+
 export function apply(ctx, config) {
   if (config.enableTypeScript !== false) {
     initTypeScript(config)
@@ -215,10 +240,7 @@ export function apply(ctx, config) {
   ctx.on('session/disposed', (session) => {
     watchManager.setSessionActive(session?.id ?? 'unknown', false)
   })
-  ctx.tools.register(listTasksTool(config))
-  ctx.tools.register(selectTaskTool(config, { llm: ctx.llm, ctx }))
-  ctx.tools.register(archiveTaskTool(config, { llm: ctx.llm, ctx }))
-  ctx.tools.register(showTaskPanelTool(config))
+  for (const def of toolDefinitions(config, ctx, watchManager)) ctx.tools.register(def)
 
   // /tasks：唯一的用户命令（宿主命令注册后必然出现在 `/` 菜单且无法隐藏，所以只留一条）；
   // 切换/归档/审核等子动词由面板按钮经 remote.commands.execute 驱动。
@@ -230,14 +252,6 @@ export function apply(ctx, config) {
     console.error(`[dsh-project-memory] /tasks registration skipped: ${err.message}`)
   }
 
-  ctx.tools.register(indexDocTool(ctx, config))
-  ctx.tools.register(indexRepoTool(ctx, config))
-  ctx.tools.register(queryMemoryTool(ctx, config))
-  ctx.tools.register(rememberTool(config))
-  ctx.tools.register(forgetTool(config))
-  ctx.tools.register(lessonTool(config))
-  ctx.tools.register(watchRepoTool(watchManager, config))
-  ctx.tools.register(statsTool(config))
 
   // 原生服务 seam（D3-1）：宿主/其他插件可通过 `ctx.get('projectMemory')` 消费召回与写入。
   // 老宿主没有 `ctx.provide` 时 install 返回 null 并安全跳过，不影响其余注册与 apply 的返回值。

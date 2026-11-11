@@ -11,7 +11,7 @@ import { stepContent } from './util/task-view.js'
 import { insightMatchText, normalizedTokenOverlap } from './similarity.js'
 import { createVectorCosine, createVectorRerank, vectorItemsFrom } from './vector-index.js'
 import { BoundedMap, SessionCache } from './util/session-cache.js'
-import { createVisibleState, ensureVisible, isBlockVisible, isItemVisible, onSessionEvent, provenanceOf, recordInjected } from './inject-visible.js'
+import { createVisibleState, ensureVisible, isBlockVisible, isEntryVisible, isItemVisible, isLegacyBodyVisible, lineHash, onSessionEvent, provenanceOf, recordInjected, takeRollback } from './inject-visible.js'
 import { SOURCE_KIND, isOwnInjection } from './util/message-source.js'
 import { sessionWorkingDir } from './util/session-dir.js'
 import { cfgInsight, GlobalStore, defaultGlobalFile, recordHit } from './insight-store.js'
@@ -667,6 +667,8 @@ function warnUnsafeSessionRoot(root, rejection) {
  * 返回 null 表示本步无事可做（交回原决策）。
  */
 async function injectForStep({ payload, decision, config, cfg, audit, shadow, sessions }) {
+  // 宿主已 abort 的请求不要再做注入/记账：pre-step 之后宿主还有 abort 检查，消息可能根本不会 append。
+  if (payload?.signal?.aborted) return null
   const session = payload && payload.agent && payload.agent.session
   // 与工具侧同一口径的「当前工作目录」：0.2.1+ 走 workingDirectory 投影（cd 后会变），老宿主回退
   // header.cwd。少了这一步，cd 之后审计与懒索引会落在两个不同的 store 里。
@@ -722,7 +724,7 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   sessions.step.set(sessionId, stepNo)
   const quota = sessions.quota.ensure(sessionId)
   // 压缩/历史丢失时跳过冷却：否则注入消息刚被替换掉，还要再等 N 步才补回来。
-  const historyLost = surfaceReady && !visibleState.blocks.size && !visibleState.items.size
+  const historyLost = surfaceReady && !visibleState.blocks.size && !visibleState.items.size && !visibleState.legacy.size
   // 压缩把注入消息换掉了：额度也必须跟着归零。只跳过冷却不够——quota 只增不减，打满
   // maxItemsPerSession 的会话压缩后会永久失明（条目通道一直沉默）。
   if (historyLost) {
@@ -731,9 +733,29 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     quota.lastStep = null
   }
   reconcile.historyLost = historyLost
-  const silence = sessionSilence({ cfg, quota, stepNo, ignoreCooldown: historyLost })
   // 条目级去重：surface 可用时看"是否仍在可见上下文里"，否则退回进程缓存。
   const seenItems = sessions.items.ensure(sessionId)
+  // 上一步的注入没进 surface：先回滚额度/冷却/命中，再算本步的 silence——否则本步会带着
+  // 已经打满的旧额度直接沉默（回滚等于没做）。
+  const rollback = takeRollback(visibleState)
+  if (rollback) {
+    quota.items = Math.max(0, quota.items - rollback.ids.length)
+    quota.chars = Math.max(0, quota.chars - rollback.chars)
+    // 这次注入没发生：冷却的起点也回退，否则下一步会以“冷却中”再次沉默。
+    if (quota.lastStep === rollback.step) quota.lastStep = null
+    for (const id of rollback.ids) {
+      const rec = seenItems.get(id)
+      if (rec && rec.step === rollback.step) seenItems.delete(id)
+    }
+    try {
+      recordHit({ store, globalStore, ids: rollback.ids, delta: -1 })
+      if (store.hasContent) store.save()
+      globalStore.commit()
+    } catch {
+      /* 回滚失败不影响本步注入 */
+    }
+  }
+  const silence = sessionSilence({ cfg, quota, stepNo, ignoreCooldown: historyLost })
   const skipItem = surfaceReady
     ? makeVisibleSkipItem(visibleState, seenItems, stepNo, cfg.reinjectItemsAfter || 0)
     : makeSkipItem(seenItems, stepNo, cfg.reinjectItemsAfter || 0)
@@ -793,6 +815,7 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   const notice = cfg.maxTokens > 0 ? rootNotice({ root, sessionId, sessions, config }) : null
 
   const fp = built.text ? fingerprint(built.dedupeText ?? built.text) : fingerprint(notice || '')
+  const entryHash = built.entry ? fingerprint(built.entry) : null
   const injectedText = notice ? (built.text ? `${notice}\n${built.text}` : notice) : built.text
   // 条目级冷却（reinjectItemsAfter>0）与块级指纹必须对齐：条目级已放行、块正文没变时，
   // 块级 fp 会把“该重发”判成“没变化”。宿主外部裁剪历史时，这个开关本来就是为了重发。
@@ -802,13 +825,18 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     return rec && Number.isFinite(rec.step) && stepNo - rec.step >= cfg.reinjectItemsAfter
   })
   const blockSeen = surfaceReady ? isBlockVisible(visibleState, fp) : fp === sessions.lastText.peek(sessionId)
-  if (!injectedText || (!reinjectDue && blockSeen)) return null
+  // 条目全被跳过时正文只剩任务卡：卡本身也要可对账，否则“条目注入的下一步/重启”会重复发一遍卡。
+  const cardSeen = surfaceReady && entryHash ? isEntryVisible(visibleState, entryHash) : false
+  const seenThisStep = built.reasons.length === 0 && built.entry ? (blockSeen || cardSeen) : blockSeen
+  if (!injectedText || (!reinjectDue && seenThisStep)) return null
   sessions.lastText.set(sessionId, fp)
   const itemCount = built.reasons.length
   const summary = itemCount
     ? `memory inject: ${itemCount} item(s)${built.entry ? ' + task card' : ''}`
     : built.entry ? 'memory inject: task card' : 'memory root notice'
 
+  // 构建期间也可能被 abort：在记账/写盘/审计之前再确认一次。
+  if (payload?.signal?.aborted) return null
   // 只记真的进了上下文的那几条：dropped 的没被看到，不能记账（否则以后永远不再注入）。
   for (const r of built.reasons) {
     if (r && r.id && r.hash) seen.set(r.id, { hash: r.hash, step: stepNo })
@@ -849,8 +877,8 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
     reconcile,
   }), audit, root)
 
-  const message = injectionMessage(injectedText, summary, provenanceOf(fp, built.reasons, cfg.maxItemsPerSession))
-  if (surfaceReady) recordInjected(visibleState, message)
+  const message = injectionMessage(injectedText, summary, provenanceOf(fp, built.reasons, cfg.maxItemsPerSession, entryHash))
+  if (surfaceReady) recordInjected(visibleState, message, { chars: built.itemChars, step: stepNo, reasons: built.reasons })
   return { ...decision, messages: [...decision.messages, message] }
 }
 
@@ -888,10 +916,26 @@ function sessionSilence({ cfg, quota, stepNo, ignoreCooldown = false }) {
   return { reason, itemsLeft, charsLeft }
 }
 
+/**
+ * 旧消息（无 provenance）可能的两种整行写法：任务卡的 `- [id] kind: title — body120`
+ * 与注入正文的 `- [id] title — fix/solution/choice`。正文变了 → hash 变 → 允许重发。
+ */
+function legacyItemHashes(it) {
+  const tail = it.fix || it.solution || it.choice
+  const suffixed = tail ? ` — ${tail}` : ''
+  return [
+    lineHash(`- [${it.id}] ${it.title}${suffixed}`),
+    lineHash(`- [${it.id}] ${it.kind || 'lesson'}: ${it.title}${tail ? ` — ${String(tail).slice(0, 120)}` : ''}`),
+  ]
+}
+
 /** surface 可见时的条目去重；cooldown 到期仍允许重发。 */
 function makeVisibleSkipItem(state, seen, stepNo, cooldown) {
   return (it) => {
-    if (!isItemVisible(state, it.id, insightItemHash(it))) return false
+    const visible = isItemVisible(state, it.id, insightItemHash(it), legacyItemHashes(it))
+      // 旧 procedure 正文没有 id：整块文本一致也算仍可见。
+      || (it.kind === 'procedure' && isLegacyBodyVisible(state, insightBody(it)))
+    if (!visible) return false
     if (cooldown === 0) return true
     const rec = seen.get(it.id)
     return !rec || stepNo - rec.step < cooldown

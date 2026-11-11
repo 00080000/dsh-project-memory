@@ -7,18 +7,42 @@ import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
 import { stepContent, stepProgress, stepStatus, timeAgo } from '../util/task-view.js'
 
+// 快照会原样写进会话历史（command/done），没有上限时一个异常任务就能把单条消息撑到几十 MB。
+// 截断只发生在**展示载荷**里，不碰 store；超出部分由 totals 告知调用方。
+const SNAPSHOT_LIMITS = { steps: 50, files: 50, insights: 20 }
+
+function cappable(list, max) {
+  const arr = Array.isArray(list) ? list : []
+  return { slice: arr.slice(0, max), total: arr.length }
+}
+
 export function buildTaskPayload(tasks, boundId, archived, root = null) {
   return JSON.stringify({
-    tasks: tasks.map((t) => ({
-      id: t.id,
-      title: t.title,
-      steps: (t.steps || []).map((s) => ({ content: stepContent(s), status: stepStatus(s) })),
-      files: (t.files || []).map((f) => ({ path: f, line: undefined })),
-      lastActiveAt: t.lastActiveAt,
-      updatedAt: t.updatedAt,
-      archived: t.archived || false,
-      insights: (t.insights || []).filter((i) => !i.archived).map((i) => ({ id: i.id, kind: i.kind || 'lesson', title: i.title || '', draft: i.draft === true })),
-    })),
+    tasks: tasks.map((t) => {
+      const steps = cappable(t.steps, SNAPSHOT_LIMITS.steps)
+      const files = cappable(t.files, SNAPSHOT_LIMITS.files)
+      const insights = cappable((t.insights || []).filter((i) => !i.archived), SNAPSHOT_LIMITS.insights)
+      const truncated = steps.total > steps.slice.length || files.total > files.slice.length || insights.total > insights.slice.length
+      return {
+        id: t.id,
+        title: t.title,
+        steps: steps.slice.map((s) => ({ content: stepContent(s), status: stepStatus(s) })),
+        files: files.slice.map((f) => ({ path: f, line: undefined })),
+        lastActiveAt: t.lastActiveAt,
+        updatedAt: t.updatedAt,
+        archived: t.archived || false,
+        insights: insights.slice.map((i) => ({ id: i.id, kind: i.kind || 'lesson', title: i.title || '', draft: i.draft === true })),
+        ...(truncated ? {
+          totals: {
+            steps: steps.total,
+            files: files.total,
+            insights: insights.total,
+            // 截断后 UI 不能再用前 50 步判断“全部完成”。
+            completedSteps: (Array.isArray(t.steps) ? t.steps : []).filter((x) => stepStatus(x) === 'completed').length,
+          },
+        } : {}),
+      }
+    }),
     boundId: boundId || null,
     archived,
     // 项目根：客户端用它把跨标签页广播限定在同一个项目里（不同项目共用一个浏览器时，

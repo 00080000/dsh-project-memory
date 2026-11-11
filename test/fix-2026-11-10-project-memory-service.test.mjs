@@ -209,8 +209,32 @@ try {
   assert.ok(taskSaved.id)
   assert.equal(api.recall('quokka', { root }).results.length, 0, '未绑定任务时不召回 task 条目')
   assert.ok(api.recall('quokka', { root, taskId: 'tsk_service_task' }).results.length >= 1, '传 taskId 能读回 task 条目')
+  assert.equal(api.stats({ root }).taskInsights, 1, 'stats 必须单列 task 级条目，否则 remember(scope:task) 在统计里消失')
   assert.throws(() => api.recall('quokka', { root, layers: 'doc' }), /layers must be an array/)
+  const missingRoot = path.join(root, 'does-not-exist')
+  assert.throws(() => api.remember({ title: 'typo root' }, { root: missingRoot }), /does not exist/, '拼错的 root 不能建 store')
+  assert.throws(() => api.recall('x', { root: missingRoot }), /does not exist/)
+  assert.throws(() => api.stats({ root: missingRoot }), /does not exist/)
+  assert.equal(existsSync(path.join(missingRoot, '.dsh-project-memory')), false)
   ok('recall/stats 过根护栏；task 级写入可通过 taskId 召回；layers 非法即报错')
+
+  // ---- 11. forget 命中超 cap：必须能区分“没命中”与“命中太多、拒绝删” ----
+  const capApi = installProjectMemoryService({ provide() {} }, {
+    ...config,
+    insight: { ...config.insight, maxForgetMatches: 1 },
+  })
+  const capStore = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+  capStore.replaceInsightItems([
+    ...capStore.insightItems(),
+    { id: 'ins_zebra1', kind: 'lesson', scope: 'project', title: 'zebra one', pattern: 'zebra pattern one' },
+    { id: 'ins_zebra2', kind: 'lesson', scope: 'project', title: 'zebra two', pattern: 'zebra pattern two' },
+  ])
+  capStore.save()
+  const capped = capApi.forget('zebra', { root })
+  assert.deepEqual(capped.deleted, [], '超 cap 不删任何条目')
+  assert.equal(capped.tooMany, true)
+  assert.equal(capped.matched, 2, '匹配数必须可读，否则与“没命中”无法区分')
+  ok('forget 超 cap 返回 tooMany/matched，不再与没命中同形')
 
 } finally {
   rmSync(root, { recursive: true, force: true })

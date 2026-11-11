@@ -1,6 +1,7 @@
 // 2026-11-10 审计回归：读失败不覆盖、rewrite 不复活跨进程删除、重复副本取新、扩桶不抖动、懒索引相对路径、git 空清单保护、空文档快路径。
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, chmodSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -207,6 +208,74 @@ ok('空文档不需要 terms 回填')
   assert.ok(edited.triggerDerived, '编辑正文后必须重新派生')
   assert.ok(!edited.triggerDerived.keywords.includes('旧坑'), '旧派生词必须消失')
   ok('面板编辑后派生词刷新')
+}
+
+// 14. 全量重排用“实际写过的桶”清理：缩桶后空桶里的已删条目不能复活
+{
+  const dir = tmp('audit-stale-bucket-')
+  const store = new ProjectMemoryStore(dir).load()
+  const rels = Array.from({ length: 200 }, (_, i) => `src/f${i}.js`)
+  seed(store, rels)
+  store.save()
+  const bucketCount = JSON.parse(readFileSync(path.join(dir, 'format.json'), 'utf8')).bucketCount
+  assert.ok(bucketCount > 1, '前提：测试数据要跨桶')
+  const inBucket = (rel, n) => (parseInt(createHash('sha256').update(rel).digest('hex').slice(0, 8), 16) % n)
+  // 缩到 2 桶：只保留会落 bucket-0 的文件，bucket-1 里的条目全部删除。
+  const keep = rels.filter((rel) => inBucket(rel, 2) === 0)
+  const drop = rels.filter((rel) => inBucket(rel, 2) === 1)
+  assert.ok(keep.length && drop.length, '前提：两个桶都有文件')
+  for (const rel of drop) store.removeFile(rel)
+  writeFileSync(path.join(dir, 'format.json'), JSON.stringify({ version: 3, layout: 'bucket', bucketSize: 32768, bucketCount: 2 }))
+  store._bucketCount = 2
+  store._needsShardRewrite = true
+  assert.equal(store.save(), true)
+  assert.ok(!readdirSync(path.join(dir, 'shards')).includes('bucket-00001.json'), '缩桶后的空桶必须删掉')
+  _clearStoreCacheForTest()
+  const reread = new ProjectMemoryStore(dir).load()
+  assert.equal(Object.keys(reread.files).length, keep.length, '已删除的条目不能从残留桶复活')
+  ok('缩桶重排：空桶里的已删条目不再复活')
+}
+
+// 15. 加载后读失败：合并读不到时不能继续写，否则覆盖另一进程的条目
+if (process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() !== 0) {
+  const dir = tmp('audit-merge-read-')
+  const a = new ProjectMemoryStore(dir).load()
+  a.replaceInsightItems([{ id: 'a', kind: 'lesson', scope: 'project', title: 'a' }])
+  a.save()
+  _clearStoreCacheForTest()
+  const b = new ProjectMemoryStore(dir).load()
+  b.replaceInsightItems([...b.insightItems(), { id: 'b', kind: 'lesson', scope: 'project', title: 'b' }])
+  b.save()
+  const file = path.join(dir, 'insights.json')
+  chmodSync(file, 0o000)
+  try {
+    a.replaceInsightItems([...a.insightItems(), { id: 'c', kind: 'lesson', scope: 'project', title: 'c' }])
+    assert.equal(a.save(), false, '锁内读到 EACCES 时必须放弃写入')
+  } finally {
+    chmodSync(file, 0o644)
+  }
+  const ids = JSON.parse(readFileSync(file, 'utf8')).items.map((i) => i.id)
+  assert.ok(ids.includes('b'), '另一进程刚写的条目不能被旧快照覆盖')
+  ok('锁内读失败：save 返回 false，保留对方写入')
+}
+
+// 16. format.json 读失败：不能按旧桶数 cleanup 掉另一进程的新桶
+if (process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() !== 0) {
+  const dir = tmp('audit-layout-read-')
+  const store = new ProjectMemoryStore(dir).load()
+  seed(store, ['src/a.js'])
+  store.save()
+  const before = readdirSync(path.join(dir, 'shards')).sort()
+  const formatFile = path.join(dir, 'format.json')
+  chmodSync(formatFile, 0o000)
+  try {
+    store.markFile('src/b.js', { sha256: 'h-b', size: 1, type: 'code', indexedAt: new Date().toISOString() })
+    assert.equal(store.save(), false, '读不到 layout 时 save 必须失败')
+  } finally {
+    chmodSync(formatFile, 0o644)
+  }
+  assert.deepEqual(readdirSync(path.join(dir, 'shards')).sort(), before, 'layout 读失败不得 cleanup 桶')
+  ok('layout 读失败：save 返回 false，不删任何桶')
 }
 
 console.log(`\naudit-2026-11-10 tests: ${passed} passed`)

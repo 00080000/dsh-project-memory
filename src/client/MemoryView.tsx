@@ -9,7 +9,7 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { invokeCommand } from './commands.ts'
-import { PAGE_SIZE, PREFETCH_MARGIN, SPINNER_DELAY_MS, appendUnique, createRequestGate, insightListLine, normalizeWindow, progressCounts, reloadWindowRequest } from './paging.js'
+import { HOST_PAGE_MAX, PAGE_SIZE, PREFETCH_MARGIN, SPINNER_DELAY_MS, appendUnique, createRequestGate, insightListLine, normalizeWindow, progressCounts } from './paging.js'
 import css from './TaskPanel.module.css'
 
 export type InsightScope = 'task' | 'project' | 'global'
@@ -79,6 +79,14 @@ function readInsightCache(sessionId: string | null, scope: InsightScope, root: s
     return null
   }
   return hit
+}
+
+/** 动作会跨 scope 改变列表：整份失效本 session/root 的缓存，否则目标页 30s 内仍显示旧列表。 */
+function invalidateInsightCache(sessionId: string | null, root: string | null): void {
+  const prefix = `${sessionId || ''}|${root || ''}|`
+  for (const key of [...insightCache.keys()]) {
+    if (key.startsWith(prefix)) insightCache.delete(key)
+  }
 }
 
 function writeInsightCache(
@@ -203,9 +211,16 @@ export function MemoryView({
    * @param offset 起始下标。
    * @param limit 本页条数。
    * @param append true=追加到已渲染列表；false=替换成这一页（首屏或前缀重放）。
+   * @param opts.prefix 前缀重放时忽略 total 变化（由调用方连续取页直到目标条数）。
+   * @returns 本页条数与下一页 offset；请求被取代/失败时为 null。
    */
   const load = useCallback(
-    async (offset: number, limit: number, append: boolean): Promise<void> => {
+    async (
+      offset: number,
+      limit: number,
+      append: boolean,
+      opts: { prefix?: boolean } = {},
+    ): Promise<{ count: number; nextOffset: number | null } | null> => {
       // 没有活跃会话时不发命令、也不报错：面板顶部已经显示「还没有会话」，
       // 再报一次"同步失败"会让人以为记忆库坏了（0.1.7 上会话快照结构变化时就是这个表象）。
       if (!sessionId) {
@@ -214,12 +229,12 @@ export function MemoryView({
         setNextOffset(null)
         setError(null)
         setLoading(false)
-        return
+        return null
       }
       const requestedScope = scopeRef.current
       const key = `${requestedScope}|${offset}|${limit}|${append}`
       const ticket = gateRef.current!.begin(key)
-      if (ticket === false) return
+      if (ticket === false) return null
       if (!append) setLoading(true)
       setLoadingMore(append)
       setError(null)
@@ -227,21 +242,21 @@ export function MemoryView({
       try {
         const res = await runLine(insightListLine(requestedScope, offset, limit))
         // 已被更新的请求取代，或切了作用域：这份响应属于上一个列表，整份丢弃。
-        if (gateRef.current!.isStale(ticket, requestedScope, scopeRef.current)) return
+        if (gateRef.current!.isStale(ticket, requestedScope, scopeRef.current)) return null
         if (!res.ok) {
           setError(res.text)
-          return
+          return null
         }
         const parsed = parseInsightPayloadText(res.text)
         if (!parsed) {
           setError('unparsable payload')
-          return
+          return null
         }
-        if (append && parsed.total !== totalRef.current) {
+        if (append && !opts.prefix && parsed.total !== totalRef.current) {
           // 列表在翻页时变了：丢掉这一页，从 0 重新取，避免永久漏行。
           totalRef.current = parsed.total
           void loadRef.current(0, PAGE_SIZE, false)
-          return
+          return null
         }
         totalRef.current = parsed.total
         setRows((prev) => {
@@ -251,6 +266,7 @@ export function MemoryView({
         })
         setTotal(parsed.total)
         setNextOffset(parsed.nextOffset)
+        return { count: parsed.items.length, nextOffset: parsed.nextOffset }
       } finally {
         window.clearTimeout(spinner)
         // 加载标志只由最后一次请求回落：过期请求提前清掉会让界面"看起来加载完了"。
@@ -284,6 +300,7 @@ export function MemoryView({
     if (cached) {
       setRows(cached.rows)
       setTotal(cached.total)
+      totalRef.current = cached.total
       setNextOffset(cached.nextOffset)
       // 上一页的在途请求可能还没回落；缓存命中时直接把加载态关掉。
       setLoading(false)
@@ -312,11 +329,25 @@ export function MemoryView({
 
   /**
    * 重载**已加载的整个前缀**（不是重置成第一页）：动作之后用户的位置不该跳回顶部。
+   * 宿主单页上限是 HOST_PAGE_MAX，超过它时必须连续拉多页，否则一次动作会把 500 条
+   * 已加载列表截回 200 条（旧实现说的“余下由 nextOffset 追加”，
+   * 但替换式加载不会自动追加）。
    */
+  const loadPrefix = useCallback(async (desired: number): Promise<void> => {
+    const target = Math.max(PAGE_SIZE, desired || 0)
+    let offset = 0
+    let loaded = 0
+    for (let guard = 0; guard < 100 && loaded < target; guard++) {
+      const win = await loadRef.current(offset, Math.min(HOST_PAGE_MAX, target - loaded), offset !== 0, { prefix: true })
+      if (!win) break
+      loaded += win.count
+      if (win.nextOffset === null) break
+      offset = win.nextOffset
+    }
+  }, [])
   const reloadWindow = useCallback(async (): Promise<void> => {
-    const { offset, limit } = reloadWindowRequest(rows.length)
-    await loadRef.current(offset, limit, false)
-  }, [rows.length])
+    await loadPrefix(rows.length)
+  }, [loadPrefix, rows.length])
 
   const act = async (action: string, id: string): Promise<void> => {
     if (busy) return
@@ -325,8 +356,12 @@ export function MemoryView({
     try {
       const line = `/tasks insight ${action} ${scope} ${id}${action === 'demote' && scope === 'project' && boundTaskId ? ` ${boundTaskId}` : ''}`
       const res = await runLine(line)
-      if (!res.ok) setError(res.text)
-      else await reloadWindow()
+      if (!res.ok) {
+        setError(res.text)
+      } else {
+        invalidateInsightCache(sessionId, root)
+        await reloadWindow()
+      }
     } finally {
       setBusy(false)
     }
@@ -392,16 +427,19 @@ export function MemoryView({
       if (form.kind === 'decision') fields.choice = title
       if (form.kind === 'experience') fields.problem = title
       // procedure 的正文由 steps 表达；不要把 body 一起提交（它只可能是合成摘要）。
-      if (form.kind !== 'procedure' && form.body.trim()) {
-        if (form.kind === 'lesson') fields.fix = form.body.trim()
-        else if (form.kind === 'decision') fields.reason = form.body.trim()
-        else if (form.kind === 'experience') fields.solution = form.body.trim()
-        else fields.body = form.body.trim()
+      // 编辑时必须把本表单拥有的字段都带上（空串/空数组表示清空）：宿主只合并出现的键，
+      // 省略会让“清空正文/步骤”变成静默空操作。
+      if (form.kind !== 'procedure' && (editingId || form.body.trim())) {
+        const body = form.body.trim()
+        if (form.kind === 'lesson') fields.fix = body
+        else if (form.kind === 'decision') fields.reason = body
+        else if (form.kind === 'experience') fields.solution = body
+        else fields.body = body
       }
-      if (form.kind === 'procedure' && form.steps.trim()) {
+      if (form.kind === 'procedure' && (editingId || form.steps.trim())) {
         fields.steps = form.steps.split('\n').map((s) => s.trim()).filter(Boolean)
       }
-      if (form.kind === 'procedure' && form.trigger.trim()) {
+      if (form.kind === 'procedure' && (editingId || form.trigger.trim())) {
         fields.trigger = { keywords: form.trigger.split(/[,，]/).map((s) => s.trim()).filter(Boolean) }
       }
       const line = editingId
@@ -414,6 +452,7 @@ export function MemoryView({
         setSavedTip(t('mem.saved'))
         closeForm()
         window.setTimeout(() => setSavedTip(null), 2500)
+        invalidateInsightCache(sessionId, root)
         await reloadWindow()
       }
     } finally {

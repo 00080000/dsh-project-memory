@@ -104,7 +104,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   const applyPayload = (text?: string): boolean => {
     const parsed = parseTaskPayloadText(text)
     if (!parsed) return false
-    dataActions.setTasks({ tasks: parsed.tasks, boundTaskId: parsed.boundId, archivedCount: parsed.archived, root: parsed.root })
+    dataActions.setTasks({ tasks: parsed.tasks, boundTaskId: parsed.boundId, archivedCount: parsed.archived, root: parsed.root, sessionId })
     setSyncedAt(Date.now())
     setSyncError(null)
     return true
@@ -154,7 +154,9 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   // v0.5：任务卡内联记忆动作（confirm/promote/delete 于 /insight task 层），随后刷新任务数据
   const handleInsightTask = async (action: 'confirm' | 'promote' | 'delete', id: string): Promise<void> => {
     await withLock(async () => {
-      await runLine(`/tasks insight ${action} task ${id}`)
+      // 动作失败时不要用随后的 /tasks 成功把错误清掉（用户会看到“点了没反应”）。
+      const ok = await runLine(`/tasks insight ${action} task ${id}`)
+      if (!ok) return
       await runLine('/tasks')
     })
   }
@@ -245,8 +247,16 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   // 命令节点本身由 TaskCommandNode 隐藏，所以这次补数据不会在对话里留下可见行。
   const refreshRef = useRef<() => void>(() => {})
   refreshRef.current = () => { void refresh() }
+  // 记住这份数据属于哪个会话：切会话必须无条件刷新，不能被 5s 节流吞掉一次后永久显示旧项目。
+  const syncedSessionRef = useRef<string | null>(null)
   useEffect(() => {
     if (ui.closed || !sessionId) return
+    if (syncedSessionRef.current !== sessionId) {
+      syncedSessionRef.current = sessionId
+      dataActions.reset()
+      refreshRef.current()
+      return
+    }
     if (Date.now() - Math.max(data.lastUpdate, syncedAt) < 5_000) return
     refreshRef.current()
   }, [ui.closed, ui.view, sessionId])
@@ -278,7 +288,10 @@ function TaskPanelView({ ctx }: { ctx: any }) {
 
   const doneCount = activeTasks.filter((task) => {
     const steps = task.steps || []
-    return steps.length > 0 && steps.every((s) => s.status === 'completed')
+    // 载荷在 >50 步时被截断：必须用服务端总量判断，否则“前 50 步都完成”会误显示为整单完成。
+    const totalSteps = task.totals?.steps ?? steps.length
+    const done = task.totals?.completedSteps ?? steps.filter((s) => s.status === 'completed').length
+    return totalSteps > 0 && done === totalSteps
   }).length
 
   return (

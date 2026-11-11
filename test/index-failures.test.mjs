@@ -2,7 +2,7 @@
 // watch 的失败过去只有一行日志、懒索引的单文件失败甚至被 `catch {}` 吞掉，于是
 // "某些文件一直没进语料"在界面上不可见。账本 + index_repo / memory_stats 必须能报出来。
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -95,11 +95,18 @@ function writeMinimalPdf(file, text = 'Hello Index Failure Test') {
   const root = project()
   mkdirSync(path.join(root, 'src'), { recursive: true })
   writeFileSync(path.join(root, 'src', 'ok.md'), '# fine\n')
+  const broken = path.join(root, 'broken.pdf')
+  writeFileSync(broken, 'definitely not a pdf payload')
   recordIndexFailure(root, 'broken.pdf', 'No "GlobalWorkerOptions.workerSrc" specified.')
 
   const report = await indexRepository({}, CONFIG, root, {})
   assert.match(report, /broken\.pdf/, 'index_repo 结果里要出现失败文件')
   assert.match(report, /background indexing/, '要说明这是后台索引的失败，而不是本次扫描')
+
+  // 文件被删掉后，失败账本不能永久留着这条幽灵记录。
+  rmSync(broken)
+  await indexRepository({}, CONFIG, root, {})
+  assert.equal(listIndexFailures(root).count, 0, '已删除的失败项要清掉')
   ok('index_repo：报告后台失败')
 }
 

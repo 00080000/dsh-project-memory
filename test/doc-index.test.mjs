@@ -43,6 +43,26 @@ const CONFIG = { memoryDir: '.dsh-project-memory', chunkChars: 3000, maxChunksPe
   ok('summary 保持 ≤300 字符；terms 覆盖 300 字符之后的正文')
 }
 
+// ---- 1b. index_doc 因超大/被 exclude 提前退出时，要摘掉旧索引 ----
+{
+  const root = mkdtempSync(path.join(tmpdir(), 'pm-di-stale-'))
+  const md = path.join(root, 'notes.md')
+  writeFileSync(md, '# Notes\n\nalpha only token')
+  const tool = indexDocTool({ llm: null }, CONFIG)
+  await tool.execute({ file_path: md, root })
+  const store = new ProjectMemoryStore(memoryRootFor(root, CONFIG.memoryDir)).load()
+  assert.ok(store.fileRecord('notes.md'), '先建立旧索引')
+
+  writeFileSync(md, `# Notes\n\n${'x'.repeat(4096)}`)
+  const small = indexDocTool({ llm: null }, { ...CONFIG, maxFileSizeMb: 0.001 })
+  const out = await small.execute({ file_path: md, root })
+  assert.match(out, /Removed stale index/)
+  const reread = new ProjectMemoryStore(memoryRootFor(root, CONFIG.memoryDir)).load()
+  assert.equal(reread.fileRecord('notes.md'), undefined, '超大后旧索引必须被摘掉')
+  assert.equal(reread.entries['notes.md'], undefined)
+  ok('index_doc：超大文件提前退出时摘掉旧索引')
+}
+
 // ---- 2. 检索真的能命中 300 字符之后的词（修 A 前这里是 0 分） ----
 {
   const root = mkdtempSync(path.join(tmpdir(), 'pm-di-rank-'))

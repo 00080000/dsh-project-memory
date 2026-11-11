@@ -37,6 +37,9 @@ ok('载荷取根：非空字符串才算，其余归一为 null')
   const gate = onmessage.indexOf('broadcastAppliesTo')
   assert.ok(gate > -1 && gate < before, '判定必须在写入之前（先拦后写）')
   assert.ok(src.includes('root: nextRoot'), '广播必须带上本页的根')
+  assert.ok(src.includes('sessionId: nextSession'), '广播必须带会话：绑定只在同一会话内同步')
+  assert.ok(src.includes('sentAt'), '广播必须带时序，乱序快照不能覆盖新状态')
+  assert.ok(src.includes('boundTaskId'), '广播必须带绑定，否则另一标签页永远看不到切换')
   ok('静态守卫：onmessage 先判定后写入，且广播载荷带根')
 }
 

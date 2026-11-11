@@ -1,12 +1,12 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { TEXT_OUTPUT, rootParam } from './output.js'
+import { TEXT_OUTPUT, persistenceNote, rootParam } from './output.js'
 import path from 'node:path'
-import { statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { assertIndexRoot, assertSafeRoot, listProjectFiles, memoryDirName, memoryRootFor, relativePath, resolveIndexRoot, scanLimits, storeKey } from '../util/fs.js'
 import { DROP, OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from '../index-pipeline.js'
 import { ProjectMemoryStore } from '../store.js'
 import { onFileIndexed, isTypeScriptFile, enhanceQueueStats } from '../enhancer.js'
-import { listIndexFailures } from '../index-failures.js'
+import { clearIndexFailure, listIndexFailures } from '../index-failures.js'
 
 /**
  * 每批提交的文件数。旧实现把整棵树的 updates 攒到最后一次性 commit：一次全量扫描的
@@ -69,6 +69,8 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
         if (batch.length >= COMMIT_BATCH) flushBatch()
         continue
       }
+      // 本轮已成功处理：之前任何瞬时失败都应从“后台失败”账本里消失。
+      clearIndexFailure(root, rel)
       batch.push(toFileUpdate(rel, plan, record))
       if (plan.key === DROP) skipped++
       else if (plan.type === 'code') {
@@ -119,6 +121,10 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
   if (failures.length) {
     report += `\nfailed to index ${failures.length} file(s): ${failures.join(', ')}`
   }
+  // 已删除的失败项也要摘掉，否则一次瞬时失败会永久出现在报告里。
+  for (const item of listIndexFailures(root, 50).items) {
+    if (!existsSync(path.join(root, item.rel))) clearIndexFailure(root, item.rel)
+  }
   // 后台（watch / 懒索引）的失败不在本次扫描里，但它们同样意味着"这些文件没进语料"。
   // 过去只写日志，用户看不到；这里跟随本次结果一起报出来。
   const background = listIndexFailures(root, 5)
@@ -139,7 +145,7 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
       ': their L1 regex symbols are unaffected; they are re-queued on the next index or change.'
   }
 
-  return report
+  return report + persistenceNote(store)
 }
 
 export function indexRepoTool(ctx, config) {

@@ -355,6 +355,7 @@ export function editMemoryItem({ store, gs, scope, id, fields, root }) {
   if (!fields || typeof fields !== 'object') return { ok: false, text: 'edit 需要字段对象' }
   const applyTo = (item) => {
     let changed = false
+    let dropped = 0
     const oldKind = item.kind
     for (const key of Object.keys(fields)) {
       const v = fields[key]
@@ -385,7 +386,13 @@ export function editMemoryItem({ store, gs, scope, id, fields, root }) {
       if (key === 'steps' || key === 'tags' || key === 'files' || key === 'symbols') {
         if (!Array.isArray(v)) continue
         // 写入期约束（与 save_lesson 同一判据）：files 只收项目内相对路径，项目外/逃出根的丢弃。
-        item[key] = key === 'files' ? normalizeCitationFiles(v, root).files : v.map(String)
+        if (key === 'files') {
+          const norm = normalizeCitationFiles(v, root)
+          item.files = norm.files
+          dropped += norm.dropped.length
+        } else {
+          item[key] = v.map(String)
+        }
         changed = true
         continue
       }
@@ -406,25 +413,28 @@ export function editMemoryItem({ store, gs, scope, id, fields, root }) {
       item.updatedAt = new Date().toISOString()
       refreshDerivedTrigger(item)
     }
-    return changed
+    return { changed, dropped }
   }
+  const droppedNote = (n) => (n ? `；${n} 个 files 是项目外路径，已丢弃` : '')
   const s = scope || 'project'
   if (!['task', 'project', 'global'].includes(s)) return { ok: false, text: `未知 scope: ${s}（只认 task/project/global）` }
   if (s === 'task') {
     const found = findTaskInsight(store, id)
     if (!found) return { ok: false, text: `insight ${id} 不在任务层` }
-    if (!applyTo(found.insight)) return { ok: false, text: '没有可更新的字段' }
+    const applied = applyTo(found.insight)
+    if (!applied.changed) return { ok: false, text: '没有可更新的字段' }
     store.markTasksDirty()
-    return { ok: true, text: '已更新任务级记忆' }
+    return { ok: true, text: `已更新任务级记忆${droppedNote(applied.dropped)}` }
   }
   const items = s === 'global' ? (gs ? gs.items() : null) : store.insightItems()
   if (!items) return { ok: false, text: '存储不可用' }
   const item = items.find((i) => i.id === id)
   if (!item) return { ok: false, text: `insight ${id} 不在 ${s} 层` }
-  if (!applyTo(item)) return { ok: false, text: '没有可更新的字段' }
+  const applied = applyTo(item)
+  if (!applied.changed) return { ok: false, text: '没有可更新的字段' }
   if (s === 'global') gs.markDirty()
   else store.replaceInsightItems(items)
-  return { ok: true, text: '已更新记忆条目' }
+  return { ok: true, text: `已更新记忆条目${droppedNote(applied.dropped)}` }
 }
 
 /**
@@ -495,15 +505,23 @@ export function insightCommandDefinition(config, ctx) {
             return { kind: 'error', text: '[insight] save JSON 需要 title/pattern/topic' }
           }
           // 面板来的 files 也要走同一套写入期路径约束：项目外/绝对路径丢弃，不写进条目。
+          let droppedFiles = 0
           if (Array.isArray(fields.files)) {
-            fields = { ...fields, files: normalizeCitationFiles(fields.files, root).files }
+            const norm = normalizeCitationFiles(fields.files, root)
+            droppedFiles = norm.dropped.length
+            fields = { ...fields, files: norm.files }
           }
           const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
           const gs = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()
           const res = saveMemoryItem({ store, gs, cfg: cfgInsight(config), scope, fields })
           store.commit(() => 0)
           gs.commit()
-          return res.ok ? { kind: 'success', text: res.text } : { kind: 'error', text: res.text }
+          if (res.ok && (store.lastSaveOk === false || gs.lastCommitOk === false)) {
+            return { kind: 'error', text: `${res.text}；但写盘失败（权限/磁盘/锁），重启后会丢失` }
+          }
+          return res.ok
+            ? { kind: 'success', text: res.text + (droppedFiles ? `；${droppedFiles} 个 files 是项目外路径，已丢弃` : '') }
+            : { kind: 'error', text: res.text }
         }
         if (verb === 'edit') {
           // /insight edit <scope> <id> <json>
@@ -523,6 +541,9 @@ export function insightCommandDefinition(config, ctx) {
           const res = editMemoryItem({ store, gs, scope, id, fields, root })
           store.commit(() => 0)
           gs.commit()
+          if (res.ok && (store.lastSaveOk === false || gs.lastCommitOk === false)) {
+            return { kind: 'error', text: `${res.text}；但写盘失败（权限/磁盘/锁），重启后会丢失` }
+          }
           return res.ok ? { kind: 'success', text: res.text } : { kind: 'error', text: res.text }
         }
         const scope = raw[1]
@@ -536,6 +557,9 @@ export function insightCommandDefinition(config, ctx) {
         const res = actInsight({ store, gs, action: verb, scope, id, taskId, cfg: cfgInsight(config) })
         store.commit(() => 0) // 项目侧（tasks/insights）落盘
         gs.commit() // global 侧若有变更落盘
+        if (res.ok && (store.lastSaveOk === false || gs.lastCommitOk === false)) {
+          return { kind: 'error', text: `${res.text}；但写盘失败（权限/磁盘/锁），重启后会丢失` }
+        }
         return res.ok ? { kind: 'success', text: res.text } : { kind: 'error', text: res.text }
       } catch (err) {
         return { kind: 'error', text: `[insight] ${err?.message || err}` }

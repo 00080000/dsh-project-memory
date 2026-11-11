@@ -1,7 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { TEXT_OUTPUT, rootParam } from './output.js'
+import { TEXT_OUTPUT, persistenceNote, rootParam } from './output.js'
 import path from 'node:path'
-import { statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { assertIndexRoot, assertReadableFile, assertSafeRoot, excludedEntryForPath, findProjectRoot, memoryRootFor, resolveIndexRoot, sessionMemoryRootOrNull, sha256OfFile, storeKey } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { docEntriesNeedBackfill } from '../doc-index.js'
@@ -24,18 +24,14 @@ export function indexDocTool(ctx, config) {
     async execute(args, exec) {
       // 相对路径按会话当前工作目录解析；直接用会落到宿主进程 cwd（web profile 里可能是 /）。
       const rawPath = typeof args.file_path === 'string' ? args.file_path : ''
+      // 先只做“存在且可读”检查（不限大小）：超大/被 exclude 的文件也要能解析出 root，
+      // 才能把旧索引摘掉。
       const filePath = assertReadableFile(
         path.isAbsolute(rawPath) ? rawPath : path.resolve(resolveIndexRoot(exec), rawPath),
-        config.maxFileSizeMb,
+        0,
       )
       // roots.exclude 是"这棵子树里的文件一律不进索引"：显式 index_doc 也要服从。
       const excluded = excludedEntryForPath(filePath, config)
-      if (excluded) {
-        return (
-          `Not indexed: ${filePath} is inside the subtree excluded by \`roots.exclude\` entry ${JSON.stringify(excluded.raw)}. ` +
-          'Remove that entry from `config.roots.exclude` under `- id: project-memory` if this file should be indexed.'
-        )
-      }
       const explicit = args.root && args.root.trim() ? args.root : null
       let root
       if (explicit) {
@@ -48,6 +44,13 @@ export function indexDocTool(ctx, config) {
         const sessionRoot = sessionMemoryRootOrNull(exec, config)
         root = findProjectRoot(filePath, { sessionRoot, config })
         if (!root) {
+          // 被 exclude 的文件在无标记目录里先命中排除规则：报排除原因（此时也没有可清理的 store）。
+          if (excluded) {
+            return (
+              `Not indexed: ${filePath} is inside the subtree excluded by \`roots.exclude\` entry ${JSON.stringify(excluded.raw)}. ` +
+              'Remove that entry from `config.roots.exclude` under `- id: project-memory` if this file should be indexed.'
+            )
+          }
           return (
             `Not indexed: ${filePath} is not inside a detected project ` +
             '(no .git / package.json / pyproject.toml … marker above it). Pass root explicitly to place the memory store.'
@@ -65,9 +68,35 @@ export function indexDocTool(ctx, config) {
         )
       }
 
-      const store = new ProjectMemoryStore(memoryDir).load()
-
       const rel = storeKey(relRaw.split(path.sep).join('/'))
+      const storeExists = existsSync(memoryDir)
+
+      // 被排除 / 超大：旧版本留下的索引必须摘掉，否则 query_memory 会继续命中已删除的内容。
+      // 但没有 store 时绝不能为了“清理”先建一个空 store（老契约：拒绝不产生副作用）。
+      const dropStale = (reason) => {
+        if (!storeExists) return reason
+        const staleStore = new ProjectMemoryStore(memoryDir).load()
+        return staleStore.commit((s) => {
+          s.removeFile(rel)
+          return reason
+        }) + persistenceNote(staleStore)
+      }
+      if (excluded) {
+        return dropStale(
+          `Not indexed: ${filePath} is inside the subtree excluded by \`roots.exclude\` entry ${JSON.stringify(excluded.raw)}. ` +
+          `Removed stale index (if any). Remove that entry from \`config.roots.exclude\` under \`- id: project-memory\` if this file should be indexed.`,
+        )
+      }
+      const sizeLimit = config.maxFileSizeMb
+      if (sizeLimit) {
+        let size = 0
+        try { size = statSync(filePath).size } catch { size = 0 }
+        if (size > sizeLimit * 1024 * 1024) {
+          return dropStale(`Not indexed: ${rel} is now ${(size / 1024 / 1024).toFixed(1)} MB, over the ${sizeLimit} MB limit. Removed stale index (if any).`)
+        }
+      }
+
+      const store = new ProjectMemoryStore(memoryDir).load()
       // mtime 必须在读正文之前取：记录里的 mtime 不能比内容新，否则懒索引的快路径会跳过之后的真实改动。
       let mtimeMs
       try {
@@ -82,7 +111,7 @@ export function indexDocTool(ctx, config) {
       if (existing && existing.sha256 === hash && !docEntriesNeedBackfill(store.entries[rel])) {
         // 旧记录没有 explicit 时在这里补上：否则重新 index_doc 一次也救不回被扫描清理掉的文件。
         if (!existing.explicit) store.commit((s) => s.markFile(rel, { ...existing, explicit: true }))
-        return `Skipped (unchanged): ${rel}\nAlready indexed with ${(store.entries[rel] || []).length} entry/entries.`
+        return `Skipped (unchanged): ${rel}\nAlready indexed with ${(store.entries[rel] || []).length} entry/entries.` + persistenceNote(store)
       }
 
       const entries = await buildDocEntries(rel, filePath, {
@@ -92,10 +121,11 @@ export function indexDocTool(ctx, config) {
         maxPdfPages: config.maxPdfPages,
       })
       if (entries === null) {
-        return store.commit((s) => {
+        const text = store.commit((s) => {
           s.removeFile(rel)
           return `Skipped: ${rel} looks like a reflection dump, not a document.`
         })
+        return text + persistenceNote(store)
       }
 
       return store.commit((s) => {
@@ -109,7 +139,7 @@ export function indexDocTool(ctx, config) {
           .map((e) => `  - ${e.title} @ ${rel}:${e.sourceLine}`)
           .join('\n')
         return `Indexed: ${rel}\nEntries: ${entries.length}\n${preview}`
-      })
+      }) + persistenceNote(store)
     },
   })
 }

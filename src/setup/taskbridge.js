@@ -341,7 +341,8 @@ export function flushTaskStore(cwd, config) {
   if (!cwd) return
   try {
     const { store } = taskStoreFor(cwd, config)
-    if (store) store.save()
+    // 回合结束的 flush 不能按默认 15s 等锁：写路径已经有同步等待，这里只做一次短兜底。
+    if (store) store.save({ timeoutMs: 1500 })
   } catch (err) {
     console.error('[dsh-project-memory] taskbridge flush:', err?.message || err)
   }

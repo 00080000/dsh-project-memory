@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
 import { ProjectMemoryStore, _estimateResidentBytes as estimate } from '../src/store.js'
+import { saveInsight } from '../src/insight-store.js'
 import { normalizeRelFile, genTaskId, onSessionEvent, adoptStepsToSession, shouldAdoptToHost, isSubagentSession, flushTaskStore } from '../src/setup/taskbridge.js'
 import { taskCommandDefinition } from '../src/commands/task-actions.js'
 import { selectTaskTool, archiveTaskTool } from '../src/tools/task-tools.js'
@@ -385,6 +386,18 @@ const ev = (type, data) => ({ type, data })
   const diskTool = JSON.parse(readFileSync(path.join(tool.root, '.dsh-project-memory', 'tasks.json'), 'utf8'))
   assert.equal(diskTool[0].archived, true)
   ok('select_task / archive_task 落盘')
+}
+
+// --- 12. 已归档任务不能写入 task 级记忆（写进去也永远召回不到） ---
+{
+  const { root, store } = newProject()
+  const now = new Date().toISOString()
+  store.addTask({ id: 'tsk_archived', title: '已归档', projectRoot: root, steps: null, files: [], archived: true, insights: [], createdAt: now, updatedAt: now, lastActiveAt: now })
+  store.save()
+  const res = saveInsight({ store, raw: { kind: 'lesson', title: '不该写进去' }, scope: 'task', taskId: 'tsk_archived' })
+  assert.equal(res.ok, false)
+  assert.match(res.error, /已归档/)
+  ok('已归档任务拒绝 task 级写入（不再假报 Saved）')
 }
 
 console.log(`\nTaskBridge tests: ${passed} passed`)

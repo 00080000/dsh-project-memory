@@ -226,9 +226,9 @@ Four corpora, one Linux machine (Node 24.19), each run twice with the **second, 
 | TypeScript monorepo, 3,000-file slice | 3,000 / 17,576 | 1.9 s | 70 ms | 9.2 / 18.9 ms | 1.9 ms | 10.9 MB / 18.9 MB | 22.7 MB |
 | TypeScript monorepo, whole tree | 12,634 / 80,231 | 7.8 s | 278 ms | 40.6 / 74.8 ms | 7.2 ms | 42.0 MB / 75.7 MB | 75.2 MB |
 
-> The table above was measured on the **v2 per-file shard layout**. v3 packs files into ~32 KB hash buckets, so on-disk file count and per-file overhead drop sharply; cold-load time stays in the same range. On this repository (v3, 223 files / 1,894 entries) `npm run bench`: **cold load 22 ms** in a fresh process, **0.65 MB content / 0.70 MB on disk**, and the 5,000-file synthetic store loads in **129 ms (205 buckets)**. Absolute numbers move with the corpus; use `npm run bench` on your own project rather than extrapolating the 2026-10-13 rows.
+> The table above was measured on the **v2 per-file shard layout**. v3 packs files into ~32 KB hash buckets, so on-disk file count and per-file block overhead drop sharply; cold-load time stays in the same range. On the 5,000-file synthetic corpus, v3 loads in **~60 ms (205 buckets)**; 10,000 files load in **~120 ms (413 buckets)**. **Cross-day measurements can drift ~20%** — treat anything under that as noise, and for a regression claim run the old and new revisions in the same session on the same corpus (`npm run bench` twice, quote the warm run). Use your own project rather than extrapolating the 2026-10-13 rows.
 
-**How it scales.** Re-indexing a changed file costs O(file), not O(corpus) — 0.3–7.2 ms across every corpus above. Query time (≈0.5 µs/entry on the largest corpus) and resident heap (≈1.5 KB/entry once queried) grow linearly with the index; cold load is tens of µs per file (22 ms for 223 files, 129 ms for 5,000 synthetic files), which keeps small and mid-size projects in the single-digit-millisecond range. Re-reading a file that is already indexed costs ≈0.01 ms: it stops after one `stat` plus a cached record lookup, with no read, no hash and no `git check-ignore`.
+**How it scales.** Re-indexing a changed file costs O(file), not O(corpus) — 0.3–7.2 ms across every corpus above. Query time (≈0.5 µs/entry on the largest corpus) and resident heap (≈1.5 KB/entry once queried) grow linearly with the index; cold load is tens of µs per file (~60 ms for 5,000 synthetic files), which keeps small and mid-size projects in the single-digit-millisecond range. Re-reading a file that is already indexed costs ≈0.01 ms: it stops after one `stat` plus a cached record lookup, with no read, no hash and no `git check-ignore`.
 
 > `read+hash` depends on the OS page cache — 2.3 s cold vs 0.27 s warm on the 12,634-file tree — so the table quotes the warm figure.
 
@@ -287,7 +287,7 @@ These commands are for **maintaining the plugin code** — regular users do not 
 
 ```bash
 npm install
-npm test                    # 1066 tests
+npm test                    # 1081 tests
 npm run eval:injection      # synthetic pool P/R: precision 0.93 / recall 1.00, + a 3-scenario hint-only group
 npm run eval:injection -- --store .dsh-project-memory/insights.json   # replay on YOUR store; control group is a hard gate
 npm run selfcheck:triggers  # which entries can still push, which declarations are dead (reads your local store)

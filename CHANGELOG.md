@@ -8,6 +8,20 @@
   - **客户端**：记忆页打开时也取 `/tasks`（降级按钮不再永远禁用）；记忆页命令走统一 `invokeCommand`（超时/取消/错误信封）；分页发现 total 变化时回到第一页重取；`BroadcastChannel` 缺失时软降级；根比较归一大小写/分隔符；切换 scope 关闭编辑表单；设置服务部分缺失时点名告警。
   - **文档/打包**：README 性能表标注 v2 基线并补 v3 实测；`pm-digest` 区分桶数与源文件数；删除过时的 `client/client.d.ts`，构建前清理 `client/` 产物。
 
+- **第二轮审计收口（2026-11-11）**：补齐上一批的“半修”与低优先设计项，无新增配置键。
+  - 旧消息（无 `source.memory`）改用**整行文本 hash** 对账：正文/结论改了会重发，不再因为 `hash=null` 永久压制；procedure 旧消息仍可能重发一次（老正文没有 id）。
+  - 旧宿主（无 `replaceGeneration`）每 32 次 ensure 做一次全量重建，等长/中间替换也能发现；删除只写不读的 `maxSeq`。
+  - `index_repo` / `index_doc` 在 `save()` 未落盘时也追加与写工具一致的警告。
+  - `/tasks` 快照对 steps/files/insights 分别截断到 50/50/20，超出量由 `totals` 回报，避免单条命令消息膨胀。
+  - `/insight edit|save` 的 `files` 被丢弃时在文案里回报数量。
+  - 服务 `stats` 增加 `taskInsights`；`forget` 命中超 cap 时返回 `tooMany/matched`，不再与“没命中”同形。
+  - 客户端动作后的前缀重载改为**连续翻页**直到原条数（单页仍 ≤200），超过 200 条不再被截断。
+  - 跨标签页广播增加 `sessionId / boundTaskId / sentAt`：同项目同会话同步绑定，乱序快照按时间丢弃。
+  - `tool-schema-size` 从 `toolDefinitions()` 注册表生成，新增工具自动进预算。
+  - **第三轮审计补丁**：注入被宿主 abort/丢弃时回滚额度、冷却、`seen` 与命中计数（`recordHit` 支持负 delta），pre-step 增加 abort 闸门；任务卡用 `e` 指纹对账，条目全被跳过的下一步/重启不再重发卡；旧 procedure 按整块文本 hash 对账。
+  - **存储**：缩桶重排按“实际写过的桶”清理（空桶里的已删条目不再复活）；锁内合并读失败时放弃本次写入（不覆盖另一进程）；`format.json` 读失败不再 cleanup 掉新桶；`pruneTasks` 的归档不被跨进程合并回滚；锁新增 `up`（uptime）判重启；turn/end flush 使用 1.5s 预算。
+  - **工具**：`/tasks insight` 写命令落盘失败返回 error 而不是 success；原生服务四动词要求 root 存在；`index_doc` 超大/排除时摘掉旧索引（无 store 时不建）；已归档任务拒绝 task 级写入；`index_repo` 成功/删除后清理后台失败账本。
+
 - **store 布局 v3：目标尺寸哈希桶**。`shards/` 从“一文件一 shard”改为 `bucket-*.json`（目标 32KB，按 `sha256(relPath) % bucketCount` 分配，桶数随体积伸缩）。全量索引的文件操作数约降一个量级；单文件更新只重写它所属的一个桶。旧 `format.json` v2 / 逐文件分片在首次 `save()` 时自动迁移，迁移后删除旧分片。
   - 兼容性：新版本能读 v2 并自动迁移；**旧版本读不懂 v3 桶**（会看到空 store），确认要回退时请先备份 `.dsh-project-memory/`。
   - 损坏隔离粒度从“单文件”变为“单桶”：一个桶损坏会影响桶内文件，它们会在下一次扫描时重新索引。
