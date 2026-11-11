@@ -1,12 +1,18 @@
 ## Unreleased
 
+- **存储**：缩桶重排把空桶写成空文件，加载时忽略越界桶，避免清理失败/崩溃后已删条目复活；会话绑定按“相对加载基线的变化”合并，成功写盘后清墓碑；任务归档按显式改动而不是 `updatedAt` 合并；迁移保护态不再每次 save 全量重排；文件热点时间取最新；注入回滚恢复 `lastHitAt`。
+- **注入**：压缩只保留 card-only 消息时也把会话条目额度归零，不再永久失明。
+- **工具/命令**：`index_doc` 拒绝源码文件，避免覆盖符号索引；`roots.exclude` 优先于 explicit 豁免；`watch_repo` 在 watchlist 未落盘时明确告警；服务 `remember/forget` 同时检查 global 落盘；已删除的会话根不再被 TaskBridge 重建；`session/disposed` 补延迟写 flush；`git -C … checkout/rm` 正确抽取写目标。
+- **客户端**：编辑不再把 `pattern/choice/problem` 静默覆盖成标题；切会话时旧 `/tasks` 响应被丢弃且新刷新排队补发；任务卡动作后失效记忆缓存；缓存命中推进请求闸门；分页失败重试重放失败页；procedure 步骤被截断时不回传整份 `steps`；同步中禁止进入行内编辑。
+- **其他**：工具 schema 预算计入工具名；`file-peak` 报错路径修正；README 测试数与当前套件对齐。
+
 - **全量修复（存储 / 注入对账 / 工具 / 客户端）**，不新增配置键，`client/` 产物已重建。
   - **注入对账**：正文回退只认本插件自己的消息（压缩摘要/recall 里的 `- [ins_…]` 不再永久压制条目）；乐观登记下一步与 surface 对账（宿主 abort 时不再整会话失明）；`historyLost` 把会话额度一并归零；provenance 上限与 `maxItemsPerSession` 对齐；`reconcile` 增加 `degraded / genSupported / historyLost`。
   - **旁路日志**：日志建目录后立即补 `.gitignore`；主日志 `dropped` 截断到 40 并记 `droppedTotal`（1000 条候选的单行从 113KB 降到 KB 级）。
   - **持久化**：读失败（EACCES/EISDIR）进入只读模式、不覆盖读不出的分片；重写不复活跨进程删除；扩桶按摊还计数；任务跨进程合并按字段（steps / files / fileMeta）而不是整条二选一。
   - **工具/命令**：`save_lesson` / `remember` / `forget` / `select_task` / `archive_task` / `/tasks` 在未落盘时给出 `persisted:false` 或明确警告；`roots.deny/exclude` 对 symlink 别名生效；原生服务的 `recall/stats` 也过根护栏；TaskBridge 相对路径按会话 cwd 解析；显式切换任务/清空步骤会推空宿主清单；`/insight edit|list` 校验 scope；services `recall` 支持 `taskId`。
   - **客户端**：记忆页打开时也取 `/tasks`（降级按钮不再永远禁用）；记忆页命令走统一 `invokeCommand`（超时/取消/错误信封）；分页发现 total 变化时回到第一页重取；`BroadcastChannel` 缺失时软降级；根比较归一大小写/分隔符；切换 scope 关闭编辑表单；设置服务部分缺失时点名告警。
-  - **文档/打包**：README 性能表标注 v2 基线并补 v3 实测；`pm-digest` 区分桶数与源文件数；删除过时的 `client/client.d.ts`，构建前清理 `client/` 产物。
+  - **文档/打包**：README 性能表更新为 v3 实测；`pm-digest` 区分桶数与源文件数；删除过时的 `client/client.d.ts`，构建前清理 `client/` 产物。
 
 - **第二轮修复**：补齐上一批的“半修”与低优先设计项，无新增配置键。
   - 旧消息（无 `source.memory`）改用**整行文本 hash** 对账：正文/结论改了会重发，不再因为 `hash=null` 永久压制；procedure 旧消息仍可能重发一次（老正文没有 id）。
