@@ -468,7 +468,6 @@ export function buildInjection(opts) {
   // 模型会一直看到旧文件列表；只有热点文件集合/顺序变化时才重发整块。
   const echo = stepBudget > 0 && cfg.entryOn !== false && shouldEchoTaskCard(task, cfg)
   const entry = echo ? buildEntryContent(task, cfg) : ''
-  const entryStable = entry
   let used = entry.length
   let itemUsed = 0
   let itemCount = 0
@@ -525,8 +524,8 @@ export function buildInjection(opts) {
   }
   // 整块只受单轮预算（maxTokens）约束；会话条目额度已在 place() 里单独扣过。
   const clamp = (t) => (t.length > stepBudget ? `${t.slice(0, stepBudget)}\n…(截断)` : t)
-  const dedupeText = clamp([entryStable, ...parts].filter(Boolean).join('\n'))
-  return { text: clamp(total.join('\n')), entry, entryStable, labels, reasons, dropped, candidates, scoreQuery, dedupeText, itemChars: itemUsed }
+  const dedupeText = clamp([entry, ...parts].filter(Boolean).join('\n'))
+  return { text: clamp(total.join('\n')), entry, labels, reasons, dropped, candidates, scoreQuery, dedupeText, itemChars: itemUsed }
 }
 
 // 每会话状态的会话数上限：六张表共用。
@@ -551,6 +550,8 @@ class InjectionSessions {
     // "整块指纹变了"不等于"内容都是新的"：滑动窗口 / 任务卡更新都会让同一份 procedure 被重发
     // （实测 66 步注入 20 次，同一份 1732 字重发 3 次）。
     this.items = cache(() => new BoundedMap(INJECTED_ITEMS_MAX))
+    // 本轮注入前的 lastHitAt：宿主丢弃这条注入时要一起回滚，否则条目会留下“刚用过”的假活跃度。
+    this.hitAt = cache(() => new Map())
     // 会话步数：为 reinjectItemsAfter 提供时间轴。
     this.step = cache(() => 0)
     // 会话级条目额度：条数 / 字符 / 上次"条目注入"的步号。常驻任务卡不占额度——
@@ -724,7 +725,9 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   sessions.step.set(sessionId, stepNo)
   const quota = sessions.quota.ensure(sessionId)
   // 压缩/历史丢失时跳过冷却：否则注入消息刚被替换掉，还要再等 N 步才补回来。
-  const historyLost = surfaceReady && !visibleState.blocks.size && !visibleState.items.size && !visibleState.legacy.size
+  // 只看“条目是否还可见”，不能把 blocks 也算进来：压缩可能只留下最后一条 card-only
+  // 注入（或 root notice），此时一个条目都没了，却因为 blocks.size>0 而永不归零。
+  const historyLost = surfaceReady && !visibleState.items.size && !visibleState.legacy.size
   // 压缩把注入消息换掉了：额度也必须跟着归零。只跳过冷却不够——quota 只增不减，打满
   // maxItemsPerSession 的会话压缩后会永久失明（条目通道一直沉默）。
   if (historyLost) {
@@ -748,7 +751,9 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
       if (rec && rec.step === rollback.step) seenItems.delete(id)
     }
     try {
-      recordHit({ store, globalStore, ids: rollback.ids, delta: -1 })
+      const restore = sessions.hitAt.peek(sessionId)
+      recordHit({ store, globalStore, ids: rollback.ids, delta: -1, restore })
+      sessions.hitAt.delete(sessionId)
       if (store.hasContent) store.save()
       globalStore.commit()
     } catch {
@@ -819,9 +824,8 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   const injectedText = notice ? (built.text ? `${notice}\n${built.text}` : notice) : built.text
   // 条目级冷却（reinjectItemsAfter>0）与块级指纹必须对齐：条目级已放行、块正文没变时，
   // 块级 fp 会把“该重发”判成“没变化”。宿主外部裁剪历史时，这个开关本来就是为了重发。
-  const seen = seenItems
   const reinjectDue = cfg.reinjectItemsAfter > 0 && built.reasons.some((r) => {
-    const rec = seen.get(r.id)
+    const rec = seenItems.get(r.id)
     return rec && Number.isFinite(rec.step) && stepNo - rec.step >= cfg.reinjectItemsAfter
   })
   const blockSeen = surfaceReady ? isBlockVisible(visibleState, fp) : fp === sessions.lastText.peek(sessionId)
@@ -839,7 +843,7 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   if (payload?.signal?.aborted) return null
   // 只记真的进了上下文的那几条：dropped 的没被看到，不能记账（否则以后永远不再注入）。
   for (const r of built.reasons) {
-    if (r && r.id && r.hash) seen.set(r.id, { hash: r.hash, step: stepNo })
+    if (r && r.id && r.hash) seenItems.set(r.id, { hash: r.hash, step: stepNo })
   }
   // 会话额度只被"条目"消耗；任务卡不算（否则任务一多就把记忆挤没了）。
   if (built.reasons.length) {
@@ -852,7 +856,14 @@ async function injectForStep({ payload, decision, config, cfg, audit, shadow, se
   // save()，只标脏等于进程退出就丢。记账失败绝不影响注入（与审计同约定）。
   if (built.reasons.length) {
     try {
-      if (recordHit({ store, globalStore, ids: built.reasons.map((r) => r.id) })) {
+      const ids = built.reasons.map((r) => r.id)
+      const prevHitAt = new Map()
+      for (const it of [...store.insightItems(), ...globalStore.items()]) {
+        if (it && ids.includes(it.id)) prevHitAt.set(it.id, it.lastHitAt || null)
+      }
+      if (recordHit({ store, globalStore, ids })) {
+        // 若这一步的注入随后被宿主丢弃，回滚要连 lastHitAt 一起恢复到注入前。
+        sessions.hitAt.set(sessionId, prevHitAt)
         // 只有这个根里真有东西才落盘。否则一次**全局** insight 的命中就会为一个从没被
         // 索引过的容器目录建出整个 store（`save()` 会 mkdir）。审计侧同样不建，见 audit.js。
         if (store.hasContent) store.save()

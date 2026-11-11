@@ -41,13 +41,14 @@ export function watchRepoTool(watchManager, config) {
       const mirrorSessionWatchlist = async (present) => {
         // 会话根不可用（家目录/系统目录且无标记）时跳过镜像：那会在不该有项目记忆的目录里
         // 造出 watch.json，而 watch.json 一旦落在那里，下次以该目录为 cwd 启动又会把它读回来。
-        if (!sessionRoot || !sessionMemoryDir) return
+        if (!sessionRoot || !sessionMemoryDir) return true
         // Windows/macOS 大小写不敏感：同一目录的两种写法不能当成两个 store 互相镜像。
-        if (storeKey(path.resolve(sessionMemoryDir)) === storeKey(path.resolve(memoryDir))) return
+        if (storeKey(path.resolve(sessionMemoryDir)) === storeKey(path.resolve(memoryDir))) return true
         const sessionStore = new ProjectMemoryStore(sessionMemoryDir).load()
         const removed = sessionStore.removeWatch(root)
         const added = present ? sessionStore.addWatch(root) : false
-        if (removed || added) sessionStore.save()
+        if (removed || added) return sessionStore.save() !== false
+        return true
       }
 
       if (args.watch === false) {
@@ -64,12 +65,18 @@ export function watchRepoTool(watchManager, config) {
         await mirrorSessionWatchlist(false)
         return `Stopped watching: ${root}`
       }
-      new ProjectMemoryStore(memoryDir).load().commit((s) => s.addWatch(root))
-      await mirrorSessionWatchlist(true)
+      const rootStore = new ProjectMemoryStore(memoryDir).load()
+      rootStore.commit((s) => s.addWatch(root))
+      const mirrored = await mirrorSessionWatchlist(true)
       watchManager.addRoot(root)
       const intervalMs = normalizeWatchIntervalMs(Number(cfgValue(config, 'watchInterval')) * 1000)
       watchManager.start(intervalMs)
-      return `Watching ${root} (interval ${intervalMs / 1000}s). Docs/code changes will be re-indexed silently.`
+      // 进程内已经在监听，但 watch.json 没写成功时重启会静默丢失：必须让调用方看见。
+      const persisted = rootStore.lastSaveOk !== false && mirrored
+      const warning = persisted
+        ? ''
+        : '\nWarning: watchlist was not persisted (busy/read-only store); this process keeps watching, but a restart will not restore it.'
+      return `Watching ${root} (interval ${intervalMs / 1000}s). Docs/code changes will be re-indexed silently.${warning}`
     },
   })
 }

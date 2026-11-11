@@ -84,7 +84,3 @@ function collectTags(root) {
   }
   return [...tags]
 }
-
-export function clearProjectTagsCache() {
-  cache.clear()
-}

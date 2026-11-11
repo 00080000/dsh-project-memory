@@ -1,7 +1,7 @@
 import { existsSync, statSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
-import { listProjectFiles, memoryDirName, memoryRootFor, relativePath, rootRejection, scanLimits, storeKey } from './util/fs.js'
+import { excludedEntryForPath, listProjectFiles, memoryDirName, memoryRootFor, relativePath, rootRejection, scanLimits, storeKey } from './util/fs.js'
 import { OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from './index-pipeline.js'
 import { ProjectMemoryStore } from './store.js'
 import { onFileChanged, isTypeScriptFile } from './enhancer.js'
@@ -55,8 +55,7 @@ async function mapLimit(items, limit, fn) {
 }
 
 export class WatchManager {
-  constructor(ctx, config) {
-    this.ctx = ctx
+  constructor(_ctx, config) {
     this.config = config
     this.roots = new Map()
     /**
@@ -411,6 +410,7 @@ export class WatchManager {
       updates,
       unseen: truncated ? null : seen,
       root,
+      isExcludedRel: (rel) => Boolean(excludedEntryForPath(path.join(root, rel), this.config)),
     })
     // 扫全了才剪快照：删掉的文件不能留着，否则它以同样的 mtime:size 回来会被当成未变。
     if (!truncated) {

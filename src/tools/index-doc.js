@@ -5,6 +5,7 @@ import { existsSync, statSync } from 'node:fs'
 import { assertIndexRoot, assertReadableFile, assertSafeRoot, excludedEntryForPath, findProjectRoot, memoryRootFor, resolveIndexRoot, sessionMemoryRootOrNull, sha256OfFile, storeKey } from '../util/fs.js'
 import { buildDocEntries } from '../doc-pipeline.js'
 import { docEntriesNeedBackfill } from '../doc-index.js'
+import { fileKind } from '../index-pipeline.js'
 import { ProjectMemoryStore } from '../store.js'
 
 export function indexDocTool(ctx, config) {
@@ -69,6 +70,16 @@ export function indexDocTool(ctx, config) {
       }
 
       const rel = storeKey(relRaw.split(path.sep).join('/'))
+      // index_doc 只接受文档。此前不校验后缀，代码文件会被 buildDocEntries 当文本抽成
+      // 一条 doc chunk，并用 type:'doc' 覆盖掉 index_repo 写下的同 rel 符号条目——
+      // 符号层随即查不到东西，直到下一次 index_repo 才自愈。
+      const kind = fileKind(path.extname(filePath).toLowerCase())
+      if (kind !== 'doc') {
+        const why = kind === 'code'
+          ? 'this is a source file; use index_repo (or lazy indexing) for code symbols'
+          : 'unsupported extension (index_doc accepts PDF/MD/txt)'
+        return `Not indexed: ${rel} — ${why}. The existing record was left untouched.`
+      }
       const storeExists = existsSync(memoryDir)
 
       // 被排除 / 超大：旧版本留下的索引必须摘掉，否则 query_memory 会继续命中已删除的内容。

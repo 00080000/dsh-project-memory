@@ -5,36 +5,16 @@
 import path from 'node:path'
 import { ProjectMemoryStore } from '../store.js'
 import { memoryRootFor, normalizeCitationFiles } from '../util/fs.js'
-import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, recordDeleted, carryUsageFields, mergeInto, pruneItems, refreshDerivedTrigger, INSIGHT_KINDS } from '../insight-store.js'
+import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsight, recordDeleted, carryUsageFields, mergeOrPushInto, demoteToProject, demoteToTask, pruneItems, refreshDerivedTrigger, putInsightField, INSIGHT_KINDS } from '../insight-store.js'
 import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
 import { isoMs } from '../util/value.js'
 import { pruneKindFields } from '../util/insight-fields.js'
-import { findBestOverlapMatch, insightMatchText } from '../similarity.js'
 import { forgetVectorRows } from '../vector-index.js'
 
 /** 容量旋钮的防御性取值：cfg 可能只带显式测试字段。 */
 function capOf(value, fallback) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
-}
-
-/** 落点去重：同 id 或近重复（≥ dedupOverlap）合并，否则 push；来源删除/容量收口由调用方做。 */
-function mergeOrPushInto({ targetPool, copy, cfg, nowIso }) {
-  // 同 id 必须比 id 而不是相似度：'ins_dup' 已在 global 时再提升同 id，指纹类字段可能因后来编辑
-  // 而分叉，靠相似度会漏判——同 id 是确定事实，直接合并。
-  const sameId = targetPool.find((it) => it && it.id === copy.id)
-  if (sameId) {
-    mergeInto(sameId, copy, cfg, nowIso)
-    return { merged: true, target: sameId }
-  }
-  const hit = findBestOverlapMatch(insightMatchText(copy), targetPool)
-  const threshold = cfg?.dedupOverlap ?? 0.7
-  if (hit && hit.score >= threshold) {
-    mergeInto(hit.item, copy, cfg, nowIso)
-    return { merged: true, target: hit.item }
-  }
-  targetPool.push(copy)
-  return { merged: false, target: copy }
 }
 
 /**
@@ -89,6 +69,8 @@ function insSummary(ins, extra = {}) {
     symbols: (s.symbols || []).length,
     trigger: s.trigger ? { keywords: s.trigger.keywords || [], scope: s.trigger.scope || [] } : null,
     steps: Array.isArray(s.steps) ? s.steps.slice(0, 50) : null,
+    // 面板编辑要知道原数组是否被截断：只回传看到的 50 条会删掉后面的步骤。
+    stepsTotal: Array.isArray(s.steps) ? s.steps.length : 0,
     updatedAt: s.updatedAt || '',
     ...extra,
   }
@@ -266,27 +248,15 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       }
     }
     if (act === 'demote') {
-      // project → task（需目标任务）
+      // project → task（需目标任务）；去重/去留统一走 insight-store 的唯一实现。
       const task = store.getTask(taskId)
       if (!task) return { ok: false, text: '降级到任务需要 taskId' }
-      const now = new Date().toISOString()
-      const copy = carryUsageFields(
-        normalizeInsight(ins, { scope: 'task', source: ins.source, nowIso: now }),
-        ins,
-      )
-      copy.id = `${id}_d${Date.now().toString(36)}`
-      copy.movedFrom = { scope: 'project', id, at: now }
-      copy.createdAt = ins.createdAt || copy.createdAt
-      copy.promoteHold = true
-      if (!Array.isArray(task.insights)) task.insights = []
-      const { merged, target } = mergeOrPushInto({ targetPool: task.insights, copy, cfg, nowIso: now })
-      store.markTasksDirty()
-      items.splice(idx, 1)
-      store.replaceInsightItems(items)
+      const moved = demoteToTask(store, taskId, id, new Date().toISOString(), cfg)
+      if (!moved.ok) return { ok: false, text: moved.error }
       return {
         ok: true,
-        text: merged
-          ? `已降级并合并到任务 ${task.title} 的既有条目：${target.title}`
+        text: moved.merged
+          ? `已降级并合并到任务 ${task.title} 的既有条目：${moved.target.title}`
           : `已降级到任务 ${task.title}`,
       }
     }
@@ -313,25 +283,14 @@ export function actInsight({ store, gs, action, scope, id, taskId, cfg }) {
       return { ok: true, text: `已删除 global 条目 ${id}` }
     }
     if (act === 'demote') {
-      // global → project
-      const now = new Date().toISOString()
-      const pjItems = store.insightItems()
-      const copy = carryUsageFields(
-        normalizeInsight(ins, { scope: 'project', source: ins.source, nowIso: now }),
-        ins,
-      )
-      copy.id = `${id}_d${Date.now().toString(36)}`
-      copy.movedFrom = { scope: 'global', id, at: now }
-      copy.createdAt = ins.createdAt || copy.createdAt
-      copy.promoteHold = true
-      const { merged, target } = mergeOrPushInto({ targetPool: pjItems, copy, cfg, nowIso: now })
-      pruneItems(pjItems, capOf(cfg?.maxProject, 100), now, { protectedIds: new Set([target.id]) })
-      store.replaceInsightItems(pjItems)
-      items.splice(idx, 1)
-      gs.markDirty()
+      // global → project；去重/容量/去留统一走 insight-store 的唯一实现。
+      const moved = demoteToProject(store, gs, id, new Date().toISOString(), cfg)
+      if (!moved.ok) return { ok: false, text: moved.error }
       return {
         ok: true,
-        text: merged ? `已降级并合并到 project 既有条目：${target.title}` : `已降级到 project：${copy.title}`,
+        text: moved.merged
+          ? `已降级并合并到 project 既有条目：${moved.target.title}`
+          : `已降级到 project：${moved.target.title}`,
       }
     }
     return { ok: false, text: `global 级不支持动作: ${act}` }
@@ -362,8 +321,8 @@ export function editMemoryItem({ store, gs, scope, id, fields, root }) {
       if (!EDIT_FIELDS.has(key)) continue
       if (key === 'kind') {
         if (!INSIGHT_KINDS.includes(v) || v === item.kind) continue
-        item.kind = v
-        changed = true
+        // 与自动覆盖同一条字段写入：旧 kind 进 prev，编辑可还原。
+        if (putInsightField(item, key, v)) changed = true
         continue
       }
       if (key === 'trigger') {
@@ -379,8 +338,7 @@ export function editMemoryItem({ store, gs, scope, id, fields, root }) {
         if (v.when && typeof v.when === 'object') next.when = v.when
         if (v.guard && typeof v.guard === 'object') next.guard = v.guard
         if (typeof v.prevents === 'string') next.prevents = v.prevents
-        item.trigger = next
-        changed = true
+        if (putInsightField(item, 'trigger', next)) changed = true
         continue
       }
       if (key === 'steps' || key === 'tags' || key === 'files' || key === 'symbols') {
@@ -388,25 +346,22 @@ export function editMemoryItem({ store, gs, scope, id, fields, root }) {
         // 写入期约束（与 save_lesson 同一判据）：files 只收项目内相对路径，项目外/逃出根的丢弃。
         if (key === 'files') {
           const norm = normalizeCitationFiles(v, root)
-          item.files = norm.files
+          if (putInsightField(item, key, norm.files)) changed = true
           dropped += norm.dropped.length
-        } else {
-          item[key] = v.map(String)
+        } else if (putInsightField(item, key, v.map(String))) {
+          changed = true
         }
-        changed = true
         continue
       }
       if (key === 'confidence') {
         const n = Number(v)
         if (!Number.isFinite(n)) continue
-        item.confidence = Math.max(0, Math.min(1, n))
-        changed = true
+        if (putInsightField(item, key, Math.max(0, Math.min(1, n)))) changed = true
         continue
       }
       const s = v === null || v === undefined ? '' : String(v)
       if (key === 'title' && !s.trim()) continue
-      item[key] = s
-      changed = true
+      if (putInsightField(item, key, s)) changed = true
     }
     pruneKindFields(item, oldKind)
     if (changed) {
@@ -550,7 +505,7 @@ export function insightCommandDefinition(config, ctx) {
         const id = raw[2]
         const taskId = raw[3]
         if (!['confirm', 'promote', 'demote', 'archive', 'restore', 'delete'].includes(verb) || !id) {
-          return { kind: 'error', text: '[insight] 用法: /insight <动作|save|edit> …' }
+          return { kind: 'error', text: '[insight] 用法: /tasks insight <动作|save|edit> …' }
         }
         const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
         const gs = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { pathToFileURL } from 'node:url'
-import { ProjectMemoryStore } from '../src/store.js'
+import { ProjectMemoryStore, _clearStoreCacheForTest } from '../src/store.js'
 import { shardItem } from './shard-format.mjs'
 
 const run = promisify(execFile)
@@ -75,4 +75,66 @@ const merged = new ProjectMemoryStore(taskRoot).load().getTask('tsk_c')
 assert.deepEqual(merged.steps, [{ content: 'remote', status: 'completed' }], '另一进程的新步骤不能被热点回滚')
 assert.ok(merged.files.includes('src/hot.ts'), '另一进程新增的文件热点不能被步骤合并丢掉')
 console.log('  ok concurrent task merge keeps both steps and file hotspots')
-console.log('ALL CHECKS PASSED (2 passed)')
+
+// 会话绑定：B 只改 s2，A 改 s1。整份本地快照覆盖会把 B 的 s2 回退，也会让 A 的旧内存
+// 把 B 刚改的绑定写回去。合并必须只回写“相对基线有变化”的项。
+const bindRoot = mkdtempSync(path.join(tmpdir(), 'pm-concurrent-bind-'))
+const nowIso = '2026-01-01T00:00:00.000Z'
+const mkTask = (id) => ({ id, title: id, projectRoot: bindRoot, steps: [], files: [], archived: false, createdAt: nowIso, updatedAt: nowIso, lastActiveAt: nowIso })
+const seed = new ProjectMemoryStore(bindRoot).load()
+for (const id of ['tsk_old', 'tsk_a', 'tsk_b']) seed.addTask(mkTask(id))
+seed.setBinding('s1', 'tsk_old')
+seed.setBinding('s2', 'tsk_old')
+seed.save()
+_clearStoreCacheForTest()
+const A = new ProjectMemoryStore(bindRoot).load()
+_clearStoreCacheForTest()
+const B = new ProjectMemoryStore(bindRoot).load()
+B.setBinding('s2', 'tsk_b')
+B.save()
+A.setBinding('s1', 'tsk_a')
+A.save()
+_clearStoreCacheForTest()
+assert.deepEqual(new ProjectMemoryStore(bindRoot).load().binding, { s1: 'tsk_a', s2: 'tsk_b' }, '未改动的绑定不能被本地旧快照回退')
+console.log('  ok concurrent binding merge only writes locally changed sessions')
+
+// tombstone 不能越过一次成功落盘：A 解绑后 B 重新绑定，A 之后的写不能把 B 的新绑定删掉。
+const tombRoot = mkdtempSync(path.join(tmpdir(), 'pm-concurrent-tomb-'))
+const seed2 = new ProjectMemoryStore(tombRoot).load()
+for (const id of ['tsk_old', 'tsk_new', 'tsk_other']) {
+  seed2.addTask({ id, title: id, projectRoot: tombRoot, steps: [], files: [], archived: false, createdAt: nowIso, updatedAt: nowIso, lastActiveAt: nowIso })
+}
+seed2.setBinding('s1', 'tsk_old')
+seed2.save()
+_clearStoreCacheForTest()
+const A2 = new ProjectMemoryStore(tombRoot).load()
+_clearStoreCacheForTest()
+const B2 = new ProjectMemoryStore(tombRoot).load()
+A2.removeBinding('s1')
+A2.save()
+B2.setBinding('s1', 'tsk_new')
+B2.save()
+A2.setBinding('s9', 'tsk_other')
+A2.save()
+_clearStoreCacheForTest()
+assert.deepEqual(new ProjectMemoryStore(tombRoot).load().binding, { s1: 'tsk_new', s9: 'tsk_other' }, '旧 tombstone 不能误杀后续合法绑定')
+console.log('  ok binding tombstone clears after a successful save')
+
+// 归档状态不能用 updatedAt 猜：普通步骤写也会刷新它。B 持有旧 archived=false 时
+// 只改步骤，不能把 A 的归档回滚；反向也不能把 A 的解归档回滚。
+const archRoot = mkdtempSync(path.join(tmpdir(), 'pm-concurrent-arch-'))
+const archSeed = new ProjectMemoryStore(archRoot).load()
+archSeed.addTask({ id: 'tsk_arch', title: '归档并发', projectRoot: archRoot, steps: [{ content: 'a', status: 'pending' }], files: [], fileMeta: {}, archived: false, createdAt: nowIso, updatedAt: nowIso, lastActiveAt: nowIso })
+archSeed.save()
+_clearStoreCacheForTest()
+const AA = new ProjectMemoryStore(archRoot).load()
+_clearStoreCacheForTest()
+const BB = new ProjectMemoryStore(archRoot).load()
+AA.commit((st) => { const t = st.getTask('tsk_arch'); t.archived = true; t.updatedAt = '2026-02-01T00:00:00.000Z'; st.markTasksDirty() })
+AA.save()
+BB.commit((st) => { const t = st.getTask('tsk_arch'); t.steps = [{ content: 'b', status: 'completed' }]; t.updatedAt = '2026-03-01T00:00:00.000Z'; st.markTasksDirty() })
+BB.save()
+_clearStoreCacheForTest()
+assert.equal(new ProjectMemoryStore(archRoot).load().getTask('tsk_arch').archived, true, '普通更新不能回滚另一进程的归档')
+console.log('  ok concurrent task archive is not rolled back by a plain update')
+console.log('ALL CHECKS PASSED (5 passed)')

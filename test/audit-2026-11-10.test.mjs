@@ -229,11 +229,33 @@ ok('空文档不需要 terms 回填')
   store._bucketCount = 2
   store._needsShardRewrite = true
   assert.equal(store.save(), true)
-  assert.ok(!readdirSync(path.join(dir, 'shards')).includes('bucket-00001.json'), '缩桶后的空桶必须删掉')
+  const emptyBucket = readFileSync(path.join(dir, 'shards', 'bucket-00001.json'), 'utf8')
+  assert.deepEqual(JSON.parse(emptyBucket).items, [], '缩桶后的空桶要重写成空文件（只删文件会留下复活窗口）')
   _clearStoreCacheForTest()
   const reread = new ProjectMemoryStore(dir).load()
   assert.equal(Object.keys(reread.files).length, keep.length, '已删除的条目不能从残留桶复活')
   ok('缩桶重排：空桶里的已删条目不再复活')
+}
+
+// 14b. 越界桶是缩桶 cleanup 失败/崩溃的残留：load 必须忽略，不能把已删条目读回来
+{
+  const dir = tmp('audit-out-of-range-')
+  mkdirSync(path.join(dir, 'shards'), { recursive: true })
+  writeFileSync(path.join(dir, 'format.json'), JSON.stringify({ version: 3, layout: 'bucket', bucketSize: 32768, bucketCount: 2 }))
+  writeFileSync(path.join(dir, 'shards', 'bucket-00009.json'), JSON.stringify({
+    version: 3,
+    bucket: 9,
+    bucketSize: 32768,
+    items: [{
+      relPath: 'ghost.js',
+      record: { sha256: 'ghost', size: 1, type: 'code', indexedAt: '2026-01-01T00:00:00.000Z' },
+      entries: [],
+    }],
+  }))
+  _clearStoreCacheForTest()
+  const store = new ProjectMemoryStore(dir).load()
+  assert.equal(store.fileRecord('ghost.js'), undefined, 'bucketCount 之外的桶不能参与加载')
+  ok('越界桶：load 按 bucketCount 忽略残留')
 }
 
 // 15. 加载后读失败：合并读不到时不能继续写，否则覆盖另一进程的条目

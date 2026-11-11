@@ -2,7 +2,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { TEXT_OUTPUT, persistenceNote, rootParam } from './output.js'
 import path from 'node:path'
 import { existsSync, statSync } from 'node:fs'
-import { assertIndexRoot, assertSafeRoot, listProjectFiles, memoryDirName, memoryRootFor, relativePath, resolveIndexRoot, scanLimits, storeKey } from '../util/fs.js'
+import { assertIndexRoot, assertSafeRoot, excludedEntryForPath, listProjectFiles, memoryDirName, memoryRootFor, relativePath, resolveIndexRoot, scanLimits, storeKey } from '../util/fs.js'
 import { DROP, OVERSIZE, UNCHANGED, commitFileUpdates, fileKind, planFileIndex, toFileUpdate } from '../index-pipeline.js'
 import { ProjectMemoryStore } from '../store.js'
 import { onFileIndexed, isTypeScriptFile, enhanceQueueStats } from '../enhancer.js'
@@ -93,6 +93,7 @@ export async function indexRepository(ctx, config, root, { reindex = false, allo
     updates: batch,
     unseen: truncated ? null : seen,
     root,
+    isExcludedRel: (rel) => Boolean(excludedEntryForPath(path.join(root, rel), config)),
   })
   const stats = store.stats()
   let report =

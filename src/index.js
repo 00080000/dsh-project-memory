@@ -29,7 +29,7 @@ export const Config = Schema.object({
   chunkChars: Schema.number().default(3000),
   maxChunksPerFile: Schema.number().default(40),
   // 单文件内存闸门，不是磁盘设置：索引一个文件要先整个物化，峰值随文件大小线性走。
-  // 实测边际系数（峰值 RSS / 磁盘 MB，见 scripts/file-peak.mjs 与 README「单文件内存预算」）：
+  // 实测边际系数（峰值 RSS / 磁盘 MB，见 scripts/file-peak.mjs）：
   // 典型源码 ~10×、符号密集代码 ~22×、文本型 PDF ~20×；10 把单文件增量压在 ~+300 MB。
   maxFileSizeMb: Schema.number().default(10),
   maxOutputChars: Schema.number().default(8000),
@@ -213,7 +213,7 @@ export function apply(ctx, config) {
   }
 
   // 设置页保存（宿主 volatile 更新）后：只有 watchInterval 会影响运行中的定时器，
-  // 其余 volatile 字段都在各自的读取点当场生效（llmQueryExpansion 每次查询读、autoIndex 只认启动值）。
+  // 其余 volatile 字段都在各自的读取点当场生效（llmQueryExpansion 每次查询读、autoIndexOnFirstUse 只认启动值）。
   // paths 为 `[[]]` 时表示整份 Config 都可能变了 → changedConfigKeys 返回 null，按"全部重读"处理。
   ctx.on('loader/volatile-update', (paths) => {
     const changed = changedConfigKeys(paths)

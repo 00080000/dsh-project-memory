@@ -857,8 +857,6 @@ export function normalizeCitationFiles(files, root) {
   return { files: kept, dropped }
 }
 
-export const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin'
-
 export function storeKey(rel, platform = process.platform) {
   return platform === 'win32' || platform === 'darwin' ? rel.toLowerCase() : rel
 }
@@ -1139,7 +1137,7 @@ function isCompiledRootPolicy(value) {
  * @param {object} [config] 插件 config（只读 `config.roots` 与 `config.allowUnsafeRoots`）
  * @param {{platform?: string, pathApi?: object, home?: string|null, env?: object, warn?: Function,
  *   allowUnsafe?: boolean, unsafeDirs?: Set<string>, sharedTemp?: Set<string>}} [opts]
- * @returns {object} 策略对象（内部结构，调用方应通过 rootRejection/isUnsafeRoot/isExcludedPath 使用）
+ * @returns {object} 策略对象（内部结构，调用方应通过 rootRejection/isUnsafeRoot/excludedEntryForPath 使用）
  */
 export function compileRootPolicy(config, opts = {}) {
   const platform = opts.platform || process.platform
@@ -1614,6 +1612,9 @@ export function resolveSafeIndexRoot(exec, explicitRoot, config) {
 
 /** 尽力而为的会话记忆根：拿不到就返回 null（用于审计镜像这类旁路，不抛错）。 */
 export function sessionMemoryRootOrNull(exec, config) {
+  // 没有会话信息时不要退回进程 cwd：那会把「没有会话」的工具调用（测试 / 脚本）
+  // 当成以 cwd 为根的会话，在仓库里镜像 watchlist、甚至改写开发者的真实 store。
+  if (!sessionWorkingDir(exec?.agent?.session, { agent: exec?.agent })) return null
   try {
     return resolveSafeIndexRoot(exec, null, config)
   } catch {

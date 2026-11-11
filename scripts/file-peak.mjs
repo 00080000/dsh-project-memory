@@ -47,7 +47,7 @@ function startSampler() {
 
 async function measure({ label, stages }) {
   if (typeof globalThis.gc !== 'function') {
-    throw new Error('需要 --expose-gc：node --expose-gc bench/file-peak.mjs')
+    throw new Error('需要 --expose-gc：node --expose-gc scripts/file-peak.mjs')
   }
   globalThis.gc()
   const base = process.memoryUsage()

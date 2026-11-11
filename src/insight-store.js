@@ -35,7 +35,7 @@ export function containsSecretFields(ins, fields = ['title', 'body', 'pattern', 
   for (const f of fields) {
     const v = ins && ins[f]
     if (!v) continue
-    const text = typeof v === 'object' ? JSON.stringify(v) : Array.isArray(v) ? v.join('\n') : String(v)
+    const text = Array.isArray(v) ? v.join('\n') : typeof v === 'object' ? JSON.stringify(v) : String(v)
     for (const re of SECRET_PATTERNS) if (re.test(text)) return f
   }
   return null
@@ -186,6 +186,13 @@ function putField(item, key, next, replaced) {
   }
   item[key] = next
   replaced.push(key)
+}
+
+/** 面板编辑用的单字段写入：与自动覆盖共用 `prev` 单槽，避免“编辑后旧值不可还原”。 */
+export function putInsightField(item, key, next) {
+  const replaced = []
+  putField(item, key, next, replaced)
+  return replaced.length > 0
 }
 
 /** 局部 trigger 更新与面板编辑同语义：只改传入成员，when/guard/prevents 等 authored 面保留。 */
@@ -378,7 +385,7 @@ function autoMergeTarget(near, cfg) {
  * 只记非归档条目。返回实际加一的条数，调用方据此决定是否落盘。
  * @returns {number} 被加一的条目数
  */
-export function recordHit({ store, globalStore, ids, nowIso, delta = 1 } = {}) {
+export function recordHit({ store, globalStore, ids, nowIso, delta = 1, restore = null } = {}) {
   const want = new Set((ids || []).filter(Boolean))
   if (!want.size) return 0
   const now = nowIso || new Date().toISOString()
@@ -393,6 +400,12 @@ export function recordHit({ store, globalStore, ids, nowIso, delta = 1 } = {}) {
       if (next === num(it.hitCount, 0)) continue
       it.hitCount = next
       if (step > 0) it.lastHitAt = now
+      else if (restore && restore.has(it.id)) {
+        // 回滚到注入前的活跃度：不能把“模型从没看到过”的这次曝光留成 lastHitAt=now。
+        const prev = restore.get(it.id)
+        if (prev) it.lastHitAt = prev
+        else delete it.lastHitAt
+      }
       c++
     }
     n += c
@@ -1187,7 +1200,29 @@ export function promoteProjectToGlobal(store, globalStore, cfg, now) {
   return moved
 }
 
-// ---- 降级（反向，PR3 UI 使用；现在提供最小实现） ----
+// ---- 降级（反向，PR3 UI 使用） ----
+
+/**
+ * 落点去重：同 id 或近重复（≥ dedupOverlap）合并，否则 push；来源删除/容量收口由调用方做。
+ * 提升/降级与面板的四个目标池共用这一份，避免 store 与命令层各有一套去重规则。
+ */
+export function mergeOrPushInto({ targetPool, copy, cfg, nowIso }) {
+  // 同 id 必须比 id 而不是相似度：'ins_dup' 已在目标池时再移动同 id，指纹类字段可能因后来编辑
+  // 而分叉，靠相似度会漏判——同 id 是确定事实，直接合并。
+  const sameId = targetPool.find((it) => it && it.id === copy.id)
+  if (sameId) {
+    mergeInto(sameId, copy, cfg, nowIso)
+    return { merged: true, target: sameId }
+  }
+  const hit = findBestOverlapMatch(insightMatchText(copy), targetPool)
+  const threshold = cfg?.dedupOverlap ?? 0.7
+  if (hit && hit.score >= threshold) {
+    mergeInto(hit.item, copy, cfg, nowIso)
+    return { merged: true, target: hit.item }
+  }
+  targetPool.push(copy)
+  return { merged: false, target: copy }
+}
 
 export function demoteToProject(store, globalStore, id, nowIso, cfg = cfgInsight({})) {
   if (!globalStore) return { ok: false, error: 'global 存储未初始化' }
@@ -1199,18 +1234,17 @@ export function demoteToProject(store, globalStore, id, nowIso, cfg = cfgInsight
   const copy = carryUsageFields(normalizeInsight(ins, { scope: 'project', nowIso: now }), ins)
   copy.id = `${ins.id}_d${Date.now().toString(36)}`
   copy.movedFrom = { scope: 'global', id: ins.id, at: now }
-  copy.lastHitAt = now
   copy.promoteHold = true
-  items.push(copy)
+  const { merged, target } = mergeOrPushInto({ targetPool: items, copy, cfg, nowIso: now })
   // 降级只增不减 project：同样要收口 maxProject；被移动的条目必须豁免。
-  pruneItems(items, cfg.maxProject, now, { protectedIds: new Set([copy.id]) })
+  pruneItems(items, cfg.maxProject, now, { protectedIds: new Set([target.id]) })
   store.replaceInsightItems(items)
   globalStore.items().splice(idx, 1)
   globalStore.markDirty()
-  return { ok: true, action: 'demoted', id: copy.id, hint: '已降级回 project' }
+  return { ok: true, action: 'demoted', id: target.id, merged, target, hint: '已降级回 project' }
 }
 
-export function demoteToTask(store, taskId, id, nowIso) {
+export function demoteToTask(store, taskId, id, nowIso, cfg = cfgInsight({})) {
   const now = nowIso || new Date().toISOString()
   const task = store.getTask(taskId)
   if (!task) return { ok: false, error: `任务不存在: ${taskId}` }
@@ -1222,13 +1256,12 @@ export function demoteToTask(store, taskId, id, nowIso) {
   const copy = carryUsageFields(normalizeInsight(ins, { scope: 'task', nowIso: now }), ins)
   copy.id = `${ins.id}_d${Date.now().toString(36)}`
   copy.movedFrom = { scope: 'project', id: ins.id, at: now }
-  copy.lastHitAt = now
   copy.promoteHold = true
-  task.insights.push(copy)
+  const { merged, target } = mergeOrPushInto({ targetPool: task.insights, copy, cfg, nowIso: now })
   items.splice(idx, 1)
   store.replaceInsightItems(items)
   store.markTasksDirty()
-  return { ok: true, action: 'demoted', id: copy.id, hint: '已降级到任务级' }
+  return { ok: true, action: 'demoted', id: target.id, merged, target, hint: '已降级到任务级' }
 }
 
 /** 便捷：直接对归一化后文本算重叠（测试用）。 */

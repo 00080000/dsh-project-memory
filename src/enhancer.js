@@ -73,18 +73,6 @@ export function initTypeScript(config) {
   return null
 }
 
-export function getTypeScript() {
-  return ts
-}
-
-export function hasTypeScript() {
-  return ts !== null
-}
-
-export function getTsPath() {
-  return tsPath
-}
-
 export function getTsVersion() {
   return tsVersion
 }

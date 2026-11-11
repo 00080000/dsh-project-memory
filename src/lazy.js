@@ -51,12 +51,6 @@ function rootCacheFor(config) {
   return cache
 }
 
-/** 清空根缓存（测试 / 诊断；不传 config 表示全清）。 */
-export function clearRootCache(config) {
-  if (config) rootCaches.delete(config)
-  else rootCaches.clear()
-}
-
 function cachedProjectRoot(config, filePath, watchManager, sessionRoot) {
   const cache = rootCacheFor(config)
   const dir = path.dirname(filePath)

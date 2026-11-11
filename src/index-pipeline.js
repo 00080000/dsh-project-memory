@@ -113,13 +113,16 @@ export function toFileUpdate(rel, plan, record) {
  * 不再重建 doc↔symbol 链接：链接是读取期解算的派生关系（见 src/link.js），
  * 所以这里也没有了那个「中间批次跳过链接、最后一批统一做」的 `link` 参数。
  *
- * @param {{updates: object[], unseen?: Set<string>|null, root?: string|null}} args
+ * @param {{updates: object[], unseen?: Set<string>|null, root?: string|null,
+ *   isExcludedRel?: ((rel: string) => boolean)|null}} args
  *   `root` 给出时，显式索引过、且文件仍在盘上的条目不会被 unseen 清理删掉：它们本来就不在
  *   扫描清单里（.gitignore 排除），"没扫到"不等于"被删了"。
+ *   `isExcludedRel` 必须先于 explicit 豁免生效：roots.exclude 是"这棵子树一律不进索引"，
+ *   显式 index_doc 过的文件也不能因为 explicit 标记而在排除后继续可检索。
  * @returns {{stale: string[], removed: number}} stale 是 CAS 失败（并发改动）的 rel，
  *   调用方应让它们保持「未落快照」状态，下一轮重试。
  */
-export function commitFileUpdates(store, { updates, unseen = null, root = null }) {
+export function commitFileUpdates(store, { updates, unseen = null, root = null, isExcludedRel = null }) {
   const stale = []
   let removed = 0
   store.commit((s) => {
@@ -133,6 +136,12 @@ export function commitFileUpdates(store, { updates, unseen = null, root = null }
     if (unseen) {
       for (const rel of Object.keys(s.files)) {
         if (unseen.has(rel)) continue
+        // 排除规则优先于 explicit：被 roots.exclude 命中的文件即使显式索引过也必须摘掉。
+        if (isExcludedRel && isExcludedRel(rel)) {
+          s.removeFile(rel)
+          removed++
+          continue
+        }
         if (root && s.files[rel]?.explicit && existsSync(path.join(root, rel))) continue
         s.removeFile(rel)
         removed++

@@ -10,18 +10,24 @@ const defs = toolDefinitions(config, { llm: null }, {})
 
 let chars = 0
 let cjk = 0
+let tokens = 0
 for (const def of defs) {
-  const text = def.description + JSON.stringify(def.parameters)
-  chars += text.length
-  cjk += (text.match(/[\u4e00-\u9fff]/g) || []).length
+  // 模型收到的是 {name, description, parameters}，名字也占预算；漏掉它会比真实值少 ~32 token。
+  // 三个字段分别计 token 再求和，与 scripts/tool-schema-size.mjs 的 sizeOf() 完全同口径。
+  for (const text of [def.name, def.description, JSON.stringify(def.parameters)]) {
+    // 与脚本同一组区段：汉字、假名、全角/CJK 标点都按 1 token/字符计。
+    const textCjk = (text.match(/[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFF60\u3000-\u303F]/gu) || []).length
+    chars += text.length
+    cjk += textCjk
+    tokens += textCjk + Math.round((text.length - textCjk) / 4)
+  }
 }
 // 预算按 **token 估算** 判，不按字符：中文字符约 1 token/字，其余约 4 字符/token。
 // 之前只看字符，导致"中文描述省字符"被当成省预算——同样的信息换成英文，字符 +25%、token 反而更少。
-// 基线（2026-11）：全英前 5458 字符 / 536 汉字 ≈ 1767 token；全英后 6801 字符 / 0 汉字 ≈ 1700 token。
+// 基线（2026-11）：含工具名 7232 字符 / 0 汉字 ≈ 1813 token。旧断言漏算名字，实际余量比显示的小。
 assert.equal(defs.length, 12, '工具数量变化必须同步检查 schema 预算与注册表')
-const tokens = cjk + Math.round((chars - cjk) / 4)
 console.log(`  tool schema: ${chars} chars · ${cjk} CJK · ~${tokens} tokens (${defs.length} tools)`)
-assert.ok(tokens <= 1800, `tool schema budget exceeded: ~${tokens} tokens (${chars} chars, limit ~1800 tokens)`)
+assert.ok(tokens <= 1850, `tool schema budget exceeded: ~${tokens} tokens (${chars} chars, limit ~1850 tokens)`)
 
 // ---- root 参数：形状与"不传 root 会怎样"的提示只有一处声明 ----
 // 十一份手写副本收敛成 rootParam() 之后，这里把每个工具的 root 契约钉死：

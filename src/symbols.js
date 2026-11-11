@@ -398,8 +398,6 @@ function matchShell(line) {
 }
 
 function extractParamsAndReturn(line) {
-  const trimmed = line.trim()
-  
   // Try to extract params and return type from function declaration
   // Matches: function name(params): returnType { or => returnType {
   const funcMatch = line.match(/function\s+([A-Za-z_$][\w$]*)\s*(\([^)]*\))\s*(?::\s*([^{]+))?\s*\{/)
@@ -417,8 +415,8 @@ function extractParamsAndReturn(line) {
   
   // Arrow function without explicit return type: const name = (params) => {
   const arrowSimple = line.match(/const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?\(([^)]*)\)\s*=>/)
-  if (arrowMatch) {
-    return `${arrowMatch[1]}(${arrowMatch[2]})`
+  if (arrowSimple) {
+    return `${arrowSimple[1]}(${arrowSimple[2]})`
   }
   
   // Class method: methodName(params): returnType {

@@ -125,13 +125,13 @@ export function createProjectMemoryService(ctx, config) {
       return {
         id: saved.id,
         action: saved.action,
-        ...(store.lastSaveOk === false ? { persisted: false } : {}),
+        // project 与 global 任一侧没落盘都算未持久化：只查 store 会把 global 写失败报成成功。
+        ...(store.lastSaveOk === false || globalStore.lastCommitOk === false ? { persisted: false } : {}),
       }
     },
 
-    // v1 契约只返回 `{ deleted }`：关键词命中数超过 `maxForgetMatches` 时 `removeMemory` 会返回
-    // `ok:false / tooMany`，这里与"没有命中"一样落成 `{ deleted: [] }`——调用方无法区分这两者，
-    // 是刻意换取四动词返回形状稳定的取舍（不让 v1 契约随内部错误码漂移）。
+    // v1 契约只返回 `{ deleted }`：命中数超过 `maxForgetMatches` 时额外带 `tooMany/matched`，
+    // 其余失败与"没有命中"同形（`deleted: []`），保持四动词返回形状稳定。
     forget(idOrQuery, opts = {}) {
       const root = resolveRoot(opts.root)
       // 删除也是写盘入口：先过根护栏，拒绝发生在 store / 删除留痕文件被写出之前。
@@ -156,7 +156,7 @@ export function createProjectMemoryService(ctx, config) {
         deleted,
         // 命中超 cap 时没有任何删除：调用方需要能区分“没命中”与“命中太多、拒绝删”。
         ...(removed && removed.tooMany ? { tooMany: true, matched: (removed.matches || []).length } : {}),
-        ...(store.lastSaveOk === false ? { persisted: false } : {}),
+        ...(store.lastSaveOk === false || globalStore.lastCommitOk === false ? { persisted: false } : {}),
       }
     },
 

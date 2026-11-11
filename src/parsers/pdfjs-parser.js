@@ -5,7 +5,6 @@ import { pathToFileURL } from 'node:url'
 const WORKER_SPECIFIER = 'pdfjs-dist/legacy/build/pdf.worker.mjs'
 
 let pdfjsPromise
-let configuredWorkerSrc
 
 /**
  * 解析 pdf.js 的 worker 模块位置，返回 file:// URL；解析不到返回 undefined。
@@ -33,10 +32,10 @@ function loadPdfjs() {
   if (!pdfjsPromise) {
     pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs')
       .then((mod) => {
-        // 显式配置 > pdf.js 自己已设的默认值 > 按文件位置解析出来的 URL。
+        // pdf.js 自己已设的默认值 > 按文件位置解析出来的 URL。
         // 必须用 `||` 而不是 `??`：GlobalWorkerOptions.workerSrc 的初始值是空字符串
         // （GlobalWorkerOptions.#src = ""），`??` 会停在 "" 上直接跳过兜底解析。
-        const workerSrc = configuredWorkerSrc || mod.GlobalWorkerOptions.workerSrc || resolveWorkerSrc()
+        const workerSrc = mod.GlobalWorkerOptions.workerSrc || resolveWorkerSrc()
         if (workerSrc) mod.GlobalWorkerOptions.workerSrc = workerSrc
         return mod
       })
@@ -85,7 +84,7 @@ function extractPageText(items) {
   return lines.join('\n')
 }
 
-export async function parsePdf(filePath, { pages = null, maxPages = 1000, backend = 'pdfjs', collectLayoutStats = false } = {}) {
+export async function parsePdf(filePath, { maxPages = 1000 } = {}) {
   const data = new Uint8Array(await readFile(filePath))
   const { getDocument } = await loadPdfjs()
   const loadingTask = getDocument({ data, ...PDFJS_OPTIONS })
@@ -97,50 +96,21 @@ export async function parsePdf(filePath, { pages = null, maxPages = 1000, backen
     }
 
     const pageList = []
-    let imageCount = 0
-    let sampledPages = 0
     for (let n = 1; n <= total; n++) {
-      if (pages && !pages.has(n)) continue
       const page = await doc.getPage(n)
       const content = await page.getTextContent()
       pageList.push({ page: n, text: extractPageText(content.items) })
-
-      if (collectLayoutStats && sampledPages < 5) {
-        const { OPS } = await loadPdfjs()
-        const opList = await page.getOperatorList()
-        for (const fn of opList.fnArray) {
-          if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject) imageCount++
-        }
-        sampledPages++
-      }
     }
     if (pageList.length === 0) {
       throw new Error('No pages matched the selection, or the PDF contains no extractable text')
     }
 
-    const totalTextChars = pageList.reduce((sum, p) => sum + p.text.length, 0)
     return {
       pageCount: pageList.length,
       pages: pageList,
       markdown: buildMarkdown(pageList),
-      backend,
-      stats: collectLayoutStats
-        ? {
-            totalTextChars,
-            avgImagesPerPage: sampledPages ? imageCount / sampledPages : 0,
-          }
-        : undefined,
     }
   } finally {
     await loadingTask.destroy()
-  }
-}
-
-export function configurePdfjsWorker(workerSrc) {
-  configuredWorkerSrc = workerSrc
-  if (pdfjsPromise) {
-    pdfjsPromise.then((mod) => {
-      mod.GlobalWorkerOptions.workerSrc = workerSrc
-    })
   }
 }

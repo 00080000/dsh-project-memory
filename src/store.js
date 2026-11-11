@@ -158,7 +158,7 @@ function auxCharsOf(store) {
 /**
  * 单个 store 的驻留估算：数**内存里留下的对象图**，按版本记忆化。不用读盘文本量换算——
  * `searchText` 要到 `allEntries()` 才物化，前后估出两个数（实测 76MB → 107MB），且被
- * `stripPersistedDerived` 删掉的字段也会被算进去。`_entriesVersion` 与 `_materializeVersion`
+ * `withoutPersistedDerived` 删掉的字段也会被算进去。`_entriesVersion` 与 `_materializeVersion`
  * 都参与失效；一次全量遍历 70119 条目 ~40ms，逐出又会遍历整个缓存，所以必须记忆化。
  */
 export function _estimateResidentBytes(store) {
@@ -264,19 +264,25 @@ function mergeTaskFileState(a, b) {
       if (typeof rel !== 'string' || !rel) continue
       const prev = meta[rel] || { n: 0, writes: 0, reads: 0 }
       const cur = isRecord(src[rel]) ? src[rel] : {}
-      meta[rel] = {
+      const next = {
         ...prev,
         ...cur,
         n: Math.max(prev.n || 0, cur.n || 0),
         writes: Math.max(prev.writes || 0, cur.writes || 0),
         reads: Math.max(prev.reads || 0, cur.reads || 0),
-        ...(newerIso(cur.lastWriteAt, prev.lastWriteAt) >= 0 && (cur.lastWriteAt || prev.lastWriteAt)
-          ? { lastWriteAt: newerIso(cur.lastWriteAt, prev.lastWriteAt) >= 0 ? cur.lastWriteAt : prev.lastWriteAt }
-          : {}),
-        ...(newerIso(cur.lastReadAt, prev.lastReadAt) >= 0 && (cur.lastReadAt || prev.lastReadAt)
-          ? { lastReadAt: newerIso(cur.lastReadAt, prev.lastReadAt) >= 0 ? cur.lastReadAt : prev.lastReadAt }
-          : {}),
       }
+      // 不能先 `...cur` 再条件覆盖：条件为假时留下的正是 cur 的旧时间。时间取最新必须显式计算。
+      const writeAt = newerIso(cur.lastWriteAt, prev.lastWriteAt) >= 0
+        ? (cur.lastWriteAt || prev.lastWriteAt)
+        : (prev.lastWriteAt || cur.lastWriteAt)
+      const readAt = newerIso(cur.lastReadAt, prev.lastReadAt) >= 0
+        ? (cur.lastReadAt || prev.lastReadAt)
+        : (prev.lastReadAt || cur.lastReadAt)
+      if (writeAt) next.lastWriteAt = writeAt
+      else delete next.lastWriteAt
+      if (readAt) next.lastReadAt = readAt
+      else delete next.lastReadAt
+      meta[rel] = next
     }
   }
   const files = Object.keys(meta).sort((x, y) => {
@@ -315,9 +321,10 @@ function mergeTaskInsights(local, disk, base) {
 }
 
 /**
- * 落盘的 entry 只保留**不可推导的事实**，两个派生字段永不写盘：`linkedSymbols` 是跨实体
+ * 落盘的 entry 只保留**不可推导的事实**，三个派生字段永不写盘：`linkedSymbols` 是跨实体
  * 派生（取决于符号表当前状态，读取期由 src/link.js 解算），`searchText` 是自派生（只依赖
- * 本 entry，由 `allEntries()` 在内存里物化）。旧 store 的这两个字段加载时剥掉，下次写盘自然压实。
+ * 本 entry，由 `allEntries()` 在内存里物化），`typeSig` 是增强器的实现细节。旧 store 的
+ * 这些字段加载时剥掉，下次写盘自然压实。
  */
 const PERSISTED_DERIVED = ['linkedSymbols', 'searchText', 'typeSig']
 const PERSISTED_DERIVED_SET = new Set(PERSISTED_DERIVED)
@@ -348,16 +355,10 @@ function rebuildWithoutDerived(entry) {
 }
 
 /**
- * 剥掉派生字段（加载路径用）。没有派生字段时**原对象返回**（零分配热路径）。
- * @returns {object} 不含派生字段的条目（可能是同一个对象）
+ * 返回不含派生字段的条目（加载/写盘共用）。没有派生字段时**原对象返回**（零分配热路径），
+ * 有派生字段时重建而不是 `delete`（避免 V8 字典模式）。加载路径复用返回值即可，写盘路径
+ * 不能动内存对象。
  */
-function stripPersistedDerived(entry) {
-  if (!entry || typeof entry !== 'object') return entry
-  if (!hasPersistedDerived(entry)) return entry
-  return rebuildWithoutDerived(entry)
-}
-
-/** 返回不含派生字段的条目（写盘路径用，不能动内存里的对象）。 */
 function withoutPersistedDerived(entry) {
   if (!entry || typeof entry !== 'object') return entry
   if (!hasPersistedDerived(entry)) return entry
@@ -366,7 +367,7 @@ function withoutPersistedDerived(entry) {
 
 /** 仅供测试：加载/写盘路径的剥离实现（内存形状由测试用 --expose-gc 度量）。 */
 export function _stripPersistedDerivedForTest(entry) {
-  return stripPersistedDerived(entry)
+  return withoutPersistedDerived(entry)
 }
 
 function loadJson(filePath, fallback, counter, errorSink) {
@@ -490,11 +491,15 @@ export class ProjectMemoryStore {
     this._deletedInsightIds = new Set()
     this._deletedTaskIds = new Set()
     this._deletedBindings = new Set()
+    /** 加载/上次成功落盘时的会话绑定：跨进程合并时区分“本地改过”与“只是旧快照”。 */
+    this._baseBinding = new Map()
     this._removedWatch = new Set()
     /** 上次落盘/加载时的 insight id 集合：原地 splice 的删除也要能被合并逻辑看见。 */
     this._baseInsightIds = new Set()
     /** task.id → 上次落盘/加载时该任务的 insight id 集合（任务级条目的合并基线，见 mergeTaskInsights）。 */
     this._baseTaskInsightIds = new Map()
+    /** task.id → 加载/上次落盘时的 archived：只看 updatedAt 会把显式归档/解归档回滚。 */
+    this._baseTaskArchived = new Map()
     /**
      * 本进程**新建**的条目。"磁盘没有但内存有"可能是新建（要补写）也可能是**对方删了**
      * （不能写回）；没有这个集合，后者会被复活。
@@ -761,6 +766,11 @@ export class ProjectMemoryStore {
     let sawLegacy = false
     const sourceRank = new Map()
     for (const name of shardNames) {
+      // v3 只认当前 bucketCount 内的桶：越界桶是缩桶后 cleanup 失败/崩溃的残留，
+      // 读它会让已删除条目复活（cleanup 修复前尤其常见）。
+      const bucketMatch = /^bucket-(\d{5})\.json$/.exec(name)
+      if (bucketMatch && this._layout === 'v3' && this._bucketCount > 0
+        && Number(bucketMatch[1]) >= this._bucketCount) continue
       const counter = { chars: 0 }
       const doc = loadJson(path.join(this.dir, SHARDS_DIR, name), null, counter, this._readErrors)
       if (!doc) continue
@@ -783,7 +793,7 @@ export class ProjectMemoryStore {
         const list = Array.isArray(item.entries) ? item.entries.filter(isRecord) : []
         this._setFileTextChars(item.relPath, Array.isArray(doc.items) ? JSON.stringify(item).length : counter.chars)
         if (list.some((e) => PERSISTED_DERIVED.some((k) => k in e))) this._compactQueue.add(item.relPath)
-        this.entries[item.relPath] = list.map(stripPersistedDerived)
+        this.entries[item.relPath] = list.map(withoutPersistedDerived)
       }
       if (!isBucket) sawLegacy = true
     }
@@ -822,6 +832,7 @@ export class ProjectMemoryStore {
     }
     const bindingDoc = this._loadJson(path.join(this.dir, BINDING_FILE), {})
     this.binding = isRecord(bindingDoc) ? bindingDoc : {}
+    this._baseBinding = new Map(Object.entries(this.binding))
     const watchDoc = this._loadJson(path.join(this.dir, WATCH_FILE), [])
     const rawWatch = Array.isArray(watchDoc) ? watchDoc.filter((r) => typeof r === 'string' && r) : []
     // 老版本可能把同一个物理目录按不同大小写写了两条（Windows/macOS 大小写不敏感）：
@@ -1033,10 +1044,12 @@ export class ProjectMemoryStore {
   /** 重新记下每个任务当前可见的 insight id：只在加载成功 / 整份 tasks 落盘成功后调用。 */
   _resetTaskInsightBases() {
     this._baseTaskInsightIds = new Map()
+    this._baseTaskArchived = new Map()
     for (const task of Array.isArray(this.tasks) ? this.tasks : []) {
       if (!task?.id) continue
       const ids = Array.isArray(task.insights) ? task.insights.map((it) => it?.id).filter(Boolean) : []
       this._baseTaskInsightIds.set(task.id, new Set(ids))
+      this._baseTaskArchived.set(task.id, task.archived === true)
     }
   }
 
@@ -1187,6 +1200,9 @@ export class ProjectMemoryStore {
       if (this._dirtyBinding) {
         writeJsonAtomic(path.join(this.dir, BINDING_FILE), this.binding, { ensureDir: false })
         this._dirtyBinding = false
+        // 这份内容已经落盘：基线推进、tombstone 清空，否则旧墓碑会误杀对方之后的新绑定。
+        this._baseBinding = new Map(Object.entries(this.binding))
+        this._deletedBindings.clear()
       }
       if (this._dirtyWatch) {
         writeJsonAtomic(path.join(this.dir, WATCH_FILE), this.watchlist, { ensureDir: false })
@@ -1257,6 +1273,9 @@ export class ProjectMemoryStore {
         }
       }
     } else if (this._layout === 'v3') {
+      // 迁移保护态下 format 仍是 v2（_writeFormat 拒绝写）。此时不要翻回 v2 触发全量重排：
+      // 那会让每一次 save 都重写整库，直到用户手工修好旧文件。
+      if (this._legacyBlocked) return true
       this._layout = 'v2'
       this._needsShardRewrite = true
     }
@@ -1302,8 +1321,8 @@ export class ProjectMemoryStore {
     return map
   }
 
-  _writeBucket(index, map) {
-    if (!map.size) {
+  _writeBucket(index, map, { keepEmpty = false } = {}) {
+    if (!map.size && !keepEmpty) {
       try {
         unlinkWithRetry(bucketRelPath(this.dir, index))
       } catch (err) {
@@ -1340,7 +1359,7 @@ export class ProjectMemoryStore {
 
   _adoptBucketItem(rel, item) {
     this.files[rel] = item.record
-    this.entries[rel] = (item.entries || []).filter(isRecord).map(stripPersistedDerived)
+    this.entries[rel] = (item.entries || []).filter(isRecord).map(withoutPersistedDerived)
     this._setFileTextChars(rel, JSON.stringify({ record: item.record, entries: this.entries[rel] }).length)
     this._entriesVersion++
     this._baseFileSha.set(rel, item.record?.sha256 ?? null)
@@ -1433,9 +1452,23 @@ export class ProjectMemoryStore {
       }
       map.set(rel, { record: this.files[rel], entries: this.entries[rel] || [] })
     }
+    // 缩桶时“新布局下应为空”的桶也必须落成空文件：只写非空桶再删旧桶，一旦 unlink
+    // 失败/进程在窗口内退出，同名旧桶会活下来；它的下标仍在新 bucketCount 内，
+    // 范围检查发现不了，下一次 load 就把已删条目读回来。先把所有现存 in-range 桶清空，
+    // 再写 format（顺序不能反）。
+    try {
+      for (const name of readdirSync(path.join(this.dir, SHARDS_DIR))) {
+        const match = /^bucket-(\d{5})\.json$/.exec(name)
+        if (!match) continue
+        const index = Number(match[1])
+        if (index < this._bucketCount && !groups.has(index)) groups.set(index, new Map())
+      }
+    } catch {
+      // shards/ 还不存在：groups 里的桶会在下面建目录
+    }
     const written = new Set()
     for (const [index, map] of groups) {
-      this._writeBucket(index, map)
+      this._writeBucket(index, map, { keepEmpty: true })
       written.add(`bucket-${String(index).padStart(5, '0')}.json`)
     }
     // 全量重排后重建冲突基线：否则后续 removeFile 会拿不到 base、误判成"对方更新"。
@@ -1668,11 +1701,13 @@ export class ProjectMemoryStore {
           // `lastActiveAt`，不能让它把另一进程刚写的步骤盖回旧值。
           const semanticLocal = newerIso(t.updatedAt, prev.updatedAt) >= 0
           const semantic = semanticLocal ? t : prev
+          // 归档是语义状态，不能靠 updatedAt 猜：普通步骤/热点写也会刷新 updatedAt。
+          // 只有本地相对基线**显式改过** archived 时才取本地，否则一律取磁盘。
+          const baseArchived = this._baseTaskArchived.get(t.id)
+          const archived = (t.archived === true) === baseArchived ? prev.archived === true : t.archived === true
           const merged = {
             ...semantic,
-            // 归档：本进程更新更晚时尊重显式解归档；否则任一侧归档即归档（prune 不改 updatedAt，
-            // 不能让另一进程的普通更新把它的归档回滚）。
-            archived: semanticLocal ? t.archived === true : (t.archived === true || prev.archived === true),
+            archived,
             insights: mergedInsights,
             ...mergeTaskFileState(t, prev),
             updatedAt: newerIso(t.updatedAt, prev.updatedAt) >= 0 ? t.updatedAt : prev.updatedAt,
@@ -1689,9 +1724,22 @@ export class ProjectMemoryStore {
     if (this._dirtyBinding) {
       const disk = this._loadJson(path.join(this.dir, BINDING_FILE), {})
       if (isRecord(disk)) {
+        // 只回写“相对加载基线有变化”的本地项。整份本地快照覆盖会把另一进程刚改的
+        // 绑定回退成旧任务，也会让本地旧内存把对方刚删的会话复活。
         const merged = { ...disk }
-        for (const [sid, tid] of Object.entries(this.binding)) merged[sid] = tid
-        for (const sid of this._deletedBindings) delete merged[sid]
+        const sids = new Set([...Object.keys(this.binding), ...this._baseBinding.keys(), ...Object.keys(disk)])
+        for (const sid of sids) {
+          const localVal = this.binding[sid]
+          const baseVal = this._baseBinding.get(sid)
+          if (localVal !== baseVal) {
+            if (localVal === undefined) delete merged[sid]
+            else merged[sid] = localVal
+          } else if (disk[sid] === undefined) {
+            delete merged[sid]
+          } else {
+            merged[sid] = disk[sid]
+          }
+        }
         this.binding = merged
         this._auxVersion++
       }
@@ -1781,7 +1829,7 @@ export class ProjectMemoryStore {
     if (entries.length) {
       // searchText 在内存里物化（写入/检索都靠它），但 save() 不会把它写盘。
       const enriched = entries.map((e) => {
-        const out = stripPersistedDerived({ ...e })
+        const out = withoutPersistedDerived({ ...e })
         out.searchText = makeSearchText(out)
         return out
       })

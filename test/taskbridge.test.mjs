@@ -1,6 +1,6 @@
 // TaskBridge 单元测试：node test/taskbridge.test.mjs
 // 覆盖：store 任务持久化/容量裁剪、路径归一化、todo/write 自动建任务+绑定+快照覆盖（子代理不建档、标题取清单首条）、tool/call 文件跟踪、工具契约不在此测（需宿主 exec）。
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
@@ -398,6 +398,20 @@ const ev = (type, data) => ({ type, data })
   assert.equal(res.ok, false)
   assert.match(res.error, /已归档/)
   ok('已归档任务拒绝 task 级写入（不再假报 Saved）')
+}
+
+// --- 13. 已删除的会话根不得被 todo/write 重新创建 ---
+{
+  const { root } = newProject()
+  rmSync(root, { recursive: true, force: true })
+  onSessionEvent(
+    config,
+    sess('sess-deleted', root),
+    ev('todo/write', { todos: [{ content: '写点什么', status: 'in_progress' }] }),
+    new Map(),
+  )
+  assert.equal(existsSync(root), false, '根已删除：不能靠 save() 的 mkdir 把它重新造出来')
+  ok('已删除的会话根：todo/write 不重建目录、不写盘')
 }
 
 console.log(`\nTaskBridge tests: ${passed} passed`)

@@ -279,12 +279,15 @@ if (process.platform !== 'win32' && typeof process.getuid === 'function' && proc
   const dir = tmp('watch-')
   const started = []
   const wm = { addRoot() {}, removeRoot() {}, start(ms) { started.push(ms) } }
+  // watch_repo 会把监听根镜像进**会话**记忆目录；给一个 tmp 会话根，避免退回
+  // process.cwd() 在 checkout 里读写真 store（即使工具侧已有同源护栏，也不该依赖它）。
+  const exec = { agent: { session: { header: { cwd: dir } } } }
   const text0 = await watchRepoTool(wm, { memoryDir: '.dsh-project-memory', watchInterval: 0 })
-    .execute({ root: dir }, {})
+    .execute({ root: dir }, exec)
   assert.match(text0, /interval 1s/)
   assert.equal(started.at(-1), 1000)
   const text30 = await watchRepoTool(wm, { memoryDir: '.dsh-project-memory', watchInterval: 30 })
-    .execute({ root: dir }, {})
+    .execute({ root: dir }, exec)
   assert.match(text30, /interval 30s/)
   assert.equal(started.at(-1), 30000)
   ok('watch_repo：回报的 interval 与真实定时器一致（0 被 clamp 成 1s）')

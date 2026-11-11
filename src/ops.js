@@ -352,7 +352,9 @@ function isWriteSegment(head, rest, redirects) {
   if (redirects.length) return true
   if (WRITE_HEADS.has(head) || WINDOWS_WRITE_HEADS.has(head)) return true
   if (head === 'sed' && rest.includes('-i')) return true
-  if (head === 'git' && GIT_WRITE_SUBCOMMANDS.has(String(rest[0] || '').toLowerCase())) return true
+  // `git -C repo checkout -- src/a.ts` / `git -c core.x=y rm …`：子命令在全局 flag 之后，
+  // 不能只看 rest[0]（否则 ops 判对了，targets 仍为空，when.writes 守卫静默失效）。
+  if (head === 'git' && GIT_WRITE_SUBCOMMANDS.has(firstSubcommand(rest))) return true
   return false
 }
 

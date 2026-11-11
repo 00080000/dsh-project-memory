@@ -48,7 +48,16 @@ const tmp = (p) => path.join(mkdtempSync(path.join(tmpdir(), p)), 'mem')
   assert.equal(item.lastHitAt, '2026-01-01T00:00:00.000Z', '回滚不能把 lastHitAt 改成 now')
   recordHit({ store, ids: ['h1'], delta: -1 })
   assert.equal(item.hitCount, 0, '不能减成负数')
-  ok('recordHit 负 delta：回滚命中且不改时间戳')
+
+  // 真实回滚序列：+1 把 lastHitAt 写成 now，-1 必须恢复到注入前的值。
+  store.replaceInsightItems([{ id: 'h2', kind: 'lesson', scope: 'project', title: 'h2', hitCount: 0, lastHitAt: '2020-01-01T00:00:00.000Z' }])
+  const prev = new Map([['h2', '2020-01-01T00:00:00.000Z']])
+  recordHit({ store, ids: ['h2'], nowIso: '2026-11-11T00:00:00.000Z' })
+  recordHit({ store, ids: ['h2'], delta: -1, restore: prev })
+  const rolled = store.insightItems()[0]
+  assert.equal(rolled.hitCount, 0)
+  assert.equal(rolled.lastHitAt, '2020-01-01T00:00:00.000Z', '+1 后 -1 必须恢复注入前的活跃时间')
+  ok('recordHit 负 delta：回滚命中且恢复 lastHitAt')
 }
 
 // 4. 旧宿主等长替换兜底常量仍在（行为测试见 inject-visible #9）

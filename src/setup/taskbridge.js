@@ -2,6 +2,7 @@
 // 事实依据：dsh session/event 签名 (session, event)；todo/write data.todos；
 // tool/call data.arguments 为 JSON 字符串；fs 工具名 read/write/edit/read_image，参数 file_path。
 import path from 'node:path'
+import { existsSync, statSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { memoryRootFor, resolveProjectMemoryRoot } from '../util/fs.js'
 import { sessionWorkingDir } from '../util/session-dir.js'
@@ -55,6 +56,13 @@ export function projectRootFor(cwd, config) {
 export function taskStoreFor(cwd, config) {
   const root = projectRootFor(cwd, config)
   if (!root) return { root: null, store: null }
+  // 会话 cwd 可能已被删除/改名：此时不能 load（save 的 mkdirSync 会把项目根重新造出来）。
+  // 与 index_repo / watch_repo 的同一条护栏。
+  try {
+    if (!existsSync(root) || !statSync(root).isDirectory()) return { root: null, store: null }
+  } catch {
+    return { root: null, store: null }
+  }
   return { root, store: new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load() }
 }
 
@@ -376,6 +384,9 @@ export function setupTaskbridge(ctx, config) {
   })
   ctx.on('session/disposed', (session) => {
     flushSessionTaskStore(session, config, ctx)
+    // 会话可能 cd 过：disposed 时按当前 cwd 只能找到最后一个根，之前根里的热点
+    // （tool/call 用 save:false 延迟写）会一直留到进程退出。与 turn/end 一样兜底。
+    flushDirtyStores({ timeoutMs: 1500 })
     if (session?.id) meta.delete(session.id)
   })
   ctx.effect(() => () => meta.clear())

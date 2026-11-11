@@ -13,6 +13,7 @@ import { indexDocTool } from '../src/tools/index-doc.js'
 import { indexRepoTool, indexRepository } from '../src/tools/index-repo.js'
 import { ProjectMemoryStore } from '../src/store.js'
 import { memoryRootFor, sha256OfFile } from '../src/util/fs.js'
+import { commitFileUpdates } from '../src/index-pipeline.js'
 
 let passed = 0
 const ok = (name) => {
@@ -199,6 +200,35 @@ const CONFIG = { memoryDir: '.dsh-project-memory', chunkChars: 3000, maxChunksPe
   commitFileUpdates(store, { updates: [], unseen: new Set(), root: storeDir })
   assert.equal(store.fileRecord('private-notes.md'), undefined, '文件真被删了 → 清掉')
   ok('超大文档提前 OVERSIZE；显式索引的文件不被 unseen 清理')
+}
+
+// ---- 8. index_doc 不能把源码重标成 doc（会覆盖同 rel 的符号条目） ----
+{
+  const root = mkdtempSync(path.join(tmpdir(), 'pm-di-code-'))
+  writeFileSync(path.join(root, 'package.json'), '{"name":"fixture"}')
+  const code = path.join(root, 'a.ts')
+  writeFileSync(code, 'export function gammaDelta() { return 1 }\n')
+  const out = await indexDocTool({ llm: null }, CONFIG).execute({ file_path: code, root })
+  assert.match(out, /source file/)
+  assert.ok(!existsSync(path.join(root, CONFIG.memoryDir)), '拒绝时不得建 store')
+  ok('index_doc：源码文件被拒绝，不会覆盖符号索引')
+}
+
+// ---- 9. roots.exclude 优先于 explicit 豁免 ----
+{
+  const storeDir = mkdtempSync(path.join(tmpdir(), 'pm-di-excl-'))
+  const store = new ProjectMemoryStore(storeDir).load()
+  const file = path.join(storeDir, 'private.md')
+  writeFileSync(file, 'x')
+  store.markFile('private.md', { sha256: 'h', size: 1, type: 'doc', indexedAt: new Date().toISOString(), explicit: true })
+  commitFileUpdates(store, {
+    updates: [],
+    unseen: new Set(),
+    root: storeDir,
+    isExcludedRel: (rel) => rel === 'private.md',
+  })
+  assert.equal(store.fileRecord('private.md'), undefined, 'exclude 命中时必须清掉，即使文件仍在且标了 explicit')
+  ok('index_repo/watch 清理：roots.exclude 优先于 explicit 豁免')
 }
 
 console.log(`\ndoc-index tests: ${passed} passed`)

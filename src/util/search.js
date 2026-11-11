@@ -103,7 +103,6 @@ export function tokenize(text) {
 
 const K1 = 1.5
 const B = 0.75
-const DELTA = 1
 
 function avgDocLen(docs) {
   if (!docs.length) return 1

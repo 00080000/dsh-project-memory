@@ -78,7 +78,7 @@ export function queryMemoryTool(ctx, config) {
       },
       limit: {
         type: 'number',
-        description: 'max results, default 8, capped at 20; use the smallest useful number',
+        description: 'max results per layer, default 8, capped at 20; `all` can return up to 3x (docs/symbols, insights, experience)',
       },
     },
     output: TEXT_OUTPUT,
