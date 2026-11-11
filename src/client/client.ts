@@ -128,13 +128,10 @@ function registerTaskPanel(ctx: any): void {
       // 会话内命令节点：按命令名 key 接管渲染，替换内置大段文本卡片
       // （文本含 JSON 载荷，只有面板需要它），避免载荷刷屏对话。
       // 合并后只剩一条用户命令 /tasks（子动词都记在同一个命令名下）。
-      const nodeKeys = ['tasks']
-      for (const key of nodeKeys) {
-        slots.inject('conversation.chat.commandview', () => register(
-          { name: 'conversation.chat.commandview', key },
-          TaskCommandNode
-        ))
-      }
+      slots.inject('conversation.chat.commandview', () => register(
+        { name: 'conversation.chat.commandview', key: 'tasks' },
+        TaskCommandNode
+      ))
 
       // 工具调用视图：`show_task_panel` 的唯一实际效果就是开面板，而面板状态在浏览器侧；
       // 宿主进程碰不到它（宿主契约里 `ToolRunContext` 没有 `ctx`）。认领这个**工具名**后，

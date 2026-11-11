@@ -1,5 +1,5 @@
 /**
- * Task UI Store — 仅管本地 UI 状态（closed、minimized、position、expandedIds、theme、showHints）
+ * Task UI Store — 仅管本地 UI 状态（closed、minimized、position、expandedTaskIds、theme、showHints）
  * - 持久化到 localStorage（key: dsh-pm-task-panel-ui）
  * - 不跨标签页同步（每个标签页独立）
  * - 启动/刷新强制 closed: true，面板默认不显示

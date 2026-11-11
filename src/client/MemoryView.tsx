@@ -1,6 +1,6 @@
 /**
  * Memory View — 记忆三作用域列表（Task 草稿 / Project / Global）
- * 数据通道与任务面板一致：remote.commands.execute 执行 /insight 命令，取 JSON 载荷。
+ * 数据通道与任务面板一致：remote.commands.execute 执行 `/tasks insight …`，取 JSON 载荷。
  * 动作：confirm(草稿审核) / promote(向上提升) / demote(向下降级，需绑定任务) / archive / restore / delete
  *
  * 列表是**增量加载**的：首屏只取 PAGE_SIZE 条，滚到底前 600px 预取下一页追加。
@@ -35,6 +35,8 @@ export interface InsightRow {
   symbols?: number
   trigger?: { keywords: string[]; scope: string[] } | null
   steps?: string[]
+  // 列表载荷最多带 50 条步骤；编辑时必须知道原条目是否被截断，否则回传会删掉第 51 条起。
+  stepsTotal?: number
   taskId?: string
   taskTitle?: string
   updatedAt?: string
@@ -82,7 +84,7 @@ function readInsightCache(sessionId: string | null, scope: InsightScope, root: s
 }
 
 /** 动作会跨 scope 改变列表：整份失效本 session/root 的缓存，否则目标页 30s 内仍显示旧列表。 */
-function invalidateInsightCache(sessionId: string | null, root: string | null): void {
+export function invalidateInsightCache(sessionId: string | null, root: string | null): void {
   const prefix = `${sessionId || ''}|${root || ''}|`
   for (const key of [...insightCache.keys()]) {
     if (key.startsWith(prefix)) insightCache.delete(key)
@@ -166,6 +168,9 @@ export function MemoryView({
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
+  // 失败的那一页：重试必须重放它，而不是只重取第一页（否则 nextOffset/rows 不变，
+  // 观察器不会重新武装，界面永远卡在“已显示 30 / 60”）。
+  const failedPageRef = useRef<{ offset: number; append: boolean } | null>(null)
   // 加载指示延迟显示：本地数据几十毫秒就回来，立刻显示只会"闪一下"（见 paging.js）。
   const [showSpinner, setShowSpinner] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -229,6 +234,7 @@ export function MemoryView({
         setNextOffset(null)
         setError(null)
         setLoading(false)
+        failedPageRef.current = null
         return null
       }
       const requestedScope = scopeRef.current
@@ -244,11 +250,13 @@ export function MemoryView({
         // 已被更新的请求取代，或切了作用域：这份响应属于上一个列表，整份丢弃。
         if (gateRef.current!.isStale(ticket, requestedScope, scopeRef.current)) return null
         if (!res.ok) {
+          failedPageRef.current = { offset, append }
           setError(res.text)
           return null
         }
         const parsed = parseInsightPayloadText(res.text)
         if (!parsed) {
+          failedPageRef.current = { offset, append }
           setError('unparsable payload')
           return null
         }
@@ -258,6 +266,7 @@ export function MemoryView({
           void loadRef.current(0, PAGE_SIZE, false)
           return null
         }
+        failedPageRef.current = null
         totalRef.current = parsed.total
         setRows((prev) => {
           const next = append ? appendUnique(prev, parsed.items) : parsed.items
@@ -295,9 +304,16 @@ export function MemoryView({
     totalRef.current = 0
     setNextOffset(null)
     setError(null)
+    failedPageRef.current = null
     if (!sessionId) return
     const cached = readInsightCache(sessionId, scope, root, boundTaskId)
     if (cached) {
+      // 缓存命中不发请求，但必须推进闸门序号：否则上一个 scope/project 的在途响应
+      // 仍会被判为“最新”，把旧列表套到当前 root 上。
+      const gate = gateRef.current!
+      const key = `cache|${scope}|${root || ''}|${boundTaskId || ''}`
+      const ticket = gate.begin(key)
+      if (ticket !== false) gate.end(key, ticket)
       setRows(cached.rows)
       setTotal(cached.total)
       totalRef.current = cached.total
@@ -423,9 +439,13 @@ export function MemoryView({
     setError(null)
     try {
       const fields: Record<string, unknown> = { title, kind: form.kind }
-      if (form.kind === 'lesson') fields.pattern = title
-      if (form.kind === 'decision') fields.choice = title
-      if (form.kind === 'experience') fields.problem = title
+      // 标题镜像只用于**新建**：编辑时 pattern/choice/problem 不出现在表单里，
+      // 无条件回传会把它们静默覆盖成标题（且宿主的 edit 路径不写 prev，无法还原）。
+      if (!editingId) {
+        if (form.kind === 'lesson') fields.pattern = title
+        if (form.kind === 'decision') fields.choice = title
+        if (form.kind === 'experience') fields.problem = title
+      }
       // procedure 的正文由 steps 表达；不要把 body 一起提交（它只可能是合成摘要）。
       // 编辑时必须把本表单拥有的字段都带上（空串/空数组表示清空）：宿主只合并出现的键，
       // 省略会让“清空正文/步骤”变成静默空操作。
@@ -436,7 +456,11 @@ export function MemoryView({
         else if (form.kind === 'experience') fields.solution = body
         else fields.body = body
       }
-      if (form.kind === 'procedure' && (editingId || form.steps.trim())) {
+      const editingRow = editingId ? rows.find((r) => r.id === editingId) : null
+      // procedure 的列表载荷被宿主截到 50 条：编辑标题/正文时若整份回传，会删掉第 51 条起。
+      // 载荷带 stepsTotal 时以它为准；没有该字段（旧宿主）保持原行为。
+      const stepsTruncated = Boolean(editingId && (editingRow?.stepsTotal ?? 0) > 50)
+      if (form.kind === 'procedure' && (editingId || form.steps.trim()) && !stepsTruncated) {
         fields.steps = form.steps.split('\n').map((s) => s.trim()).filter(Boolean)
       }
       if (form.kind === 'procedure' && (editingId || form.trigger.trim())) {
@@ -517,7 +541,16 @@ export function MemoryView({
           {t('mem.error')}: {error}
           {/* 失败必须给出口：增量加载里"卡住不动"和"已经加载完"外观一样，没有重试按钮
               用户只能靠开关面板碰运气。 */}
-          <Button variant="outline" size="sm" disabled={loading || loadingMore} onClick={() => void reloadWindow()}>{t('mem.retry')}</Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={loading || loadingMore}
+            onClick={() => {
+              const failed = failedPageRef.current
+              if (failed) void loadRef.current(failed.offset, PAGE_SIZE, failed.append)
+              else void reloadWindow()
+            }}
+          >{t('mem.retry')}</Button>
         </div>
       )}
       {loading && !items.length && <div className={css.muted}>{t('mem.loading')}</div>}

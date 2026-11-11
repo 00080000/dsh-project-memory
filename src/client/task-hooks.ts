@@ -3,7 +3,6 @@
  * 只依赖 react + task-data-store 类型，不碰数据/UI store。
  */
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { TaskStep } from './task-data-store.ts'
 
 interface DragState {
   fromIndex: number
@@ -26,7 +25,6 @@ interface DragState {
  */
 export function useTaskDrag(
   taskId: string,
-  steps: TaskStep[],
   isBound: boolean,
   onReorder: (fromIndex: number, toIndex: number) => void
 ) {

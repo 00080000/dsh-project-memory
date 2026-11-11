@@ -54,12 +54,13 @@ interface InlineEditorProps {
   value: string
   className?: string
   maxRows?: number
+  disabled?: boolean
   onValueChange: (value: string) => void
   onCommit: () => void
   onCancel: () => void
 }
 
-function InlineEditor({ value, className, maxRows = 8, onValueChange, onCommit, onCancel }: InlineEditorProps) {
+function InlineEditor({ value, className, maxRows = 8, disabled = false, onValueChange, onCommit, onCancel }: InlineEditorProps) {
   const ref = useRef<HTMLTextAreaElement>(null)
 
   // 在绘制前按真实内容测量并写死高度：内容 <= maxRows 行时刚好包住，超出后内部滚动。
@@ -84,6 +85,7 @@ function InlineEditor({ value, className, maxRows = 8, onValueChange, onCommit, 
       rows={1}
       value={value}
       autoFocus
+      disabled={disabled}
       spellCheck={false}
       onChange={(e) => onValueChange(e.target.value)}
       onFocus={(e) => {
@@ -208,7 +210,7 @@ export function TaskCard({
   t,
 }: TaskCardProps) {
   const steps = task.steps || []
-  const { dragState, dropTargetIndex, startDrag, cancelDrag } = useTaskDrag(task.id, steps, isBound, onReorderSteps)
+  const { dragState, dropTargetIndex, startDrag, cancelDrag } = useTaskDrag(task.id, isBound, onReorderSteps)
 
   // 行内编辑状态（本卡片局部）：双击进入，Enter/失焦提交，Esc 取消。
   const [stepEdit, setStepEdit] = useState<{ index: number; value: string } | null>(null)
@@ -219,6 +221,8 @@ export function TaskCard({
 
   const commitStepEdit = (index: number) => {
     if (!stepEdit || stepEdit.index !== index) return
+    // 同步中提交会被 withLock 静默丢掉；保留编辑态，等这轮结束再让用户提交。
+    if (syncing) return
     const value = stepEdit.value
     setStepEdit(null)
     onEditStep(index, value)
@@ -226,6 +230,7 @@ export function TaskCard({
 
   const commitTitleEdit = () => {
     if (titleEdit === null) return
+    if (syncing) return
     const value = titleEdit.value
     setTitleEdit(null)
     onRename(value)
@@ -292,6 +297,7 @@ export function TaskCard({
               className={css.editorArea}
               value={titleEdit.value}
               maxRows={4}
+              disabled={syncing}
               onValueChange={(value) => setTitleEdit({ value })}
               onCommit={commitTitleEdit}
               onCancel={() => setTitleEdit(null)}
@@ -304,7 +310,7 @@ export function TaskCard({
               onDoubleClick={(e) => {
                 e.preventDefault()
                 e.stopPropagation()
-                if (isBound) setTitleEdit({ value: String(task.title ?? '') })
+                if (isBound && !syncing) setTitleEdit({ value: String(task.title ?? '') })
               }}
             >
               {task.title}
@@ -369,6 +375,7 @@ export function TaskCard({
                             className={css.editorArea}
                             value={stepEdit!.value}
                             maxRows={10}
+                            disabled={syncing}
                             onValueChange={(value) => setStepEdit({ index: i, value })}
                             onCommit={() => commitStepEdit(i)}
                             onCancel={() => setStepEdit(null)}
@@ -379,7 +386,7 @@ export function TaskCard({
                             title={isBound && showHints ? t('step.edit-hint') : undefined}
                             onDoubleClick={(e) => {
                               e.stopPropagation()
-                              if (isBound) setStepEdit({ index: i, value: String(step.content ?? '') })
+                              if (isBound && !syncing) setStepEdit({ index: i, value: String(step.content ?? '') })
                             }}
                           >
                             {step.content}

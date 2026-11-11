@@ -1,6 +1,6 @@
 /**
- * /tasks、/task、/insight 命令在会话中的节点渲染器（conversation.chat.commandview，按命令名 key）。
- * 列表型命令（/tasks、无动词 /task、/insight list）只显示一行摘要；/insight 的动作类只显示一句结果——
+ * /tasks（含 /tasks insight …）与旧版 /task、/insight 节点的渲染器（conversation.chat.commandview）。
+ * 列表型命令只显示一行摘要；记忆动作类只显示一句结果——
  * 目的：大 JSON 载荷绝不整段渲染进对话（否则切视图会刷屏）。
  */
 import { useEffect, useRef } from 'react'
@@ -62,10 +62,12 @@ export function TaskCommandNode({ node }: { node?: any }) {
   // 解析失败时保留一行，避免"命令成功了却什么都不显示"。
   if (isList && (isInsight ? parsedInsights : parsedTasks)) return null
 
-  // /insight：动作类只显示一句结果（永不整段渲染）
+  // 记忆动作：只显示一句结果（永不整段渲染）。新命令是 /tasks insight …，
+  // 旧会话里仍可能留着 name='insight' 的节点。
   if (isInsight) {
     const note = String(text ?? '').split('\n')[0].slice(0, 120)
-    return <div className={css.row} data-variant="ok">/insight {insightVerb} {note || '已完成'}</div>
+    const label = name === 'insight' ? '/insight' : '/tasks insight'
+    return <div className={css.row} data-variant="ok">{label} {insightVerb} {note || '已完成'}</div>
   }
 
   if (!isList) {

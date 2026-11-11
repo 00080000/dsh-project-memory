@@ -18,11 +18,9 @@ import { missingServices, service } from './services.ts'
 import { useTaskData, useTaskDataActions, parseTaskPayloadText } from './task-data-store.ts'
 import { useTaskUI, useTaskUIActions, PANEL_VIEWS } from './task-ui-store.ts'
 import { MiniBar, TaskCard } from './TaskComponents.tsx'
-import { MemoryView, type InsightScope } from './MemoryView.tsx'
+import { MemoryView, invalidateInsightCache, type InsightScope } from './MemoryView.tsx'
 import { pickSessionId } from './session-id.js'
 import css from './TaskPanel.module.css'
-
-const NS = 'dsh-project-memory'
 
 const STATUS_CYCLE = ['pending', 'in_progress', 'completed'] as const
 // 视图列表的唯一事实来源在 UI store（`/` 菜单那三行也读它）；这里不再抄一份。
@@ -80,6 +78,11 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   const sessionId = useSessionId(ctx)
   const [syncing, setSyncing] = useState(false)
   const syncingRef = useRef(false)
+  // 切会话时旧 /tasks 可能仍在飞：锁不能把新会话的刷新一起吞掉，排队到锁释放后补发。
+  const pendingRefreshRef = useRef(false)
+  // 响应必须按**发起时**的会话判定，旧闭包里的 sessionId 不能覆盖新会话的数据。
+  const sessionIdRef = useRef(sessionId)
+  sessionIdRef.current = sessionId
   const [syncedAt, setSyncedAt] = useState(0)
   const [syncError, setSyncError] = useState<string | null>(null)
   // 提示信息开关落在 UI store（持久化）：关掉后面板内所有悬停 title 气泡都不再弹出。
@@ -101,7 +104,9 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   const activeTasks = tasks.filter((task) => !task.archived)
   const boundTask = data.boundTaskId ? tasks.find((task) => task.id === data.boundTaskId) ?? null : null
 
-  const applyPayload = (text?: string): boolean => {
+  const applyPayload = (text: string | undefined, requestSessionId: string | null): boolean => {
+    // 旧会话的响应不得落到新会话：applyPayload 是旧闭包，sessionId 也已过期。
+    if (requestSessionId !== sessionIdRef.current) return false
     const parsed = parseTaskPayloadText(text)
     if (!parsed) return false
     dataActions.setTasks({ tasks: parsed.tasks, boundTaskId: parsed.boundId, archivedCount: parsed.archived, root: parsed.root, sessionId })
@@ -116,7 +121,7 @@ function TaskPanelView({ ctx }: { ctx: any }) {
       setSyncError(result.error === 'no-channel' ? t('panel.no-channel') : (result.error || t('panel.sync-failed')))
       return false
     }
-    return applyPayload(result.text)
+    return applyPayload(result.text, sessionId)
   }
 
   // 锁用 ref 而不是渲染快照里的 state：同一 tick 的两次触发也能被挡住。
@@ -129,6 +134,10 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     } finally {
       syncingRef.current = false
       setSyncing(false)
+      if (pendingRefreshRef.current) {
+        pendingRefreshRef.current = false
+        refreshRef.current()
+      }
     }
   }
 
@@ -144,6 +153,10 @@ function TaskPanelView({ ctx }: { ctx: any }) {
    * 它们各自会推宿主清单（adoptStepsToSession），不需要巡检式补写。
    */
   const refresh = async (): Promise<void> => {
+    if (syncingRef.current) {
+      pendingRefreshRef.current = true
+      return
+    }
     await withLock(() => runLine('/tasks'))
   }
 
@@ -151,12 +164,14 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     await withLock(() => runLine(`/tasks ${verb} ${taskId}`))
   }
 
-  // v0.5：任务卡内联记忆动作（confirm/promote/delete 于 /insight task 层），随后刷新任务数据
+  // v0.5：任务卡内联记忆动作（confirm/promote/delete 于任务层），随后刷新任务数据
   const handleInsightTask = async (action: 'confirm' | 'promote' | 'delete', id: string): Promise<void> => {
     await withLock(async () => {
       // 动作失败时不要用随后的 /tasks 成功把错误清掉（用户会看到“点了没反应”）。
       const ok = await runLine(`/tasks insight ${action} task ${id}`)
       if (!ok) return
+      // 记忆页的 30s 缓存不知道任务卡里刚改过条目；不失效会显示旧行（甚至已删除的行）。
+      invalidateInsightCache(sessionId, data.root ?? null)
       await runLine('/tasks')
     })
   }
@@ -224,7 +239,6 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     const onMove = (ev: MouseEvent) => {
       if (!drag.current) return
       const width = panelRef.current?.offsetWidth ?? 380
-      const height = panelRef.current?.offsetHeight ?? 480
       const x = Math.max(8, Math.min(window.innerWidth - width - 8, ev.clientX - drag.current.dx))
       const y = Math.max(8, Math.min(window.innerHeight - 64, ev.clientY - drag.current.dy))
       dragPosRef.current = { x, y }
@@ -405,7 +419,6 @@ function TaskPanelView({ ctx }: { ctx: any }) {
       ) : (
         <div className={css.taskList}>
           {activeTasks.map((task) => {
-            const steps = task.steps || []
             const expanded = ui.expandedTaskIds.includes(task.id)
             const isBound = data.boundTaskId === task.id
             return (

@@ -656,7 +656,7 @@ window.__ModuleLoader__.load({
 		//#endregion
 		//#region src/client/task-ui-store.ts
 		/**
-		* Task UI Store — 仅管本地 UI 状态（closed、minimized、position、expandedIds、theme、showHints）
+		* Task UI Store — 仅管本地 UI 状态（closed、minimized、position、expandedTaskIds、theme、showHints）
 		* - 持久化到 localStorage（key: dsh-pm-task-panel-ui）
 		* - 不跨标签页同步（每个标签页独立）
 		* - 启动/刷新强制 closed: true，面板默认不显示
@@ -870,7 +870,7 @@ window.__ModuleLoader__.load({
 		*    （插入自身前后）/按钮输入等控件上 → 取消；
 		*  - 350ms 内原地松手 = 普通点击，不产生幽灵；Esc → 取消。
 		*/
-		function useTaskDrag(taskId, steps, isBound, onReorder) {
+		function useTaskDrag(taskId, isBound, onReorder) {
 			const [dragState, setDragState] = (0, react.useState)(null);
 			const [dropTargetIndex, setDropTargetIndex] = (0, react.useState)(null);
 			const dragRef = (0, react.useRef)(dragState);
@@ -1169,7 +1169,7 @@ window.__ModuleLoader__.load({
 		* 数值是可感知与可靠性的折中：太小慢速双击会失效，太大单击会显“肉”。
 		*/
 		const CLICK_SINGLE_DELAY_MS = 250;
-		function InlineEditor({ value, className, maxRows = 8, onValueChange, onCommit, onCancel }) {
+		function InlineEditor({ value, className, maxRows = 8, disabled = false, onValueChange, onCommit, onCancel }) {
 			const ref = (0, react.useRef)(null);
 			(0, react.useLayoutEffect)(() => {
 				const el = ref.current;
@@ -1190,6 +1190,7 @@ window.__ModuleLoader__.load({
 				rows: 1,
 				value,
 				autoFocus: true,
+				disabled,
 				spellCheck: false,
 				onChange: (e) => onValueChange(e.target.value),
 				onFocus: (e) => {
@@ -1276,19 +1277,21 @@ window.__ModuleLoader__.load({
 		}
 		function TaskCard({ task, isBound, expanded, onToggleExpand, onSwitch, onUnbind, onArchive, onRename, onEditStep, onCycleStatus, onReorderSteps, onInsightAction, showHints, syncing, t }) {
 			const steps = task.steps || [];
-			const { dragState, dropTargetIndex, startDrag, cancelDrag } = useTaskDrag(task.id, steps, isBound, onReorderSteps);
+			const { dragState, dropTargetIndex, startDrag, cancelDrag } = useTaskDrag(task.id, isBound, onReorderSteps);
 			const [stepEdit, setStepEdit] = (0, react.useState)(null);
 			const [titleEdit, setTitleEdit] = (0, react.useState)(null);
 			const done = steps.filter((s) => s.status === "completed").length;
 			const pct = steps.length > 0 ? Math.round(done / steps.length * 100) : 0;
 			const commitStepEdit = (index) => {
 				if (!stepEdit || stepEdit.index !== index) return;
+				if (syncing) return;
 				const value = stepEdit.value;
 				setStepEdit(null);
 				onEditStep(index, value);
 			};
 			const commitTitleEdit = () => {
 				if (titleEdit === null) return;
+				if (syncing) return;
 				const value = titleEdit.value;
 				setTitleEdit(null);
 				onRename(value);
@@ -1347,6 +1350,7 @@ window.__ModuleLoader__.load({
 								className: TaskPanel_module_css_default.editorArea,
 								value: titleEdit.value,
 								maxRows: 4,
+								disabled: syncing,
 								onValueChange: (value) => setTitleEdit({ value }),
 								onCommit: commitTitleEdit,
 								onCancel: () => setTitleEdit(null)
@@ -1357,7 +1361,7 @@ window.__ModuleLoader__.load({
 								onDoubleClick: (e) => {
 									e.preventDefault();
 									e.stopPropagation();
-									if (isBound) setTitleEdit({ value: String(task.title ?? "") });
+									if (isBound && !syncing) setTitleEdit({ value: String(task.title ?? "") });
 								},
 								children: task.title
 							})]
@@ -1431,6 +1435,7 @@ window.__ModuleLoader__.load({
 												className: TaskPanel_module_css_default.editorArea,
 												value: stepEdit.value,
 												maxRows: 10,
+												disabled: syncing,
 												onValueChange: (value) => setStepEdit({
 													index: i,
 													value
@@ -1442,7 +1447,7 @@ window.__ModuleLoader__.load({
 												title: isBound && showHints ? t("step.edit-hint") : void 0,
 												onDoubleClick: (e) => {
 													e.stopPropagation();
-													if (isBound) setStepEdit({
+													if (isBound && !syncing) setStepEdit({
 														index: i,
 														value: String(step.content ?? "")
 													});
@@ -1711,7 +1716,7 @@ window.__ModuleLoader__.load({
 		//#region src/client/MemoryView.tsx
 		/**
 		* Memory View — 记忆三作用域列表（Task 草稿 / Project / Global）
-		* 数据通道与任务面板一致：remote.commands.execute 执行 /insight 命令，取 JSON 载荷。
+		* 数据通道与任务面板一致：remote.commands.execute 执行 `/tasks insight …`，取 JSON 载荷。
 		* 动作：confirm(草稿审核) / promote(向上提升) / demote(向下降级，需绑定任务) / archive / restore / delete
 		*
 		* 列表是**增量加载**的：首屏只取 PAGE_SIZE 条，滚到底前 600px 预取下一页追加。
@@ -1800,6 +1805,7 @@ window.__ModuleLoader__.load({
 			const [error, setError] = (0, react.useState)(null);
 			const [loading, setLoading] = (0, react.useState)(false);
 			const [loadingMore, setLoadingMore] = (0, react.useState)(false);
+			const failedPageRef = (0, react.useRef)(null);
 			const [showSpinner, setShowSpinner] = (0, react.useState)(false);
 			const [busy, setBusy] = (0, react.useState)(false);
 			const [showNew, setShowNew] = (0, react.useState)(false);
@@ -1861,6 +1867,7 @@ window.__ModuleLoader__.load({
 					setNextOffset(null);
 					setError(null);
 					setLoading(false);
+					failedPageRef.current = null;
 					return null;
 				}
 				const requestedScope = scopeRef.current;
@@ -1875,11 +1882,19 @@ window.__ModuleLoader__.load({
 					const res = await runLine(insightListLine(requestedScope, offset, limit));
 					if (gateRef.current.isStale(ticket, requestedScope, scopeRef.current)) return null;
 					if (!res.ok) {
+						failedPageRef.current = {
+							offset,
+							append
+						};
 						setError(res.text);
 						return null;
 					}
 					const parsed = parseInsightPayloadText(res.text);
 					if (!parsed) {
+						failedPageRef.current = {
+							offset,
+							append
+						};
 						setError("unparsable payload");
 						return null;
 					}
@@ -1888,6 +1903,7 @@ window.__ModuleLoader__.load({
 						loadRef.current(0, 30, false);
 						return null;
 					}
+					failedPageRef.current = null;
 					totalRef.current = parsed.total;
 					setRows((prev) => {
 						const next = append ? appendUnique(prev, parsed.items) : parsed.items;
@@ -1924,9 +1940,14 @@ window.__ModuleLoader__.load({
 				totalRef.current = 0;
 				setNextOffset(null);
 				setError(null);
+				failedPageRef.current = null;
 				if (!sessionId) return;
 				const cached = readInsightCache(sessionId, scope, root, boundTaskId);
 				if (cached) {
+					const gate = gateRef.current;
+					const key = `cache|${scope}|${root || ""}|${boundTaskId || ""}`;
+					const ticket = gate.begin(key);
+					if (ticket !== false) gate.end(key, ticket);
 					setRows(cached.rows);
 					setTotal(cached.total);
 					totalRef.current = cached.total;
@@ -2050,9 +2071,11 @@ window.__ModuleLoader__.load({
 						title,
 						kind: form.kind
 					};
-					if (form.kind === "lesson") fields.pattern = title;
-					if (form.kind === "decision") fields.choice = title;
-					if (form.kind === "experience") fields.problem = title;
+					if (!editingId) {
+						if (form.kind === "lesson") fields.pattern = title;
+						if (form.kind === "decision") fields.choice = title;
+						if (form.kind === "experience") fields.problem = title;
+					}
 					if (form.kind !== "procedure" && (editingId || form.body.trim())) {
 						const body = form.body.trim();
 						if (form.kind === "lesson") fields.fix = body;
@@ -2060,7 +2083,9 @@ window.__ModuleLoader__.load({
 						else if (form.kind === "experience") fields.solution = body;
 						else fields.body = body;
 					}
-					if (form.kind === "procedure" && (editingId || form.steps.trim())) fields.steps = form.steps.split("\n").map((s) => s.trim()).filter(Boolean);
+					const editingRow = editingId ? rows.find((r) => r.id === editingId) : null;
+					const stepsTruncated = Boolean(editingId && (editingRow?.stepsTotal ?? 0) > 50);
+					if (form.kind === "procedure" && (editingId || form.steps.trim()) && !stepsTruncated) fields.steps = form.steps.split("\n").map((s) => s.trim()).filter(Boolean);
 					if (form.kind === "procedure" && (editingId || form.trigger.trim())) fields.trigger = { keywords: form.trigger.split(/[,，]/).map((s) => s.trim()).filter(Boolean) };
 					const line = editingId ? `/tasks insight edit ${scope} ${editingId} ${JSON.stringify(fields)}` : `/tasks insight save ${scope} ${JSON.stringify(fields)}`;
 					const res = await runLine(line);
@@ -2214,7 +2239,11 @@ window.__ModuleLoader__.load({
 								variant: "outline",
 								size: "sm",
 								disabled: loading || loadingMore,
-								onClick: () => void reloadWindow(),
+								onClick: () => {
+									const failed = failedPageRef.current;
+									if (failed) loadRef.current(failed.offset, 30, failed.append);
+									else reloadWindow();
+								},
 								children: t("mem.retry")
 							})
 						]
@@ -2506,6 +2535,9 @@ window.__ModuleLoader__.load({
 			const sessionId = useSessionId(ctx);
 			const [syncing, setSyncing] = (0, react.useState)(false);
 			const syncingRef = (0, react.useRef)(false);
+			const pendingRefreshRef = (0, react.useRef)(false);
+			const sessionIdRef = (0, react.useRef)(sessionId);
+			sessionIdRef.current = sessionId;
 			const [syncedAt, setSyncedAt] = (0, react.useState)(0);
 			const [syncError, setSyncError] = (0, react.useState)(null);
 			const showHints = ui.showHints;
@@ -2520,7 +2552,8 @@ window.__ModuleLoader__.load({
 			const tasks = Array.isArray(data.tasks) ? data.tasks : [];
 			const activeTasks = tasks.filter((task) => !task.archived);
 			const boundTask = data.boundTaskId ? tasks.find((task) => task.id === data.boundTaskId) ?? null : null;
-			const applyPayload = (text) => {
+			const applyPayload = (text, requestSessionId) => {
+				if (requestSessionId !== sessionIdRef.current) return false;
 				const parsed = parseTaskPayloadText(text);
 				if (!parsed) return false;
 				dataActions.setTasks({
@@ -2540,7 +2573,7 @@ window.__ModuleLoader__.load({
 					setSyncError(result.error === "no-channel" ? t("panel.no-channel") : result.error || t("panel.sync-failed"));
 					return false;
 				}
-				return applyPayload(result.text);
+				return applyPayload(result.text, sessionId);
 			};
 			const withLock = async (fn) => {
 				if (syncingRef.current) return;
@@ -2551,6 +2584,10 @@ window.__ModuleLoader__.load({
 				} finally {
 					syncingRef.current = false;
 					setSyncing(false);
+					if (pendingRefreshRef.current) {
+						pendingRefreshRef.current = false;
+						refreshRef.current();
+					}
 				}
 			};
 			/**
@@ -2565,6 +2602,10 @@ window.__ModuleLoader__.load({
 			* 它们各自会推宿主清单（adoptStepsToSession），不需要巡检式补写。
 			*/
 			const refresh = async () => {
+				if (syncingRef.current) {
+					pendingRefreshRef.current = true;
+					return;
+				}
 				await withLock(() => runLine("/tasks"));
 			};
 			const handleAction = async (verb, taskId) => {
@@ -2573,6 +2614,7 @@ window.__ModuleLoader__.load({
 			const handleInsightTask = async (action, id) => {
 				await withLock(async () => {
 					if (!await runLine(`/tasks insight ${action} task ${id}`)) return;
+					invalidateInsightCache(sessionId, data.root ?? null);
 					await runLine("/tasks");
 				});
 			};
@@ -2633,7 +2675,6 @@ window.__ModuleLoader__.load({
 				const onMove = (ev) => {
 					if (!drag.current) return;
 					const width = panelRef.current?.offsetWidth ?? 380;
-					panelRef.current?.offsetHeight;
 					const x = Math.max(8, Math.min(window.innerWidth - width - 8, ev.clientX - drag.current.dx));
 					const y = Math.max(8, Math.min(window.innerHeight - 64, ev.clientY - drag.current.dy));
 					dragPosRef.current = {
@@ -2839,7 +2880,6 @@ window.__ModuleLoader__.load({
 					}) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: TaskPanel_module_css_default.taskList,
 						children: [activeTasks.map((task) => {
-							task.steps;
 							const expanded = ui.expandedTaskIds.includes(task.id);
 							const isBound = data.boundTaskId === task.id;
 							return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TaskCard, {
@@ -2890,8 +2930,8 @@ window.__ModuleLoader__.load({
 		//#endregion
 		//#region src/client/TaskCommandNode.tsx
 		/**
-		* /tasks、/task、/insight 命令在会话中的节点渲染器（conversation.chat.commandview，按命令名 key）。
-		* 列表型命令（/tasks、无动词 /task、/insight list）只显示一行摘要；/insight 的动作类只显示一句结果——
+		* /tasks（含 /tasks insight …）与旧版 /task、/insight 节点的渲染器（conversation.chat.commandview）。
+		* 列表型命令只显示一行摘要；记忆动作类只显示一句结果——
 		* 目的：大 JSON 载荷绝不整段渲染进对话（否则切视图会刷屏）。
 		*/
 		function TaskCommandNode({ node }) {
@@ -2943,11 +2983,13 @@ window.__ModuleLoader__.load({
 			if (isList && (isInsight ? parsedInsights : parsedTasks)) return null;
 			if (isInsight) {
 				const note = String(text ?? "").split("\n")[0].slice(0, 120);
+				const label = name === "insight" ? "/insight" : "/tasks insight";
 				return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 					className: TaskCommandNode_module_css_default.row,
 					"data-variant": "ok",
 					children: [
-						"/insight ",
+						label,
+						" ",
 						insightVerb,
 						" ",
 						note || "已完成"
@@ -3622,9 +3664,9 @@ window.__ModuleLoader__.load({
 						id: "dsh-project-memory-task-panel",
 						order: 100
 					}, () => (0, react.createElement)(TaskPanelEntry, { ctx })));
-					for (const key of ["tasks"]) slots.inject("conversation.chat.commandview", () => register({
+					slots.inject("conversation.chat.commandview", () => register({
 						name: "conversation.chat.commandview",
-						key
+						key: "tasks"
 					}, TaskCommandNode));
 					registerShowTaskPanelView(slots, keep);
 				} catch (err) {
