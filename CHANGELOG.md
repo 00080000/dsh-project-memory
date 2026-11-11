@@ -1,14 +1,14 @@
 ## Unreleased
 
-- **全量审计修复（存储 / 注入对账 / 工具 / 客户端）**，不新增配置键，`client/` 产物已重建。
+- **全量修复（存储 / 注入对账 / 工具 / 客户端）**，不新增配置键，`client/` 产物已重建。
   - **注入对账**：正文回退只认本插件自己的消息（压缩摘要/recall 里的 `- [ins_…]` 不再永久压制条目）；乐观登记下一步与 surface 对账（宿主 abort 时不再整会话失明）；`historyLost` 把会话额度一并归零；provenance 上限与 `maxItemsPerSession` 对齐；`reconcile` 增加 `degraded / genSupported / historyLost`。
-  - **旁路日志**：审计建目录后立即补 `.gitignore`；主审计 `dropped` 截断到 40 并记 `droppedTotal`（1000 条候选的单行从 113KB 降到 KB 级）。
+  - **旁路日志**：日志建目录后立即补 `.gitignore`；主日志 `dropped` 截断到 40 并记 `droppedTotal`（1000 条候选的单行从 113KB 降到 KB 级）。
   - **持久化**：读失败（EACCES/EISDIR）进入只读模式、不覆盖读不出的分片；重写不复活跨进程删除；扩桶按摊还计数；任务跨进程合并按字段（steps / files / fileMeta）而不是整条二选一。
   - **工具/命令**：`save_lesson` / `remember` / `forget` / `select_task` / `archive_task` / `/tasks` 在未落盘时给出 `persisted:false` 或明确警告；`roots.deny/exclude` 对 symlink 别名生效；原生服务的 `recall/stats` 也过根护栏；TaskBridge 相对路径按会话 cwd 解析；显式切换任务/清空步骤会推空宿主清单；`/insight edit|list` 校验 scope；services `recall` 支持 `taskId`。
   - **客户端**：记忆页打开时也取 `/tasks`（降级按钮不再永远禁用）；记忆页命令走统一 `invokeCommand`（超时/取消/错误信封）；分页发现 total 变化时回到第一页重取；`BroadcastChannel` 缺失时软降级；根比较归一大小写/分隔符；切换 scope 关闭编辑表单；设置服务部分缺失时点名告警。
   - **文档/打包**：README 性能表标注 v2 基线并补 v3 实测；`pm-digest` 区分桶数与源文件数；删除过时的 `client/client.d.ts`，构建前清理 `client/` 产物。
 
-- **第二轮审计收口（2026-11-11）**：补齐上一批的“半修”与低优先设计项，无新增配置键。
+- **第二轮修复**：补齐上一批的“半修”与低优先设计项，无新增配置键。
   - 旧消息（无 `source.memory`）改用**整行文本 hash** 对账：正文/结论改了会重发，不再因为 `hash=null` 永久压制；procedure 旧消息仍可能重发一次（老正文没有 id）。
   - 旧宿主（无 `replaceGeneration`）每 32 次 ensure 做一次全量重建，等长/中间替换也能发现；删除只写不读的 `maxSeq`。
   - `index_repo` / `index_doc` 在 `save()` 未落盘时也追加与写工具一致的警告。
@@ -18,7 +18,7 @@
   - 客户端动作后的前缀重载改为**连续翻页**直到原条数（单页仍 ≤200），超过 200 条不再被截断。
   - 跨标签页广播增加 `sessionId / boundTaskId / sentAt`：同项目同会话同步绑定，乱序快照按时间丢弃。
   - `tool-schema-size` 从 `toolDefinitions()` 注册表生成，新增工具自动进预算。
-  - **第三轮审计补丁**：注入被宿主 abort/丢弃时回滚额度、冷却、`seen` 与命中计数（`recordHit` 支持负 delta），pre-step 增加 abort 闸门；任务卡用 `e` 指纹对账，条目全被跳过的下一步/重启不再重发卡；旧 procedure 按整块文本 hash 对账。
+  - **补充修复**：注入被宿主 abort/丢弃时回滚额度、冷却、`seen` 与命中计数（`recordHit` 支持负 delta），pre-step 增加 abort 闸门；任务卡用 `e` 指纹对账，条目全被跳过的下一步/重启不再重发卡；旧 procedure 按整块文本 hash 对账。
   - **存储**：缩桶重排按“实际写过的桶”清理（空桶里的已删条目不再复活）；锁内合并读失败时放弃本次写入（不覆盖另一进程）；`format.json` 读失败不再 cleanup 掉新桶；`pruneTasks` 的归档不被跨进程合并回滚；锁新增 `up`（uptime）判重启；turn/end flush 使用 1.5s 预算。
   - **工具**：`/tasks insight` 写命令落盘失败返回 error 而不是 success；原生服务四动词要求 root 存在；`index_doc` 超大/排除时摘掉旧索引（无 store 时不建）；已归档任务拒绝 task 级写入；`index_repo` 成功/删除后清理后台失败账本。
 
@@ -37,7 +37,7 @@
 ## 0.6.11 (2026-11-06)
 **兼容**：`format.json` 仅在成功从旧版 store 迁移时多一个可选的 `migratedFrom: 'legacy'` 标记（旧版本读到会忽略）；无新增配置键，无破坏性 store 变更。
 
-### 修复（2026-11-05 审计）
+### 修复
 
 - **旧版 store 迁移不再删库**：`entries.json` 有数据、`index.json` 缺失/无 `files` 时，`load()` 保护性跳过后 `save()` 不再补写 `format.json`；成功迁移的标记带 `migratedFrom: 'legacy'`，没有标记的旧 `format.json` 也不会触发清理。
 - **锁回收失败不再同步忙等**：stale 分支补 deadline 与 10ms 等待；只读目录 / Windows 持续占用下 `acquireDirLock()` 按 `timeoutMs` 返回 `null`，不再挂死 `save()` / 退出 flush。
@@ -247,7 +247,7 @@ Snowball 词干不幂等（`память → памя → пам`）。`recallIt
 
 ### 修复：注入的"这一步在做什么"取错了来源
 
-**证据**（用插件自己的审计日志复盘一次真实会话——作者在插件仓库里跑 30–40 分钟审计，含 4 个子代理）：17 次注入 / 8,654 字符，可判定与本步任务无关 **6.2k（72%）**。其中：
+**证据**（用插件自己的日志复盘一次真实会话）：17 次注入 / 8,654 字符，可判定与本步任务无关 **6.2k（72%）**。其中：
 
 - `find src client test scripts bench docs -type f` → `run-bench`（只是目录名 `bench`），4 条基准 procedure、1,777 字符；
 - 子代理提示词里的"删除后的悬空状态""版本迁移" → 父会话 `file-delete` / `migrate` 连续 8 步；
@@ -266,7 +266,7 @@ Snowball 词干不幂等（`память → памя → пам`）。`recallIt
 
 ### 修复：跨进程写的三条数据安全问题（多开 dsh）
 
-**背景**：审计给出三条可复现缺陷，全部发生在"两个 dsh 实例共用一个 store"这个插件明确支持的场景里。
+**背景**：三条可复现缺陷，全部发生在"两个 dsh 实例共用一个 store"这个插件明确支持的场景里。
 
 1. **锁可被抢，release 无所有权校验**。旧锁只有 mtime：持锁超过 10s 就被第二个进程当成死锁抢走；原持有者到点 release 又无条件 unlink，把对方的锁删掉，第三个进程随即进入——实测三者同时"持锁"。
    现在锁内容带 `{pid, host, token, at}`：同机 pid 活着就绝不回收（Linux 上再用 `/proc/<pid>` 的启动时刻识别 pid 复用）；release 校验 token，不删别人的锁。
@@ -327,7 +327,7 @@ Snowball 词干不幂等（`память → памя → пам`）。`recallIt
 
 ## 0.6.5 (2026-10-24)
 
-**升级注意**：`allowUnsafeRoots: true` 的作用面比 0.6.4 大。此前它只放开**显式**工具调用与 `autoIndexOnFirstUse`，懒索引、会话审计与 TaskBridge 即使开着也始终不动；现在它放开内置名单的**所有**根判定入口，这三条链路会在放行的目录里建 store、写审计。只想放开某个目录时用 `roots.allow`（精确匹配，不影响 `deny` / `exclude`）；家目录、系统目录如非必要仍建议保持 `false`。
+**升级注意**：`allowUnsafeRoots: true` 的作用面比 0.6.4 大。此前它只放开**显式**工具调用与 `autoIndexOnFirstUse`，懒索引、会话日志与 TaskBridge 即使开着也始终不动；现在它放开内置名单的**所有**根判定入口，这三条链路会在放行的目录里建 store、写日志。只想放开某个目录时用 `roots.allow`（精确匹配，不影响 `deny` / `exclude`）；家目录、系统目录如非必要仍建议保持 `false`。
 
 ### 新增：可配置的项目根名单（issue #8）
 
@@ -341,7 +341,7 @@ Snowball 词干不幂等（`память → памя → пам`）。`recallIt
 
 优先级 `exclude` > `deny` > `allow` > 内置名单。`allowUnsafeRoots: true` 保留为兼容开关，只作用于内置名单、`deny` / `exclude` 仍然优先——它的作用面变化见上面的升级注意。
 
-**生效面**：判定收敛到 `util/fs.js` 的 `compileRootPolicy()` / `rootRejection()`，以下入口共用同一结论——显式工具调用（`index_repo` / `index_doc` / `remember` / `query_memory` / `stats` / 任务工具）、懒索引、watch 轮询、会话审计、TaskBridge。`listProjectFiles()` 的 walk 与 git 两条分支都应用 `roots.exclude`；父根的完整扫描会跳过被排除子树，并清掉之前索引过的条目。
+**生效面**：判定收敛到 `util/fs.js` 的 `compileRootPolicy()` / `rootRejection()`，以下入口共用同一结论——显式工具调用（`index_repo` / `index_doc` / `remember` / `query_memory` / `stats` / 任务工具）、懒索引、watch 轮询、会话日志、TaskBridge。`listProjectFiles()` 的 walk 与 git 两条分支都应用 `roots.exclude`；父根的完整扫描会跳过被排除子树，并清掉之前索引过的条目。
 
 **自愈**：新增 `deny` / `exclude` 后，已经登记在 `watch.json` 里的根会在下次启动时自动摘掉，不需要手删。拒绝文案会说明命中的规则，并指出要改的字段（`- id: project-memory` 的 `config:` 下）。
 
@@ -377,7 +377,7 @@ Snowball 词干不幂等（`память → памя → пам`）。`recallIt
 
 ### 修复：经验层与洞察层各用一套打分器，`save_lesson` 写出的条目恒 0 分
 
-**问题**：`save_lesson` 写出的 experience 条目没有 `problem` / `solution`，而旧 `rankExperienceScored` 拼给 BM25 的文档是三个字面量 `undefined` → 该条目**恒 0 分**；洞察桶又按 kind 排除了 experience，于是两条召回路径同时断掉：条目在库里，查不到，`query_memory` 还会印出 `Problem: undefined`。同一处还有两个连带问题：只给 `pattern` 的 lesson，`vectorText` 只认 title/problem/body，空串让 `vectorNear` 返回 null，0.9 自动覆盖与 0.7 近邻提示整体失效；只给 `choice` 的 decision，标题落成 `(untitled)`。影子审计里 `rel` 的分子是 BM25 分、分母却是融合 top，实测能到 5.925。
+**问题**：`save_lesson` 写出的 experience 条目没有 `problem` / `solution`，而旧 `rankExperienceScored` 拼给 BM25 的文档是三个字面量 `undefined` → 该条目**恒 0 分**；洞察桶又按 kind 排除了 experience，于是两条召回路径同时断掉：条目在库里，查不到，`query_memory` 还会印出 `Problem: undefined`。同一处还有两个连带问题：只给 `pattern` 的 lesson，`vectorText` 只认 title/problem/body，空串让 `vectorNear` 返回 null，0.9 自动覆盖与 0.7 近邻提示整体失效；只给 `choice` 的 decision，标题落成 `(untitled)`。影子日志里 `rel` 的分子是 BM25 分、分母却是融合 top，实测能到 5.925。
 
 **改法**：经验层改用洞察层同一个 `insightToEntry` + `rankEntriesMergedScored`，命中后用 `byId` 换回原条目，`rankExperience(Scored)` 删除；`normalizeInsight` 的标题链补 `choice`；`vectorText` 用同一条链（title → pattern → problem → choice → topic → body）并截 200 字符；影子记录新增 `lexTop`，`rel = 词法分 / lexTop`，真实排序判据仍用融合分；渲染侧 problem→title、solution→fix→choice→body 兜底。
 
@@ -442,9 +442,9 @@ Snowball 词干不幂等（`память → памя → пам`）。`recallIt
 
 **影响**：每轮固定开销降约 43%；工具行为与参数契约不变。
 
-### 整理：审计写入器归一、global store 单例、`steps` 纳入密钥检测
+### 整理：日志写入器归一、global store 单例、`steps` 纳入密钥检测
 
-- 影子审计与主审计共用一份配置归一（`cfgSideLog()`：默认开、只认显式 `false`、非法上限退回默认值）与一个写入器；两者只剩文件名与默认上限不同（审计 256 KB、影子 512 KB，各留一代 `.1`）。日志名、字段、轮转行为全不变。
+- 影子日志与主日志共用一份配置归一（`cfgSideLog()`：默认开、只认显式 `false`、非法上限退回默认值）与一个写入器；两者只剩文件名与默认上限不同（主日志 256 KB、影子 512 KB，各留一代 `.1`）。日志名、字段、轮转行为全不变。
 - `GlobalStore` 按文件路径复用实例（与 project store 的 `storeCache` 同语义）：两个工具 / 会话交错读写同一份 `global.json`，不再后写覆盖先写。
 - 向量缓存的键加上模型指纹；taskbridge 的会话 Map 改成有界并在 `disposed` 时清理。
 - `remember` 的 `source_file` 走 `normalizeCitationFiles()`：项目外的路径丢弃并回报，不再把任意绝对路径写进记忆。
@@ -553,7 +553,7 @@ README 双语与 CHANGELOG 里的具体框架名、硬件与机器信息、内�
 - **精确 id 优先**：命中即删那一条，不被当成关键词。
 - **关键词**沿用旧经验层**一直以来的判据**——查询侧覆盖率（命中词 / 查询词数）≥ 0.5，而不是排序/去重用的两侧取大：删除查询通常只有一个词，用两侧取大会被长正文稀释到接近 0，"删掉 pnpm 那条"就永远删不掉。换层不顺带改判据。
 - **上限保护**：关键词命中超过 `insight.maxForgetMatches`（默认 10）时**一条都不删**，只列出候选（id + 标题 + 所在层）让人给更具体的词或逐个 id。删除是真删且无撤销，一次 `forget 'pnpm'` 扫掉十几条精选记忆不可接受。
-- **回报说清删了什么**：`Removed N memory entries:` + 每条的 `id《标题》(层)`。旧实现只回一个计数，事后无法审计。
+- **回报说清删了什么**：`Removed N memory entries:` + 每条的 `id《标题》(层)`。旧实现只回一个计数，事后无法核对。
 
 `save_lesson` 的近邻提示同步补上"确认过时的用 forget 删掉它"，写入与删除两条路闭环。`test/insight-store.test.mjs` 新增 2 项（+2）：精确 id 删 project / global / task（global 要验落盘）、关键词删旧经验层、上限保护超限不删、无匹配不炸，以及 `forget` 工具端到端的回报内容。
 
@@ -574,7 +574,7 @@ README 双语与 CHANGELOG 里的具体框架名、硬件与机器信息、内�
 
 ### 修复：dsh 0.2.1 起 `session.header.cwd` 不再是「当前工作目录」
 
-0.2.1 引入 `@deepseek-ai/dsh-working-directory`：`header.cwd` 变成**原始项目身份 / 权限根**，而 `working_directory({cd})` 改的是会话投影里的当前执行目录，**不写回 header**。本插件的根解析（索引 / 检索 / 懒索引 / 审计注入 / 任务桥）此前一律读 `header.cwd`，于是用户 cd 到另一个项目后，记忆仍然读写**原项目**的 store——不报错，只是静默错根。
+0.2.1 引入 `@deepseek-ai/dsh-working-directory`：`header.cwd` 变成**原始项目身份 / 权限根**，而 `working_directory({cd})` 改的是会话投影里的当前执行目录，**不写回 header**。本插件的根解析（索引 / 检索 / 懒索引 / 注入 / 任务桥）此前一律读 `header.cwd`，于是用户 cd 到另一个项目后，记忆仍然读写**原项目**的 store——不报错，只是静默错根。
 
 取值现在收敛到 `src/util/session-dir.js` 的 `sessionWorkingDir()`：`ctx.get('workingDirectory').get(session)` → `session.header.cwd` → `agent.session.header.cwd`。新服务用 `ctx.get()` **软探测**（不能进顶层 `inject`，那是装配期门控，老宿主上会让插件整个不挂载），服务缺失或抛错都回退 `header.cwd`。没 cd 过时该投影的 `init` 就是 `header.cwd`，两者恒等，因此对既有行为是 **no-op**。`test/session-dir.test.mjs` 9 项钉住每条取值路径。
 
@@ -760,7 +760,7 @@ fiber 里 `provide`）：读它不需要 inject 的**唯一**路径是 `ctx.get(
 
 - **`insight.files` 只收项目内相对路径**（此前零校验）：`save_lesson` 的参数描述一直写着「项目相对
   路径」，但项目外的绝对路径会原样落盘 —— 实测本仓库 144 处引用里 **3 处项目外、6 处真悬空**，
-  事后只能靠审计发现"查不到"。现在写入期收敛：反斜杠归一、`./` 前缀去掉、重复合并、
+  事后只能靠日志发现"查不到"。现在写入期收敛：反斜杠归一、`./` 前缀去掉、重复合并、
   **项目内绝对路径 → 项目相对路径**，其余（项目外绝对 / `..` 逃出根 / 没有根时无法判定的绝对路径）
   **丢弃并把数量写进返回文本**（不静默少几行）。两条写入路径共用同一个纯函数
   `normalizeCitationFiles`（`src/util/fs.js`）：工具 `save_lesson` 与面板编辑（`/tasks insight edit`）。
@@ -791,7 +791,7 @@ fiber 里 `provide`）：读它不需要 inject 的**唯一**路径是 `ctx.get(
   多会话任一在跑即活跃、回合结束的节拍恢复（有改动回 base / 无改动继续退避）、`watch: false` 与
   `stop()` 之后活跃信号不抛错也不复活定时器。
 
-### 修复：`budget` 掉落的两维数字在审计面被抹掉
+### 修复：`budget` 掉落的两维数字在日志被抹掉
 
 `57b464c` 给 `dropped` 加了 `remaining` / `need`（理由写在代码里："还剩 38 字符、这条最少要 120"
 与"根本没预算"在日志里长得一样，配额逼近上限时那条**永久静默的细缝**因此不可诊断）。
@@ -800,7 +800,7 @@ fiber 里 `provide`）：读它不需要 inject 的**唯一**路径是 `ctx.get(
 `test/injection-budget.test.mjs` 断言的是 `buildInjection` 的**内存产物**：
 两处各自有测试，接缝没人测。
 
-- 审计投影原样保留这两维。只对带数字的条目落键 —— coverage 等没有量纲的掉落占绝大多数，
+- 日志投影原样保留这两维。只对带数字的条目落键 —— coverage 等没有量纲的掉落占绝大多数，
   不该为此多出两个 `null`。
 - **回归**：`buildInjection` → `auditRecordFrom` → `appendInjectionAudit` → 读回最后一行，
   断言 `remaining: 30` / `need: 120` 真的落到盘上（回退修复即失败）。
@@ -915,7 +915,7 @@ id 前缀规则 `replace(/[\\/:\s]/g, '_')` 曾在**三处各写一份**（`doc-
   50 MB 反而 328 MB），所以脚本以 **RSS 为主口径**，heap 只作参考。
 - 顺手清账：`parsePdfInfo()` 零调用方（且自己会整份读盘）→ 删除。
 
-### 文档：README 测试数断言审计
+### 文档：README 测试数断言
 
 README（英/中）的测试数此前停在 561，而 `npm test` 实测已是 563（`readiness` 15→16、
 `ops` 6→7 两处漏更）。本次与新增用例一起对齐到 **592**，逐项相加与实测一致。
@@ -1416,17 +1416,17 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
   **精确匹配**：只拒绝这些目录本身，子目录照常可用（`~/Library/Mobile Documents/…/proj` 仍是合法项目根）。
 - 所有会写盘/扫描的入口统一过这道关：`index_repo`、`watch_repo`、`index_doc`、`remember`/
   `forget`/`lesson`/`query_memory`/`memory_stats`/任务工具、watch 管理器、`autoIndexOnFirstUse`。
-- **项目根推导收敛成 `util/fs.js` 里的唯一策略**，懒索引 / 会话审计 / TaskBridge / 所有工具
+- **项目根推导收敛成 `util/fs.js` 里的唯一策略**，懒索引 / 会话日志 / TaskBridge / 所有工具
   用同一套顺序：显式 `root` → 显式登记的根（`watch_repo`）→ 最近的 VCS/清单标记 →
   **会话工作目录本身（只要它是安全目录）** → `null`。旧实现是"标记优先，找不到就兜底到文件
-  所在目录"，且审计/工具侧直接用原始 cwd、懒索引用标记根，同一个会话会分裂成两个 store。
+  所在目录"，且日志/工具侧直接用原始 cwd、懒索引用标记根，同一个会话会分裂成两个 store。
   现在"有没有标记"不再决定"能不能用"——只决定"这个根是声明的还是推定的"。没有标记的散目录
   仍然**不会**被升格：只有会话 cwd（人明确选择的工作位置）才有这个资格。
 - **推定根会通告模型**：根来自无标记的会话工作目录时，首次注入前追加一行"记忆根 = X
   （无项目标记，按会话工作目录推定）；若要改，给 index_repo / watch_repo / remember /
   query_memory 传 `root: <dir>`，或在项目目录里重启 dsh"。每个会话一次，与常驻任务卡同类
   （状态声明，不占条目额度），`autoContext.rootNotice: false` 可关。
-- 危险根里**自动路径零副作用**：懒索引不索引、auto-inject 不读 store 也不写审计（不再把
+- 危险根里**自动路径零副作用**：懒索引不索引、auto-inject 不读 store 也不写日志（不再把
   `.dsh-project-memory` `mkdirSync` 进家目录）、TaskBridge 不建档不记文件；即使被显式调用的工具
   也会收到可执行的拒绝说明，只有新配置 `allowUnsafeRoots: true` 才放行显式调用。
 - 有界化：`walkDir` 返回 `{files, truncated}` 并支持 `maxScanFiles`（默认 20000）/`maxScanDepth`
@@ -1439,7 +1439,7 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
 
 验证：新增 `test/root-guards.test.mjs`（69 项：判定与例外、**用 `path.win32` 在任意平台上
 模拟验证 Windows 分支**、每个入口的拒绝、历史污染自愈、安全无标记 cwd 照常可用、推定根通告、
-审计与懒索引用同一个根、截断不误删、auto-inject 静默）；
+日志与懒索引用同一个根、截断不误删、auto-inject 静默）；
 `test/run-test.mjs` 里依赖旧语义（启发式、兜底、temp ceiling）的断言改为新契约；
 `injection-audit` / `injection-budget` 的夹具根补上项目标记，避免根通告混进它们的计数。
 全量测试与 `npm run typecheck` 通过。
@@ -1557,7 +1557,7 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
 
 - 新增 `admission-shadow.jsonl`：**每步**一行（含零注入的静默步与对照组），带本步全部被评分的
   候选 + 判据特征（`rel` / `coverage` / `matched` / `support` / `terms` / `decision`）与场景
-  （`query` / `ops` / `writes`）。主审计只在真的注入时写，静默步零痕迹 → "换个阈值会怎样"
+  （`query` / `ops` / `writes`）。主日志只在真的注入时写，静默步零痕迹 → "换个阈值会怎样"
   永远无法离线回答，也攒不出训练样本。`decision` 直接指出每条候选卡在哪一关。
 - `scoreHints` 只做加法：影子候选单独一条路径，`hints` / `dropped` 的行为一字未改。
 - 配置：`autoContext.shadowLog`（默认 true）/ `shadowMaxBytes`（默认 2 MB，超限轮转 `.1`）。
@@ -1578,7 +1578,7 @@ git 会读取工作区里任意目录下的 `.gitignore`，`*` 连这个文件�
 
 ## 0.5.7 (2026-09-20) — bug-fix release
 
-发布前审计在 313 项全绿下发现并修复以下缺陷，新增 18 项回归测试（共 331）。
+发布前在 313 项全绿下发现并修复以下缺陷，新增 18 项回归测试（共 331）。
 
 ### 数据完整性
 

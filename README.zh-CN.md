@@ -48,8 +48,6 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 
 以下工具由 **agent 自动调用**，无需用户手动输入。在对话中直接说自然语言即可——例如「给这个项目建个索引」或「auth 模块是干嘛的」，或者正常开发即可——agent 会自动调用对应工具。默认开启「读到即索引」：模型读哪个文件，就顺便索引哪个文件，记忆在你干活的过程中自然积累。`watch_repo` 让显式监听的根目录在后台保持新鲜；`index_repo` 强制对项目做一次全量回填（未变更文件自动跳过）。
 
-在 git 工作树里，语料就是 `git ls-files --cached --others --exclude-standard` 的清单——已跟踪文件，加上未被忽略的未跟踪文件——因此 `.gitignore`（含嵌套规则）决定什么会被记忆。隐藏路径（任一段以 `.` 开头）与内置忽略名单（`node_modules`、`dist` …）在两种模式下都跳过；不是 git 工作树的目录退回普通遍历，套用同一套过滤。「读到即索引」只在文件**首次入库**时套用同一判据；已入库的条目后续只刷新内容、不再问 git——等 `.gitignore` 开始排除它时，由 `index_repo` / `watch_repo` 的扫描清理摘掉。显式 `index_doc` 不受 `.gitignore` 与隐藏路径过滤限制，但仍服从 `roots.exclude`、可读性与体积上限，且只要文件还在，它的条目就能活过后续扫描清理。
-
 | 工具 | 用途 |
 |---|---|
 | `index_doc file_path` | 索引单个文档（PDF/MD/txt）：分块、确定性摘要，带 `路径:行号` 入库。未变更文件自动跳过。 |
@@ -85,15 +83,13 @@ dsh plugin --profile web add @yolk_vat-y/dsh-project-memory -w
 
 ```
 .dsh-project-memory/
-  format.json      布局标记（v3，32KB 桶）
+  format.json      布局标记
   shards/          bucket-*.json，每桶约 32KB —— 写入只重写受影响的那一个桶
   watch.json       被监听根目录
   tasks.json       TaskBridge 任务实体（跨会话）
   binding.json     当前会话 ↔ 任务绑定
   insights.json    项目级记忆（教训 / 决策 / 流程 / 经验笔记）——唯一实体
   vectors.json     可选语义索引（只在向量层启用时存在）
-  injection-audit.jsonl   每次真实注入一行（注入了什么 / 为什么 / 丢了什么 / 额度）
-  admission-shadow.jsonl  每步一行，全部被评分的候选 + 特征（离线重放）
 ```
 
 global 级条目不放在项目里：它们在 `insight.globalFile`（默认 `~/.config/dsh-project-memory/global.json`），所有项目共享。
@@ -101,21 +97,7 @@ global 级条目不放在项目里：它们在 `insight.globalFile`（默认 `~/
 - **增量** — 按文件内容哈希，仅重新抽取变更文件。
 - **交叉链接** — `query_memory` 返回文档 chunk 时，按**当前**符号表解算它提到的符号，以 `references` 带出。文档先索引、符号后到也能链上。
 - **查询扩展** — `llmQueryExpansion` 开启时，把查询改写为多个变体（同义词、中英、符号名猜测）再合并分数；关闭时查询完全不碰 LLM。索引本身不调用模型。
-- **一致性** — 事实层跟随代码库（哈希重抽 / 删除即移除）；经验条目与其他 insight 走同一套覆盖与 `forget` 机制。写入在跨进程的目录锁（`.write.lock`）内做一次短暂的读改写，因此两个 dsh 实例可以共用一个项目存储：分片按 `indexedAt` 收敛，拿不到锁的保存会延后重试，仍失败则在退出时同步 flush；默认静默（`DSH_PROJECT_MEMORY_DEBUG=1` 才打印一行诊断）。
 
-## 架构（任务面板）
-
-```
-TaskPanel (Container)
-├── task-data-store  (服务端数据，跨标签页 BroadcastChannel 同步)
-├── task-ui-store    (本地 UI 状态，localStorage)
-├── task-hooks       (useTaskDrag, useTaskEdit)
-└── TaskComponents   (MiniBar, TaskCard — 纯展示组件)
-```
-
-工作流卡片可收起，自动适应 dsh 及主题插件风格，提供四种卡片风格切换。
-
-![四种卡片风格](docs/images/image-4.png)
 
 ## 配置
 
@@ -123,31 +105,20 @@ TaskPanel (Container)
 |---|---|---|
 | `memoryDir` | `.dsh-project-memory` | 每个被索引根目录内的存储目录。必须是根内的相对路径：`.`、`..`、含 `..` 段或绝对路径都会回落到默认目录并告警一次（否则 store 会落到根外，或落到根上并把整个仓库自我忽略掉） |
 | `chunkChars` / `maxChunksPerFile` | 3000 / 40 | 每个文档块最大字符数、每文档最大块数 |
-| `maxFileSizeMb` | 10 | 大于该值（MB）的文档（含 PDF）/代码文件跳过；已经索引过的文件后来涨过阈值，旧条目会在下一轮扫描 / watch 时摘掉；峰值系数见下文「单文件内存预算」 |
+| `maxFileSizeMb` | 10 | 大于该值（MB）的文档（含 PDF）/代码文件跳过；已经索引过的文件后来涨过阈值，旧条目会在下一轮扫描 / watch 时摘掉 |
 | `maxPdfPages` | 1000 | PDF 页数上限 |
-| `maxOutputChars` | 8000 | `query_memory` 返回文本上限（字符） |
 | `lazyIndexing` | true | 模型读取文件的瞬间即索引 |
 | `autoIndexOnFirstUse` | false | 插件加载时对当前工作目录做全量扫描（可选） |
 | `watch` / `watchInterval` | true / 30 | 后台刷新；基础轮询间隔（秒）；回合进行中静默（5 分钟兜底，外部改动仍会自愈），回合结束立刻合并扫一次；空闲时逐步退避到最长 2 分钟，一有变化立即回到该值 |
 | `maxScanFiles` / `maxScanDepth` | 20000 / 12 | 单次扫描的文件数与目录深度硬上限；被截断时会在报告里说明，且不会删除没扫到的条目。**无法取消**：`0` 或任何非法值都回落到默认值 |
-| `allowUnsafeRoots` | false | 放开**内置**排除名单，所有根判定入口（含懒索引、会话审计、任务桥）都生效。它只作用于内置名单——`roots.deny` / `roots.exclude` 仍然优先；只想放开一个目录时用 `roots.allow` |
 | `roots.allow` / `roots.deny` / `roots.exclude` | `[]` / `[]` / `[]` | 自定义根名单（机器/配置档级，CLI 与 web 通用）。`allow` / `deny` 精确匹配目录本身；`exclude` 按路径边界前缀匹配整棵子树（其中的文件一律不进索引）。优先级 `exclude` > `deny` > `allow` > 内置名单，文件系统根永远不能当根。支持 `~`/`~/...`；非绝对路径忽略并在 stderr 告警一次；Windows 下大小写不敏感 |
 | `llmQueryExpansion` / `expansionCount` | false / 6 | 检索前用 LLM 扩展查询（默认关闭，节省 token）；扩展变体上限 |
 | `tsPath` / `enableTypeScript` | (自动) / true | 可选：强制指定 `typescript` 安装路径；`enableTypeScript: false` 彻底禁用类型感知层 |
 | `tasklist.enabled` / `tasklist.syncHostOnAdopt` | true / true | TaskBridge 自动同步（由会话 todo 清单与文件读取沉淀任务实体）；绑定任务时把其步骤推给宿主任务清单，使 dsh 镜像该任务 |
 | `insight.*` | dedupOverlap `0.7` · reinforceBand `0.65` · autoMergeCos `0.9` · autoMergeMargin `0.05` · hintCos `0.7` · maxForgetMatches `10` · maxProject `100` · maxGlobalProcedures `200` · promoteConfidence `0.7` · globalPromoteTasks `3` · decayDays `90` · `globalFile`（自动） | insight 去重 / 自动覆盖 / 近邻提示 / 删除上限 / 强化 / 提升 / 容量 / 归档设置。`autoMergeCos` / `hintCos` 设 `0` 表示**关闭**那条带 |
-| `reflection.enabled` | false | LLM 反思，**只写任务级草稿**（触发于任务切走 / 归档）。`cooldownMs` `1800000`、`maxLessonsPerReflect` `3`、`maxDecisionsPerReflect` `2` |
-| `autoContext.enabled` | true | 静默注入包装（常驻任务卡 + 受门槛约束的条目）；宿主无法解析会话 cwd 时完全透传。`maxTokens` `400`（单轮；`0` = 完全关闭注入）、`editedMax` `3`（任务卡显示的最近"编辑中"文件数）、`signalMinRatio` `0.5`（提示至少达到该层最高分的一半）、`skipEchoSelfTodo` `true`、`budgetLog` `off`、`reinjectItemsAfter` `0`（同一条 insight 重复注入的冷却步数）、`rootNotice` `true` |
-| `autoContext.gateCooldownSteps` | 2 | **准入旋钮**：两次*条目*注入之间至少隔几步（常驻任务卡不受限——它是状态快照）。这是"别频繁注入"的主旋钮 |
-| `autoContext.maxItemsPerSession` / `autoContext.maxItemCharsPerSession` | 60 / 24000 | **runaway 保险丝，不是节流阀** —— 按条数与字符计的每会话硬上限：一旦触顶，本会话余下部分条目通道持续沉默 |
-| `autoContext.hintMinCoverage` | 0.45 | 提示通道的**绝对**下限：条目覆盖了查询多少 IDF 加权信息量。只用相对阈值分不出"有信号"和"矮子里拔将军" |
-| `autoContext.hintMinMatched` / `autoContext.hintMinSupport` | 2 / 0.15 | 提示还必须至少共享这么多个词；且查询里能在语料中找到对应的词占比不低于该值时，通道才出声——否则本轮整体沉默 |
+| `autoContext.enabled` | true | 静默注入包装（常驻任务卡 + 受门槛约束的条目）；宿主无法解析会话 cwd 时完全透传。`maxTokens` `400`（单轮；`0` = 完全关闭注入）、`editedMax` `3`（任务卡显示的最近"编辑中"文件数）、`signalMinRatio` `0.5`（提示至少达到该层最高分的一半）、`skipEchoSelfTodo` `true`、`rootNotice` `true` |
 | `autoContext.vectorDir` | 未设 | **可选**语义层，只作用于经验/洞察两层；随 `leanvec`（optionalDependency）默认装上并启用（约 85 MB 表、约 +45 MB RSS）。填 `off` 强制纯词法；填路径或用 `DSH_LEANVEC_DIR` 可覆盖。只改排序、返回条数不变；启用时只有**没拿到余弦**的条目才继续按词法命中数筛 |
 | `autoContext.vectorAlpha` | 0.5 | 这两层内 `(1-α)·词法分 + α·余弦` 的权重；`0` 只关闭重排（写入侧去重仍在），`1`（纯向量）实测更差 |
-| `autoContext.vectorDedup` | true | 写入侧近重复检测（余弦 ≥0.9 自动覆盖、≥0.7 近邻提示）。与 `vectorAlpha` 独立；设 `false` 不影响召回排序 |
-| `autoContext.vectorItemMin` / `autoContext.vectorSpeakMin` | 未设 | **实验性**：提示通道的绝对余弦地板（条目级）与通道级语义救援。未标定——不设即关闭，开启前先看 `src/auto-inject.js` 里的实测证据 |
-| `autoContext.auditLog` | true | 每次**真实**注入往 `injection-audit.jsonl` 追加一行（注入了什么、为什么命中、丢了什么、会话额度）；超过 `auditMaxBytes`（`262144`）轮转 `.1`。任何 IO 失败都静默 |
-| `autoContext.shadowLog` / `autoContext.shadowMaxBytes` | true / 524288 | **每步**（含什么都没注入的步）往 `admission-shadow.jsonl` 追加一行：被评分候选及其特征，以及每条候选卡在哪一关 —— 它让"换个阈值会怎样"可以离线回答。只写盘、不进 prompt；超过上限轮转，只保留一代 `.1` |
 
 ### 功能开关
 
@@ -156,22 +127,6 @@ TaskPanel (Container)
 **项目根怎么定。** 按顺序：显式 `root` 参数 → 登记的根（`watch_repo`）→ 最近的 VCS 标记（`.git`/`.hg`/`.svn`）或构建/清单标记（`package.json`、`go.mod`、`Cargo.toml`、`pyproject.toml` 等）所在祖先 → 会话工作目录（前提是它不在排除名单里）。都不命中则不索引该文件。
 
 根来自工作目录时，模型每个会话收到一条通告，说明根的位置与改法；`autoContext.rootNotice: false` 关闭。因此在 `~/workspace` 这类容器目录里启动 dsh，该目录就是根，记忆覆盖其下所有项目直到扫描上限——想一个项目一个 store，就在项目目录里启动。
-
-**排除名单。** 以下目录不会作为根，精确匹配（子目录不受影响）：文件系统根、家目录、临时目录（`os.tmpdir()` 与共享的 `/tmp`、`/var/tmp`、`%TEMP%`、`%SystemRoot%\Temp`），以及系统/包管理器前缀（POSIX 上的 `/opt/homebrew`，Windows 上的 `%SystemRoot%`、`%ProgramFiles%`、`%ProgramData%`）。这些目录下的会话默认不启用记忆，stderr 输出一行说明。
-
-**自定义根名单。** 在同一份配置的 `roots` 下可以覆盖上述判定；三项都支持 `~`/`~/...`，非绝对路径会被忽略并在 stderr 告警一次（相对路径按宿主 cwd 解释，不可预测），Windows 下大小写不敏感：
-
-- `roots.allow`：即使命中了内置名单也允许作根，精确匹配；文件系统根不在此列。
-- `roots.deny`：这个目录不能当根，精确匹配；它的子目录仍可各自成根。
-- `roots.exclude`：这棵子树里的文件一律不进索引，按路径边界前缀匹配（含子目录）；也不能在这里推出新的根。父根的完整扫描会跳过它，并清理该子树里已索引的条目。
-
-注意 `deny` 只决定这个目录自己能不能当根：父目录已经是根时，`deny` 的子目录仍会被父根索引——要连文件一起排除请用 `exclude`（或 `.gitignore`，git 仓库里的扫描本来就尊重它）。显式 `index_doc` 也服从 `exclude`，被排除的文件会返回 `Not indexed`。
-
-优先级是 `exclude` > `deny` > `allow` > 内置名单。`allowUnsafeRoots: true` 只放开内置名单，`deny` / `exclude` 仍然优先。生效面是同一套判定：显式工具调用、懒索引、watch、会话审计、任务桥。被当前策略拒绝的根会在下次启动时从 `watch.json` 摘掉。配置写在 `- id: project-memory` 的 `config:` 下。
-
-**扫描上限。** 单次扫描最多 `maxScanFiles` 个文件（20000）、`maxScanDepth` 层目录（12）。被截断时，`index_repo` 的结果里会说明，watcher 每个根记一行，且不会删除没扫到的条目。**读不到的目录**（如 `EACCES`）同样算一次截断扫描并在结果里点名：读失败不等于被删除。
-
-**单文件内存预算。** `maxFileSizeMb` 管的是内存而不是磁盘偏好。索引一个文件要先把它整个物化——代码是整个 buffer 加解码后的正文，文档是逐页正文再加拼出来的 markdown——峰值随文件大小线性走。用 `npm run bench:peak` 实测（1–50 MB 阶梯，每档一个独立进程，对「峰值 RSS = a + b × 磁盘 MB」做最小二乘）：典型源码（约 1 个声明 / 1.4 KB）**≈10×**，符号密集的代码（1 个 / 220 B）**≈22×**，文本型 PDF **≈20×**；此外还有约 52 MB 的进程基线，以及首次解析 PDF 一次性约 175 MB 的底座。默认 10 MB 因此把单个文件的增量压在 **+300 MB RSS**（代码）/ **+370 MB**（PDF）量级；调大它就按比例抬高这个上限。
 
 store 建在被索引的目录树里，并且**自我忽略**：自己目录内的一条 `*` 规则让它不出现在 `git status` / `git add -A` 里，`git clean -fd` 也不会删它。确实想把记忆跟着仓库提交：`git add -f .dsh-project-memory`——已跟踪文件不受忽略规则影响。
 
@@ -194,14 +149,11 @@ store 建在被索引的目录树里，并且**自我忽略**：自己目录内�
     #   deny: [/srv/shared]                # 精确拒绝这个目录本身；子目录仍可成根
     #   exclude: [/srv/monorepo/archive]   # 子树前缀：里面的文件一律不进索引
     # tsPath: /custom/path/to/typescript  # 可选：强制指定 TS 安装路径
-    # autoContext:              # 注意：下面两个键在 autoContext 下，不是顶层
-    #   budgetLog: once         # 调试用：注入被预算挤掉时在 stderr 留痕（默认 off 静默）
-    #   reinjectItemsAfter: 20  # 调试用：同一条 insight 隔 N 步才允许重发（默认 0 = 本会话只发一次）
 ```
 
 只需列出要改的键，其余键回落到插件默认值。用 `dsh --profile web --dump-config` 验证生效。
 
-**web profile 上有三个键同时提供可视化设置。** 位置是**插件 → 项目记忆 → 详情页 → 常用设置**（`plugins.bundle.config`，key 为包名）：`autoIndexOnFirstUse`、`watchInterval`（秒）、`llmQueryExpansion`。保存走宿主的 `settings` 接口——卡片始终是上面那份 profile 配置的投影，不另写文件。`watchInterval` 与 `llmQueryExpansion` 立即生效（轮询定时器当场重排，扩展开关每次查询时读取）；`autoIndexOnFirstUse` 是一次性启动动作，卡片上写明"下次启动生效"。其余旋钮——`memoryDir`、`roots.*`、扫描上限、insight / 反思 / 自动注入——**刻意留在 profile**：它们要么一改就换数据位置，要么需要理解上下文，三行卡片承载不了；后台监视也**不给开关**（关掉只会让记忆越来越旧）。宿主完全没有 `configForms`（老宿主）时卡片静默跳过；`configForms` 在而 `slots` / `locale` 缺一个时，打一条点名缺项的告警，而不是静默消失。这三个键在插件装配期解析，所以**升级后需要重启一次 dsh**（在卡片里保存则无需重启）。
+**web profile 上有三个键同时提供可视化设置。** 位置是**插件 → 项目记忆 → 详情页 → 常用设置**（`plugins.bundle.config`，key 为包名）：`autoIndexOnFirstUse`、`watchInterval`（秒）、`llmQueryExpansion`。保存走宿主的 `settings` 接口——卡片始终是上面那份 profile 配置的投影，不另写文件。`watchInterval` 与 `llmQueryExpansion` 立即生效（轮询定时器当场重排，扩展开关每次查询时读取）；`autoIndexOnFirstUse` 是一次性启动动作，卡片上写明"下次启动生效"。这三个键在插件装配期解析，所以**升级后需要重启一次 dsh**（在卡片里保存则无需重启）。
 
 不想改 profile 文件、只想临时试一次，可用 CLI 补丁覆盖：
 
@@ -213,37 +165,14 @@ dsh web --patch ./config.yml
 
 ## 性能
 
-### 真实项目实测（v2 逐文件分片，2026-10-13）
+合成代码语料（每文件约 4–5 个符号），Node 24 / Linux，第二遍热缓存：
 
-四个语料、同一台 Linux 机器（Node 24.19），每个跑两遍、引用**第二次（页缓存已热）**的数据。「冷索引」= 完整索引一轮（walk + 哈希 + 抽取 + 落盘）；「查询」= 线上同一套 scorer 跑 100 条采样；「单文件重索引」= watch 的重索引内核（读 + 抽取 + 落盘），不含懒索引的根解析 / `.gitignore` 固定开销。
+| 语料 | 全量索引 | 冷加载 | 缓存查询 p50 / p95 | 单文件重索引 |
+|---|---:|---:|---:|---:|
+| 5,000 文件 / 20k 条目 | 218 ms | 49 ms | 4.9 / 9.7 ms | 1.6 ms |
+| 10,000 文件 / 40k 条目 | 417 ms | 103 ms | 11.4 / 21.9 ms | 3.0 ms |
 
-| 语料 | 文件数 / 条目数 | 冷索引 | 冷加载 | 查询 p50 / p95 | 单文件重索引 | 存储内容 / 落盘 | 加载后堆 |
-|------|----------------|--------|--------|----------------|--------------|----------------|----------|
-| 前端应用（纯代码） | 289 / 2,142 | 246 ms | 8 ms | 0.76 / 1.4 ms | 0.3 ms | 0.66 MB / 1.52 MB | 6.3 MB |
-| 文档工作区（Markdown + PDF） | 249 / 977 | 705 ms | 10 ms | 1.8 / 5.5 ms | 0.4 ms | 1.31 MB / 1.84 MB | 6.8 MB |
-| TypeScript monorepo，3,000 文件切片 | 3,000 / 17,576 | 1.9 s | 70 ms | 9.2 / 18.9 ms | 1.9 ms | 10.9 MB / 18.9 MB | 22.7 MB |
-| TypeScript monorepo，整棵树 | 12,634 / 80,231 | 7.8 s | 278 ms | 40.6 / 74.8 ms | 7.2 ms | 42.0 MB / 75.7 MB | 75.2 MB |
-
-> 上表测于 **v2 逐文件分片**布局。v3 按 ~32 KB 哈希桶打包，落盘文件数与每文件块开销大幅下降，冷加载仍在同一量级。5,000 文件合成语料冷加载约 **60 ms（205 桶）**；10,000 文件约 **120 ms（413 桶）**。**跨天测量可能漂移 ~20%**：低于这个幅度当作噪声；要谈回归，必须同一会话、同一语料跑新旧两版（`npm run bench` 各两遍，引用第二遍热缓存数据），不要外推 2026-10-13 的表格。
-
-**扩展形状。** 重索引一个变更文件的成本是 O(文件)、不是 O(语料)——上面每个语料都在 0.3–7.2 ms。查询（最大语料 ≈0.5 µs/条目）与常驻堆（查询一次后 ≈1.5 KB/条目）随索引规模线性增长；冷加载是每文件数十 µs（5,000 合成文件约 60 ms），因此小型与中型项目都落在个位数毫秒。重复读一个已索引文件约 0.01 ms：一次 `stat` 加一次缓存命中的记录查询就结束，不读盘、不哈希、也不起 `git check-ignore`。
-
-> `read+hash` 受操作系统页缓存影响——12,634 文件时冷缓存 2.3 s、热缓存 0.27 s——上表引用的是热缓存那一遍。
-
-### 合成基准测试（Node 24.19，Linux）
-
-| 场景 | 规模 | 实测 |
-|------|------|------|
-| 批量冷记忆构建 | 5,000 文件 / 20k 条目 | 284 ms 均值（p50 286）|
-| 冷加载 | 5,000 文件 | 58 ms |
-| 热路径懒记忆 | 单文件重记忆+落盘 | p50 2.5 ms / 最大 6.7 ms (5k) |
-| query_memory (缓存命中) | 5k 文件 / 20k 条目 | p50 2.9 ms / p95 6.0 ms |
-| query_memory (缓存命中) | 1k 文件 / 4k 条目 | p50 0.5 ms / p95 1.1 ms |
-| 批量冷记忆构建 | 10,000 文件 / 40k 条目 | 558 ms 均值（p50 540）|
-| 冷加载 | 10,000 文件 | 117 ms |
-| 热路径懒记忆 | 单文件重记忆+落盘 | p50 5.5 ms / 最大 8.4 ms (10k) |
-
-> 合成基准：生成代码（~4–5 符号/文件），实测于 2026-10-13。复现命令 `npm run bench:synthetic -- 5000`（脚本 `scripts/bench-synthetic.mjs`）。测量纯索引开销，不含 LLM 调用。写入后的首次查询会重建 IDF 缓存（**40k 条目 141 ms**，20k 条目 68 ms，4k 条目 17 ms），后续查询命中缓存。这组 IDF 数字是 0.6.10 之前的基线——0.6.10 的分词重写在同一语料上把这次重建缩短约三分之一（同会话 A/B，数字见 CHANGELOG）。
+冷加载是首次读盘；写入后的首次查询会重建 IDF 缓存（20k 条目 79 ms，40k 条目 153 ms），之后命中缓存。重索引一个变更文件是 O(文件)，不是 O(语料)。
 
 ### 自己复现这些数字
 
@@ -255,29 +184,7 @@ npm run bench -- /你的/项目路径
 node scripts/bench.mjs /你的/项目路径 [--json] [--samples 100] [--no-pdf] [--keep]
 ```
 
-输出包含：冷索引（拆成 read+hash / extract / commit 三段）、冷加载、IDF 重建、冷查询与热查询延迟（100 条采样报 p50/p95/max）、单文件热重索引、存储体积、常驻堆与单条目字节数。示例——上表里的前端应用：
-
-```
-冷索引     246 ms   （read+hash 8 ms · extract 222 ms · commit 14 ms）← 第二次、页缓存已热
-存储       内容 0.66 MB · 落盘 1.52 MB · 325 bytes/条目 · 冷加载 8 ms
-内存       加载后堆 6.3 MB → 首次查询后 6.9 MB（RSS 62 MB）
-热查询     p50 0.76 ms · p95 1.4 ms          （2,142 条目）
-单文件重索引  p50 0.3 ms
-```
-
-带 `--queries 你的查询集.json` 可以在你自己的项目上跑标注集方法（hit@5 / hit@10 / MRR）。
-
-## 设计取舍
-
-- **短时文件锁，而不是嵌入式数据库** — 每次保存只在读改写期间持有排他的 `.write.lock`（解析在锁外完成），对方忙时最多**同步等 15s**（写路径的正确性靠等到锁，不靠后台重试）；仍失败会登记进退出 flush，关 dsh / 卸载插件时再同步写一次。全程**默认不打扰用户**——记忆写入幂等、失败成本低；需要排查时设 `DSH_PROJECT_MEMORY_DEBUG=1` 才会打印一行。锁内容带 `pid` / `host` / `token`：同机持有者活着就绝不抢，release 校验所有权、不删别人的锁；崩溃残留的同机死锁按 pid 立即回收。两个 dsh 实例因此可以共用一个存储。没有 WAL、没有常驻进程、没有原生依赖。
-- **Watch：事务外计算，事务内提交** — 不持锁解析，也不用 `fs.watch`：轮询 + mtime/内容哈希在网络盘、Docker 卷、WSL 上行为一致，没有 `fs.watch` 的重复触发/漏事件问题。
-- **损坏桶隔离，不自动修复** — 解析失败的桶改名、桶内文件在**下一次扫描时**重新索引；不引入 WAL 或嵌入式数据库，那会带来原生依赖、锁竞争与它们自己的新故障模式。
-- **向量只重排，不做排序主力** — 在**改写成不含原词**的查询集上，纯向量替换差于 BM25（hit@10 **53% vs 69%**），加权融合只在**小 k** 上更好（hit@3 **53% vs 50%**），所以可选层只重排经验/洞察两层、绝不参与闸门。词法检索在本插件针对的查询上依然够用：真实项目 29 条标注查询的文件级 hit@5 为 **96.6%**，整 chunk 词项把文档词项覆盖从 **27.3% 提到 100%** 且 MRR 不变（**0.958** vs **0.955**）。
-- **索引确定且不调用模型** — 索引期不调模型、查询期也不翻译：前者会让同一份文档两次索引结果不同，后者有一个硬失败模式（译错 = 零召回）；规则 + 符号链接已经覆盖常见情况，且离线可用。
-- **面向模型的记忆：agent 自己写，不把人放进回路** — 记忆的消费方是 agent，而 agent 通常是无头的，只在有人点卡片时才升级的记忆等于永远不会升级。`draft` 是「来源标记 + 佐证门槛」而不是审批队列。
-- **直接返回完整条目** — 条目本就紧凑，完整返回更可核验，也少一轮往返。
-- **`forget` 按关键词激进；精确请用 ID** — 经验笔记低风险、高量，陈旧噪音比误删更伤。精确删用 `query_memory` 输出里的 ID。
-- **TS 增强可选、异步** — 后台执行、不阻塞索引，没有 TS 时回退正则扫描；队列有上界并按内容去重，被丢弃的文件会在报告里给出条数。**默认 lib 不加载**：依赖全局类型（`Promise`/`Array`/DOM）的推导会退化成 `any`/`unknown`，显式标注的类型不受影响。
+输出包含：冷索引（拆成 read+hash / extract / commit 三段）、冷加载、IDF 重建、冷查询与热查询延迟（100 条采样报 p50/p95/max）、单文件热重索引、存储体积、常驻堆与单条目字节数。带 `--queries 你的查询集.json` 可以在你自己的项目上跑标注集方法（hit@5 / hit@10 / MRR）。
 
 ## 开发（面向贡献者）
 
