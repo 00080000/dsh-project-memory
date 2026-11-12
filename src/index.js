@@ -186,6 +186,33 @@ export function toolDefinitions(config, ctx, watchManager) {
   ]
 }
 
+/**
+ * 逐个注册工具，单个失败只丢那一个。
+ *
+ * 触发这次改动的是真事故：`dsh-memory-tiers` 也注册了 `memory_stats`，宿主 `ctx.tools.register`
+ * 遇到重名直接抛错，而这里原本是裸循环——一个工具名被别的插件占掉，整条 fiber 就 failed，
+ * 12 个工具连同客户端面板、`/tasks` 一起消失，用户看到的是"插件装了但什么都没生效"。
+ * 重名不是本插件的 bug，代价不该是全部归零；失败必须点名打日志，否则只是换成"少了个工具"
+ * 的静默。其它注册错误（schema 不合法等）同样吞掉并照常登记其余工具——那种 bug 归测试管，
+ * 线上仍应尽量保留可用面。
+ *
+ * @param {object} ctx 宿主上下文（读取 `ctx.tools.register`）
+ * @param {object[]} defs `toolDefinitions()` 的产物
+ * @returns {string[]} 注册失败的工具名，供调用方/测试核对
+ */
+export function registerTools(ctx, defs) {
+  const failed = []
+  for (const def of defs) {
+    try {
+      ctx.tools.register(def)
+    } catch (err) {
+      failed.push(def.name)
+      console.error(`[dsh-project-memory] tool "${def.name}" was not registered: ${err?.message ?? err}`)
+    }
+  }
+  return failed
+}
+
 export function apply(ctx, config) {
   if (config.enableTypeScript !== false) {
     initTypeScript(config)
@@ -240,7 +267,7 @@ export function apply(ctx, config) {
   ctx.on('session/disposed', (session) => {
     watchManager.setSessionActive(session?.id ?? 'unknown', false)
   })
-  for (const def of toolDefinitions(config, ctx, watchManager)) ctx.tools.register(def)
+  registerTools(ctx, toolDefinitions(config, ctx, watchManager))
 
   // /tasks：唯一的用户命令（宿主命令注册后必然出现在 `/` 菜单且无法隐藏，所以只留一条）；
   // 切换/归档/审核等子动词由面板按钮经 remote.commands.execute 驱动。

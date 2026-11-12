@@ -11,6 +11,7 @@ import { installAutoInject, isOwnInjection } from '../src/auto-inject.js'
 import { GlobalStore } from '../src/insight-store.js'
 import { WatchManager } from '../src/watch.js'
 import { ProjectMemoryStore } from '../src/store.js'
+import { registerTools } from '../src/index.js'
 
 let passed = 0
 const ok = (name) => {
@@ -293,6 +294,37 @@ const ok = (name) => {
   }
   assert.deepEqual(unmet, [], `client 包的 cordis peer 未满足：\n${unmet.join('\n')}`)
   ok('测试保真：node_modules 与 lockfile 同版本、client 包的 cordis peer 满足')
+}
+
+// ---- 4. 工具注册：一个名字撞车只丢那一个，不能拖垮整条 fiber ----
+// 事故形状：`dsh-memory-tiers` 也注册 `memory_stats`，宿主的 `ctx.tools.register` 遇重名抛错，
+// 裸循环里这一抛就让 fiber failed —— 12 个工具、客户端面板、`/tasks` 一起消失。
+{
+  const taken = new Set(['taken_tool'])
+  const registered = []
+  const ctx = {
+    tools: {
+      register: (def) => {
+        if (taken.has(def.name)) throw new Error(`tool "${def.name}" is already registered`)
+        taken.add(def.name)
+        registered.push(def.name)
+      },
+    },
+  }
+  const errors = []
+  const realError = console.error
+  console.error = (msg) => errors.push(String(msg))
+  let failed
+  try {
+    failed = registerTools(ctx, [{ name: 'free_tool' }, { name: 'taken_tool' }, { name: 'another_tool' }])
+  } finally {
+    console.error = realError
+  }
+  assert.deepEqual(failed, ['taken_tool'], '只有撞名的那一个算失败')
+  assert.deepEqual(registered, ['free_tool', 'another_tool'], '撞名之外的工具必须照常注册')
+  assert.equal(errors.length, 1, '失败必须报出来，且只报一次')
+  assert.match(errors[0], /taken_tool/)
+  ok('工具撞名只丢一个：其余工具照常注册，失败点名报错')
 }
 
 console.log(`\nhost-contract tests: ${passed} passed`)
