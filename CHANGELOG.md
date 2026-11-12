@@ -1,6 +1,8 @@
 ## Unreleased
 
-- **工具**：统计工具 `memory_stats` 改名为 `pm_stats`——`dsh-memory-tiers` 也注册 `memory_stats`，同进程同时启用时后注册方整条 fiber 因 `tool "memory_stats" is already registered` 失败；改名后两插件可共存（除工具名外无行为变化，`test/tool-schema-size` 加回归断言）。
+**兼容**：无新增配置键；`shards/` 的落盘布局从「一文件一分片」改为按 32KB 目标的哈希桶（`bucket-000xx.json`，`format.json` 记 `bucketCount` / `bucketSize`）——老 store 照常可读，首次写入时自动整体重排一次，不需要手工重建索引；统计工具 `memory_stats` 改名为 `pm_stats`（与 `dsh-memory-tiers` 撞名），提示词、skill 与自动化里写死旧名的地方要跟着改。`client/` 产物不变。
+
+- **工具**：统计工具 `memory_stats` 改名为 `pm_stats`——`dsh-memory-tiers` 也注册 `memory_stats`，同进程同时启用时后注册方整条 fiber 因 `tool "memory_stats" is already registered` 失败；改名后两插件可共存（除工具名外无行为变化，`test/tool-schema-size` 加回归断言）。（PR #12，@chen3tu）
 - **存储**：缩桶重排把空桶写成空文件，加载时忽略越界桶，避免清理失败/崩溃后已删条目复活；会话绑定按“相对加载基线的变化”合并，成功写盘后清墓碑；任务归档按显式改动而不是 `updatedAt` 合并；迁移保护态不再每次 save 全量重排；文件热点时间取最新；注入回滚恢复 `lastHitAt`。
 - **注入**：压缩只保留 card-only 消息时也把会话条目额度归零，不再永久失明。
 - **工具/命令**：`index_doc` 拒绝源码文件，避免覆盖符号索引；`roots.exclude` 优先于 explicit 豁免；`watch_repo` 在 watchlist 未落盘时明确告警；服务 `remember/forget` 同时检查 global 落盘；已删除的会话根不再被 TaskBridge 重建；`session/disposed` 补延迟写 flush；`git -C … checkout/rm` 正确抽取写目标。
