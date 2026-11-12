@@ -377,7 +377,7 @@ export class WatchManager {
           state.failures.set(rel, err.message)
           console.error(`[dsh-project-memory] re-index failed for ${rel}: ${err.message}`)
         }
-        // 日志只打一次是防刷屏；账本每轮都刷新时间，index_repo / memory_stats 才看得见
+        // 日志只打一次是防刷屏；账本每轮都刷新时间，index_repo / pm_stats 才看得见
         // "这个文件现在仍然没进语料"，而不是一条陈年记录。
         recordIndexFailure(root, rel, err.message)
         continue

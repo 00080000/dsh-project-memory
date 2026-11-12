@@ -57,7 +57,7 @@ const BUILDERS = [
   ['remember', () => rememberTool(config)],
   ['forget', () => forgetTool(config)],
   ['watch_repo', () => watchRepoTool(watchManager, config)],
-  ['memory_stats', () => statsTool(config)],
+  ['pm_stats', () => statsTool(config)],
   ['save_lesson', () => lessonTool(config)],
 ]
 

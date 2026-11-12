@@ -35,7 +35,7 @@ Query it before re-deriving; write to it only after something has been verified.
 2. **Refresh the index if it looks empty or stale**
    - `index_repo root:"<project>"` — incremental; unchanged files are skipped.
    - `index_doc file_path:"…"` — one document, even outside the corpus.
-   - `memory_stats` — counts, last index time, per-file list.
+   - `pm_stats` — counts, last index time, per-file list.
 3. **Write back what will still be true next session**
    - `save_lesson` — one insight. Give `kind` (`lesson` / `decision` / `procedure`), a one-line
      `title`, and the body: `pattern` + `fix`, or `choice` + `reason`, or `steps`.

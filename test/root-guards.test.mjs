@@ -312,7 +312,7 @@ console.log('\n== read paths never create a store for a typo root ==')
   const miss = () => path.join(mkdtempSync(path.join(TMP, 'pm-miss-')), 'typo-root')
   const execFor = (cwd) => ({ agent: { session: { id: 's_guard', header: { cwd }, requestHeader: () => undefined }, options: {}, ctx: {} } })
   for (const [label, run] of [
-    ['memory_stats', (root) => statsTool(CONFIG).execute({ root }, execFor(TMP))],
+    ['pm_stats', (root) => statsTool(CONFIG).execute({ root }, execFor(TMP))],
     ['query_memory', (root) => queryMemoryTool({ get: () => undefined, llm: {} }, CONFIG).execute({ query: 'x', root }, execFor(TMP))],
     ['forget', (root) => forgetTool(CONFIG).execute({ id_or_query: 'x', root }, execFor(TMP))],
     ['list_tasks', (root) => listTasksTool(CONFIG).execute({ root }, execFor(TMP))],
@@ -383,7 +383,7 @@ console.log('\n== a safe marker-less working directory is still a memory root ==
   // 工具侧与懒索引同一套解析：cwd 是子包时写到 repo 根的 store。
   const exec = { agent: { session: { header: { cwd: sub } } } }
   check('resolveSafeIndexRoot prefers the marker root over the raw cwd', resolveSafeIndexRoot(exec, null, CONFIG) === mono)
-  check('memory_stats-style reads and writes agree on one root', resolveSafeIndexRoot(exec, undefined, CONFIG) === mono)
+  check('pm_stats-style reads and writes agree on one root', resolveSafeIndexRoot(exec, undefined, CONFIG) === mono)
 }
 
 console.log('\n== the inferred root is announced to the model, once ==')

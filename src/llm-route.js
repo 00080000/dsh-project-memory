@@ -66,7 +66,7 @@ export function resolveRoute(exec, config) {
 
 /**
  * 记录一次降级（允许降级，不允许静默）。同一 code 只打印一次，避免逐 chunk 刷屏；
- * 计数与最近原因保留下来，供 memory_stats / 测试读取。
+ * 计数与最近原因保留下来，供 pm_stats / 测试读取。
  */
 export function noteDegraded(code, reason) {
   const at = new Date().toISOString()

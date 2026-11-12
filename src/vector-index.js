@@ -243,7 +243,7 @@ async function resolveLeanvecDir(explicit) {
 
 /**
  * 解析当前可用的 leanvec 目录（不加载模型，只做 memo 过的解析 + 指纹）。
- * 给 `memory_stats` 这类"只想知道开没开"的调用方用。
+ * 给 `pm_stats` 这类"只想知道开没开"的调用方用。
  * @returns {Promise<{dir: string|null, fingerprint: string|null}>}
  */
 export async function resolveVectorLayer(vectorDir = null) {
@@ -398,7 +398,7 @@ export function forgetVectorRows({ dir = null, ids = [] } = {}) {
 }
 
 /**
- * 索引状态摘要（不加载模型）：给 `memory_stats` 用的可观测量——行数、陈旧行
+ * 索引状态摘要（不加载模型）：给 `pm_stats` 用的可观测量——行数、陈旧行
  * （文件里有、store 里已没有）、体积、模型指纹与落盘时间。
  */
 export function vectorIndexSummary({ dir = null, items = [] } = {}) {
