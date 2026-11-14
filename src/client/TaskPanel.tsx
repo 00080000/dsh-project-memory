@@ -12,7 +12,8 @@ import {
   IconFolderOpenOutline16,
   IconQuestionOutline14,
 } from './icons.ts'
-import { createTranslate, zh, en } from './locales.ts'
+import { zh } from './locales.ts'
+import { translatorFor } from './i18n.ts'
 import { invokeCommand } from './commands.ts'
 import { missingServices, service } from './services.ts'
 import { useTaskData, useTaskDataActions, parseTaskPayloadText } from './task-data-store.ts'
@@ -25,12 +26,6 @@ import css from './TaskPanel.module.css'
 const STATUS_CYCLE = ['pending', 'in_progress', 'completed'] as const
 // 视图列表的唯一事实来源在 UI store（`/` 菜单那三行也读它）；这里不再抄一份。
 const VIEW_CYCLE = PANEL_VIEWS
-
-function getT(ctx: any) {
-  // 服务一律走软探测（services.ts）：宿主的翻译服务不在时退英文，而不是抛错带崩整个面板。
-  const locale = service(ctx, 'locale')?.getSnapshot?.()?.active === 'zh' ? zh : en
-  return createTranslate(locale)
-}
 
 function useSessionId(ctx: any): string | null {
   const [, force] = useState(0)
@@ -69,7 +64,7 @@ export function TaskPanelEntry({ ctx }: { ctx: any }) {
 }
 
 function TaskPanelView({ ctx }: { ctx: any }) {
-  const t = getT(ctx)
+  const t = translatorFor(ctx)
   const data = useTaskData()
   const ui = useTaskUI()
   // 缺失的客户端服务：面板照常挂载，但必须把原因摆在界面上（否则用户看到的是

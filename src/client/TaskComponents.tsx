@@ -13,20 +13,11 @@ import {
   IconFolderOpenOutline16,
 } from './icons.ts'
 import { createTranslate } from './locales.ts'
+import { insightKindLabel } from './kind-label.js'
 import { useTaskDrag } from './task-hooks.ts'
 import { type Task, type TaskInsight, type TaskStep } from './task-data-store.ts'
 import { timeAgo } from '../util/relative-time.js'
 import css from './TaskPanel.module.css'
-
-function insightKindLabel(kind: string, t: ReturnType<typeof createTranslate>): string {
-  const map: Record<string, string> = {
-    lesson: t('mem.kind.lesson'),
-    decision: t('mem.kind.decision'),
-    procedure: t('mem.kind.procedure'),
-    experience: t('mem.kind.experience'),
-  }
-  return map[kind] ?? kind
-}
 
 type InsightAction = 'confirm' | 'promote' | 'delete'
 

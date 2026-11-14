@@ -409,6 +409,31 @@ window.__ModuleLoader__.load({
 			} catch {}
 		}
 		//#endregion
+		//#region src/client/i18n.ts
+		/**
+		* client 半边唯一的「按宿主语言取翻译函数」入口。
+		*
+		* 为什么单独一个模块：同一段「软读 locale 服务 → 中文用 zh、其余（含服务缺失）用 en →
+		* createTranslate」原先在 TaskPanel.tsx（getT）与 slash.ts（translator）各写一份。
+		* 语言判据是产品语义而不是某次渲染的局部细节：两份副本各自演化时，面板会中文、
+		* `/` 菜单却英文，而且看起来都"正常"。收敛到这里，只保留一个事实。
+		*
+		* 语义（刻意定死）：
+		*  - 只认 `active === 'zh'`；其它值（en / 未知 / 缺失 locale 服务）一律英文——
+		*    与旧实现一致，也不把"未知语言"猜成中文；
+		*  - `service()` 是软探测，宿主没有 locale 服务时这里不抛错，面板照常渲染英文。
+		* @module dsh-project-memory/client/i18n
+		*/
+		/**
+		* 当前宿主语言对应的翻译函数。
+		* @param ctx - client 上下文（缺失/贫服务宿主也能调用）。
+		* @returns 翻译函数；语言服务不可读时退回英文。
+		*/
+		function translatorFor(ctx) {
+			const active = service(ctx, "locale")?.getSnapshot?.()?.active;
+			return createTranslate(active === "zh" ? zh : en);
+		}
+		//#endregion
 		//#region src/client/commands.ts
 		/**
 		* 客户端命令调用层：所有 `remote.commands.execute` 只走这里。
@@ -854,6 +879,44 @@ window.__ModuleLoader__.load({
 			return taskUIStore.actions;
 		}
 		//#endregion
+		//#region src/client/kind-label.js
+		/**
+		* 记忆 kind 的展示名（纯函数、零依赖，面板卡片与记忆视图共用）。
+		*
+		* 为什么单独一个模块：同一份「kind → 词典 key」映射原先在两处各抄一份
+		* （TaskComponents.tsx 的 insightKindLabel、MemoryView.tsx 的 kindText，逐字相同）。
+		* 新增 kind 时漏改一处，两个界面就会对同一条记忆显示不同的标签；而词典 key 本身
+		* 是 locales.ts 的一等公民（`mem.kind.*` 中英两份），映射不该散落在组件里。
+		*
+		* 语义（刻意定死，边缘输入也用测试钉住）：
+		*  - 四个合法 kind 一律走 `t(key)`，语言切换由词典自己负责；
+		*  - 其余值**原样返回**（字符串化），绝不回退到某个默认 kind —— 脏数据要让调用方看见；
+		*  - 用 `hasOwn` 而不是 `map[kind] ?? kind` 查表：`kind: '__proto__'` / `'constructor'`
+		*    在对象字面量上会命中原型成员（返回函数/对象），React 渲染对象会直接抛
+		*    "Objects are not valid as a React child"。非 kind 的键必须当成非法值处理。
+		* @module dsh-project-memory/client/kind-label
+		*/
+		/** kind → 词典 key（唯一一份；与 locales.ts 的 `mem.kind.*` 一一对应）。 */
+		const KIND_LABEL_KEYS = Object.freeze({
+			lesson: "mem.kind.lesson",
+			decision: "mem.kind.decision",
+			procedure: "mem.kind.procedure",
+			experience: "mem.kind.experience"
+		});
+		/**
+		* 一条记忆的 kind 展示名。
+		* @param {unknown} kind - 记忆条目的 kind（可能是缺失/脏值）。
+		* @param {any} t - 翻译函数。这里刻意不收窄成 `(key: string) => string`：组件的 t 是
+		*   `ReturnType<typeof createTranslate>`（key 为词典字面量并集），收窄会让严格模式下的
+		*   函数参数逆变检查拒绝调用；key 本身由本模块掌管，调用方只需要"能翻译一个字符串 key"。
+		* @returns {string} 本地化后的标签；非法 kind 原样字符串化。
+		*/
+		function insightKindLabel(kind, t) {
+			const key = typeof kind === "string" && Object.hasOwn(KIND_LABEL_KEYS, kind) ? KIND_LABEL_KEYS[kind] : null;
+			if (key === null) return String(kind ?? "");
+			return t(key);
+		}
+		//#endregion
 		//#region src/client/task-hooks.ts
 		/**
 		* Task Panel Hooks — 步骤拖拽交互逻辑（useTaskDrag）。
@@ -1149,14 +1212,6 @@ window.__ModuleLoader__.load({
 		* Task Panel Presentational 组件 — MiniBar（折叠迷你条）与 TaskCard（任务卡）。
 		* 纯渲染 + 卡片局部行内编辑/拖拽状态，动作经 props 回调交给容器（TaskPanel.tsx）。
 		*/
-		function insightKindLabel(kind, t) {
-			return {
-				lesson: t("mem.kind.lesson"),
-				decision: t("mem.kind.decision"),
-				procedure: t("mem.kind.procedure"),
-				experience: t("mem.kind.experience")
-			}[kind] ?? kind;
-		}
 		function StepIcon({ status }) {
 			if (status === "completed") return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconCheckOutline16, { className: TaskPanel_module_css_default.stepDone });
 			if (status === "in_progress") return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconPlayOutline16, { className: TaskPanel_module_css_default.stepRun });
@@ -1789,14 +1844,6 @@ window.__ModuleLoader__.load({
 				return null;
 			}
 		}
-		function kindText(kind, t) {
-			return {
-				lesson: t("mem.kind.lesson"),
-				decision: t("mem.kind.decision"),
-				procedure: t("mem.kind.procedure"),
-				experience: t("mem.kind.experience")
-			}[kind] ?? kind;
-		}
 		function MemoryView({ ctx, sessionId, scope, root, boundTaskId, showHints, t }) {
 			const [rows, setRows] = (0, react.useState)([]);
 			const [total, setTotal] = (0, react.useState)(0);
@@ -2269,7 +2316,7 @@ window.__ModuleLoader__.load({
 											className: TaskPanel_module_css_default.memTitle,
 											children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 												className: TaskPanel_module_css_default.kindBadge,
-												children: kindText(row.kind, t)
+												children: insightKindLabel(row.kind, t)
 											}), row.title || row.body]
 										}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
 											className: TaskPanel_module_css_default.memMeta,
@@ -2494,9 +2541,6 @@ window.__ModuleLoader__.load({
 			"completed"
 		];
 		const VIEW_CYCLE = PANEL_VIEWS;
-		function getT(ctx) {
-			return createTranslate(service(ctx, "locale")?.getSnapshot?.()?.active === "zh" ? zh : en);
-		}
 		function useSessionId(ctx) {
 			const [, force] = (0, react.useState)(0);
 			(0, react.useEffect)(() => {
@@ -2528,7 +2572,7 @@ window.__ModuleLoader__.load({
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PanelErrorBoundary, { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TaskPanelView, { ctx }) });
 		}
 		function TaskPanelView({ ctx }) {
-			const t = getT(ctx);
+			const t = translatorFor(ctx);
 			const data = useTaskData();
 			const ui = useTaskUI();
 			const degraded = missingServices(ctx);
@@ -3104,10 +3148,6 @@ window.__ModuleLoader__.load({
 				view: "global"
 			}
 		];
-		/** 按当前语言取翻译函数。 */
-		function translator(ctx) {
-			return createTranslate(service(ctx, "locale")?.getSnapshot?.()?.active === "zh" ? zh : en);
-		}
 		/**
 		* 一轮候选：把三行装配成菜单行，再按查询与位置过滤。
 		* 三行都不接参数（动作全在面板卡片里），所以位置过滤只做一件事：非 leading 位置不弹这一整组
@@ -3177,7 +3217,7 @@ window.__ModuleLoader__.load({
 		* @returns 触发器源；只依赖宿主的公开契约字段。
 		*/
 		function createSlashSource(ctx, deps) {
-			const t = translator(ctx);
+			const t = translatorFor(ctx);
 			return {
 				trigger: "/",
 				name: SLASH_SOURCE_NAME,

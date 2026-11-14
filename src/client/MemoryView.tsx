@@ -9,6 +9,7 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { invokeCommand } from './commands.ts'
+import { insightKindLabel } from './kind-label.js'
 import { HOST_PAGE_MAX, PAGE_SIZE, PREFETCH_MARGIN, SPINNER_DELAY_MS, appendUnique, createRequestGate, insightListLine, normalizeWindow, progressCounts } from './paging.js'
 import css from './TaskPanel.module.css'
 
@@ -130,16 +131,6 @@ export function parseInsightPayloadText(text?: string | null): ListPayload | nul
   } catch {
     return null
   }
-}
-
-function kindText(kind: string, t: any): string {
-  const map: Record<string, string> = {
-    lesson: t('mem.kind.lesson'),
-    decision: t('mem.kind.decision'),
-    procedure: t('mem.kind.procedure'),
-    experience: t('mem.kind.experience'),
-  }
-  return map[kind] ?? kind
 }
 
 export function MemoryView({
@@ -562,7 +553,7 @@ export function MemoryView({
             <div key={row.id} className={`${css.memRow}${row.archived ? ` ${css.memRowArchived}` : ''}`}>
               <div className={css.memRowMain}>
                 <span className={css.memTitle}>
-                  <span className={css.kindBadge}>{kindText(row.kind, t)}</span>
+                  <span className={css.kindBadge}>{insightKindLabel(row.kind, t)}</span>
                   {row.title || row.body}
                 </span>
                 <span className={css.memMeta}>

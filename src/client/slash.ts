@@ -4,8 +4,7 @@
  * 面板 `closed`/`view` 是浏览器侧状态，直接调 `openView(view)`；也不实现 matchSpace / matchEnter。
  */
 import type { ComponentType } from 'react'
-import { createTranslate, en, zh } from './locales.ts'
-import { service } from './services.ts'
+import { translatorFor, type Translator } from './i18n.ts'
 import type { PanelView } from './task-ui-store.ts'
 import { IconChecklistOutline16, IconGlobeOutline16, IconLightOutline16 } from './icons.ts'
 
@@ -65,16 +64,6 @@ export interface SlashSourceDeps {
   openView(view: PanelView): void
 }
 
-/** 翻译函数签名（key 来自 ROWS，不是字面量，故不做类型约束）。 */
-type Translate = (key: string, params?: Record<string, string | number>) => string
-
-/** 按当前语言取翻译函数。 */
-function translator(ctx: any): Translate {
-  // 软探测（services.ts）：宿主没有翻译服务时退英文，而不是抛错。
-  const dict = service(ctx, 'locale')?.getSnapshot?.()?.active === 'zh' ? zh : en
-  return createTranslate(dict) as unknown as Translate
-}
-
 /**
  * 一轮候选：把三行装配成菜单行，再按查询与位置过滤。
  * 三行都不接参数（动作全在面板卡片里），所以位置过滤只做一件事：非 leading 位置不弹这一整组
@@ -83,7 +72,7 @@ function translator(ctx: any): Translate {
  * @param req - 宿主给的候选请求（query / position）。
  * @returns 菜单行；永不抛出。
  */
-export function buildSlashCandidates(t: Translate, req: any): readonly Record<string, unknown>[] {
+export function buildSlashCandidates(t: Translator, req: any): readonly Record<string, unknown>[] {
   if (req?.position !== undefined && req.position !== 'leading') return []
   const query = typeof req?.query === 'string' ? req.query.trim().toLowerCase() : ''
   const rows = ROWS.map((row) => {
@@ -131,7 +120,7 @@ function consumeSpan(deps: SlashSourceDeps, pick: any): boolean {
  * @param pick - 宿主给的点击载荷。
  * @returns PickOutcome；拿不到可用形状时返回 undefined（菜单照常关闭，草稿不动）。
  */
-export function dispatchSlashPick(t: Translate, deps: SlashSourceDeps, pick: any): unknown {
+export function dispatchSlashPick(t: Translator, deps: SlashSourceDeps, pick: any): unknown {
   const title = pick?.candidate?.name
   if (typeof title !== 'string' || title === '') return undefined
   const row = ROWS.find((candidate) => t(candidate.labelKey) === title)
@@ -152,7 +141,7 @@ export function dispatchSlashPick(t: Translate, deps: SlashSourceDeps, pick: any
  * @returns 触发器源；只依赖宿主的公开契约字段。
  */
 export function createSlashSource(ctx: any, deps: SlashSourceDeps): Record<string, unknown> {
-  const t = translator(ctx)
+  const t = translatorFor(ctx)
   return {
     trigger: '/',
     name: SLASH_SOURCE_NAME,
