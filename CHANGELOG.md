@@ -1,3 +1,13 @@
+## 0.7.1 (2026-11-18)
+
+**兼容**：无新增配置键，无 store 格式变更，`client/` 产物已重建，直接覆盖升级。开发依赖从 dsh `0.2.2-rc.3` 对齐到 `0.2.2-rc.5`（运行时依赖未变；rc.4/rc.5 是宿主侧的模型异常响应、LiveShare 与服务端搜索修复，不涉及本插件使用的接口）。
+
+- **客户端**：记忆 kind 的展示名收敛到 `src/client/kind-label.js`，面板卡片与记忆视图共用同一份映射（此前 `TaskComponents.tsx` 与 `MemoryView.tsx` 各抄一份）。非法 kind 原样字符串化，`__proto__` / `constructor` 这类值不再命中原型成员——旧实现会把对象交给 React 渲染并抛错，整页打不开。
+- **客户端**：面板与 `/` 菜单的语言入口收敛到 `src/client/i18n.ts`（只认 `active === 'zh'`，其余与缺 locale 服务时退英文），不再各存一份副本。
+- **依赖**：`dsh-tools` / `dsh-llm` / 四个 client 包升到 `0.2.2-rc.5`；旧 `package-lock.json` 把 peer 钉在 `rc.3`，增量升级会因 peer 冲突失败，改为删除锁与 `node_modules` 后从零安装。
+- **构建**：从零安装把传递依赖 `rolldown` 从 `1.2.14` 带到 `1.2.19`，`client/client.js` 只有注释格式变化（`//#region` 改为 `//`），无代码差异。
+- **测试**：新增 `test/client-kind-label.test.mjs`（4 项），全量 1096 项。
+
 ## 0.7.0 (2026-11-12)
 
 **兼容**：`shards/` 的落盘布局从「一文件一分片」改为按 32KB 目标的哈希桶（`bucket-000xx.json`，`format.json` 记 `bucketCount` / `bucketSize`）——新版本能读旧布局，首次写入时自动整体重排，不需要手工重建索引；**旧版本读不懂新布局**（会看到空 store），要回退请先备份 `.dsh-project-memory/`。统计工具 `memory_stats` 改名为 `pm_stats`（与 `dsh-memory-tiers` 撞名），提示词、skill 与自动化里写死旧名的地方要跟着改。无新增配置键，`client/` 产物不变。
