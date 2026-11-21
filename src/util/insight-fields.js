@@ -34,6 +34,26 @@ export function bodyFieldOf(kind) {
 /** 与正文配对的「症状」字段：新建条目时用标题镜像它（KIND_CONTENT 的另一半）。 */
 const TITLE_FIELD = { lesson: 'pattern', decision: 'choice', experience: 'problem' }
 
+/** 标题缺失时的占位符：它不是内容，向量编码必须当空串处理（否则所有无标题条目共享一份向量文本）。 */
+export const UNTITLED_TITLE = '(untitled)'
+
+/**
+ * 一条记忆的标题：**唯一一份**兜底链，写入侧（`normalizeInsight`）与向量编码（`vectorText`）共用。
+ *
+ * 为什么必须共用：写入时向量编码拿的是归一化之前的 raw（只认 title 会让查询文本变成空串），
+ * 而落盘后重载编码的是归一化后的 title——两条链一旦不同，同一条记忆写入/重启后编码文本不同，
+ * 向量去重与近邻检索就针对两份不同的文本。
+ * 兜底顺序：title → pattern → problem → choice → topic → body；`body` 在链尾，
+ * 让"只有正文"的条目不至于落成 `(untitled)`（那会让所有这类条目共享同一份向量文本）。
+ * 统一 trim 后截 200：不 trim 的话首尾空白会让写入侧与重载侧差一个字符。
+ * @param {unknown} item - 归一化前/后的记忆条目。
+ * @returns {string} 标题；没有任何可用字段时为空串（由调用方决定是否回落 `(untitled)`）。
+ */
+export function titleOf(item) {
+  const raw = item?.title || item?.pattern || item?.problem || item?.choice || item?.topic || item?.body
+  return String(raw ?? '').trim().slice(0, 200)
+}
+
 /**
  * kind → 新建时用标题镜像的字段名。
  * @param {unknown} kind - 记忆条目的 kind（可能是缺失/脏值）。

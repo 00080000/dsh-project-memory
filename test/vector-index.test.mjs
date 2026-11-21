@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import {
   createVectorCosine, createVectorRerank, forgetVectorRows, leanvecFingerprint, openVectorIndex, vectorText,
 } from '../src/vector-index.js'
+import { normalizeInsight } from '../src/insight-store.js'
 
 let passed = 0
 const ok = (name) => { passed++; console.log('  ok', name) }
@@ -203,6 +204,31 @@ function fakeLeanvec({ slow = false } = {}) {
   assert.ok(b('pnpm 拦截安装脚本', items).get('r1') > 0.99, '第二路同样要能编码')
   ok('冷启动并发：只加载一次运行时，两路都可用')
 }
+
+// ---- 编码文本与落盘标题同源：写入侧（raw）与重载侧（title）必须编码同一个字符串 ----
+// 旧实现两条链各自维护且缺 `body` 兜底：只有正文的条目写入时编码正文、重启后编码 "(untitled)"，
+// 同一条记忆有了两份向量文本，去重与近邻检索都指向错的文本。
+{
+  for (const raw of [
+    { title: '显式标题', body: '正文' },
+    { pattern: '只有 pattern' },
+    { problem: '只有 problem' },
+    { choice: '只有 choice' },
+    { topic: '只有 topic' },
+    { body: '  只有正文  ' },
+    { body: '长正文' + 'x'.repeat(500) },
+    {},
+  ]) {
+    const normalized = normalizeInsight(raw)
+    assert.equal(vectorText(raw), vectorText(normalized), `写入侧与重载侧编码文本必须一致：${JSON.stringify(raw).slice(0, 40)}`)
+    assert.equal(vectorText(raw), normalized.title === '(untitled)' ? '' : normalized.title)
+  }
+  assert.equal(vectorText({ body: '只有正文' }), '只有正文', 'body 在兜底链里（不再落成空串/untitled）')
+  assert.equal(vectorText({ body: '  只有正文  ' }), '只有正文', '两侧都 trim，首尾空白不会造成差一个字符')
+  assert.equal(vectorText({}), '', '什么都没有时编码空串（调用方据此跳过）')
+  ok('vectorText 与 normalizeInsight 标题同源：body 兜底、trim、截断一致')
+}
+
 
 rmSync(dir, { recursive: true, force: true })
 console.log(`\nvector-index tests: ${passed} passed`)

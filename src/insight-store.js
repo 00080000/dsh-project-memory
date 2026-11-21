@@ -14,7 +14,7 @@ import { backfillDerivedTriggers, deriveTrigger } from './readiness.js'
 import { vectorText } from './vector-index.js'
 import { tokenize } from './util/search.js'
 import { isRecord, isoMs, newerIso } from './util/value.js'
-import { pruneKindFields } from './util/insight-fields.js'
+import { UNTITLED_TITLE, pruneKindFields, titleOf } from './util/insight-fields.js'
 
 export const INSIGHT_KINDS = ['lesson', 'decision', 'procedure', 'experience']
 export const INSIGHT_SCOPES = ['task', 'project', 'global']
@@ -97,8 +97,9 @@ export function normalizeInsight(raw, extra = {}) {
     kind,
     scope: extra.scope || 'project',
     // 标题推导必须覆盖 `save_lesson` 的三种最小输入（title / pattern / choice），否则只给 choice 的
-    // decision 会落成 `(untitled)`；顺序与 `vectorText` 兜底链一致（写入侧向量文本也走这里）。
-    title: String(raw.title || raw.pattern || raw.problem || raw.choice || raw.topic || '(untitled)').slice(0, 200),
+    // decision 会落成 `(untitled)`。兜底链与 trim/截断规则住在 `titleOf` 里，`vectorText` 调用同一份：
+    // 两边链一漂移，同一条记忆写入与重启后就会编码成两份不同的向量文本。
+    title: titleOf(raw) || UNTITLED_TITLE,
     source: extra.source || raw.source || 'agent',
     draft: raw.draft === true || extra.draft === true,
     confidence: num(raw.confidence, num(extra.confidence, 0.8)),

@@ -4,6 +4,7 @@
 // 失效两级：模型指纹（词表哈希 + 表字节数）变了全量重建；条目文本哈希变了只重算一行。
 // 降级：leanvec 不可用 / 文件损坏 / embed 抛异常 → 返回 null 或空 Map，调用方退回纯词法。
 import { createHash } from 'node:crypto'
+import { UNTITLED_TITLE, titleOf } from './util/insight-fields.js'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -16,13 +17,13 @@ const DIM = 256
 /**
  * 条目用于编码的文本：只取标题（经验条目取 problem）。实测标题变体并集 hit@10 94%，
  * 加上 300 字摘要只有 89%——长文本在均值池化下被稀释向语料均值。
- * ⚠ 兜底链必须与 `normalizeInsight` 的标题推导逐项相同（含 `choice` / `topic`），
- * 且同样截到 200：写入路径拿的是归一化之前的 raw，只认 title 会让查询文本变成空串，
- * 整条向量去重静默失效。索引侧编码的是落盘后的 title，两边同源才可比。
+ * 兜底链与 `normalizeInsight` 共用 `titleOf`：写入路径拿的是归一化之前的 raw，只认 title
+ * 会让查询文本变成空串，整条向量去重静默失效；索引侧编码的是落盘后的 title，两边同源才可比。
  */
 export function vectorText(it) {
-  const t = it?.title || it?.pattern || it?.problem || it?.choice || it?.topic || it?.body
-  return String(t ?? '').trim().slice(0, 200)
+  const title = titleOf(it)
+  // 占位符不是内容：编码它等于让所有无标题条目共享同一份向量文本（彼此 cos=1）。
+  return title === UNTITLED_TITLE ? '' : title
 }
 
 const hashOf = (text) => createHash('sha256').update(String(text)).digest('hex').slice(0, 16)
