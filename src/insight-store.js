@@ -510,11 +510,13 @@ export function pruneItems(items, max, nowIso, { protectedIds = new Set() } = {}
 /** 进程内按文件路径复用；整份文档读改写，两个实例会互相覆盖。 */
 const globalStoreCache = new Map()
 
-function readJson(file, fallback) {
+function readJson(file, fallback, onReadError) {
   let raw
   try {
     raw = readFileSync(file, 'utf8')
-  } catch {
+  } catch (err) {
+    // ENOENT 才是"真的没有"；EACCES/EISDIR/EIO/EMFILE 是读失败，不能当成"用户清空了整库"。
+    if (err?.code !== 'ENOENT') onReadError?.(err)
     return fallback
   }
   try {
@@ -557,6 +559,12 @@ export class GlobalStore {
     /** 锁竞争后的有限次延迟重试（与 ProjectMemoryStore.save 同一套节拍）。 */
     this._retryTimer = null
     this._retryAttempts = 0
+    /**
+     * 读失败（非 ENOENT）后的只读降级：此时内存里是空库，任何落盘都会把磁盘上的整库覆盖掉。
+     * 与 ProjectMemoryStore 的 `_readOnly` 同义，权限修好后同一进程可自愈。
+     */
+    this._readOnly = false
+    this._readOnlyWarned = false
   }
 
   load() {
@@ -571,7 +579,10 @@ export class GlobalStore {
       this._dirty = hot._dirty
       return hot
     }
-    this.doc = normalizeDoc(readJson(this.file, null))
+    this.doc = normalizeDoc(readJson(this.file, null, (err) => {
+      this._readOnly = true
+      this._warnReadOnly(err)
+    }))
     // 与 project 级一致：global 条目也要补派生 trigger（提示通道用它提升召回；确定性、幂等）。
     if (backfillDerivedTriggers(this.doc)) this.markDirty()
     this._baseIds = new Set(this.doc.items.map((it) => it?.id).filter(Boolean))
@@ -600,6 +611,28 @@ export class GlobalStore {
     return this.lastCommitOk === true
   }
 
+  /** 读失败告警只打一次（每个 store 实例）。 */
+  _warnReadOnly(err) {
+    if (this._readOnlyWarned) return
+    this._readOnlyWarned = true
+    const why = err ? ` (${err.code || err.message || err})` : ''
+    console.error(
+      `[dsh-project-memory] global store ${this.file} is unreadable${why}; writes are disabled until permissions are fixed. `
+      + 'Nothing was overwritten.',
+    )
+  }
+
+  /** 磁盘重新可读（或文件已被删掉）即解除只读，让权限修好后无需重启。 */
+  _recoveredFromReadOnly() {
+    try {
+      readFileSync(this.file)
+    } catch (err) {
+      if (err?.code !== 'ENOENT') return false
+    }
+    this._readOnly = false
+    return true
+  }
+
   /** 锁竞争失败后的有限次延迟重试：没有重试就会永久丢这次写入。 */
   _scheduleRetry() {
     const delays = [100, 500, 2000, 6000, 12000]
@@ -623,6 +656,14 @@ export class GlobalStore {
    */
   commit(fn, options = {}) {
     const res = fn ? fn(this.doc, this) : undefined
+    // 读失败（非 ENOENT）时整库内容未知：拒绝落盘，否则会用内存里的空库覆盖磁盘上的整库。
+    // 每次写前重试一次读，权限修好后同一进程自愈（与 ProjectMemoryStore 一致）。
+    if (this._readOnly && !this._recoveredFromReadOnly()) {
+      this.lastCommitOk = false
+      trackDirty(this)
+      this._warnReadOnly()
+      return res
+    }
     if (!this._dirty && res === undefined) return res
     // 本进程从基线里删掉的 id（removeMemory 直接 splice，没有单独的删除 API）。
     const current = new Set(this.doc.items.map((it) => it?.id).filter(Boolean))

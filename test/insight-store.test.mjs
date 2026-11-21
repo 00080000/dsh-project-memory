@@ -2,7 +2,7 @@
 // 覆盖：insights.json 存取往返 / 旧 experience.json 非破坏迁移幂等 / save_lesson 三级写入 /
 //       去重合并 / 近重复强化带 / 跨任务 sourceTaskIds 累积与 2 任务提升 project、3 任务提升 global /
 //       confidence 闸门 / 归档软删与容量 / 密文过滤 / 种子幂等 / 降级
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
@@ -814,6 +814,40 @@ const lesson = (pattern, fix = '用正确做法', conf = 0.8) => ({ title: patte
   assert.deepEqual(unknown, { kind: 'nope', body: 'b', fix: 'f' }, '未知 kind 不清字段')
   assert.doesNotThrow(() => pruneKindFields(null, 'lesson'))
   ok('切 kind 清理：procedure 留 body / trigger 永不清 / 同 kind 与未知 kind 不动')
+}
+
+// ---- global 读失败（非 ENOENT）降级只读：不得用空库覆盖磁盘上的整库 ----
+// 与 project store 的 `_readErrors → _readOnly` 同义：读不到 ≠ 用户清空了整库。
+if (process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() !== 0) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'global-ro-'))
+  const file = path.join(dir, 'global.json')
+  const now = new Date().toISOString()
+  writeFileSync(file, JSON.stringify({ version: 1, items: [{ id: 'g1', kind: 'lesson', scope: 'global', title: 'G1', createdAt: now, updatedAt: now }] }))
+  chmodSync(file, 0o000)
+  try {
+    const gs = new GlobalStore(file).load()
+    assert.equal(gs.items().length, 0, '读不到时内存里只能是空库（不能假装读到了）')
+    // 一次真实写入的路径：内存里加一条然后 commit。
+    gs.doc.items.push({ id: 'g2', kind: 'lesson', scope: 'global', title: 'G2', createdAt: now, updatedAt: now })
+    gs.commit()
+    assert.equal(gs.lastCommitOk, false, '只读降级下 commit 必须如实回报未落盘')
+  } finally {
+    chmodSync(file, 0o644)
+  }
+  const ids = JSON.parse(readFileSync(file, 'utf8')).items.map((it) => it.id)
+  assert.deepEqual(ids, ['g1'], '磁盘上的原库不能被内存空库覆盖')
+  ok('global 读失败：降级只读，commit 不覆盖磁盘原库')
+
+  // 权限修好后同一进程自愈：下一次 commit 正常把新条目写进去。
+  // 同一路径复用缓存实例（这正是真实进程内行为）：读回的是刚才那个只读实例。
+  const gs2 = new GlobalStore(file).load()
+  gs2.doc.items.push({ id: 'g3', kind: 'lesson', scope: 'global', title: 'G3', createdAt: now, updatedAt: now })
+  gs2.markDirty()
+  gs2.commit()
+  assert.equal(gs2.lastCommitOk, true, '权限恢复后应能正常落盘')
+  // 只读期间那条被拒的写入仍留在内存里，恢复后与新的写入一起补上——这正是"保持脏状态、稍后重试"的语义。
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).items.map((it) => it.id).sort(), ['g1', 'g2', 'g3'])
+  ok('global 只读自愈：权限恢复后下一次 commit 补写积压条目')
 }
 
 console.log(`\ninsight-store tests: ${passed} passed`)
