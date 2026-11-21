@@ -44,8 +44,10 @@ function exceedsSizeCap(size, config) {
  * @param {number} [args.size] 调用方已 statSync 时传入，避免重复 stat。
  * @param {number} [args.mtimeMs] 调用方已 statSync 时传入；与 `record.mtimeMs` 构成"未改"快路径。
  * @param {boolean} [args.force] index_repo 的 reindex：忽略哈希跳过。
+ * @param {boolean} [args.noMtimeFastPath] 禁用"mtime+size 未变即跳过"的快路径：显式 index_doc
+ *   必须按内容判重（rsync -t 之类的还原会保留 mtime，快路径会把改过的内容当未变）。
  */
-export async function planFileIndex({ rel, filePath, kind, config, record, existingEntries = [], size, mtimeMs, force = false }) {
+export async function planFileIndex({ rel, filePath, kind, config, record, existingEntries = [], size, mtimeMs, force = false, noMtimeFastPath = false }) {
   if (!kind) return { key: UNSUPPORTED }
   let fileSize = size
   let fileMtime = mtimeMs
@@ -54,14 +56,14 @@ export async function planFileIndex({ rel, filePath, kind, config, record, exist
     if (typeof fileSize !== 'number') fileSize = st.size
     if (typeof fileMtime !== 'number') fileMtime = st.mtimeMs
   }
-  if (exceedsSizeCap(fileSize, config)) return { key: OVERSIZE }
+  if (exceedsSizeCap(fileSize, config)) return { key: OVERSIZE, size: fileSize }
 
   // 旧 store 的 doc 条目缺 terms → 即使哈希未变也重抽一次（一次性回填）。
   const backfill = kind === 'doc' && docEntriesNeedBackfill(existingEntries)
   // 快路径：mtime + size 都没动就不读盘、不哈希。懒索引由 `fs/observed` 触发，重复读同一个
   // 文件不该每次整读 + sha256。代价与 make/tsc 同一取舍（rsync -t 保留 mtime 的还原察觉不到，
   // 需要时用 reindex: true 强制重读）。
-  if (!force && !backfill && record && typeof record.mtimeMs === 'number' && record.mtimeMs === fileMtime && record.size === fileSize) {
+  if (!force && !noMtimeFastPath && !backfill && record && typeof record.mtimeMs === 'number' && record.mtimeMs === fileMtime && record.size === fileSize) {
     return { key: UNCHANGED }
   }
 

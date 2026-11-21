@@ -1,11 +1,9 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { TEXT_OUTPUT, persistenceNote, rootParam } from './output.js'
 import path from 'node:path'
-import { existsSync, statSync } from 'node:fs'
-import { assertIndexRoot, assertReadableFile, assertSafeRoot, excludedEntryForPath, findProjectRoot, memoryRootFor, resolveIndexRoot, sessionMemoryRootOrNull, sha256OfFile, storeKey } from '../util/fs.js'
-import { buildDocEntries } from '../doc-pipeline.js'
-import { docEntriesNeedBackfill } from '../doc-index.js'
-import { fileKind } from '../index-pipeline.js'
+import { existsSync } from 'node:fs'
+import { assertIndexRoot, assertReadableFile, assertSafeRoot, excludedEntryForPath, findProjectRoot, memoryRootFor, resolveIndexRoot, sessionMemoryRootOrNull, storeKey } from '../util/fs.js'
+import { DROP, OVERSIZE, UNCHANGED, WRITE, fileKind, planFileIndex } from '../index-pipeline.js'
 import { ProjectMemoryStore } from '../store.js'
 
 export function indexDocTool(ctx, config) {
@@ -81,16 +79,16 @@ export function indexDocTool(ctx, config) {
         return `Not indexed: ${rel} — ${why}. The existing record was left untouched.`
       }
       const storeExists = existsSync(memoryDir)
+      const store = new ProjectMemoryStore(memoryDir).load()
 
       // 被排除 / 超大：旧版本留下的索引必须摘掉，否则 query_memory 会继续命中已删除的内容。
       // 但没有 store 时绝不能为了“清理”先建一个空 store（老契约：拒绝不产生副作用）。
       const dropStale = (reason) => {
         if (!storeExists) return reason
-        const staleStore = new ProjectMemoryStore(memoryDir).load()
-        return staleStore.commit((s) => {
+        return store.commit((s) => {
           s.removeFile(rel)
           return reason
-        }) + persistenceNote(staleStore)
+        }) + persistenceNote(store)
       }
       if (excluded) {
         return dropStale(
@@ -98,40 +96,33 @@ export function indexDocTool(ctx, config) {
           `Removed stale index (if any). Remove that entry from \`config.roots.exclude\` under \`- id: project-memory\` if this file should be indexed.`,
         )
       }
-      const sizeLimit = config.maxFileSizeMb
-      if (sizeLimit) {
-        let size = 0
-        try { size = statSync(filePath).size } catch { size = 0 }
-        if (size > sizeLimit * 1024 * 1024) {
-          return dropStale(`Not indexed: ${rel} is now ${(size / 1024 / 1024).toFixed(1)} MB, over the ${sizeLimit} MB limit. Removed stale index (if any).`)
-        }
+
+      // 判重/回填/超限/抽条目全走 index-pipeline 的唯一实现：index_doc 只负责"怎么把结果说给用户"。
+      // `noMtimeFastPath`：显式索引必须按内容判重，不能被 mtime+size 快路径骗过去。
+      const plan = await planFileIndex({
+        rel,
+        filePath,
+        kind,
+        config,
+        record: store.fileRecord(rel),
+        existingEntries: store.entries[rel] || [],
+        noMtimeFastPath: true,
+      })
+
+      if (plan.key === OVERSIZE) {
+        const sizeLimit = config.maxFileSizeMb
+        const size = typeof plan.size === 'number' ? plan.size : 0
+        return dropStale(`Not indexed: ${rel} is now ${(size / 1024 / 1024).toFixed(1)} MB, over the ${sizeLimit} MB limit. Removed stale index (if any).`)
       }
 
-      const store = new ProjectMemoryStore(memoryDir).load()
-      // mtime 必须在读正文之前取：记录里的 mtime 不能比内容新，否则懒索引的快路径会跳过之后的真实改动。
-      let mtimeMs
-      try {
-        mtimeMs = statSync(filePath).mtimeMs
-      } catch {
-        mtimeMs = undefined
-      }
-      const { hash, size } = await sha256OfFile(filePath)
-      const existing = store.fileRecord(rel)
-      // 与 index_repo/watch/lazy 同一条判据：哈希未变但旧条目缺 terms 时仍要重抽一次（一次性回填）。
-      // 少了这一步，terms 回填就是"路径相关"的——只有走 index_repo 才生效。
-      if (existing && existing.sha256 === hash && !docEntriesNeedBackfill(store.entries[rel])) {
+      if (plan.key === UNCHANGED) {
+        const existing = store.fileRecord(rel)
         // 旧记录没有 explicit 时在这里补上：否则重新 index_doc 一次也救不回被扫描清理掉的文件。
-        if (!existing.explicit) store.commit((s) => s.markFile(rel, { ...existing, explicit: true }))
+        if (existing && !existing.explicit) store.commit((s) => s.markFile(rel, { ...existing, explicit: true }))
         return `Skipped (unchanged): ${rel}\nAlready indexed with ${(store.entries[rel] || []).length} entry/entries.` + persistenceNote(store)
       }
 
-      const entries = await buildDocEntries(rel, filePath, {
-        chunkChars: config.chunkChars,
-        maxChunks: config.maxChunksPerFile,
-        maxFileSizeMb: config.maxFileSizeMb,
-        maxPdfPages: config.maxPdfPages,
-      })
-      if (entries === null) {
+      if (plan.key === DROP) {
         const text = store.commit((s) => {
           s.removeFile(rel)
           return `Skipped: ${rel} looks like a reflection dump, not a document.`
@@ -139,17 +130,22 @@ export function indexDocTool(ctx, config) {
         return text + persistenceNote(store)
       }
 
+      if (plan.key !== WRITE) {
+        // UNSUPPORTED 已在上面用 fileKind 拦过；其余 key 出现即代码错误，宁可报错也不静默写脏记录。
+        throw new Error(`index_doc: unexpected plan key ${plan.key}`)
+      }
+
       return store.commit((s) => {
-        s.setEntries(rel, entries)
+        s.setEntries(rel, plan.entries)
         // explicit：这个文件可能是被 .gitignore 排除的（显式索引不受 gitignore 限制），
         // 扫描清单里永远不会有它 —— 清理时靠这个标记区分"没扫到"与"被删了"。
-        const record = { sha256: hash, size, type: 'doc', indexedAt: new Date().toISOString(), explicit: true }
-        if (typeof mtimeMs === 'number' && Number.isFinite(mtimeMs)) record.mtimeMs = mtimeMs
+        const record = { sha256: plan.hash, size: plan.size, type: 'doc', indexedAt: new Date().toISOString(), explicit: true }
+        if (typeof plan.mtimeMs === 'number' && Number.isFinite(plan.mtimeMs)) record.mtimeMs = plan.mtimeMs
         s.markFile(rel, record)
-        const preview = entries
+        const preview = plan.entries
           .map((e) => `  - ${e.title} @ ${rel}:${e.sourceLine}`)
           .join('\n')
-        return `Indexed: ${rel}\nEntries: ${entries.length}\n${preview}`
+        return `Indexed: ${rel}\nEntries: ${plan.entries.length}\n${preview}`
       }) + persistenceNote(store)
     },
   })

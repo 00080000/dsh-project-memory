@@ -1,7 +1,7 @@
 // 文档索引的结构化词项：索引期不调用模型 + 检索词项与注入摘要分离。
 //   node test/doc-index.test.mjs
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -42,6 +42,26 @@ const CONFIG = { memoryDir: '.dsh-project-memory', chunkChars: 3000, maxChunksPe
   assert.ok(e.terms.includes('zzztokenq'), 'terms 覆盖整个 chunk')
   assert.ok(weightedFieldText(e).includes('zzztokenq'))
   ok('summary 保持 ≤300 字符；terms 覆盖 300 字符之后的正文')
+}
+
+// ---- 1a. index_doc 按内容判重：mtime+size 都没变也要发现内容变了 ----
+{
+  const root = mkdtempSync(path.join(tmpdir(), 'pm-di-mtime-'))
+  const md = path.join(root, 'notes.md')
+  writeFileSync(md, '# Notes\n\nAAAA token')
+  const tool = indexDocTool({ llm: null }, CONFIG)
+  assert.match(await tool.execute({ file_path: md, root }), /^Indexed: notes\.md/)
+
+  // 同 size、同 mtime 换内容（rsync -t / checkout 还原的典型形状）：
+  // 懒索引的 mtime 快路径可以跳过，显式 index_doc 不行。
+  const { atime, mtime } = statSync(md)
+  writeFileSync(md, '# Notes\n\nBBBB token')
+  utimesSync(md, atime, mtime)
+  assert.match(await tool.execute({ file_path: md, root }), /^Indexed: notes\.md/, '显式索引必须按内容判重')
+
+  // 内容与 mtime 都没再动：这次才该走跳过。
+  assert.match(await tool.execute({ file_path: md, root }), /^Skipped \(unchanged\)/)
+  ok('index_doc：mtime+size 未变但内容变了仍重索引；真未变才跳过')
 }
 
 // ---- 1b. index_doc 因超大/被 exclude 提前退出时，要摘掉旧索引 ----
