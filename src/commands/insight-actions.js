@@ -9,7 +9,7 @@ import { cfgInsight, GlobalStore, normalizeInsight, defaultGlobalFile, saveInsig
 import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
 import { isoMs } from '../util/value.js'
-import { pruneKindFields } from '../util/insight-fields.js'
+import { bodyFieldOf, pruneKindFields } from '../util/insight-fields.js'
 import { forgetVectorRows } from '../vector-index.js'
 
 /** 容量旋钮的防御性取值：cfg 可能只带显式测试字段。 */
@@ -55,7 +55,7 @@ function insSummary(ins, extra = {}) {
       if (s.kind === 'procedure' && Array.isArray(s.steps) && s.steps.length) {
         return `步骤 ${s.steps.length} 条：${String(s.steps[0]).slice(0, 80)}`
       }
-      const byKind = s.kind === 'lesson' ? s.fix : s.kind === 'decision' ? s.reason : s.kind === 'experience' ? s.solution : s.body
+      const byKind = s[bodyFieldOf(s.kind)]
       const cands = [byKind, s.fix, s.solution, s.reason, s.body, s.choice, s.pattern, s.problem]
       for (const v of cands) if (v && v !== s.title) return v
       return ''
@@ -418,6 +418,23 @@ export function insightCommandDefinition(config, ctx) {
         if (!root) return { kind: 'error', text: NO_PROJECT_ROOT_NOTE }
         if (!raw[0]) return { kind: 'error', text: '[insight] 用法见面板' }
         const verb = raw[0]
+        // 每个动词都是「打开两个 store → 变更 → 落盘 → 把写盘失败翻成错误」这条流水线。
+        // 四处各写一份时，提交顺序与错误文案会漂移（漏一次 `commit` 就是静默丢写），只留这一份。
+        const openStores = () => {
+          const cfg = cfgInsight(config)
+          const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
+          // 与工具/自动注入同一个 global 解析顺序：显式配置优先，否则默认文件。
+          const gs = new GlobalStore(cfg.globalFile || defaultGlobalFile()).load()
+          return { store, gs, cfg }
+        }
+        const commitBoth = (store, gs, res) => {
+          store.commit(() => 0) // 项目侧（tasks/insights）落盘
+          gs.commit() // global 侧若有变更落盘
+          if (res.ok && (store.lastSaveOk === false || gs.lastCommitOk === false)) {
+            return { kind: 'error', text: `${res.text}；但写盘失败（权限/磁盘/锁），重启后会丢失` }
+          }
+          return res.ok ? { kind: 'success', text: res.text } : { kind: 'error', text: res.text }
+        }
         if (verb === 'list') {
           if (raw[1] !== undefined && !['task', 'global', 'project'].includes(raw[1])) {
             return { kind: 'error', text: `[insight] 未知 scope: ${raw[1]}（只认 task/project/global）` }
@@ -437,8 +454,7 @@ export function insightCommandDefinition(config, ctx) {
             if (!Number.isFinite(n) || n <= 0) return { kind: 'error', text: '[insight] limit 必须是正整数' }
             limit = Math.min(n, INSIGHT_PAGE_MAX)
           }
-          const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
-          const gs = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()
+          const { store, gs } = openStores()
           const payload = listInsights(store, gs, scope, { offset, limit })
           const shown = offset + payload.items.length
           const range = limit === null ? '' : `（显示 ${shown}/${payload.total}）`
@@ -466,17 +482,10 @@ export function insightCommandDefinition(config, ctx) {
             droppedFiles = norm.dropped.length
             fields = { ...fields, files: norm.files }
           }
-          const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
-          const gs = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()
-          const res = saveMemoryItem({ store, gs, cfg: cfgInsight(config), scope, fields })
-          store.commit(() => 0)
-          gs.commit()
-          if (res.ok && (store.lastSaveOk === false || gs.lastCommitOk === false)) {
-            return { kind: 'error', text: `${res.text}；但写盘失败（权限/磁盘/锁），重启后会丢失` }
-          }
-          return res.ok
-            ? { kind: 'success', text: res.text + (droppedFiles ? `；${droppedFiles} 个 files 是项目外路径，已丢弃` : '') }
-            : { kind: 'error', text: res.text }
+          const { store, gs, cfg } = openStores()
+          const res = saveMemoryItem({ store, gs, cfg, scope, fields })
+          if (res.ok && droppedFiles) res.text += `；${droppedFiles} 个 files 是项目外路径，已丢弃`
+          return commitBoth(store, gs, res)
         }
         if (verb === 'edit') {
           // /insight edit <scope> <id> <json>
@@ -491,15 +500,8 @@ export function insightCommandDefinition(config, ctx) {
           } catch {
             return { kind: 'error', text: '[insight] edit 需要 JSON 参数（由面板生成）' }
           }
-          const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
-          const gs = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()
-          const res = editMemoryItem({ store, gs, scope, id, fields, root })
-          store.commit(() => 0)
-          gs.commit()
-          if (res.ok && (store.lastSaveOk === false || gs.lastCommitOk === false)) {
-            return { kind: 'error', text: `${res.text}；但写盘失败（权限/磁盘/锁），重启后会丢失` }
-          }
-          return res.ok ? { kind: 'success', text: res.text } : { kind: 'error', text: res.text }
+          const { store, gs } = openStores()
+          return commitBoth(store, gs, editMemoryItem({ store, gs, scope, id, fields, root }))
         }
         const scope = raw[1]
         const id = raw[2]
@@ -507,15 +509,8 @@ export function insightCommandDefinition(config, ctx) {
         if (!['confirm', 'promote', 'demote', 'archive', 'restore', 'delete'].includes(verb) || !id) {
           return { kind: 'error', text: '[insight] 用法: /tasks insight <动作|save|edit> …' }
         }
-        const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
-        const gs = new GlobalStore(cfgInsight(config).globalFile || defaultGlobalFile()).load()
-        const res = actInsight({ store, gs, action: verb, scope, id, taskId, cfg: cfgInsight(config) })
-        store.commit(() => 0) // 项目侧（tasks/insights）落盘
-        gs.commit() // global 侧若有变更落盘
-        if (res.ok && (store.lastSaveOk === false || gs.lastCommitOk === false)) {
-          return { kind: 'error', text: `${res.text}；但写盘失败（权限/磁盘/锁），重启后会丢失` }
-        }
-        return res.ok ? { kind: 'success', text: res.text } : { kind: 'error', text: res.text }
+        const { store, gs, cfg } = openStores()
+        return commitBoth(store, gs, actInsight({ store, gs, action: verb, scope, id, taskId, cfg }))
       } catch (err) {
         return { kind: 'error', text: `[insight] ${err?.message || err}` }
       }

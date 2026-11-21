@@ -1648,6 +1648,46 @@ window.__ModuleLoader__.load({
 				]
 			});
 		}
+		// src/util/insight-fields.js
+		/**
+		* 每个 kind 的「解答」字段（写侧 / 列表摘要侧的唯一一份映射）。
+		*
+		* 由来：面板把 textarea 的正文提交到哪个字段（MemoryView.submitNew）、编辑时从哪个字段
+		* 预填（MemoryView.rowToForm）、记忆列表的合成摘要取哪个字段当正文（insight-actions.insSummary）
+		* 原先各写一份 if/else 链，三处必须对同一 kind 指向同一字段，抄漏一处就是"编辑后正文搬了家"。
+		* 映射依据 KIND_CONTENT 的配对：每种 kind 是 [症状, 解答]，解答即正文；
+		* procedure 的正文是 steps（没有单字段正文），未知 kind 落到通用 body。
+		*
+		* 查表用 `Object.hasOwn` 而不是 `map[kind] || 'body'`：kind 是外来字符串（脏 JSON / 手改
+		* store），`__proto__` / `constructor` 会命中原型成员，返回函数就不是字段名了。
+		*/
+		const BODY_FIELD = {
+			lesson: "fix",
+			decision: "reason",
+			experience: "solution"
+		};
+		/**
+		* kind → 正文所在字段名。
+		* @param {unknown} kind - 记忆条目的 kind（可能是缺失/脏值）。
+		* @returns {'fix'|'reason'|'solution'|'body'} 字段名；procedure 与未知 kind 都是 `body`。
+		*/
+		function bodyFieldOf(kind) {
+			return typeof kind === "string" && Object.hasOwn(BODY_FIELD, kind) ? BODY_FIELD[kind] : "body";
+		}
+		/** 与正文配对的「症状」字段：新建条目时用标题镜像它（KIND_CONTENT 的另一半）。 */
+		const TITLE_FIELD = {
+			lesson: "pattern",
+			decision: "choice",
+			experience: "problem"
+		};
+		/**
+		* kind → 新建时用标题镜像的字段名。
+		* @param {unknown} kind - 记忆条目的 kind（可能是缺失/脏值）。
+		* @returns {'pattern'|'choice'|'problem'|null} 字段名；procedure 与未知 kind 没有对应字段。
+		*/
+		function titleFieldOf(kind) {
+			return typeof kind === "string" && Object.hasOwn(TITLE_FIELD, kind) ? TITLE_FIELD[kind] : null;
+		}
 		// src/client/paging.js
 		/** 预取提前量：哨兵进入视口**下方 600px** 就开始取下一页，数据在滚到底之前到位。 */
 		const PREFETCH_MARGIN = "600px 0px";
@@ -2047,7 +2087,7 @@ window.__ModuleLoader__.load({
 				}
 			};
 			const rowToForm = (row) => {
-				const main = row.kind === "lesson" ? row.fix : row.kind === "experience" ? row.solution : row.kind === "decision" ? row.reason : row.kind === "procedure" ? "" : row.body;
+				const main = row.kind === "procedure" ? "" : row[bodyFieldOf(row.kind)];
 				const body = main && main !== row.title ? main : "";
 				return {
 					title: row.title || "",
@@ -2104,17 +2144,10 @@ window.__ModuleLoader__.load({
 						kind: form.kind
 					};
 					if (!editingId) {
-						if (form.kind === "lesson") fields.pattern = title;
-						if (form.kind === "decision") fields.choice = title;
-						if (form.kind === "experience") fields.problem = title;
+						const titleField = titleFieldOf(form.kind);
+						if (titleField) fields[titleField] = title;
 					}
-					if (form.kind !== "procedure" && (editingId || form.body.trim())) {
-						const body = form.body.trim();
-						if (form.kind === "lesson") fields.fix = body;
-						else if (form.kind === "decision") fields.reason = body;
-						else if (form.kind === "experience") fields.solution = body;
-						else fields.body = body;
-					}
+					if (form.kind !== "procedure" && (editingId || form.body.trim())) fields[bodyFieldOf(form.kind)] = form.body.trim();
 					const editingRow = editingId ? rows.find((r) => r.id === editingId) : null;
 					const stepsTruncated = Boolean(editingId && (editingRow?.stepsTotal ?? 0) > 50);
 					if (form.kind === "procedure" && (editingId || form.steps.trim()) && !stepsTruncated) fields.steps = form.steps.split("\n").map((s) => s.trim()).filter(Boolean);

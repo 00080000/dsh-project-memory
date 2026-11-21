@@ -159,6 +159,19 @@ export function isLegacyBodyVisible(state, body) {
   return Boolean(state && body && state.legacyBlocks.has(lineHash(body)))
 }
 
+/**
+ * 清空一张会话的「已可见」账本。六张表必须一起清：只清一部分会让下一轮把旧块当成"已经发过"
+ * 而不再重发（假可见），或把新块当成"已确认"（对账错）。抽成函数是为了将来加第七张表时不会漏。
+ */
+function resetVisible(state) {
+  state.items.clear()
+  state.legacy.clear()
+  state.legacyBlocks.clear()
+  state.blocks.clear()
+  state.confirmedBlocks.clear()
+  state.entries.clear()
+}
+
 export function ensureVisible(session, state) {
   const surface = surfaceOf(session)
   if (!surface || state.degraded) return false
@@ -174,12 +187,7 @@ export function ensureVisible(session, state) {
   if (!state.ready || state.dirty || (state.genSupported && gen !== state.surfaceGen)
     || (!state.genSupported && (surface.nodes.length < state.nodeCount
       || (state.firstSeq !== null && surface.nodes[0] !== state.firstSeq)))) {
-    state.items.clear()
-    state.legacy.clear()
-    state.legacyBlocks.clear()
-    state.blocks.clear()
-    state.confirmedBlocks.clear()
-    state.entries.clear()
+    resetVisible(state)
     state.firstSeq = null
     state.nodeCount = 0
     state.dirty = false
@@ -189,12 +197,7 @@ export function ensureVisible(session, state) {
       scanNodes(session, state)
     } catch {
       state.degraded = true
-      state.items.clear()
-      state.legacy.clear()
-      state.legacyBlocks.clear()
-      state.blocks.clear()
-      state.confirmedBlocks.clear()
-      state.entries.clear()
+      resetVisible(state)
       return false
     }
     settlePending(state)
@@ -206,12 +209,7 @@ export function ensureVisible(session, state) {
       scanNodes(session, state, state.nodeCount)
     } catch {
       state.degraded = true
-      state.items.clear()
-      state.legacy.clear()
-      state.legacyBlocks.clear()
-      state.blocks.clear()
-      state.confirmedBlocks.clear()
-      state.entries.clear()
+      resetVisible(state)
       return false
     }
   }

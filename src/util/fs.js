@@ -9,14 +9,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { sessionWorkingDir } from './session-dir.js'
 
-/**
- * 原子写 JSON：先写同目录的 `<file>.<pid>.tmp`，再 rename 覆盖目标；先建父目录，失败时只删自己的 `.tmp`。
- * 重试 rename 没有意义；崩溃（kill -9 / 断电）走不到 catch，残留由 `cleanStaleTmp()` 兜底
- * （它扫不到 `~/.config/dsh-project-memory/`）。
- * @param {string} file - 目标文件绝对路径。
- * @param {unknown} data - 要序列化的 JSON 值。
- * @throws 序列化失败或写盘/rename 失败时原样抛出（调用方决定回退策略）。
- */
+/** Windows 上杀毒/索引/备份会瞬时占用的错误码：只有这些值得原样重试（见 retryTransient）。 */
 const TRANSIENT_FS_CODES = new Set(['EPERM', 'EBUSY', 'EACCES'])
 
 /**
@@ -37,6 +30,14 @@ function retryTransient(op, attempts = 3) {
   throw last
 }
 
+/**
+ * 原子写 JSON：先写同目录的 `<file>.<pid>.tmp`，再 rename 覆盖目标；先建父目录，失败时只删自己的 `.tmp`。
+ * 重试 rename 没有意义；崩溃（kill -9 / 断电）走不到 catch，残留由 `cleanStaleTmp()` 兜底
+ * （它扫不到 `~/.config/dsh-project-memory/`）。
+ * @param {string} file - 目标文件绝对路径。
+ * @param {unknown} data - 要序列化的 JSON 值。
+ * @throws 序列化失败或写盘/rename 失败时原样抛出（调用方决定回退策略）。
+ */
 export function writeJsonAtomic(file, data, { ensureDir = true } = {}) {
   const dir = path.dirname(file)
   if (ensureDir) mkdirSync(dir, { recursive: true })
@@ -934,12 +935,7 @@ export function memoryDirName(config) {
   return safeMemoryDirName(config?.memoryDir)
 }
 
-/**
- * 危险根目录：整体扫描/监听它们会直接吃满内存（家目录、`/opt/homebrew`）。判定是**精确匹配**：
- * 只拒绝这些目录**本身**，子目录照常可用（`~/Library` 拒绝，`~/Library/…/MyProj` 可用）。
- * 四类：文件系统根（含 Windows 盘符根）；家目录及所有祖先 + 系统型子目录；每用户私有与共享/
- * 系统临时目录（macOS 的 os.tmpdir() 与共享 /tmp 是两个路径）；系统/包管理器前缀（按平台分组）。
- */
+/** `os.homedir()` 的安全包装：拿不到（容器 / 无 HOME）时返回 null，调用方跳过家目录那一组。 */
 function safeHomedir() {
   try {
     return os.homedir()
@@ -955,9 +951,14 @@ function safeHomedir() {
 const POSIX_SHARED_TEMP = ['/tmp', '/var/tmp', '/private/tmp', '/private/var/tmp', '/var/folders', '/dev/shm']
 
 /**
- * 危险根集合（判定用，`isUnsafeRoot` 的底座）。参数化是为了能在任意平台验证各平台分支
- * （测试用 `path.win32` 模拟 Windows）；生产路径只调用无参形式。系统前缀按平台分组：
- * `C:\opt`、`C:\usr` 在 Windows 上是正常用户目录，跨平台套用会误伤。
+ * 危险根集合（判定用，`isUnsafeRoot` 的底座）：整体扫描/监听它们会直接吃满内存（家目录、
+ * `/opt/homebrew`）。判定是**精确匹配**：只拒绝这些目录**本身**，子目录照常可用
+ * （`~/Library` 拒绝，`~/Library/…/MyProj` 可用）。四类：文件系统根（含 Windows 盘符根）；
+ * 家目录及所有祖先 + 系统型子目录；每用户私有与共享/系统临时目录（macOS 的 os.tmpdir() 与
+ * 共享 /tmp 是两个路径）；系统/包管理器前缀（按平台分组）。
+ *
+ * 参数化是为了能在任意平台验证各平台分支（测试用 `path.win32` 模拟 Windows）；生产路径只调用
+ * 无参形式。系统前缀按平台分组：`C:\opt`、`C:\usr` 在 Windows 上是正常用户目录，跨平台套用会误伤。
  * @returns {{ unsafe: Set<string>, sharedTemp: Set<string> }} `sharedTemp` 单独返回，只为让拒绝
  *   文案能说清"是共享临时目录"；两套集合由同一次调用产出，不会漂移。
  */

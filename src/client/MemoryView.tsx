@@ -10,6 +10,7 @@ import { useEffect, useCallback, useRef, useState } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { invokeCommand } from './commands.ts'
 import { insightKindLabel } from './kind-label.js'
+import { bodyFieldOf, titleFieldOf } from '../util/insight-fields.js'
 import { HOST_PAGE_MAX, PAGE_SIZE, PREFETCH_MARGIN, SPINNER_DELAY_MS, appendUnique, createRequestGate, insightListLine, normalizeWindow, progressCounts } from './paging.js'
 import css from './TaskPanel.module.css'
 
@@ -378,12 +379,7 @@ export function MemoryView({
     // 正文按 kind 取专属字段（fix/solution/reason），避免把与标题相同的 pattern/problem 当正文。
     // procedure 的 row.body 是服务端 insSummary 合成的“步骤 N 条：…”——它不是正文，
     // 表单里也没有对应输入框；预填后提交会把合成摘要写进真实 body，所以这里不预填。
-    const main =
-      row.kind === 'lesson' ? row.fix
-        : row.kind === 'experience' ? row.solution
-          : row.kind === 'decision' ? row.reason
-            : row.kind === 'procedure' ? ''
-              : row.body
+    const main = row.kind === 'procedure' ? '' : row[bodyFieldOf(row.kind)]
     const body = main && main !== row.title ? main : ''
     return {
       title: row.title || '',
@@ -433,19 +429,14 @@ export function MemoryView({
       // 标题镜像只用于**新建**：编辑时 pattern/choice/problem 不出现在表单里，
       // 无条件回传会把它们静默覆盖成标题（且宿主的 edit 路径不写 prev，无法还原）。
       if (!editingId) {
-        if (form.kind === 'lesson') fields.pattern = title
-        if (form.kind === 'decision') fields.choice = title
-        if (form.kind === 'experience') fields.problem = title
+        const titleField = titleFieldOf(form.kind)
+        if (titleField) fields[titleField] = title
       }
       // procedure 的正文由 steps 表达；不要把 body 一起提交（它只可能是合成摘要）。
       // 编辑时必须把本表单拥有的字段都带上（空串/空数组表示清空）：宿主只合并出现的键，
       // 省略会让“清空正文/步骤”变成静默空操作。
       if (form.kind !== 'procedure' && (editingId || form.body.trim())) {
-        const body = form.body.trim()
-        if (form.kind === 'lesson') fields.fix = body
-        else if (form.kind === 'decision') fields.reason = body
-        else if (form.kind === 'experience') fields.solution = body
-        else fields.body = body
+        fields[bodyFieldOf(form.kind)] = form.body.trim()
       }
       const editingRow = editingId ? rows.find((r) => r.id === editingId) : null
       // procedure 的列表载荷被宿主截到 50 条：编辑标题/正文时若整份回传，会删掉第 51 条起。

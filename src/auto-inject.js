@@ -357,7 +357,10 @@ function scoreHints({ cands, query, humanText, hintQuery, cfg, dropped, rerank =
   }
 
   // ---- 影子候选（只读、无副作用）：重放全部被评分的条目，标出它卡在哪一关 ----
-  // 顺序与真实判据一致（support → coverage → thin → relative）；'cand' 不等于"真的注入了"（还要过去重/预算/冷却）。
+  // 真实路径是：relative 预筛（下方 `relativeHits(scored, …)`）→ 循环内 support → coverage → thin → vector。
+  // 影子为了给每条都留一行，把 relative 放到末级再判（前面的关先命中就先记），所以同一条可能
+  // 在真实路径被 relative 滤掉、影子却记成更早的关卡——按 `decision` 归因阈值时要记住这个偏差。
+  // 'cand' 不等于"真的注入了"（还要过去重/预算/冷却）。
   {
     // 两个分母必须分开：真实判据（`relative`）用**融合后**的分，而影子记录的 `rel` 承诺**词法**相对分；
     // 共用会让 `rel` 到 5.925（应当 ≤1），离线拿它重放阈值全歪。
@@ -449,7 +452,8 @@ export function buildInjection(opts) {
     // 会话级限流命中：条目通道本轮整体沉默，但把"本该注入什么"记进 dropped——不做静默降级。
     for (const { it } of triggered) dropped.push({ id: it.id, channel: 'trigger', reason: opts.silenceReason || 'cooldown' })
   }
-  // procedure 不进提示通道：它要过 trigger.scope（见 scoreHints 注释）。
+  // procedure 不进提示通道：它只走 authored trigger 全文通道。提示通道没有 trigger.scope 的画像过滤，
+  // 放进来就等于绕过作用域（将来要放宽，先把那套过滤搬进提示通道）。
   const consumed = new Set(triggered.map((t) => t.it.id))
   // 限流命中时**照旧评分**（只算不注入，`place()` 仍按 skipItems 跳过）：影子记录要能回答"这一步
   // 如果不限流会注入什么"——那正是限流期间最需要回答的问题。
@@ -528,7 +532,7 @@ export function buildInjection(opts) {
   return { text: clamp(total.join('\n')), entry, labels, reasons, dropped, candidates, scoreQuery, dedupeText, itemChars: itemUsed }
 }
 
-// 每会话状态的会话数上限：六张表共用。
+// 每会话状态的会话数上限：所有每会话表共用。
 const SESSION_STATE_MAX = 200
 // 单会话已注入条目表的条数上限。
 const INJECTED_ITEMS_MAX = 600
@@ -537,7 +541,7 @@ const OBSERVED_CALLS_MAX = 8
 
 /**
  * 注入引擎的「每会话一份」状态。
- * 六张表都由 SessionCache 管容量，容量只在这里定义一次。
+ * 全部表都由 SessionCache 管容量，容量只在这里定义一次。
  */
 class InjectionSessions {
   constructor() {

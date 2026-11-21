@@ -37,11 +37,32 @@ function fixture() {
   const taskList = listInsights(store, gs, 'task')
   assert.equal(taskList.count, 1)
   assert.equal(taskList.items[0].draft, true)
+  // lesson 的正文是 fix；草稿只有与标题相同的 pattern，摘要必须跳过"与标题相同"的字样。
+  assert.equal(taskList.items[0].body, '', 'lesson 没有 fix 时不能把与标题相同的 pattern 当正文')
   const pj = listInsights(store, gs, 'project')
   assert.equal(pj.count, 1)
+  assert.equal(pj.items[0].body, '零依赖', 'decision 的正文取 reason（与面板预填字段互为逆运算）')
   const gl = listInsights(store, gs, 'global')
   assert.equal(gl.count, 1)
-  ok('list：task 草稿 / project / global 三 scope')
+  assert.equal(gl.items[0].body, '步骤 1 条：a', 'procedure 的摘要只报步骤数，不合成正文')
+  ok('list：task 草稿 / project / global 三 scope，摘要按 kind 取正文')
+}
+
+// --- 1b. list 摘要的正文来源：lesson→fix / experience→solution / 未知 kind→body ---
+{
+  const { store, gs } = fixture()
+  const now = new Date().toISOString()
+  store.replaceInsightItems([
+    { id: 'ins_l', kind: 'lesson', scope: 'project', title: 'L', pattern: 'L', fix: '修法', createdAt: now, updatedAt: now },
+    { id: 'ins_e', kind: 'experience', scope: 'project', title: 'E', problem: 'E', solution: '解药', createdAt: now, updatedAt: now },
+    // 未知 kind 不被 normalizeInsight 改写（这里直接灌内存），落通用 body。
+    { id: 'ins_u', kind: 'weird', scope: 'project', title: 'U', body: '通用正文', createdAt: now, updatedAt: now },
+  ])
+  const byId = new Map(listInsights(store, gs, 'project').items.map((it) => [it.id, it]))
+  assert.equal(byId.get('ins_l').body, '修法')
+  assert.equal(byId.get('ins_e').body, '解药')
+  assert.equal(byId.get('ins_u').body, '通用正文')
+  ok('list 摘要：lesson→fix / experience→solution / 未知 kind→body')
 }
 
 // --- 2. confirm 草稿 ---

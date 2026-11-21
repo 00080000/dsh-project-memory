@@ -11,8 +11,10 @@ import { clearIndexFailure, recordIndexFailure } from './index-failures.js'
 /**
  * 把 `watch` / `watchInterval` 的**当前值**落到轮询器上。
  *
- * 这两个键是 volatile 字段：设置页保存后宿主会发 `loader/volatile-update`，插件不重启，
- * 由这里按新值重排定时器。stop() 对没启动过的实例是空操作；start() 会按新间隔重算
+ * 只有 `watchInterval` 是 volatile 字段：设置页保存后宿主会发 `loader/volatile-update`，插件不重启，
+ * 由这里按新值重排定时器。`watch` 刻意不标 volatile（见 `src/index.js` 的 schema 注释：
+ * 关掉监视等于放任索引过期，不算用户偏好），它只在启动时从 profile 读取。
+ * stop() 对没启动过的实例是空操作；start() 会按新间隔重算
  * base/backoff/active 三个节拍。抽成函数是为了让"关掉后没有定时器、打开后按新间隔起"
  * 这条契约可以被单测直接钉住（否则它只存在于 apply 的闭包里）。
  * @param {WatchManager} watchManager 轮询器

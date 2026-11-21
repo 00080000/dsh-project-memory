@@ -116,8 +116,8 @@ export function shadowRecordFrom(input) {
 }
 
 /**
- * 审计只为"已存在"或"带项目标记"的根建 store 目录：否则在容器目录里开会话会留下
- * 只装审计日志的空 store，并被 `resolveProjectMemoryRoot()` 当成项目根。
+ * 审计只为"已存在"或"带项目标记"的根建 store 目录：否则在容器目录里开会话会留下只装审计日志的
+ * 空 store（`PROJECT_MARKERS` 不含 store 目录，它本身不会让根变成项目根，但空目录仍是垃圾）。
  * 标记判据 `hasProjectMarker`，与 `rootNotice` 一致。
  * @param {string} memoryDir `<root>/.dsh-project-memory`
  * @param {string} [root] 项目根；省略时退回 `path.dirname(memoryDir)`

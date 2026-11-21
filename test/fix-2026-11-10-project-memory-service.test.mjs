@@ -1,6 +1,6 @@
 // D3-1 原生 seam 回归：node test/fix-2026-11-10-project-memory-service.test.mjs
 //
-// 验收面（施工图 PLAN-2026-11-03-d2-d3-execution.md §3 D3-1）：
+// 验收面（原生服务 seam 的对外契约）：
 //   1. `installProjectMemoryService` 用假 ctx 把 api 注册到 `projectMemory`，api 只有四个动词；
 //   2. remember → recall（标题词）拿到非空结果，`citation` 字段存在；没有来源时为空串；
 //   3. 带 `sourcePath` + `sourceLine` 的召回条目给出 `path:line` 形状的 citation（不是只断言字符串）；

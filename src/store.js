@@ -6,7 +6,7 @@ import { acquireDirLock, ensureSelfIgnoreDir, storeKey, unlinkWithRetry, writeJs
 import { debugPersistence } from './util/persist.js'
 import { trackDirty, untrackDirty } from './util/flush.js'
 import { backfillDerivedTriggers } from './readiness.js'
-import { isRecord, newerIso } from './util/value.js'
+import { isRecord, isoMs, newerIso } from './util/value.js'
 
 const FORMAT_FILE = 'format.json'
 const INDEX_FILE = 'index.json'
@@ -243,15 +243,6 @@ export function _clearStoreCacheForTest() {
 const migrationWarned = new Set()
 
 /**
- * 合并同一任务在两份快照里的 `insights`：以**上次落盘的 id 基线**做三方判断，基线没有、
- * 本地有 → 本地新增；基线有、本地没有 → 本地删除（不复活）；两边都有 → `updatedAt` 新者胜。
- * 不能只按任务 `updatedAt` 选一侧：任务条目写入不 bump 任务时间戳，会整段覆盖另一边。
- * @param {object} local
- * @param {object} disk
- * @param {Set<string>} base
- * @returns {object[]}
- */
-/**
  * 跨进程任务合并时的文件热点并集：两侧各自累加计数，整条任务二选一会把另一侧新增的文件静默回滚。
  * 计数取 max（同一文件两边各加一次时无法区分重试与真实两次，宁可少记不可回滚），时间取最新。
  */
@@ -299,6 +290,15 @@ function mergeTaskFileState(a, b) {
   return { files, fileMeta: trimmed }
 }
 
+/**
+ * 合并同一任务在两份快照里的 `insights`：以**上次落盘的 id 基线**做三方判断，基线没有、
+ * 本地有 → 本地新增；基线有、本地没有 → 本地删除（不复活）；两边都有 → `updatedAt` 新者胜。
+ * 不能只按任务 `updatedAt` 选一侧：任务条目写入不 bump 任务时间戳，会整段覆盖另一边。
+ * @param {object} local
+ * @param {object} disk
+ * @param {Set<string>} base
+ * @returns {object[]}
+ */
 function mergeTaskInsights(local, disk, base) {
   const merged = new Map()
   for (const ins of Array.isArray(disk?.insights) ? disk.insights : []) {
@@ -782,8 +782,8 @@ export class ProjectMemoryStore {
         // 迁移崩溃窗口里同一 rel 可能同时出现在旧分片与新桶：取 indexedAt 更新的一份；
         // 时间相同优先 v3 桶（新布局）。
         const prev = this.files[item.relPath]
-        const prevAt = prev ? (Date.parse(prev.indexedAt || '') || 0) : -1
-        const nextAt = Date.parse(item.record.indexedAt || '') || 0
+        const prevAt = prev ? isoMs(prev.indexedAt) : -1
+        const nextAt = isoMs(item.record.indexedAt)
         if (prev && prevAt > nextAt) continue
         if (prev && prevAt === nextAt && !isBucket && sourceRank.get(item.relPath) === 1) continue
         sourceRank.set(item.relPath, isBucket ? 1 : 0)
@@ -1390,7 +1390,7 @@ export class ProjectMemoryStore {
       const isBucket = Array.isArray(doc.items)
       for (const item of isBucket ? doc.items : [doc]) {
         if (!item || typeof item.relPath !== 'string' || !isRecord(item.record)) continue
-        const at = Date.parse(item.record.indexedAt || '') || 0
+        const at = isoMs(item.record.indexedAt)
         const prev = disk.get(item.relPath)
         // 同 rel 多副本（崩溃/降级）：时间新者胜；同时间优先 v3 桶。
         if (!prev || at > prev.at || (at === prev.at && isBucket && !prev.bucket)) {
@@ -1413,7 +1413,7 @@ export class ProjectMemoryStore {
         if (!local) continue
         const localSha = local.sha256 ?? null
         if (entry.sha === base || entry.sha === localSha) continue
-        const localAt = Date.parse(local.indexedAt || '') || 0
+        const localAt = isoMs(local.indexedAt)
         if (localAt > entry.at) continue
         this._adoptBucketItem(rel, entry.item)
         this._dirtyShards.delete(rel)
@@ -1425,7 +1425,7 @@ export class ProjectMemoryStore {
         continue
       }
       if (entry.sha === base) continue
-      const localAt = Date.parse(this.files[rel].indexedAt || '') || 0
+      const localAt = isoMs(this.files[rel].indexedAt)
       if (entry.at >= localAt) this._adoptBucketItem(rel, entry.item)
     }
     // 另一进程已删除、本地未删除且不是本进程新建的文件：从内存移除，避免 rewrite 复活。
@@ -1573,8 +1573,8 @@ export class ProjectMemoryStore {
         const nextSha = local.sha256 ?? null
         const diskSha = diskItem?.record?.sha256 ?? null
         if (diskItem && diskSha !== base && diskSha !== nextSha) {
-          const localAt = Date.parse(local.indexedAt || '') || 0
-          const diskAt = Date.parse(diskItem.record?.indexedAt || '') || 0
+          const localAt = isoMs(local.indexedAt)
+          const diskAt = isoMs(diskItem.record?.indexedAt)
           if (localAt <= diskAt) {
             this._adoptBucketItem(rel, diskItem)
             this._warnConflict(rel)

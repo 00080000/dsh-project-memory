@@ -1,4 +1,4 @@
-// 跨标签页任务广播的项目作用域：node test/client-task-scope.test.mjs
+// 跨标签页任务广播的项目作用域：node test/client-task-sync.test.mjs
 //
 // 回归：同步频道名固定，消息体曾只带 tasks/archivedCount —— 两个项目各开一个标签页时，
 // A 刷新一下就把 B 的面板贴成 A 的任务（B 还保留自己的 boundTaskId，看起来像绑定丢了）。
