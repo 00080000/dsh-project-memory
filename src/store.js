@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { tokenizeRaw, makeSearchText } from './util/search.js'
-import { acquireDirLock, ensureSelfIgnoreDir, storeKey, unlinkWithRetry, writeJsonAtomic } from './util/fs.js'
+import { acquireDirLock, ensureSelfIgnoreDir, readJsonFile, storeKey, unlinkWithRetry, writeJsonAtomic } from './util/fs.js'
 import { debugPersistence } from './util/persist.js'
 import { trackDirty, untrackDirty } from './util/flush.js'
 import { backfillDerivedTriggers } from './readiness.js'
@@ -370,32 +370,17 @@ export function _stripPersistedDerivedForTest(entry) {
   return withoutPersistedDerived(entry)
 }
 
+// 读盘判据（ENOENT / 读失败 / 损坏隔离）只在 util/fs.js 的 readJsonFile 里定义一次；
+// 这里只接本 store 的两件副作用：读错误进 `_readErrors`（触发只读降级）与读盘字符数计量。
 function loadJson(filePath, fallback, counter, errorSink) {
-  let raw
-  try {
-    raw = readFileSync(filePath, 'utf8')
-  } catch (err) {
-    // ENOENT 才是“真的没有”；EACCES/EISDIR/EIO/EMFILE 是读失败，不能当成删除。
-    if (err?.code !== 'ENOENT') {
+  return readJsonFile(filePath, fallback, {
+    onReadError: (err) => {
       errorSink?.add(filePath)
       debugPersistence(`[dsh-project-memory] cannot read ${filePath}: ${err?.code || err?.message || err}`)
-    }
-    return fallback
-  }
-  // 累计读盘文本字符数，只供 `residentBoundBytes` 判断要不要精确计量。
-  if (counter) counter.chars += raw.length
-  try {
-    return JSON.parse(raw)
-  } catch {
-    const backup = `${filePath}.${Date.now()}.corrupt`
-    try {
-      renameSync(filePath, backup)
-      console.error(`[dsh-project-memory] corrupted ${path.basename(filePath)} moved to ${path.basename(backup)}; starting fresh`)
-    } catch (err) {
-      console.error(`[dsh-project-memory] corrupted ${path.basename(filePath)} could not be backed up: ${err.message}`)
-    }
-    return fallback
-  }
+    },
+    // 只供 `residentBoundBytes` 判断要不要精确计量。
+    onChars: (chars) => { if (counter) counter.chars += chars },
+  })
 }
 
 function shardRelPath(dir, rel) {

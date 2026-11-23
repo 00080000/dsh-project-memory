@@ -3,11 +3,11 @@
 // 提升 = 字段变更（不跨文件复制）；归档 = 软删（archived:true，不进召回/注入），物理删除只在容量溢出；
 // 写盘前过滤密钥/token/私钥形态，命中即拒绝写入。
 import { randomUUID } from 'node:crypto'
-import { readFileSync, renameSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { normalizedTokenOverlap, findBestOverlapMatch, insightMatchText } from './similarity.js'
-import { acquireDirLock, storeKey, writeJsonAtomic } from './util/fs.js'
+import { acquireDirLock, readJsonFile, storeKey, writeJsonAtomic } from './util/fs.js'
 import { debugPersistence } from './util/persist.js'
 import { trackDirty, untrackDirty } from './util/flush.js'
 import { backfillDerivedTriggers, deriveTrigger } from './readiness.js'
@@ -511,29 +511,6 @@ export function pruneItems(items, max, nowIso, { protectedIds = new Set() } = {}
 /** 进程内按文件路径复用；整份文档读改写，两个实例会互相覆盖。 */
 const globalStoreCache = new Map()
 
-function readJson(file, fallback, onReadError) {
-  let raw
-  try {
-    raw = readFileSync(file, 'utf8')
-  } catch (err) {
-    // ENOENT 才是"真的没有"；EACCES/EISDIR/EIO/EMFILE 是读失败，不能当成"用户清空了整库"。
-    if (err?.code !== 'ENOENT') onReadError?.(err)
-    return fallback
-  }
-  try {
-    return JSON.parse(raw)
-  } catch {
-    const backup = `${file}.${Date.now()}.corrupt`
-    try {
-      renameSync(file, backup)
-      console.error(`[dsh-project-memory] corrupted ${path.basename(file)} moved to ${path.basename(backup)}; starting fresh`)
-    } catch {
-      // 保留现场，回退默认
-    }
-    return fallback
-  }
-}
-
 function normalizeDoc(doc) {
   if (doc && typeof doc === 'object' && Array.isArray(doc.items)) {
     if (typeof doc.version !== 'number') doc.version = 1
@@ -580,9 +557,11 @@ export class GlobalStore {
       this._dirty = hot._dirty
       return hot
     }
-    this.doc = normalizeDoc(readJson(this.file, null, (err) => {
-      this._readOnly = true
-      this._warnReadOnly(err)
+    this.doc = normalizeDoc(readJsonFile(this.file, null, {
+      onReadError: (err) => {
+        this._readOnly = true
+        this._warnReadOnly(err)
+      },
     }))
     // 与 project 级一致：global 条目也要补派生 trigger（提示通道用它提升召回；确定性、幂等）。
     if (backfillDerivedTriggers(this.doc)) this.markDirty()
@@ -686,7 +665,7 @@ export class GlobalStore {
       return res
     }
     try {
-      const rawDisk = readJson(this.file, null)
+      const rawDisk = readJsonFile(this.file, null)
       const disk = isRecord(rawDisk) && Array.isArray(rawDisk.items) ? rawDisk : null
       if (disk) {
         const byId = new Map()
@@ -708,7 +687,7 @@ export class GlobalStore {
         for (const id of this._deletedIds) byId.delete(id)
         this.doc.items = [...byId.values()]
       } else {
-        // 文件缺失/不可读/损坏（readJson 已把损坏件备份）时，不能把"空 doc"当成
+        // 文件缺失/不可读/损坏（readJsonFile 已把损坏件备份）时，不能把"空 doc"当成
         // "对端把所有条目都删了"：那会把整库旧条目静默清掉。保留内存里的完整副本重写。
         // 项目 store 在同样场景也是保留内存整份写回（见 _mergeAuxFromDisk 的 isRecord 守卫）。
         this.doc.items = this.doc.items.filter((it) => isRecord(it) && it.id)

@@ -72,6 +72,45 @@ export function writeJsonAtomic(file, data, { ensureDir = true } = {}) {
 }
 
 /**
+ * 读一个 JSON 文件，损坏文件就地隔离：**读失败**（EACCES/EISDIR/EIO…）只回调 `onReadError`，
+ * 不备份也不降级成"用户清空了整库"；**解析失败**才把坏文件改名成 `<file>.<ts>.corrupt` 再返回 fallback，
+ * 保住现场且不原地覆盖。ENOENT 是"真的没有"，两者都不触发。
+ *
+ * 这套判据原先在 `store.js`（`loadJson`：带读盘字符计数与读错误集合）与 `insight-store.js`
+ * （`readJson`：带 onReadError 回调）里各抄一份，备份失败时一处打日志、一处静默 —— 同一种损坏
+ * 隔离必须同源，否则同一份坏文件在两个 store 里会被不同地处置。备份失败一律打日志：那是"现场没保住"
+ * 的信号，静默会让下次写入覆盖唯一的取证材料。
+ *
+ * @param {string} filePath - JSON 文件路径（绝对路径）。
+ * @param {unknown} fallback - 文件缺失 / 读失败 / 解析失败时的返回值。
+ * @param {{ onReadError?: (err: NodeJS.ErrnoException) => void, onChars?: (chars: number) => void }} [hooks]
+ *   `onReadError`：非 ENOENT 的读盘错误（调用方决定置只读 / 记集合）；`onChars`：成功读到的字符数（体积计量）。
+ * @returns {unknown} 解析结果，或 fallback。
+ */
+export function readJsonFile(filePath, fallback, { onReadError, onChars } = {}) {
+  let raw
+  try {
+    raw = readFileSync(filePath, 'utf8')
+  } catch (err) {
+    if (err?.code !== 'ENOENT') onReadError?.(err)
+    return fallback
+  }
+  onChars?.(raw.length)
+  try {
+    return JSON.parse(raw)
+  } catch {
+    const backup = `${filePath}.${Date.now()}.corrupt`
+    try {
+      renameSync(filePath, backup)
+      console.error(`[dsh-project-memory] corrupted ${path.basename(filePath)} moved to ${path.basename(backup)}; starting fresh`)
+    } catch (err) {
+      console.error(`[dsh-project-memory] corrupted ${path.basename(filePath)} could not be backed up: ${err?.message || err}`)
+    }
+    return fallback
+  }
+}
+
+/**
  * 删除文件并对 Windows 的瞬时占用（EPERM/EBUSY/EACCES）重试。
  *
  * 为什么需要：`unlinkSync` 和 `renameSync` 一样会被杀毒/索引器短暂占用。删除失败若被当成
