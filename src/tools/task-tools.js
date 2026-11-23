@@ -4,6 +4,7 @@ import { openProjectContext } from './context.js'
 import { truncate } from '../util/text.js'
 import { sessionIdOf, stepProgress, timeAgo } from '../util/task-view.js'
 import { genTaskId, hash8, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
+import { ensureTeamTaskRecord, isTeamTaskId, resolveTeamTask } from '../setup/team-task.js'
 import { fireReflect } from '../reflection-pipeline.js'
 import { resolveRoute } from '../llm-route.js'
 import { createHash } from 'node:crypto'
@@ -12,7 +13,8 @@ function summaryOf(task) {
   const { done, total } = stepProgress(task)
   const files = (task.files || []).length
   const mark = task.archived ? ' [归档]' : ''
-  return `### ${task.title}${mark}\n- 进度: ${done}/${total} 完成\n- 文件: ${files} 个\n- 最后活动: ${timeAgo(task.lastActiveAt || task.updatedAt)}`
+  const team = task.teamTaskId ? `（团队任务 ${task.teamTaskId}）` : ''
+  return `### ${task.title}${mark}${team}\n- 进度: ${done}/${total} 完成\n- 文件: ${files} 个\n- 最后活动: ${timeAgo(task.lastActiveAt || task.updatedAt)}`
 }
 
 export function listTasksTool(config) {
@@ -43,8 +45,8 @@ export function selectTaskTool(config, host) {
     name: 'select_task',
     description:
       'Bind the session to a task (its todo list and files read afterwards sync into it). Exact taskId '
-      + '(optionally renames/unarchives via title), or an exact title match (creates one if absent); '
-      + 'returns the task card used to rebuild the checklist.',
+      + '(local id, or a host team task `task-<n>` that shares task-scoped memory with teammates), '
+      + 'or an exact title match (creates one if absent); returns the task card used to rebuild the checklist.',
     parameters: {
       taskId: { type: 'string', description: 'exact task id' },
       title: { type: 'string', description: 'exact title; creates if absent' },
@@ -65,8 +67,23 @@ export function selectTaskTool(config, host) {
       let task = null
       let hint = ''
       if (args.taskId) {
-        task = store.getTask(args.taskId)
-        if (!task) return error(`Task not found: ${args.taskId}`)
+        if (isTeamTaskId(args.taskId)) {
+          const resolved = resolveTeamTask(exec, args.taskId)
+          if (!resolved.ok) {
+            if (resolved.reason === 'error') return error(`读取团队任务失败: ${resolved.error}`)
+            if (resolved.reason === 'unavailable') {
+              return error(`Task not found: ${args.taskId}（当前宿主没有团队服务；团队任务只在安装了团队插件的会话里可绑定）`)
+            }
+            return error(`Task not found: ${args.taskId}（团队任务不存在或不属于本团队）`)
+          }
+          const ensured = ensureTeamTaskRecord(store, resolved.view, { root, sid, now })
+          task = ensured.task
+          // 团队任务的记忆键是共享的：lead 写的任务级经验，队友 claim 后 select_task 同一 id 就能读到。
+          hint = ensured.created ? '已关联团队任务（新建共享记忆锚点）' : '已关联团队任务（沿用已有任务记忆）'
+        } else {
+          task = store.getTask(args.taskId)
+          if (!task) return error(`Task not found: ${args.taskId}`)
+        }
         if (task.archived) {
           task.archived = false
           hint = '已解归档'
@@ -119,8 +136,9 @@ export function selectTaskTool(config, host) {
       store.markTasksDirty()
       store.save()
 
-      // 反向接管：绑定成功后，把任务步骤推成宿主 todo/write（dsh 清单跟随我们的任务）
-      if (shouldAdoptToHost(config)) {
+      // 反向接管：绑定成功后，把任务步骤推成宿主 todo/write（dsh 清单跟随我们的任务）。
+      // 团队任务锚点只做记忆作用域：不推清单 —— 队友自己的 todo 不该被一个空的本地锚点清掉。
+      if (shouldAdoptToHost(config) && !task.teamTaskId) {
         adoptStepsToSession(exec?.agent?.session || exec?.ctx?.session, task, { force: true })
       }
 
@@ -131,6 +149,7 @@ export function selectTaskTool(config, host) {
 
       const card = {
         taskId: task.id,
+        ...(task.teamTaskId ? { teamTaskId: task.teamTaskId } : {}),
         title: task.title,
         steps: task.steps,
         files: task.files,

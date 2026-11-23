@@ -1,3 +1,7 @@
+## Unreleased
+
+- **团队任务作记忆作用域**：`select_task` 接受宿主团队任务 id（`task-<n>`），映射成本地记忆任务 `team:task-<n>` 并绑定会话——lead 写的 `scope=task` 经验，队友 claim 同一任务后 `recall` / 注入即可读到（此前只能 promote 到 project）；无 `agentTeams` 服务的宿主行为不变，团队锚点不推宿主 todo。
+
 ## 0.7.1 (2026-11-18)
 
 **兼容**：无新增配置键，无 store 格式变更，`client/` 产物已重建，直接覆盖升级。开发依赖从 dsh `0.2.2-rc.3` 对齐到 `0.2.2-rc.5`（运行时依赖未变；rc.4/rc.5 是宿主侧的模型异常响应、LiveShare 与服务端搜索修复，不涉及本插件使用的接口）。
