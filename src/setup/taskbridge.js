@@ -3,7 +3,7 @@
 // tool/call data.arguments 为 JSON 字符串；fs 工具名 read/write/edit/read_image，参数 file_path。
 import path from 'node:path'
 import { existsSync, statSync } from 'node:fs'
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { memoryRootFor, resolveProjectMemoryRoot } from '../util/fs.js'
 import { sessionWorkingDir } from '../util/session-dir.js'
 import { ProjectMemoryStore } from '../store.js'
@@ -11,6 +11,7 @@ import { BoundedMap } from '../util/session-cache.js'
 import { stepContent, stepStatus } from '../util/task-view.js'
 import { patchFilePaths } from '../util/patch.js'
 import { flushDirtyStores } from '../util/flush.js'
+import { hash8 } from '../util/hash.js'
 
 // apply_patch 的参数是整段补丁文本，路径在正文里（见 util/patch.js），单独分支处理。
 const FS_FILE_TOOLS = new Set(['read', 'write', 'edit', 'read_image', 'str_replace_editor', 'apply_patch'])
@@ -18,10 +19,6 @@ const WRITE_TOOLS = new Set(['write', 'edit']) // 编辑/写入 = 高热点
 const READ_TOOLS = new Set(['read', 'read_image'])
 const MAX_FILES_PER_TASK = 100
 const TITLE_MAX = 24
-
-export function hash8(text) {
-  return createHash('sha256').update(String(text)).digest('hex').slice(0, 8)
-}
 
 export function slugifyTitle(text) {
   return String(text || '')
@@ -248,6 +245,9 @@ export function onSessionEvent(config, session, event, meta, ctx) {
     if (!Array.isArray(todos)) return
     store.commit((s) => {
       let task = s.getBoundTaskId(sessionId) ? s.getTask(s.getBoundTaskId(sessionId)) : null
+      // 团队锚点只存记忆：步骤与 lastTodoAt 属于单个 agent 的清单。多个成员绑同一锚点时，
+      // 队友的 todo 会覆盖 lead 的清单，并把 lastTodoAt 顶到别人会话里（任务卡回声判据失效）。
+      if (task?.teamTaskId) return
       if (!task || task.archived) {
         // 空写 = 清空清单：不自动建档（避免"未绑定会话清空 todo"误建垃圾任务）
         if (todos.length === 0) return
@@ -287,18 +287,25 @@ export function onSessionEvent(config, session, event, meta, ctx) {
     const snapshot = event.data?.task
     const teamTaskId = snapshot?.id
     if (typeof teamTaskId !== 'string') return
+    // 没有本地锚点就没有可同步的东西：纯团队项目不该为一次任务变更去碰 store。
+    if (!store.getTasks().some((t) => t.teamTaskId === teamTaskId)) return
     store.commit((s) => {
       const record = s.getTasks().find((t) => t.teamTaskId === teamTaskId)
       if (!record) return
       let changed = false
-      for (const [field, value] of [
-        ['teamTaskStatus', typeof snapshot.status === 'string' ? snapshot.status : undefined],
-        ['teamOwnerName', typeof snapshot.ownerName === 'string' ? snapshot.ownerName : undefined],
-        ['teamWriteScopes', Array.isArray(snapshot.writeScopes) ? snapshot.writeScopes.filter((p) => typeof p === 'string') : undefined],
-      ]) {
-        if (value === undefined) continue
-        if (JSON.stringify(record[field]) === JSON.stringify(value)) continue
-        record[field] = value
+      const status = typeof snapshot.status === 'string' ? snapshot.status : null
+      if (status && record.teamTaskStatus !== status) {
+        record.teamTaskStatus = status
+        changed = true
+      }
+      const owner = typeof snapshot.ownerName === 'string' ? snapshot.ownerName : null
+      if (owner && record.teamOwnerName !== owner) {
+        record.teamOwnerName = owner
+        changed = true
+      }
+      const scopes = Array.isArray(snapshot.writeScopes) ? snapshot.writeScopes.filter((p) => typeof p === 'string') : null
+      if (scopes && JSON.stringify(record.teamWriteScopes || []) !== JSON.stringify(scopes)) {
+        record.teamWriteScopes = scopes
         changed = true
       }
       if (snapshot.status === 'deleted' && !record.archived) {

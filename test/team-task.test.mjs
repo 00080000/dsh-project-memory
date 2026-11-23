@@ -169,7 +169,9 @@ const readTasks = (file) => (existsSync(file) ? JSON.parse(readFileSync(file, 'u
   const restored = JSON.parse(await tool.execute({ taskId: 'task-2' }, lead.exec))
   assert.equal(restored.taskId, 'team:task-2')
   assert.equal(loadStore(dir).getTask('team:task-2').archived, false)
-  ok('幂等复用 + 人工改名保留 + 解归档')
+  assert.match(restored.hint, /团队任务/, '解归档不能把"已关联团队任务"的提示冲掉')
+  assert.match(restored.hint, /已解归档/)
+  ok('幂等复用 + 人工改名保留 + 解归档（提示不丢）')
 }
 
 // ---- 5. 软依赖：没有团队服务 → 与"找不到任务"一致，且不建记录 ----
@@ -218,7 +220,10 @@ const readTasks = (file) => (existsSync(file) ? JSON.parse(readFileSync(file, 'u
   const card = JSON.parse(await tool.execute({ taskId: 'task-4' }, lead.exec))
   assert.deepEqual(card.team.writeScopes, ['src/auth/'], 'advisory 写作用域随卡片带给模型')
   assert.deepEqual(card.team.warnings, ['overlaps task-1: src/auth/'], '宿主算好的作用域冲突告警一并带上')
-  assert.equal(loadStore(dir).getTask('team:task-4').teamWriteScopes[0], 'src/auth/', '写作用域落盘，后续 list_tasks 也能看到')
+  const boundRecord = loadStore(dir).getTask('team:task-4')
+  assert.equal(boundRecord.teamWriteScopes[0], 'src/auth/', '写作用域落盘，后续 list_tasks 也能看到')
+  assert.equal('teamWriteScopeWarnings' in boundRecord, false,
+    '冲突告警是视图值：快照里没有它，落盘只会在下一次任务变更后过期')
 
   const session = { id: 's_lead', header: { cwd: root } }
   const meta = new Map()
@@ -260,6 +265,59 @@ const readTasks = (file) => (existsSync(file) ? JSON.parse(readFileSync(file, 'u
   const listed = await listTasksTool(config).execute({}, lead.exec)
   assert.match(listed, /团队任务 task-2/, 'list_tasks 同样标出团队任务（不会误认成自建任务）')
   ok('/tasks 与 list_tasks 的团队任务标注')
+}
+
+// ---- 9. 团队锚点不吸收成员的步骤：共享记忆键不是某个人的 todo 清单 ----
+{
+  const { root, dir } = newProject()
+  const views = { 'task-2': teamView('task-2', '迁移鉴权') }
+  const team = teamService(views)
+  const lead = makeExec(root, 's_lead', team)
+  const mate = makeExec(root, 's_mate', team)
+  const tool = selectTaskTool(config, {})
+  await tool.execute({ taskId: 'task-2' }, lead.exec)
+  await tool.execute({ taskId: 'task-2' }, mate.exec)
+
+  const session = { id: 's_mate', header: { cwd: root } }
+  onSessionEvent(config, session, {
+    type: 'todo/write',
+    data: { todos: [{ content: '队友自己的步骤', status: 'in_progress' }] },
+  }, new Map())
+
+  const anchor = loadStore(dir).getTask('team:task-2')
+  assert.equal(anchor.steps, null, '队友写 todo 不改共享锚点的步骤（否则会覆盖 lead 的清单）')
+  assert.equal(anchor.lastTodoAt, undefined, 'lastTodoAt 属于单个会话：写进共享锚点会让任务卡回声判据失效')
+  assert.equal(loadStore(dir).getBoundTaskId('s_lead'), 'team:task-2', '绑定关系不受影响')
+  ok('团队锚点不吸收成员步骤 / 自维护时刻')
+}
+
+// ---- 10. 没有本地锚点时，team/task 事件不碰 store（纯团队项目不留 .dsh-project-memory） ----
+{
+  const { root } = newProject()
+  const dir = path.join(root, '.dsh-project-memory')
+  onSessionEvent(config, { id: 's_x', header: { cwd: root } }, {
+    type: 'team/task',
+    data: { version: 2, teamId: 'team-x', task: teamView('task-7', '与我无关') },
+  }, new Map())
+  assert.equal(existsSync(dir), false, '没有锚点就不该为一次团队任务变更触发 store.commit / 建目录')
+  ok('无锚点的 team/task 事件不碰磁盘')
+}
+
+// ---- 11. 非团队任务不带团队标注（标注必须是条件式的，不能污染普通项目输出） ----
+{
+  const { root } = newProject()
+  const plain = makeExec(root, 's_plain')
+  await selectTaskTool(config, {}).execute({ title: '普通任务' }, plain.exec)
+  const listed = await listTasksTool(config).execute({}, plain.exec)
+  assert.doesNotMatch(listed, /团队任务/, '普通任务不该出现团队标注')
+  const invocation = (rawInput) => ({
+    agent: { id: 's_plain', session: { id: 's_plain', header: { cwd: root }, append() {} } },
+    rawInput,
+  })
+  const snapshot = tasksCommandDefinition(config, {}).handler(invocation('/tasks'))
+  assert.doesNotMatch(snapshot.text, /团队任务/, '/tasks 对普通项目输出保持原样')
+  assert.doesNotMatch(snapshot.text, /含团队任务/, '/tasks 总览不为 0 套团队任务加噪音')
+  ok('普通任务的输出与团队标注互不污染')
 }
 
 console.log(`\nteam-task tests: ${passed} passed`)

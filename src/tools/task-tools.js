@@ -3,11 +3,11 @@ import { TEXT_OUTPUT, rootParam } from './output.js'
 import { openProjectContext } from './context.js'
 import { truncate } from '../util/text.js'
 import { sessionIdOf, stepProgress, timeAgo } from '../util/task-view.js'
-import { genTaskId, hash8, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
+import { genTaskId, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
+import { hash8 } from '../util/hash.js'
 import { ensureTeamTaskRecord, isTeamTaskId, resolveTeamTask } from '../setup/team-task.js'
 import { fireReflect } from '../reflection-pipeline.js'
 import { resolveRoute } from '../llm-route.js'
-import { createHash } from 'node:crypto'
 
 function summaryOf(task) {
   const { done, total } = stepProgress(task)
@@ -16,7 +16,9 @@ function summaryOf(task) {
   const team = task.teamTaskId
     ? `（团队任务 ${task.teamTaskId}${task.teamTaskStatus ? ` · ${task.teamTaskStatus}` : ''}）`
     : ''
-  return `### ${task.title}${mark}${team}\n- 进度: ${done}/${total} 完成\n- 文件: ${files} 个\n- 最后活动: ${timeAgo(task.lastActiveAt || task.updatedAt)}`
+  return `### ${task.title}${mark}${team}\n- 进度: ${done}/${total} 完成`
+    + `\n- 文件: ${files} 个`
+    + `\n- 最后活动: ${timeAgo(task.lastActiveAt || task.updatedAt)}`
 }
 
 export function listTasksTool(config) {
@@ -68,6 +70,8 @@ export function selectTaskTool(config, host) {
 
       let task = null
       let hint = ''
+      // 冲突告警只在绑定时由宿主视图算出来，不落盘（见 setup/team-task.js 的模块注释）。
+      let teamWarnings = null
       if (args.taskId) {
         if (isTeamTaskId(args.taskId)) {
           const resolved = resolveTeamTask(exec, args.taskId)
@@ -80,6 +84,9 @@ export function selectTaskTool(config, host) {
           }
           const ensured = ensureTeamTaskRecord(store, resolved.view, { root, sid, now })
           task = ensured.task
+          teamWarnings = Array.isArray(resolved.view.writeScopeWarnings)
+            ? resolved.view.writeScopeWarnings.filter((w) => typeof w === 'string')
+            : []
           // 团队任务的记忆键是共享的：lead 写的任务级经验，队友 claim 后 select_task 同一 id 就能读到。
           hint = ensured.created ? '已关联团队任务（新建共享记忆锚点）' : '已关联团队任务（沿用已有任务记忆）'
         } else {
@@ -88,7 +95,8 @@ export function selectTaskTool(config, host) {
         }
         if (task.archived) {
           task.archived = false
-          hint = '已解归档'
+          // 追加而不是覆盖：团队任务分支已经写了一条 hint，别把它冲掉。
+          hint = hint ? `${hint}；已解归档` : '已解归档'
         }
         if (args.title && args.title !== task.title) {
           task.title = args.title // 改名（自动标题可能带指令前缀，续接时可顺手改干净）
@@ -162,7 +170,7 @@ export function selectTaskTool(config, host) {
             status: task.teamTaskStatus || null,
             owner: task.teamOwnerName || null,
             writeScopes: task.teamWriteScopes || [],
-            warnings: task.teamWriteScopeWarnings || [],
+            warnings: teamWarnings || [],
           },
         } : {}),
         hint: hint + '；请据此用 todo_write 重建本会话清单',

@@ -1,7 +1,7 @@
 ## Unreleased
 
-- **团队任务作记忆作用域**：`select_task` 接受宿主团队任务 id（`task-<n>`），映射成本地记忆任务 `team:task-<n>` 并绑定会话——lead 写的 `scope=task` 经验，队友 claim 同一任务后 `recall` / 注入即可读到（此前只能 promote 到 project）；无 `agentTeams` 服务的宿主行为不变，团队锚点不推宿主 todo。
-- **团队任务状态与标注**：宿主 `team/task` 快照同步到本地锚点——完成不改归档（记忆仍有用），删除才归档并解绑；`/tasks` 与 `list_tasks` 标出「团队任务 task-<n>」，任务卡带 `writeScopes` 与冲突告警。
+- **团队任务作记忆作用域**：`select_task` 接受宿主团队任务 id（`task-<n>`），映射成本地记忆任务 `team:task-<n>` 并绑定会话——lead 写的 `scope=task` 经验，队友 claim 同一任务后 `recall` / 注入即可读到（此前只能 promote 到 project）；无 `agentTeams` 服务的宿主行为不变；团队锚点不推宿主 todo，也不吸收成员的步骤/自维护时刻。
+- **团队任务状态与标注**：宿主 `team/task` 快照同步到本地锚点——完成不改归档（记忆仍有用），删除才归档并解绑；`/tasks` 与 `list_tasks` 标出「团队任务 task-<n>」，任务卡带 `writeScopes` 与冲突告警（告警只在绑定时由宿主视图给出，不落盘）。
 
 ## 0.7.1 (2026-11-18)
 

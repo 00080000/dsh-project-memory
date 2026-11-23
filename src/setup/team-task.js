@@ -9,10 +9,12 @@
  *
  * 软依赖：`ctx.get('agentTeams')` 缺失（没装团队插件 / 老宿主）、调用者不是团队会话、对端任务
  * 不存在或属于别的团队时，这里只返回 `unavailable` / `not-found`，`select_task` 维持原行为。
- * 记录只是一个**记忆挂载点**：不镜像宿主的 status / owner / writeScopes（那是第二刀的事），
- * 也不进 taskbridge 的自动建档路径（子代理仍不建档，绑定只能由显式 `select_task` 建立）。
+ * 记录是**记忆挂载点**：镜像宿主的 status / owner / writeScopes（只做展示与提示），
+ * 但不吸收某个成员的步骤/自维护时刻（那是单个 agent 的清单，见 taskbridge 的 todo/write 分支）；
+ * 冲突告警由宿主的视图现算，不落盘（快照里没有它，存下来只会过期）。
+ * 它也不进 taskbridge 的自动建档路径（子代理仍不建档，绑定只能由显式 `select_task` 建立）。
  */
-import { hash8 } from './taskbridge.js'
+import { hash8 } from '../util/hash.js'
 
 /** 宿主 `TeamTaskId` 的形状：`task-<n>`。 */
 const TEAM_TASK_ID_RE = /^task-\d+$/
@@ -72,7 +74,6 @@ function teamFieldsOf(view) {
     teamTaskStatus: typeof view.status === 'string' ? view.status : null,
     teamOwnerName: typeof view.ownerName === 'string' ? view.ownerName : null,
     teamWriteScopes: strings(view.writeScopes),
-    teamWriteScopeWarnings: strings(view.writeScopeWarnings),
   }
 }
 
@@ -82,6 +83,7 @@ function teamFieldsOf(view) {
  * 标题只在新建时取宿主的 `subject`；之后不跟着变 —— 用户可能已经用 `select_task` 的 `title`
  * 改过名，每次 select 都覆盖会把人工命名冲掉。缺 subject 时用 `团队任务 <id>` 占位。
  * status / owner / writeScopes 每次都从视图刷新（它们是宿主的运行时事实，本地不持有判断）。
+ * 复用分支只改内存、不标脏：调用方（select_task）随后统一 `markTasksDirty()` + save。
  * @returns {{task: object, created: boolean}}
  */
 export function ensureTeamTaskRecord(store, view, { root, sid, now }) {
