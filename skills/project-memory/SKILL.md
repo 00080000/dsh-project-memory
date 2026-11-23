@@ -22,7 +22,9 @@ Query it before re-deriving; write to it only after something has been verified.
 - Before changing a subsystem: there may be a lesson about its failure modes.
 - Before an irreversible action (commit / publish / release / push / deploy / migrate): the store may
   know a prerequisite you would otherwise miss.
-- When resuming: call `list_tasks`, then `select_task` if one matches the current work.
+- When resuming: call `list_tasks`, then `select_task` if one matches the current work. In a team,
+  bind the host team task (`select_task task-<n>`) so the lead and teammates share its task-level
+  memory (the memory task id is `team:task-<n>`).
 
 ## Workflow
 
@@ -41,6 +43,8 @@ Query it before re-deriving; write to it only after something has been verified.
      `title`, and the body: `pattern` + `fix`, or `choice` + `reason`, or `steps`.
    - `remember problem solution` — shorthand for `kind: experience`.
    - `files`: project-relative paths the conclusion is about.
+   - Similar entries are merged or overwritten automatically; a near match returns its id instead
+     of creating a duplicate.
    - `trigger.when`: when this should be recalled. `ops` (action), `writes` (file about to change),
      `intents` (words the human would use). `guard` only narrows; `prevents` records what breaks
      without it. Do **not** write a trigger you have not seen fire.
@@ -56,6 +60,8 @@ Query it before re-deriving; write to it only after something has been verified.
 - Do not save: progress narration, temporary state, secrets/credentials, anything derivable from the
   code in one read.
 - One durable entry beats five observations. Merge by updating the existing id.
+- Keep the criterion and the command; run-specific values (versions, counts, branch names) stay
+  out of the entry.
 - Write in the same language the project uses; keep titles short and searchable.
 - The store self-ignores in git; do not commit it unless the human explicitly wants memory in the repo.
 

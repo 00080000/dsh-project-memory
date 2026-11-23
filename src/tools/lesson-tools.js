@@ -11,15 +11,13 @@ import { createVectorRerank, vectorItemsFrom } from '../vector-index.js'
 import { createWriteCosine } from '../auto-inject.js'
 
 export function lessonTool(config) {
-  const kindDesc = 'lesson (pitfall → fix) | decision (choice + reason) | procedure (steps) | experience (problem → solution); default lesson.'
-  const scopeDesc =
-    'task | project | global; default: task when a task is bound, else project; passing id updates in place.'
+  const kindDesc = 'lesson | decision | procedure | experience; default lesson.'
+  const scopeDesc = 'task | project | global; default: bound task, else project.'
   return defineTool({
     name: 'save_lesson',
     description:
-      'One lesson / decision / procedure (a single insight). Keep only the criterion and command that stay true next time; run-specific values (version numbers, counts, branch names) stay out. '
-      + 'It compares against existing memory first: high similarity overwrites (old value kept in prev), a near match returns the nearest id. '
-      + 'If an entry you saw is wrong, stale or too thin to act on, pass its id and write again to update it in place instead of adding a new one; use forget to delete.',
+      'Save one insight (lesson / decision / procedure / experience). Similar entries are merged or overwritten '
+      + '(old value kept in prev); pass an existing id to update it in place. Details: project-memory skill.',
     parameters: {
       id: { type: 'string', description: 'existing entry id (in-place update)' },
       title: { type: 'string', description: 'one-line title' },

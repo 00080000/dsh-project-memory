@@ -24,7 +24,7 @@ for (const def of defs) {
 }
 // 预算按 **token 估算** 判，不按字符：中文字符约 1 token/字，其余约 4 字符/token。
 // 之前只看字符，导致"中文描述省字符"被当成省预算——同样的信息换成英文，字符 +25%、token 反而更少。
-// 基线（2026-11，工具改名后）：含工具名 7270 字符 / 0 汉字 ≈ 1822 token。旧断言漏算名字，实际余量比显示的小。
+// 基线（2026-11-24，save_lesson 描述瘦身 + 指引移进 project-memory skill）：含工具名 ≈ 1738 token。
 assert.equal(defs.length, 12, '工具数量变化必须同步检查 schema 预算与注册表')
 // 回归（2026-11-11）：`dsh-memory-tiers` 也注册 `memory_stats`，同进程同时启用时
 // 后注册方会整条 fiber 失败（tool "memory_stats" is already registered）。
@@ -36,7 +36,7 @@ assert.equal(defs.length, 12, '工具数量变化必须同步检查 schema 预�
   assert.equal(new Set(names).size, names.length, '工具名必须唯一')
 }
 console.log(`  tool schema: ${chars} chars · ${cjk} CJK · ~${tokens} tokens (${defs.length} tools)`)
-assert.ok(tokens <= 1850, `tool schema budget exceeded: ~${tokens} tokens (${chars} chars, limit ~1850 tokens)`)
+assert.ok(tokens <= 1780, `tool schema budget exceeded: ~${tokens} tokens (${chars} chars, limit ~1780 tokens)`)
 
 // ---- root 参数：形状与"不传 root 会怎样"的提示只有一处声明 ----
 // 十一份手写副本收敛成 rootParam() 之后，这里把每个工具的 root 契约钉死：
