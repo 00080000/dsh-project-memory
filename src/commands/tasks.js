@@ -32,6 +32,7 @@ export function buildTaskPayload(tasks, boundId, archived, root = null) {
         updatedAt: t.updatedAt,
         archived: t.archived || false,
         insights: insights.slice.map((i) => ({ id: i.id, kind: i.kind || 'lesson', title: i.title || '', draft: i.draft === true })),
+        ...(t.teamTaskId ? { teamTaskId: t.teamTaskId, teamTaskStatus: t.teamTaskStatus || null } : {}),
         ...(truncated ? {
           totals: {
             steps: steps.total,
@@ -70,16 +71,20 @@ export function renderTaskSnapshot(config, cwd, sid) {
     const note = `项目 ${root}\n任务记录: 0 套${archived ? `（归档 ${archived}）` : ''}。让模型开始干活并维护 todo 清单后会自动建档。`
     return { kind: 'success', text: fencedJson(note, payload) }
   }
-  const lines = [`项目 ${root}`, `任务: ${active.length} 套${archived ? `（归档 ${archived}）` : ''}`, '']
+  const teamCount = active.filter((t) => t.teamTaskId).length
+  const teamNote = teamCount ? `（含团队任务 ${teamCount} 套）` : ''
+  const lines = [`项目 ${root}`, `任务: ${active.length} 套${archived ? `（归档 ${archived}）` : ''}${teamNote}`, '']
   for (const t of active) {
     const { done, total } = stepProgress(t)
     const progress = total ? `${done}/${total}` : '无步骤'
     const inProgress = (t.steps || []).find((s) => stepStatus(s) === 'in_progress')
     const step = inProgress ? ` · 当前: ${stepContent(inProgress)}` : ''
     const marker = bound && bound.id === t.id ? '（本会话绑定）' : ''
+    // 团队任务与自建任务同名时不至于被看成一件事：标注它来自宿主的团队任务板。
+    const team = t.teamTaskId ? `（团队任务 ${t.teamTaskId}${t.teamTaskStatus ? ` · ${t.teamTaskStatus}` : ''}）` : ''
     const files = (t.files || []).slice(0, 8)
     const fileLine = files.length ? `\n  文件: ${files.join(', ')}${t.files.length > 8 ? ' …' : ''}` : ''
-    lines.push(`● ${t.title}${marker}  步骤 ${progress}${step} · ${timeAgo(t.lastActiveAt || t.updatedAt)}${fileLine}`)
+    lines.push(`● ${t.title}${marker}${team}  步骤 ${progress}${step} · ${timeAgo(t.lastActiveAt || t.updatedAt)}${fileLine}`)
   }
   lines.push('', '续接/改名/归档：直接告诉模型（list_tasks / select_task / archive_task）。')
   const humanText = lines.join('\n')

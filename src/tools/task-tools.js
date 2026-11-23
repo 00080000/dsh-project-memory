@@ -13,7 +13,9 @@ function summaryOf(task) {
   const { done, total } = stepProgress(task)
   const files = (task.files || []).length
   const mark = task.archived ? ' [归档]' : ''
-  const team = task.teamTaskId ? `（团队任务 ${task.teamTaskId}）` : ''
+  const team = task.teamTaskId
+    ? `（团队任务 ${task.teamTaskId}${task.teamTaskStatus ? ` · ${task.teamTaskStatus}` : ''}）`
+    : ''
   return `### ${task.title}${mark}${team}\n- 进度: ${done}/${total} 完成\n- 文件: ${files} 个\n- 最后活动: ${timeAgo(task.lastActiveAt || task.updatedAt)}`
 }
 
@@ -149,11 +151,20 @@ export function selectTaskTool(config, host) {
 
       const card = {
         taskId: task.id,
-        ...(task.teamTaskId ? { teamTaskId: task.teamTaskId } : {}),
         title: task.title,
         steps: task.steps,
         files: task.files,
         insights: task.insights || [], // v0.5：任务级 lessons/decisions/procedures
+        // 团队任务的身份与 advisory 写作用域：模型据此判断"这条经验归哪个团队任务"以及是否越界。
+        ...(task.teamTaskId ? {
+          team: {
+            id: task.teamTaskId,
+            status: task.teamTaskStatus || null,
+            owner: task.teamOwnerName || null,
+            writeScopes: task.teamWriteScopes || [],
+            warnings: task.teamWriteScopeWarnings || [],
+          },
+        } : {}),
         hint: hint + '；请据此用 todo_write 重建本会话清单',
         ...(store.lastSaveOk === false ? { persisted: false, warning: '内存已绑定，但 tasks.json 未落盘（权限/磁盘/锁）；退出前会重试。' } : {}),
       }

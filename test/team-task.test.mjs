@@ -14,7 +14,9 @@ import path from 'node:path'
 import { ProjectMemoryStore } from '../src/store.js'
 import { saveInsight } from '../src/insight-store.js'
 import { recallItems } from '../src/recall.js'
-import { selectTaskTool } from '../src/tools/task-tools.js'
+import { listTasksTool, selectTaskTool } from '../src/tools/task-tools.js'
+import { tasksCommandDefinition } from '../src/commands/tasks.js'
+import { onSessionEvent } from '../src/setup/taskbridge.js'
 import { isTeamTaskId, teamMemoryTaskId } from '../src/setup/team-task.js'
 
 const config = { memoryDir: '.dsh-project-memory', tasklist: { enabled: true } }
@@ -87,7 +89,9 @@ const readTasks = (file) => (existsSync(file) ? JSON.parse(readFileSync(file, 'u
   const card = JSON.parse(await selectTaskTool(config, {}).execute({ taskId: 'task-2' }, lead.exec))
 
   assert.equal(card.taskId, 'team:task-2')
-  assert.equal(card.teamTaskId, 'task-2')
+  assert.equal(card.team.id, 'task-2')
+  assert.equal(card.team.status, 'in_progress')
+  assert.deepEqual(card.team.writeScopes, [])
   assert.equal(card.title, '迁移鉴权', '标题取团队任务 subject')
   assert.match(card.hint, /团队任务/)
 
@@ -198,6 +202,64 @@ const readTasks = (file) => (existsSync(file) ? JSON.parse(readFileSync(file, 'u
 
   assert.equal(loadStore(dir).getTasks().length, 0)
   ok('未知 / 软删 / 服务异常：错误文案可判定，且不建记录')
+}
+
+// ---- 7. writeScopes / warnings 带进任务卡；宿主快照变化同步到锚点（完成不归档、删除才归档解绑） ----
+{
+  const { root, dir } = newProject()
+  const views = {
+    'task-4': teamView('task-4', '鉴权中间件', {
+      writeScopes: ['src/auth/'],
+      writeScopeWarnings: ['overlaps task-1: src/auth/'],
+    }),
+  }
+  const lead = makeExec(root, 's_lead', teamService(views))
+  const tool = selectTaskTool(config, {})
+  const card = JSON.parse(await tool.execute({ taskId: 'task-4' }, lead.exec))
+  assert.deepEqual(card.team.writeScopes, ['src/auth/'], 'advisory 写作用域随卡片带给模型')
+  assert.deepEqual(card.team.warnings, ['overlaps task-1: src/auth/'], '宿主算好的作用域冲突告警一并带上')
+  assert.equal(loadStore(dir).getTask('team:task-4').teamWriteScopes[0], 'src/auth/', '写作用域落盘，后续 list_tasks 也能看到')
+
+  const session = { id: 's_lead', header: { cwd: root } }
+  const meta = new Map()
+  onSessionEvent(config, session, {
+    type: 'team/task',
+    data: { version: 2, teamId: 'team-x', task: { ...views['task-4'], revision: 2, status: 'completed' } },
+  }, meta)
+  const done = loadStore(dir).getTask('team:task-4')
+  assert.equal(done.teamTaskStatus, 'completed', '宿主快照同步任务状态')
+  assert.equal(done.archived, false, '完成不等于归档：任务做完，任务级记忆仍然有用')
+  assert.equal(loadStore(dir).getBoundTaskId('s_lead'), 'team:task-4', '完成不解绑')
+
+  onSessionEvent(config, session, {
+    type: 'team/task',
+    data: { version: 2, teamId: 'team-x', task: { ...views['task-4'], revision: 3, status: 'deleted' } },
+  }, meta)
+  const gone = loadStore(dir).getTask('team:task-4')
+  assert.equal(gone.archived, true, '团队任务被删（tombstone）→ 本地锚点归档')
+  assert.equal(loadStore(dir).getBoundTaskId('s_lead'), undefined, '删除时解绑所有会话（与 archive_task 同语义）')
+  ok('写作用域进卡片；团队快照同步状态，删除才归档 + 解绑')
+}
+
+// ---- 8. 面板文案：`/tasks` 与 list_tasks 都标出团队任务，不和自建任务混为一谈 ----
+{
+  const { root } = newProject()
+  const views = { 'task-2': teamView('task-2', '迁移鉴权') }
+  const lead = makeExec(root, 's_lead', teamService(views))
+  await selectTaskTool(config, {}).execute({ taskId: 'task-2' }, lead.exec)
+
+  const invocation = (rawInput) => ({
+    agent: { id: 's_lead', session: { id: 's_lead', header: { cwd: root }, append() {} } },
+    rawInput,
+  })
+  const snapshot = tasksCommandDefinition(config, {}).handler(invocation('/tasks'))
+  assert.equal(snapshot.kind, 'success')
+  assert.match(snapshot.text, /含团队任务 1 套/, '/tasks 总览标出团队任务数量')
+  assert.match(snapshot.text, /团队任务 task-2/, '/tasks 每行标出团队任务 id')
+
+  const listed = await listTasksTool(config).execute({}, lead.exec)
+  assert.match(listed, /团队任务 task-2/, 'list_tasks 同样标出团队任务（不会误认成自建任务）')
+  ok('/tasks 与 list_tasks 的团队任务标注')
 }
 
 console.log(`\nteam-task tests: ${passed} passed`)

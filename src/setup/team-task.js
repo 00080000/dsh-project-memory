@@ -65,17 +65,32 @@ export function resolveTeamTask(exec, teamTaskId) {
   }
 }
 
+/** 宿主视图里随任务变化、需要带给模型看的那几个字段（advisory，不参与准入判定）。 */
+function teamFieldsOf(view) {
+  const strings = (value) => (Array.isArray(value) ? value.filter((v) => typeof v === 'string') : [])
+  return {
+    teamTaskStatus: typeof view.status === 'string' ? view.status : null,
+    teamOwnerName: typeof view.ownerName === 'string' ? view.ownerName : null,
+    teamWriteScopes: strings(view.writeScopes),
+    teamWriteScopeWarnings: strings(view.writeScopeWarnings),
+  }
+}
+
 /**
  * 团队任务对应的本地记忆任务记录：已有就复用，没有就按宿主视图懒建一条。
  *
  * 标题只在新建时取宿主的 `subject`；之后不跟着变 —— 用户可能已经用 `select_task` 的 `title`
  * 改过名，每次 select 都覆盖会把人工命名冲掉。缺 subject 时用 `团队任务 <id>` 占位。
+ * status / owner / writeScopes 每次都从视图刷新（它们是宿主的运行时事实，本地不持有判断）。
  * @returns {{task: object, created: boolean}}
  */
 export function ensureTeamTaskRecord(store, view, { root, sid, now }) {
   const id = teamMemoryTaskId(view.id)
   const existing = store.getTask(id)
-  if (existing) return { task: existing, created: false }
+  if (existing) {
+    Object.assign(existing, teamFieldsOf(view))
+    return { task: existing, created: false }
+  }
   const subject = typeof view.subject === 'string' ? view.subject.trim() : ''
   const task = {
     id,
@@ -92,6 +107,7 @@ export function ensureTeamTaskRecord(store, view, { root, sid, now }) {
     createdAt: now,
     updatedAt: now,
     lastActiveAt: now,
+    ...teamFieldsOf(view),
   }
   store.addTask(task)
   return { task, created: true }

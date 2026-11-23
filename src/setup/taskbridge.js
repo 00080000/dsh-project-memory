@@ -281,6 +281,40 @@ export function onSessionEvent(config, session, event, meta, ctx) {
     return
   }
 
+  // 团队任务板的变化（宿主把每次变更的完整快照 append 成 team/task）：只同步本地记忆锚点。
+  // 完成不改归档（任务做完记忆仍然有用）；删除（tombstone）才归档 + 解绑，与 archive_task 同语义。
+  if (type === 'team/task') {
+    const snapshot = event.data?.task
+    const teamTaskId = snapshot?.id
+    if (typeof teamTaskId !== 'string') return
+    store.commit((s) => {
+      const record = s.getTasks().find((t) => t.teamTaskId === teamTaskId)
+      if (!record) return
+      let changed = false
+      for (const [field, value] of [
+        ['teamTaskStatus', typeof snapshot.status === 'string' ? snapshot.status : undefined],
+        ['teamOwnerName', typeof snapshot.ownerName === 'string' ? snapshot.ownerName : undefined],
+        ['teamWriteScopes', Array.isArray(snapshot.writeScopes) ? snapshot.writeScopes.filter((p) => typeof p === 'string') : undefined],
+      ]) {
+        if (value === undefined) continue
+        if (JSON.stringify(record[field]) === JSON.stringify(value)) continue
+        record[field] = value
+        changed = true
+      }
+      if (snapshot.status === 'deleted' && !record.archived) {
+        record.archived = true
+        // 团队任务没了，还绑着的会话不该继续往一个已删任务的记忆里写。
+        s.removeBindingsForTask(record.id)
+        changed = true
+      }
+      if (changed) {
+        record.updatedAt = now
+        s.markTasksDirty()
+      }
+    })
+    return
+  }
+
   if (type === 'tool/call') {
     const taskId = store.getBoundTaskId(sessionId)
     if (!taskId) return
