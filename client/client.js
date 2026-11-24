@@ -1326,6 +1326,11 @@ window.__ModuleLoader__.load({
 			const [titleEdit, setTitleEdit] = (0, react.useState)(null);
 			const done = steps.filter((s) => s.status === "completed").length;
 			const pct = steps.length > 0 ? Math.round(done / steps.length * 100) : 0;
+			const showStepsSection = !(task.teamTaskId && steps.length === 0);
+			const showFilesSection = (task.files?.length ?? 0) > 0;
+			const insights = Array.isArray(task.insights) ? task.insights : [];
+			const showInsightsSection = Boolean(onInsightAction) && insights.length > 0;
+			const hasBody = showStepsSection || showFilesSection || showInsightsSection;
 			const commitStepEdit = (index) => {
 				if (!stepEdit || stepEdit.index !== index) return;
 				if (syncing) return;
@@ -1424,7 +1429,7 @@ window.__ModuleLoader__.load({
 									className: TaskPanel_module_css_default.updated,
 									children: timeAgo(task.updatedAt || task.lastActiveAt, "")
 								}),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								hasBody && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 									className: TaskPanel_module_css_default.chevron,
 									children: expanded ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconChevronUpOutline14, {}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconChevronDownOutline14, {})
 								})
@@ -1438,10 +1443,10 @@ window.__ModuleLoader__.load({
 							style: { width: `${pct}%` }
 						})
 					}),
-					expanded && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					expanded && hasBody && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: TaskPanel_module_css_default.cardBody,
 						children: [
-							!(task.teamTaskId && steps.length === 0) && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							showStepsSection && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 								className: TaskPanel_module_css_default.section,
 								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 									className: TaskPanel_module_css_default.sectionLabel,
@@ -1529,7 +1534,7 @@ window.__ModuleLoader__.load({
 									children: t("panel.empty-desc")
 								})]
 							}),
-							(task.files?.length ?? 0) > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							showFilesSection && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 								className: TaskPanel_module_css_default.section,
 								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 									className: TaskPanel_module_css_default.sectionLabel,
@@ -1564,17 +1569,17 @@ window.__ModuleLoader__.load({
 									})]
 								})]
 							}),
-							onInsightAction && Array.isArray(task.insights) && task.insights.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							onInsightAction && showInsightsSection && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 								className: TaskPanel_module_css_default.section,
 								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 									className: TaskPanel_module_css_default.sectionLabel,
 									children: [t("mem.section-label"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 										className: TaskPanel_module_css_default.sectionCount,
-										children: task.insights.length
+										children: insights.length
 									})]
 								}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
 									className: TaskPanel_module_css_default.memList,
-									children: task.insights.map((ins) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+									children: insights.map((ins) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
 										className: TaskPanel_module_css_default.memRow,
 										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 											className: TaskPanel_module_css_default.memTitle,

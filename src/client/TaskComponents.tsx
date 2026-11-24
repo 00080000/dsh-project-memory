@@ -15,7 +15,7 @@ import {
 import { createTranslate } from './locales.ts'
 import { insightKindLabel } from './kind-label.js'
 import { useTaskDrag } from './task-hooks.ts'
-import { type Task, type TaskInsight, type TaskStep } from './task-data-store.ts'
+import { type Task, type TaskStep } from './task-data-store.ts'
 import { timeAgo } from '../util/relative-time.js'
 import css from './TaskPanel.module.css'
 
@@ -209,6 +209,13 @@ export function TaskCard({
 
   const done = steps.filter((s) => s.status === 'completed').length
   const pct = steps.length > 0 ? Math.round((done / steps.length) * 100) : 0
+  // 展开后到底有没有东西可看：团队卡不渲染空的“步骤”段，若又没有文件/记忆条目，
+  // 展开只会留一个带边框的空框，所以直接不渲染正文，也不显示展开箭头。
+  const showStepsSection = !(task.teamTaskId && steps.length === 0)
+  const showFilesSection = (task.files?.length ?? 0) > 0
+  const insights = Array.isArray(task.insights) ? task.insights : []
+  const showInsightsSection = Boolean(onInsightAction) && insights.length > 0
+  const hasBody = showStepsSection || showFilesSection || showInsightsSection
 
   const commitStepEdit = (index: number) => {
     if (!stepEdit || stepEdit.index !== index) return
@@ -311,7 +318,7 @@ export function TaskCard({
         <div className={css.cardMeta}>
           {steps.length > 0 && <span className={css.progressText}>{done}/{steps.length}</span>}
           <span className={css.updated}>{timeAgo(task.updatedAt || task.lastActiveAt, '')}</span>
-          <span className={css.chevron}>{expanded ? <IconChevronUpOutline14 /> : <IconChevronDownOutline14 />}</span>
+          {hasBody && <span className={css.chevron}>{expanded ? <IconChevronUpOutline14 /> : <IconChevronDownOutline14 />}</span>}
         </div>
       </div>
       {steps.length > 0 && (
@@ -319,10 +326,10 @@ export function TaskCard({
           <div className={css.trackFill} style={{ width: `${pct}%` }} />
         </div>
       )}
-      {expanded && (
+      {expanded && hasBody && (
         <div className={css.cardBody}>
           {/* 团队任务卡不渲染空的“步骤”段（步骤由宿主团队任务板维护），其余卡片保持原样。 */}
-          {!(task.teamTaskId && steps.length === 0) && (
+          {showStepsSection && (
             <div className={css.section}>
               <div className={css.sectionLabel}>
                 {t('task.steps')}
@@ -419,7 +426,7 @@ export function TaskCard({
             </div>
           )}
 
-          {(task.files?.length ?? 0) > 0 && (
+          {showFilesSection && (
             <div className={css.section}>
               <div className={css.sectionLabel}>
                 {t('task.files')}
@@ -446,14 +453,14 @@ export function TaskCard({
             </div>
           )}
 
-          {onInsightAction && Array.isArray(task.insights) && task.insights.length > 0 && (
+          {onInsightAction && showInsightsSection && (
             <div className={css.section}>
               <div className={css.sectionLabel}>
                 {t('mem.section-label')}
-                <span className={css.sectionCount}>{task.insights.length}</span>
+                <span className={css.sectionCount}>{insights.length}</span>
               </div>
               <ul className={css.memList}>
-                {(task.insights as TaskInsight[]).map((ins) => (
+                {insights.map((ins) => (
                   <li key={ins.id} className={css.memRow}>
                     <div className={css.memTitle}>
                       <span className={css.kindBadge}>{insightKindLabel(ins.kind, t)}</span>
