@@ -17,6 +17,8 @@ import { recallItems } from '../src/recall.js'
 import { listTasksTool, selectTaskTool } from '../src/tools/task-tools.js'
 import { tasksCommandDefinition } from '../src/commands/tasks.js'
 import { onSessionEvent } from '../src/setup/taskbridge.js'
+import { taskCommandDefinition } from '../src/commands/task-actions.js'
+import { buildEntryContent } from '../src/auto-inject.js'
 import { archiveTaskTool } from '../src/tools/task-tools.js'
 import { lessonTool } from '../src/tools/lesson-tools.js'
 import { isTeamTaskId, teamMemoryTaskId } from '../src/setup/team-task.js'
@@ -450,6 +452,49 @@ const readTasks = (file) => (existsSync(file) ? JSON.parse(readFileSync(file, 'u
   assert.match(res.error, /无法确定所属团队树/)
   assert.equal(loadStore(dir).getTasks().length, 0, '不建跨团队歧义的锚点')
   ok('缺少 subagents：拒绝绑定而不是猜团队')
+}
+
+// ---- 19. 面板动作（/tasks switch|todos|step|rename|archive）与注入卡：团队锚点不接受步骤 ----
+{
+  const { root, dir } = newProject()
+  const views = { 'task-2': teamView('task-2', '迁移鉴权') }
+  const lead = makeExec(root, 's_lead', teamService(views))
+  await selectTaskTool(config, {}).execute({ taskId: 'task-2' }, lead.exec)
+  const anchorId = 'team:team-root:task-2'
+
+  const appended = []
+  const invocation = (rawInput) => ({
+    agent: { id: 's_lead', session: { id: 's_lead', header: { cwd: root }, append: (...args) => appended.push(args) } },
+    rawInput,
+  })
+  const handler = taskCommandDefinition(config, {}).handler
+
+  const switched = handler(invocation(`switch ${anchorId}`))
+  assert.equal(switched.kind, 'success')
+  assert.equal(appended.filter((a) => a[0] === 'todo/write').length, 0,
+    '面板 switch 团队锚点也不能推空清单（否则清掉成员自己的 todo）')
+  assert.match(switched.text, /团队任务只共享任务级记忆/)
+
+  const todos = handler(invocation('todos [{"content":"成员清单","status":"pending"}]'))
+  assert.equal(todos.kind, 'error')
+  assert.match(todos.text, /团队任务/)
+  assert.deepEqual(loadStore(dir).getTask(anchorId).steps || [], [], '整份回写被拒绝，锚点不存步骤')
+
+  assert.equal(handler(invocation(`step ${anchorId} 0 completed`)).kind, 'error')
+  assert.equal(handler(invocation(`step-text ${anchorId} 0 "x"`)).kind, 'error')
+
+  const renamed = handler(invocation(`rename ${anchorId} "新名"`))
+  assert.match(renamed.text, /宿主团队任务未变/)
+  const listed = await listTasksTool(config).execute({}, lead.exec)
+  assert.match(listed, /进度: 见宿主团队任务板/, 'list_tasks 不显示 0/0 的空进度')
+  const snapshot = tasksCommandDefinition(config, {}).handler(invocation('/tasks'))
+  assert.match(snapshot.text, /步骤 见宿主团队任务板/, '/tasks 也不显示“无步骤”')
+  const card = buildEntryContent(loadStore(dir).getTask(anchorId), {})
+  assert.match(card, /进度: 见宿主团队任务板/, '注入卡也不留空的“进度:”')
+
+  const archived = handler(invocation(`archive ${anchorId}`))
+  assert.match(archived.text, /仅本地记忆锚点，宿主团队任务未变/)
+  ok('面板动作与注入卡：团队锚点不接受步骤编辑，宿主任务说明清楚')
 }
 
 console.log(`\nteam-task tests: ${passed} passed`)

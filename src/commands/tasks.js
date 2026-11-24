@@ -76,7 +76,8 @@ export function renderTaskSnapshot(config, cwd, sid) {
   const lines = [`项目 ${root}`, `任务: ${active.length} 套${archived ? `（归档 ${archived}）` : ''}${teamNote}`, '']
   for (const t of active) {
     const { done, total } = stepProgress(t)
-    const progress = total ? `${done}/${total}` : '无步骤'
+    // 团队锚点不存步骤：别把"宿主团队任务板上的进度"显示成"无步骤"。
+    const progress = total ? `${done}/${total}` : (t.teamTaskId ? '见宿主团队任务板' : '无步骤')
     const inProgress = (t.steps || []).find((s) => stepStatus(s) === 'in_progress')
     const step = inProgress ? ` · 当前: ${stepContent(inProgress)}` : ''
     const marker = bound && bound.id === t.id ? '（本会话绑定）' : ''

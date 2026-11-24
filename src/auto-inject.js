@@ -185,7 +185,8 @@ export function buildEntryContent(task, cfg, { withEdited = true } = {}) {
   if (!task) return ''
   const c = cfg || {}
   const steps = (task.steps || []).map((s) => stepContent(s).slice(0, 80))
-  const progress = steps.length ? `${steps.length} 步` : ''
+  // 团队锚点不存步骤（宿主团队任务板才是唯一来源），别在卡上留一个空的“进度: ”。
+  const progress = steps.length ? `${steps.length} 步` : (task.teamTaskId ? '见宿主团队任务板' : '')
   const card = [
     `任务: ${task.title || '(untitled)'}`,
     `进度: ${progress}`,

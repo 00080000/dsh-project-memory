@@ -9,6 +9,14 @@ import { resolveRoute } from '../llm-route.js'
 import { fencedJson, invocationContext } from './invocation.js'
 import { STEP_STATUSES, stepContent, stepProgress, stepStatus } from '../util/task-view.js'
 
+/**
+ * 团队任务的步骤不是本地数据：锚点只存任务级记忆，步骤属于宿主团队任务板。
+ * 面板的单步编辑/整份回写都走这里拒绝，避免把某个成员的清单写进共享锚点。
+ */
+function teamStepsError(task) {
+  return { kind: 'error', text: `[task] 「${task.title}」是团队任务：步骤由宿主团队任务板维护，记忆锚点只存任务级记忆` }
+}
+
 function describeTask(t) {
   const { done, total } = stepProgress(t)
   return `「${t.title}」（步骤 ${done}/${total}）`
@@ -96,6 +104,7 @@ export function taskCommandDefinition(config, ctx) {
           if (!taskId) return { kind: 'error', text: `[task] ${verb} 需要任务 id` }
           const task = store.getTask(taskId)
           if (!task) return { kind: 'error', text: `[task] 找不到任务: ${taskId}` }
+          if (task.teamTaskId) return teamStepsError(task)
           if (!Array.isArray(task.steps)) task.steps = []
           if (verb === 'step') {
             const index = Number(rest[0])
@@ -164,7 +173,8 @@ export function taskCommandDefinition(config, ctx) {
           // 直接改 task 内容 → 必须标脏：save() 没脏标记会早退（改动静默丢失），驻留账也停在旧水位。
           store.markTasksDirty()
           store.save()
-          const note = `已改名「${oldTitle}」→「${title}」`
+          const teamNote = task.teamTaskId ? '（仅本地记忆标题，宿主团队任务未变）' : ''
+          const note = `已改名「${oldTitle}」→「${title}」${teamNote}`
           return withTaskSnapshot(config, cwd, sid, store, note)
         }
 
@@ -190,6 +200,7 @@ export function taskCommandDefinition(config, ctx) {
           }
           const task = store.getTask(boundId)
           if (!task) return { kind: 'error', text: '[task] 绑定任务不存在' }
+          if (task.teamTaskId) return teamStepsError(task)
           task.steps = norm
           task.updatedAt = new Date().toISOString()
           task.lastActiveAt = task.updatedAt
@@ -219,10 +230,12 @@ export function taskCommandDefinition(config, ctx) {
             fireReflect(config, { llm: ctx?.llm }, root, prevBound, 'switch-away', resolveRoute(session ? { agent: { session } } : undefined, config))
           }
           // 反向接管：切换成功后把任务步骤推成宿主 todo/write（dsh 清单跟随）；空步骤也要推空。
-          if (shouldAdoptToHost(config)) {
+          // 团队锚点只共享记忆：推空清单会清掉当前成员自己的 todo，跳过。
+          if (shouldAdoptToHost(config) && !task.teamTaskId) {
             adoptStepsToSession(session, task, { force: true })
           }
-          const note = `已切换绑定: ${describeTask(task)}${sid ? '' : '（拿不到会话 id，未持久绑定）'}`
+          const teamNote = task.teamTaskId ? '；团队任务只共享任务级记忆（步骤请用宿主团队任务板）' : ''
+          const note = `已切换绑定: ${describeTask(task)}${sid ? '' : '（拿不到会话 id，未持久绑定）'}${teamNote}`
           return withTaskSnapshot(config, cwd, sid, store, note)
         }
 
@@ -238,7 +251,8 @@ export function taskCommandDefinition(config, ctx) {
           store.save()
           // 反思钩子：归档即收割（默认关）
           fireReflect(config, { llm: ctx?.llm }, root, taskId, 'archive', resolveRoute(session ? { agent: { session } } : undefined, config))
-          const note = `已归档: ${describeTask(task)}（select_task 可恢复）`
+          const teamNote = task.teamTaskId ? '；仅本地记忆锚点，宿主团队任务未变' : ''
+          const note = `已归档: ${describeTask(task)}（select_task 可恢复）${teamNote}`
           return withTaskSnapshot(config, cwd, sid, store, note)
         }
 

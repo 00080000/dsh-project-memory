@@ -16,7 +16,8 @@ function summaryOf(task) {
   const team = task.teamTaskId
     ? `（团队任务 ${task.teamTaskId}${task.teamTaskStatus ? ` · ${task.teamTaskStatus}` : ''}）`
     : ''
-  return `### ${task.title}${mark}${team}\n- 进度: ${done}/${total} 完成`
+  const progress = total || !task.teamTaskId ? `${done}/${total} 完成` : '见宿主团队任务板'
+  return `### ${task.title}${mark}${team}\n- 进度: ${progress}`
     + `\n- 文件: ${files} 个`
     + `\n- 最后活动: ${timeAgo(task.lastActiveAt || task.updatedAt)}`
 }
