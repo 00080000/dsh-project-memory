@@ -5,7 +5,7 @@ import { truncate } from '../util/text.js'
 import { sessionIdOf, stepProgress, timeAgo } from '../util/task-view.js'
 import { genTaskId, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
 import { hash8 } from '../util/hash.js'
-import { ensureTeamTaskRecord, isTeamTaskId, resolveTeamTask } from '../setup/team-task.js'
+import { ensureTeamTaskRecord, isTeamTaskId, memoryTaskIdFor, resolveTeamTask, teamIdOf } from '../setup/team-task.js'
 import { fireReflect } from '../reflection-pipeline.js'
 import { resolveRoute } from '../llm-route.js'
 
@@ -80,9 +80,18 @@ export function selectTaskTool(config, host) {
             if (resolved.reason === 'unavailable') {
               return error(`Task not found: ${args.taskId}（当前宿主没有团队服务；团队任务只在安装了团队插件的会话里可绑定）`)
             }
+            if (resolved.reason === 'no-caller') {
+              return error(`Task not found: ${args.taskId}（这次调用没有 agent 上下文，无法解析团队任务；请在宿主 agent 的工具调用里执行）`)
+            }
             return error(`Task not found: ${args.taskId}（团队任务不存在或不属于本团队）`)
           }
-          const ensured = ensureTeamTaskRecord(store, resolved.view, { root, sid, now })
+          // 团队任务 id 是团队内编号，锚点键必须带上团队树；拿不到根会话就拒绝，
+          // 否则同一个项目里两个团队的 task-2 会共用一条记忆。
+          const teamId = teamIdOf(exec)
+          if (!teamId) {
+            return error(`Task not found: ${args.taskId}（无法确定所属团队树：subagents 服务不可用，团队任务无法绑定）`)
+          }
+          const ensured = ensureTeamTaskRecord(store, resolved.view, { teamId, root, sid, now })
           task = ensured.task
           teamWarnings = Array.isArray(resolved.view.writeScopeWarnings)
             ? resolved.view.writeScopeWarnings.filter((w) => typeof w === 'string')
@@ -173,7 +182,10 @@ export function selectTaskTool(config, host) {
             warnings: teamWarnings || [],
           },
         } : {}),
-        hint: hint + '；请据此用 todo_write 重建本会话清单',
+        // 团队锚点不吸收步骤（见 taskbridge 的 todo/write），别再让它按本地任务的方式重建清单。
+        hint: task.teamTaskId
+          ? `${hint}；团队任务只共享任务级记忆，步骤请用宿主团队任务板维护`
+          : `${hint}；请据此用 todo_write 重建本会话清单`,
         ...(store.lastSaveOk === false ? { persisted: false, warning: '内存已绑定，但 tasks.json 未落盘（权限/磁盘/锁）；退出前会重试。' } : {}),
       }
       return truncate(JSON.stringify(card), config.maxOutputChars)
@@ -211,7 +223,7 @@ export function archiveTaskTool(config, host) {
     output: TEXT_OUTPUT,
     async execute(args, exec) {
       const { root, store } = openProjectContext(exec, args, config)
-      const task = store.getTask(args.taskId)
+      const task = store.getTask(memoryTaskIdFor(store, args.taskId, teamIdOf(exec)))
       if (!task) return truncate(JSON.stringify({ success: false, error: 'Task not found' }), config.maxOutputChars)
       if (task.archived) return truncate(JSON.stringify({ success: false, error: 'Already archived' }), config.maxOutputChars)
       task.archived = true

@@ -7,6 +7,7 @@ import { saveInsight, defaultGlobalFile, GlobalStore } from '../insight-store.js
 import { ensureGlobalInit } from '../global-seed.js'
 import { INSIGHT_KINDS, INSIGHT_SCOPES } from '../insight-store.js'
 import { sessionIdOf } from '../util/task-view.js'
+import { isTeamTaskId, memoryTaskIdFor, teamIdOf } from '../setup/team-task.js'
 import { createVectorRerank, vectorItemsFrom } from '../vector-index.js'
 import { createWriteCosine } from '../auto-inject.js'
 
@@ -76,7 +77,19 @@ export function lessonTool(config) {
       const citationFiles = normalizeCitationFiles(args.files, root)
       const sid = sessionIdOf(exec)
       const boundTaskId = sid ? store.getBoundTaskId(sid) : undefined
-      const taskId = args.task_id || boundTaskId
+      let taskId = args.task_id || boundTaskId
+      // 团队任务 id（task-<n>）不是本地任务 id：映射到 select_task 建好的锚点。没有锚点时给出
+      // 可执行的错误，而不是让它以"任务不存在"失败、模型改写成 project scope（静默丢作用域）。
+      if (taskId && isTeamTaskId(taskId)) {
+        const anchor = memoryTaskIdFor(store, taskId, teamIdOf(exec))
+        if (anchor === taskId) {
+          return truncate(JSON.stringify({
+            success: false,
+            error: `团队任务 ${taskId} 还没有记忆锚点：先 select_task ${taskId}，再用返回的记忆任务 id 写入`,
+          }), config.maxOutputChars || 8000)
+        }
+        taskId = anchor
+      }
 
       const raw = {
         id: args.id,

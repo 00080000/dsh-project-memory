@@ -24,7 +24,7 @@ Query it before re-deriving; write to it only after something has been verified.
   know a prerequisite you would otherwise miss.
 - When resuming: call `list_tasks`, then `select_task` if one matches the current work. In a team,
   bind the host team task (`select_task task-<n>`) so the lead and teammates share its task-level
-  memory (the memory task id is `team:task-<n>`).
+  memory (the returned memory task id starts with `team:`; use that id with the other tools).
 
 ## Workflow
 

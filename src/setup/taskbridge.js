@@ -286,11 +286,13 @@ export function onSessionEvent(config, session, event, meta, ctx) {
   if (type === 'team/task') {
     const snapshot = event.data?.task
     const teamTaskId = snapshot?.id
-    if (typeof teamTaskId !== 'string') return
+    // 宿主把 TeamId 定义为团队树根会话 id：任务编号只在团队内唯一，匹配必须带上它。
+    const teamId = event.data?.teamId
+    if (typeof teamTaskId !== 'string' || typeof teamId !== 'string') return
     // 没有本地锚点就没有可同步的东西：纯团队项目不该为一次任务变更去碰 store。
-    if (!store.getTasks().some((t) => t.teamTaskId === teamTaskId)) return
+    if (!store.getTasks().some((t) => t.teamId === teamId && t.teamTaskId === teamTaskId)) return
     store.commit((s) => {
-      const record = s.getTasks().find((t) => t.teamTaskId === teamTaskId)
+      const record = s.getTasks().find((t) => t.teamId === teamId && t.teamTaskId === teamTaskId)
       if (!record) return
       let changed = false
       const status = typeof snapshot.status === 'string' ? snapshot.status : null
@@ -308,11 +310,14 @@ export function onSessionEvent(config, session, event, meta, ctx) {
         record.teamWriteScopes = scopes
         changed = true
       }
-      if (snapshot.status === 'deleted' && !record.archived) {
-        record.archived = true
+      if (snapshot.status === 'deleted') {
         // 团队任务没了，还绑着的会话不该继续往一个已删任务的记忆里写。
-        s.removeBindingsForTask(record.id)
-        changed = true
+        // 绑定清理不能只在"首次归档"时做：已归档但仍有绑定（手改/跨进程合并）也要解掉。
+        if (!record.archived) {
+          record.archived = true
+          changed = true
+        }
+        if (s.removeBindingsForTask(record.id)) changed = true
       }
       if (changed) {
         record.updatedAt = now

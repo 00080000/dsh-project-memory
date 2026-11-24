@@ -24,9 +24,36 @@ export function isTeamTaskId(value) {
   return typeof value === 'string' && TEAM_TASK_ID_RE.test(value)
 }
 
-/** 团队任务 → 本地记忆任务记录的 id。带前缀，免得和 `tsk_…` 混在一起被当成同一种身份。 */
-export function teamMemoryTaskId(teamTaskId) {
-  return `team:${teamTaskId}`
+/** 团队任务 → 本地记忆任务记录的 id。
+ *
+ * **必须带团队树**：宿主 `TeamTaskId` 是团队内编号（`task-1`、`task-2`…），同一个项目里
+ * 两个顶层会话各自开团队时编号会重复；只用任务 id 会让两个团队的记忆/状态互相覆盖。
+ * @param {string} teamId - 团队树根会话 id（宿主把 `TeamId` 定义为 root session id）。
+ * @param {string} teamTaskId - `task-<n>`。
+ * @returns {string} `team:<teamId>:task-<n>`。
+ */
+export function teamMemoryTaskId(teamId, teamTaskId) {
+  return `team:${teamId}:${teamTaskId}`
+}
+
+/**
+ * 调用者所属团队树的 id（root session id）。`getTask` 用它把团队内任务编号变成全局唯一键。
+ * 软探测 `subagents` 服务（团队插件本身依赖它），拿不到就返回 null，由调用方当作"无法解析"。
+ * @param {object} exec - 工具执行上下文。
+ * @returns {string|null}
+ */
+export function teamIdOf(exec) {
+  const caller = exec?.agent
+  const ctx = hostCtxOf(exec)
+  if (!caller || !ctx || typeof ctx.get !== 'function') return null
+  try {
+    const subagents = ctx.get('subagents')
+    const root = subagents && typeof subagents.rootOf === 'function' ? subagents.rootOf(caller) : null
+    const id = root?.session?.id
+    return typeof id === 'string' && id ? id : null
+  } catch {
+    return null
+  }
 }
 
 function hostCtxOf(exec) {
@@ -51,12 +78,14 @@ export function teamServiceOf(exec) {
  * 读一个团队任务并确认归属。`getTask(caller, id)` 按 caller 所在的 subagent 树取板，
  * 所以不存在的 id、别的团队的任务都会抛 `TEAM_TASK_NOT_FOUND` —— 这里归一成 `not-found`，
  * 让模型看到的错误与本地任务一致；软删（`status: 'deleted'`）同样按找不到处理。
- * @returns {{ok: true, view: object} | {ok: false, reason: 'unavailable'|'not-found'|'error', error?: string}}
+ * @returns {{ok: true, view: object} | {ok: false, reason: 'unavailable'|'no-caller'|'not-found'|'error', error?: string}}
  */
 export function resolveTeamTask(exec, teamTaskId) {
   const service = teamServiceOf(exec)
   const caller = exec?.agent
-  if (!service || typeof service.getTask !== 'function' || !caller) return { ok: false, reason: 'unavailable' }
+  if (!service || typeof service.getTask !== 'function') return { ok: false, reason: 'unavailable' }
+  // 宿主契约要求 caller 是 live Agent；PTC/嵌套调用可能没有 agent，这时不是"没装团队插件"。
+  if (!caller || typeof caller !== 'object') return { ok: false, reason: 'no-caller' }
   try {
     const view = service.getTask(caller, teamTaskId)
     if (!view || typeof view !== 'object' || view.status === 'deleted') return { ok: false, reason: 'not-found' }
@@ -69,12 +98,30 @@ export function resolveTeamTask(exec, teamTaskId) {
 
 /** 宿主视图里随任务变化、需要带给模型看的那几个字段（advisory，不参与准入判定）。 */
 function teamFieldsOf(view) {
-  const strings = (value) => (Array.isArray(value) ? value.filter((v) => typeof v === 'string') : [])
-  return {
-    teamTaskStatus: typeof view.status === 'string' ? view.status : null,
-    teamOwnerName: typeof view.ownerName === 'string' ? view.ownerName : null,
-    teamWriteScopes: strings(view.writeScopes),
+  const fields = {}
+  if (typeof view.status === 'string') fields.teamTaskStatus = view.status
+  if (typeof view.ownerName === 'string') fields.teamOwnerName = view.ownerName
+  if (Array.isArray(view.writeScopes)) {
+    fields.teamWriteScopes = view.writeScopes.filter((p) => typeof p === 'string')
   }
+  return fields
+}
+
+/**
+ * 把工具参数里的任务引用归一成本地记忆任务 id：本地 id 原样返回；宿主团队 id（`task-<n>`）
+ * 如果已经有锚点，返回 `team:task-<n>`；没有锚点则原样返回，由调用方按"找不到"给出可执行的错误。
+ * 只做映射，不创建锚点 —— 创建需要宿主视图，入口仍是 `select_task`。
+ * @param {object} store - 项目 store。
+ * @param {unknown} taskId - 工具参数里的任务 id。
+ * @param {string|null} teamId - 调用者所属团队树（`teamIdOf`）；团队 id 缺省时不做映射。
+ * @returns {unknown} 归一后的 id。
+ */
+export function memoryTaskIdFor(store, taskId, teamId) {
+  if (typeof taskId !== 'string' || !taskId) return taskId
+  if (store.getTask(taskId)) return taskId
+  if (!isTeamTaskId(taskId) || !teamId) return taskId
+  const anchor = teamMemoryTaskId(teamId, taskId)
+  return store.getTask(anchor) ? anchor : taskId
 }
 
 /**
@@ -86,8 +133,8 @@ function teamFieldsOf(view) {
  * 复用分支只改内存、不标脏：调用方（select_task）随后统一 `markTasksDirty()` + save。
  * @returns {{task: object, created: boolean}}
  */
-export function ensureTeamTaskRecord(store, view, { root, sid, now }) {
-  const id = teamMemoryTaskId(view.id)
+export function ensureTeamTaskRecord(store, view, { teamId, root, sid, now }) {
+  const id = teamMemoryTaskId(teamId, view.id)
   const existing = store.getTask(id)
   if (existing) {
     Object.assign(existing, teamFieldsOf(view))
@@ -96,6 +143,7 @@ export function ensureTeamTaskRecord(store, view, { root, sid, now }) {
   const subject = typeof view.subject === 'string' ? view.subject.trim() : ''
   const task = {
     id,
+    teamId,
     teamTaskId: view.id,
     projectHash: hash8(root),
     projectRoot: root,
