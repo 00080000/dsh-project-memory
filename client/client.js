@@ -1439,7 +1439,7 @@ window.__ModuleLoader__.load({
 					expanded && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: TaskPanel_module_css_default.cardBody,
 						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							!(task.teamTaskId && steps.length === 0) && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 								className: TaskPanel_module_css_default.section,
 								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 									className: TaskPanel_module_css_default.sectionLabel,

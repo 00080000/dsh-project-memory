@@ -321,100 +321,103 @@ export function TaskCard({
       )}
       {expanded && (
         <div className={css.cardBody}>
-          <div className={css.section}>
-            <div className={css.sectionLabel}>
-              {t('task.steps')}
-              {steps.length > 0 && <span className={css.sectionCount}>{steps.length}</span>}
-            </div>
-            {steps.length > 0 ? (
-              <>
-                <ol className={css.stepsList}>
-                  {steps.map((step, i) => {
-                    const stepIsEditing = stepEdit !== null && stepEdit.index === i
-                    const stepIsDragging = dragState?.dragging && dragState.fromIndex === i
-                    const isDropTarget = dropTargetIndex === i
-                    const isDropTargetAfter = dropTargetIndex === i + 1
-                    return (
-                      <li
-                        key={i}
-                        data-step-row
-                        className={`${css.stepRow}${stepIsDragging ? ` ${css.stepDragging}` : ''}${isDropTarget ? ` ${css.dropTargetBefore}` : ''}${isDropTargetAfter ? ` ${css.dropTargetAfter}` : ''}`}
-                        onMouseDown={(e) => {
-                          if (e.button !== 0) return
-                          if (!isBound || syncing) return
-                          // 交互控件（状态图标、编辑输入框等）上不进入拖拽
-                          const el = e.target as HTMLElement
-                          if (el.closest('button, input, textarea, a')) return
-                          startDrag(i, step.content, e)
-                        }}
-                      >
-                        {isBound ? (
-                          <button
-                            type="button"
-                            className={css.stepToggle}
-                            disabled={syncing}
-                            onClick={(e) => { e.stopPropagation(); onCycleStatus(i) }}
-                            title={showHints ? `${t('step.completed')}/${t('step.in-progress')}/${t('step.pending')}` : undefined}
-                          >
+          {/* 团队任务卡不渲染空的“步骤”段（步骤由宿主团队任务板维护），其余卡片保持原样。 */}
+          {!(task.teamTaskId && steps.length === 0) && (
+            <div className={css.section}>
+              <div className={css.sectionLabel}>
+                {t('task.steps')}
+                {steps.length > 0 && <span className={css.sectionCount}>{steps.length}</span>}
+              </div>
+              {steps.length > 0 ? (
+                <>
+                  <ol className={css.stepsList}>
+                    {steps.map((step, i) => {
+                      const stepIsEditing = stepEdit !== null && stepEdit.index === i
+                      const stepIsDragging = dragState?.dragging && dragState.fromIndex === i
+                      const isDropTarget = dropTargetIndex === i
+                      const isDropTargetAfter = dropTargetIndex === i + 1
+                      return (
+                        <li
+                          key={i}
+                          data-step-row
+                          className={`${css.stepRow}${stepIsDragging ? ` ${css.stepDragging}` : ''}${isDropTarget ? ` ${css.dropTargetBefore}` : ''}${isDropTargetAfter ? ` ${css.dropTargetAfter}` : ''}`}
+                          onMouseDown={(e) => {
+                            if (e.button !== 0) return
+                            if (!isBound || syncing) return
+                            // 交互控件（状态图标、编辑输入框等）上不进入拖拽
+                            const el = e.target as HTMLElement
+                            if (el.closest('button, input, textarea, a')) return
+                            startDrag(i, step.content, e)
+                          }}
+                        >
+                          {isBound ? (
+                            <button
+                              type="button"
+                              className={css.stepToggle}
+                              disabled={syncing}
+                              onClick={(e) => { e.stopPropagation(); onCycleStatus(i) }}
+                              title={showHints ? `${t('step.completed')}/${t('step.in-progress')}/${t('step.pending')}` : undefined}
+                            >
+                              <StepIcon status={step.status} />
+                            </button>
+                          ) : (
                             <StepIcon status={step.status} />
-                          </button>
-                        ) : (
-                          <StepIcon status={step.status} />
-                        )}
-                        {stepIsEditing ? (
-                          <InlineEditor
-                            className={css.editorArea}
-                            value={stepEdit!.value}
-                            maxRows={10}
-                            disabled={syncing}
-                            onValueChange={(value) => setStepEdit({ index: i, value })}
-                            onCommit={() => commitStepEdit(i)}
-                            onCancel={() => setStepEdit(null)}
-                          />
-                        ) : (
-                          <span
-                            className={`${css.stepContent}${step.status === 'completed' ? ` ${css.stepContentDone}` : ''}${step.status === 'in_progress' ? ` ${css.stepContentRun}` : ''}${isBound ? ` ${css.stepEditable}` : ''}`}
-                            title={isBound && showHints ? t('step.edit-hint') : undefined}
-                            onDoubleClick={(e) => {
-                              e.stopPropagation()
-                              if (isBound && !syncing) setStepEdit({ index: i, value: String(step.content ?? '') })
-                            }}
-                          >
-                            {step.content}
-                          </span>
-                        )}
-                      </li>
-                    )
-                  })}
-                </ol>
-                {dragState && dragState.dragging && (
-                  <div
-                    className={css.dragGhost}
-                    style={{
-                      left: dragState.clientX + 12,
-                      top: dragState.clientY - 20,
-                    }}
-                  >
-                    <div className={css.dragGhostCard}>
-                      <span className={css.dragGhostContent}>{dragState.stepContent}</span>
-                      <button
-                        type="button"
-                        className={css.dragGhostClose}
-                        style={{ pointerEvents: 'auto' }}
-                        onClick={(e) => { e.stopPropagation(); cancelDrag() }}
-                        title={showHints ? t('drag.cancel') : undefined}
-                        aria-label={t('drag.cancel')}
-                      >
-                        ×
-                      </button>
+                          )}
+                          {stepIsEditing ? (
+                            <InlineEditor
+                              className={css.editorArea}
+                              value={stepEdit!.value}
+                              maxRows={10}
+                              disabled={syncing}
+                              onValueChange={(value) => setStepEdit({ index: i, value })}
+                              onCommit={() => commitStepEdit(i)}
+                              onCancel={() => setStepEdit(null)}
+                            />
+                          ) : (
+                            <span
+                              className={`${css.stepContent}${step.status === 'completed' ? ` ${css.stepContentDone}` : ''}${step.status === 'in_progress' ? ` ${css.stepContentRun}` : ''}${isBound ? ` ${css.stepEditable}` : ''}`}
+                              title={isBound && showHints ? t('step.edit-hint') : undefined}
+                              onDoubleClick={(e) => {
+                                e.stopPropagation()
+                                if (isBound && !syncing) setStepEdit({ index: i, value: String(step.content ?? '') })
+                              }}
+                            >
+                              {step.content}
+                            </span>
+                          )}
+                        </li>
+                      )
+                    })}
+                  </ol>
+                  {dragState && dragState.dragging && (
+                    <div
+                      className={css.dragGhost}
+                      style={{
+                        left: dragState.clientX + 12,
+                        top: dragState.clientY - 20,
+                      }}
+                    >
+                      <div className={css.dragGhostCard}>
+                        <span className={css.dragGhostContent}>{dragState.stepContent}</span>
+                        <button
+                          type="button"
+                          className={css.dragGhostClose}
+                          style={{ pointerEvents: 'auto' }}
+                          onClick={(e) => { e.stopPropagation(); cancelDrag() }}
+                          title={showHints ? t('drag.cancel') : undefined}
+                          aria-label={t('drag.cancel')}
+                        >
+                          ×
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className={css.muted}>{t('panel.empty-desc')}</div>
-            )}
-          </div>
+                  )}
+                </>
+              ) : (
+                <div className={css.muted}>{t('panel.empty-desc')}</div>
+              )}
+            </div>
+          )}
 
           {(task.files?.length ?? 0) > 0 && (
             <div className={css.section}>

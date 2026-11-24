@@ -34,6 +34,8 @@ export interface Task {
   insights?: TaskInsight[]
   /** 载荷被截断时的真实总量；正常任务没有这个键。 */
   totals?: { steps: number; files: number; insights: number; completedSteps: number }
+  /** 宿主团队任务锚点：面板不渲染空的步骤段（步骤由团队任务板维护）。 */
+  teamTaskId?: string
 }
 
 export interface TaskPayload {
