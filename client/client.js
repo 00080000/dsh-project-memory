@@ -97,6 +97,7 @@ window.__ModuleLoader__.load({
 			"style.brutal": "粗野",
 			"style.mono": "终端",
 			"panel.syncing": "同步中…",
+			"panel.loadMore": "加载更多",
 			"panel.sync-failed": "同步失败",
 			"panel.hints-on": "显示提示信息",
 			"panel.hints-off": "隐藏提示信息",
@@ -197,6 +198,7 @@ window.__ModuleLoader__.load({
 			"style.brutal": "Brutal",
 			"style.mono": "Mono",
 			"panel.syncing": "Syncing…",
+			"panel.loadMore": "Load more",
 			"panel.sync-failed": "Sync failed",
 			"panel.hints-on": "Show hints",
 			"panel.hints-off": "Hide hints",
@@ -2466,6 +2468,19 @@ window.__ModuleLoader__.load({
 				]
 			});
 		}
+		/**
+		* 再放一批之后渲染到第几张。
+		* @param {number} current - 当前渲染上限。
+		* @param {number} total - 当前活跃任务总数。
+		* @param {number} [step] - 每批张数，默认 TASK_PAGE_SIZE。
+		* @returns {number} 新的渲染上限：不超过 total，也不比 current 小（非法输入按 0 起算）。
+		*/
+		function nextTaskCount(current, total, step = 12) {
+			const t = Number.isFinite(total) && total > 0 ? Math.floor(total) : 0;
+			if (t === 0) return 0;
+			const s = Number.isFinite(step) && step > 0 ? Math.floor(step) : 12;
+			return Math.min(t, (Number.isFinite(current) && current > 0 ? Math.floor(current) : 0) + s);
+		}
 		// src/client/session-id.js
 		/**
 		* 会话列表快照 → 当前会话 id（宿主版本兼容层）。
@@ -2612,6 +2627,10 @@ window.__ModuleLoader__.load({
 			const tasks = Array.isArray(data.tasks) ? data.tasks : [];
 			const activeTasks = tasks.filter((task) => !task.archived);
 			const boundTask = data.boundTaskId ? tasks.find((task) => task.id === data.boundTaskId) ?? null : null;
+			const [shownCount, setShownCount] = (0, react.useState)(12);
+			const listRef = (0, react.useRef)(null);
+			const sentinelRef = (0, react.useRef)(null);
+			const visibleTasks = activeTasks.slice(0, Math.min(shownCount, activeTasks.length));
 			const applyPayload = (text, requestSessionId) => {
 				if (requestSessionId !== sessionIdRef.current) return false;
 				const parsed = parseTaskPayloadText(text);
@@ -2777,6 +2796,28 @@ window.__ModuleLoader__.load({
 				ui.view,
 				sessionId
 			]);
+			(0, react.useEffect)(() => {
+				setShownCount(12);
+			}, [sessionId]);
+			(0, react.useEffect)(() => {
+				if (ui.closed || ui.minimized || view !== "task" || shownCount >= activeTasks.length) return;
+				const sentinel = sentinelRef.current;
+				if (!sentinel || typeof IntersectionObserver === "undefined") return;
+				const observer = new IntersectionObserver((entries) => {
+					if (entries.some((e) => e.isIntersecting)) setShownCount((n) => nextTaskCount(n, activeTasks.length));
+				}, {
+					root: listRef.current ?? null,
+					rootMargin: "0px"
+				});
+				observer.observe(sentinel);
+				return () => observer.disconnect();
+			}, [
+				ui.closed,
+				ui.minimized,
+				view,
+				shownCount,
+				activeTasks.length
+			]);
 			if (ui.closed) return null;
 			if (ui.minimized) {
 				const label = boundTask ? `${t("minibar.current")}: ${boundTask.title}` : activeTasks.length > 0 ? `${t("minibar.current")}: ${activeTasks.length} ${t("minibar.tasks")}` : t("minibar.no-task");
@@ -2938,31 +2979,48 @@ window.__ModuleLoader__.load({
 							})
 						]
 					}) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						ref: listRef,
 						className: TaskPanel_module_css_default.taskList,
-						children: [activeTasks.map((task) => {
-							const expanded = ui.expandedTaskIds.includes(task.id);
-							const isBound = data.boundTaskId === task.id;
-							return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TaskCard, {
-								task,
-								isBound,
-								expanded,
-								onToggleExpand: () => uiActions.toggleTaskExpanded(task.id),
-								onSwitch: () => handleAction("switch", task.id),
-								onUnbind: () => runLine("/tasks unbind"),
-								onArchive: () => handleAction("archive", task.id),
-								onRename: (value) => commitTitle(task.id, value),
-								onEditStep: (index, value) => commitStepText(task.id, index, value),
-								onCycleStatus: (index) => cycleStatus(task.id, index),
-								onReorderSteps: (from, to) => reorderSteps(task.id, from, to),
-								onInsightAction: (action, id) => void handleInsightTask(action, id),
-								showHints,
-								syncing,
-								t
-							}, task.id);
-						}), syncing && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-							className: TaskPanel_module_css_default.syncHint,
-							children: t("panel.syncing")
-						})]
+						children: [
+							visibleTasks.map((task) => {
+								const expanded = ui.expandedTaskIds.includes(task.id);
+								const isBound = data.boundTaskId === task.id;
+								return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TaskCard, {
+									task,
+									isBound,
+									expanded,
+									onToggleExpand: () => uiActions.toggleTaskExpanded(task.id),
+									onSwitch: () => handleAction("switch", task.id),
+									onUnbind: () => runLine("/tasks unbind"),
+									onArchive: () => handleAction("archive", task.id),
+									onRename: (value) => commitTitle(task.id, value),
+									onEditStep: (index, value) => commitStepText(task.id, index, value),
+									onCycleStatus: (index) => cycleStatus(task.id, index),
+									onReorderSteps: (from, to) => reorderSteps(task.id, from, to),
+									onInsightAction: (action, id) => void handleInsightTask(action, id),
+									showHints,
+									syncing,
+									t
+								}, task.id);
+							}),
+							syncing && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: TaskPanel_module_css_default.syncHint,
+								children: t("panel.syncing")
+							}),
+							shownCount < activeTasks.length && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								ref: sentinelRef,
+								className: TaskPanel_module_css_default.memSentinel,
+								"aria-hidden": "true"
+							}), typeof IntersectionObserver === "undefined" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: TaskPanel_module_css_default.memFooter,
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+									variant: "outline",
+									size: "sm",
+									onClick: () => setShownCount((n) => nextTaskCount(n, activeTasks.length)),
+									children: t("panel.loadMore")
+								})
+							})] })
+						]
 					})
 				]
 			});

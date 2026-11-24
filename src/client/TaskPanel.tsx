@@ -20,6 +20,7 @@ import { useTaskData, useTaskDataActions, parseTaskPayloadText } from './task-da
 import { useTaskUI, useTaskUIActions, PANEL_VIEWS } from './task-ui-store.ts'
 import { MiniBar, TaskCard } from './TaskComponents.tsx'
 import { MemoryView, invalidateInsightCache, type InsightScope } from './MemoryView.tsx'
+import { TASK_PAGE_SIZE, TASK_PREFETCH_MARGIN, nextTaskCount } from './task-window.js'
 import { pickSessionId } from './session-id.js'
 import css from './TaskPanel.module.css'
 
@@ -98,6 +99,12 @@ function TaskPanelView({ ctx }: { ctx: any }) {
   const tasks = Array.isArray(data.tasks) ? data.tasks : []
   const activeTasks = tasks.filter((task) => !task.archived)
   const boundTask = data.boundTaskId ? tasks.find((task) => task.id === data.boundTaskId) ?? null : null
+  // 渐进渲染：首屏一批卡，滚到列表底部由哨兵放出下一批。数据本来就在 `/tasks` 载荷里
+  // （单任务的步骤/文件已由服务端截断），这里控的是 DOM 数量，不是请求。
+  const [shownCount, setShownCount] = useState(TASK_PAGE_SIZE)
+  const listRef = useRef<HTMLDivElement>(null)
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  const visibleTasks = activeTasks.slice(0, Math.min(shownCount, activeTasks.length))
 
   const applyPayload = (text: string | undefined, requestSessionId: string | null): boolean => {
     // 旧会话的响应不得落到新会话：applyPayload 是旧闭包，sessionId 也已过期。
@@ -270,6 +277,29 @@ function TaskPanelView({ ctx }: { ctx: any }) {
     refreshRef.current()
   }, [ui.closed, ui.view, sessionId])
 
+  // 换会话回到首屏；同一会话里的动作刷新不收回已放的批次（用户滚到哪就停在哪）。
+  useEffect(() => {
+    setShownCount(TASK_PAGE_SIZE)
+  }, [sessionId])
+
+  // 哨兵进视口就放出下一批（数据在本地，无需预取）。root 必须是列表自己的滚动容器，
+  // 用视口当 root 会无视面板 480px 的上限、一次放光。没有 IntersectionObserver 时由页脚按钮兜底。
+  // deps 里必须带 closed/minimized：收到迷你条或彻底隐藏时列表 DOM 会卸载，组件实例却还活着，
+  // 不重跑这个 effect 的话，重新展开后新哨兵没人观察——列表会停在第一批，而且没有任何报错。
+  useEffect(() => {
+    if (ui.closed || ui.minimized || view !== 'task' || shownCount >= activeTasks.length) return
+    const sentinel = sentinelRef.current
+    if (!sentinel || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) setShownCount((n) => nextTaskCount(n, activeTasks.length))
+      },
+      { root: listRef.current ?? null, rootMargin: TASK_PREFETCH_MARGIN },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [ui.closed, ui.minimized, view, shownCount, activeTasks.length])
+
   // 彻底隐藏：不渲染任何东西
   if (ui.closed) {
     return null
@@ -412,8 +442,8 @@ function TaskPanelView({ ctx }: { ctx: any }) {
           {syncing && <p className={css.syncHint}>{t('panel.syncing')}</p>}
         </div>
       ) : (
-        <div className={css.taskList}>
-          {activeTasks.map((task) => {
+        <div ref={listRef} className={css.taskList}>
+          {visibleTasks.map((task) => {
             const expanded = ui.expandedTaskIds.includes(task.id)
             const isBound = data.boundTaskId === task.id
             return (
@@ -438,6 +468,23 @@ function TaskPanelView({ ctx }: { ctx: any }) {
             )
           })}
           {syncing && <div className={css.syncHint}>{t('panel.syncing')}</div>}
+          {shownCount < activeTasks.length && (
+            <>
+              <div ref={sentinelRef} className={css.memSentinel} aria-hidden="true" />
+              {/* 老浏览器/测试替身没有 IntersectionObserver：给个按钮，绝不静默停住。 */}
+              {typeof IntersectionObserver === 'undefined' && (
+                <div className={css.memFooter}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShownCount((n) => nextTaskCount(n, activeTasks.length))}
+                  >
+                    {t('panel.loadMore')}
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>
