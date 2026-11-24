@@ -163,10 +163,9 @@
   background: var(--dsw-alias-bg-base, transparent);
   overflow: hidden;
   transition: border-color 0.15s ease;
-  /* 与 .memRow 同款的窗口化：任务多/卡片展开后离屏卡片不再参与 layout/paint。
-     用 `auto` 记住实测高度，折叠/展开切换不会算错。 */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 140px;
+  /* 0.7.1 就有的隐患：content-visibility:auto + 卡片高度随展开变化 + 内层滚动，
+     Chromium 会把卡片正文当作"离屏内容"跳过——标题和"步骤"标签还在、步骤行空白，
+     控制台无报错。任务卡最多百来张，关掉它换取稳定渲染；不动任何尺寸/间距。 */
 }
 .cardBound {
   border-color: var(--dsw-alias-border-l3, rgba(127, 127, 127, 0.35));
@@ -398,10 +397,17 @@
 .taskList {
   flex: 1 1 auto;
   min-height: 0;
+  /* 高度与其他视图（项目记忆 480px）一致；卡片保持原高度，展开的卡片按正常文档流
+     把后面的任务往下推，列表自己滚。 */
+  max-height: min(480px, 56vh);
 }
 .card {
   display: flex;
   flex-direction: column;
+  /* 关键：卡片不能是 flex-shrink 的。否则内容超过列表高度时浏览器会**压缩每张卡**，
+     展开一张就会把其他任务挤扁（截图里的重叠/挤压就是这么来的）；让它保持自身高度，
+     溢出交给列表滚动。 */
+  flex: 0 0 auto;
 }
 
 /* —— 错误边界兜底按钮 —— */
