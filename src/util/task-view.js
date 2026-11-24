@@ -11,6 +11,8 @@
  *   - 状态：只认宿主 todo/write 的三个合法值，其余（含裸字符串步骤）一律 pending。
  */
 
+import { isoMs } from './value.js'
+
 /** 宿主 todo/write 认得的三个状态。 */
 export const STEP_STATUSES = new Set(['pending', 'in_progress', 'completed'])
 
@@ -49,6 +51,22 @@ export function stepProgress(task) {
     if (stepStatus(step) === 'completed') done++
   }
   return { done, total: steps.length }
+}
+
+/** 一条任务的"最近活跃"时刻（毫秒）：与展示的 timeAgo 同口径，非法时间按 0。 */
+function recencyMs(task) {
+  return isoMs(task?.lastActiveAt) || isoMs(task?.updatedAt) || isoMs(task?.createdAt)
+}
+
+/**
+ * 任务列表的展示顺序：最近活跃的在前。面板、`/tasks`、`list_tasks` 共用这一份，
+ * 否则同一批任务在三处排序不同。并列按 id 升序，保证刷新/分页稳定。
+ * @param {Array<object>} tasks
+ * @returns {Array<object>} 新数组（不改入参）。
+ */
+export function sortTasksByRecency(tasks) {
+  const list = Array.isArray(tasks) ? [...tasks] : []
+  return list.sort((a, b) => recencyMs(b) - recencyMs(a) || String(a?.id ?? '').localeCompare(String(b?.id ?? '')))
 }
 
 // 相对时间已移到 ./relative-time.js：客户端面板也要用同一份实现（原先是第二份副本，

@@ -7,7 +7,7 @@ import { renderTaskSnapshot, buildTaskPayload } from './tasks.js'
 import { fireReflect } from '../reflection-pipeline.js'
 import { resolveRoute } from '../llm-route.js'
 import { fencedJson, invocationContext } from './invocation.js'
-import { STEP_STATUSES, stepContent, stepProgress, stepStatus } from '../util/task-view.js'
+import { STEP_STATUSES, sortTasksByRecency, stepContent, stepProgress, stepStatus } from '../util/task-view.js'
 
 /**
  * 团队任务的步骤不是本地数据：锚点只存任务级记忆，步骤属于宿主团队任务板。
@@ -41,7 +41,7 @@ function restAfter(raw, n) {
 
 function withTaskSnapshot(config, cwd, sid, store, note) {
   const tasks = store.getTasks()
-  const active = tasks.filter((t) => !t.archived)
+  const active = sortTasksByRecency(tasks.filter((t) => !t.archived))
   const archived = tasks.length - active.length
   const boundId = sid ? store.getBoundTaskId(sid) : null
   const root = projectRootFor(cwd, config)

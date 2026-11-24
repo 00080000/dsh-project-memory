@@ -5,7 +5,7 @@ import { memoryRootFor } from '../util/fs.js'
 import { ProjectMemoryStore } from '../store.js'
 import { NO_PROJECT_ROOT_NOTE, projectRootFor } from '../setup/taskbridge.js'
 import { fencedJson, invocationContext } from './invocation.js'
-import { stepContent, stepProgress, stepStatus, timeAgo } from '../util/task-view.js'
+import { sortTasksByRecency, stepContent, stepProgress, stepStatus, timeAgo } from '../util/task-view.js'
 
 // 快照会原样写进会话历史（command/done），没有上限时一个异常任务就能把单条消息撑到几十 MB。
 // 截断只发生在**展示载荷**里，不碰 store；超出部分由 totals 告知调用方。
@@ -61,7 +61,8 @@ export function renderTaskSnapshot(config, cwd, sid) {
   if (!root) return { kind: 'error', text: NO_PROJECT_ROOT_NOTE }
   const store = new ProjectMemoryStore(memoryRootFor(root, config.memoryDir)).load()
   const tasks = store.getTasks()
-  const active = tasks.filter((t) => !t.archived)
+  // 最近活跃的在前：面板/`/tasks`/list_tasks 三处同一份顺序（见 util/task-view.js）。
+  const active = sortTasksByRecency(tasks.filter((t) => !t.archived))
   const archived = tasks.length - active.length
   const boundId = sid ? store.getBoundTaskId(sid) : null
   const bound = boundId ? tasks.find((t) => t.id === boundId) : null

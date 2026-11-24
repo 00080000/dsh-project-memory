@@ -2,7 +2,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { TEXT_OUTPUT, rootParam } from './output.js'
 import { openProjectContext } from './context.js'
 import { truncate } from '../util/text.js'
-import { sessionIdOf, stepProgress, timeAgo } from '../util/task-view.js'
+import { sessionIdOf, sortTasksByRecency, stepProgress, timeAgo } from '../util/task-view.js'
 import { genTaskId, adoptStepsToSession, shouldAdoptToHost } from '../setup/taskbridge.js'
 import { hash8 } from '../util/hash.js'
 import { ensureTeamTaskRecord, isTeamTaskId, memoryTaskIdFor, resolveTeamTask, teamIdOf } from '../setup/team-task.js'
@@ -33,7 +33,7 @@ export function listTasksTool(config) {
     output: TEXT_OUTPUT,
     async execute(args, exec) {
       const { store } = openProjectContext(exec, args, config)
-      const tasks = store.getTasks()
+      const tasks = sortTasksByRecency(store.getTasks())
       if (!tasks.length) {
         return '任务记录: 0 套（先做一步再建清单，或用 select_task 新建）'
       }
