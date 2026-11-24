@@ -1,0 +1,54 @@
+name: publish
+
+# 发布走 npm trusted publishing（OIDC）：推 v* 标签时由 GitHub Actions 直接发布，
+# 不需要 NPM_TOKEN，也不需要 2FA 验证码。npm 端要在包设置里登记这个 workflow 文件名。
+on:
+  push:
+    tags: ['v*']
+  # 手动补发/重试：Actions 页面选 publish → Run workflow。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # OIDC 必需；缺了 npm 会拒绝发布
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # OIDC 发布要求 npm >= 11.5.1；tag 必须与 package.json 版本一致，
+      # 否则一次手滑的 tag 会把旧版本重复发布或直接失败。
+      - name: Preflight
+        run: |
+          npm install -g npm@latest
+          npm --version
+          name="$(node -p 'require("./package.json").name')"
+          version="$(node -p 'require("./package.json").version')"
+          # 打 tag 发布时校验 tag 与版本一致；手动 dispatch 时跳过这一条。
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            test "v${version}" = "${GITHUB_REF_NAME}" \
+              || { echo "tag ${GITHUB_REF_NAME} does not match package.json version ${version}"; exit 1; }
+          fi
+          # 已发布过的版本不重复发（npm 会 403），提前给一句人话。
+          if npm view "${name}@${version}" version >/dev/null 2>&1; then
+            echo "${name}@${version} is already published"; exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # client/ 产物是提交进仓库的：源码改了却没重建，发出去的还是旧界面。
+      - run: git diff --exit-code -- client
+
+      - run: npm publish --provenance
