@@ -7,6 +7,7 @@ import { debugPersistence } from './util/persist.js'
 import { trackDirty, untrackDirty } from './util/flush.js'
 import { backfillDerivedTriggers } from './readiness.js'
 import { isRecord, isoMs, newerIso } from './util/value.js'
+import { mergeById } from './util/merge-by-id.js'
 
 const FORMAT_FILE = 'format.json'
 const INDEX_FILE = 'index.json'
@@ -300,24 +301,17 @@ function mergeTaskFileState(a, b) {
  * @returns {object[]}
  */
 function mergeTaskInsights(local, disk, base) {
-  const merged = new Map()
-  for (const ins of Array.isArray(disk?.insights) ? disk.insights : []) {
-    if (ins?.id) merged.set(ins.id, ins)
-  }
-  const localById = new Map()
-  for (const ins of Array.isArray(local?.insights) ? local.insights : []) {
-    if (ins?.id) localById.set(ins.id, ins)
-  }
-  for (const id of base) if (!localById.has(id)) merged.delete(id)
-  for (const [id, ins] of localById) {
-    const prev = merged.get(id)
-    if (!prev) {
-      if (!base.has(id)) merged.set(id, ins)
-      continue
-    }
-    if (newerIso(ins.updatedAt, prev.updatedAt) >= 0) merged.set(id, ins)
-  }
-  return [...merged.values()]
+  const localItems = Array.isArray(local?.insights) ? local.insights : []
+  // 三方判断折成两份 id 集合交给 mergeById：基线有、本地没有 = 本地删了（墓碑）；
+  // 本地有、基线没有 = 本次新建（磁盘缺失时允许补写）；两边都有时按 updatedAt 取新。
+  const localIds = new Set(localItems.map((it) => it?.id).filter(Boolean))
+  const baseIds = base || new Set()
+  return mergeById({
+    diskItems: Array.isArray(disk?.insights) ? disk.insights : [],
+    localItems,
+    deletedIds: new Set([...baseIds].filter((id) => !localIds.has(id))),
+    createdIds: new Set([...localIds].filter((id) => !baseIds.has(id))),
+  }) || []
 }
 
 /**
@@ -1640,25 +1634,14 @@ export class ProjectMemoryStore {
       for (const id of this._baseInsightIds) if (!current.has(id)) this._deletedInsightIds.add(id)
       for (const id of current) this._deletedInsightIds.delete(id)
       const disk = this._loadJson(path.join(this.dir, INSIGHTS_FILE), null)
-      if (isRecord(disk) && Array.isArray(disk.items)) {
-        const byId = new Map()
-        for (const it of disk.items) if (isRecord(it) && it.id) byId.set(it.id, it)
-        for (const it of this.insights.items) {
-          if (!isRecord(it) || !it.id) continue
-          if (this._deletedInsightIds.has(it.id)) {
-            byId.delete(it.id)
-            continue
-          }
-          const prev = byId.get(it.id)
-          if (!prev) {
-            // 磁盘没有：本进程新建的才补写；否则是**对方删了**，丢掉内存里的旧副本。
-            if (this._createdInsightIds.has(it.id)) byId.set(it.id, it)
-            continue
-          }
-          if (newerIso(it.updatedAt, prev.updatedAt) >= 0) byId.set(it.id, it)
-        }
-        for (const id of this._deletedInsightIds) byId.delete(id)
-        this.insights = { ...this.insights, items: [...byId.values()] }
+      const merged = mergeById({
+        diskItems: isRecord(disk) && Array.isArray(disk.items) ? disk.items : null,
+        localItems: this.insights.items,
+        deletedIds: this._deletedInsightIds,
+        createdIds: this._createdInsightIds,
+      })
+      if (merged) {
+        this.insights = { ...this.insights, items: merged }
         this._baseInsightIds = new Set(this.insights.items.map((it) => it?.id).filter(Boolean))
         this._auxVersion++
       }

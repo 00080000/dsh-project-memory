@@ -13,7 +13,8 @@ import { trackDirty, untrackDirty } from './util/flush.js'
 import { backfillDerivedTriggers, deriveTrigger } from './readiness.js'
 import { vectorText } from './vector-index.js'
 import { tokenize } from './util/search.js'
-import { isRecord, isoMs, newerIso } from './util/value.js'
+import { isRecord, isoMs } from './util/value.js'
+import { mergeById } from './util/merge-by-id.js'
 import { UNTITLED_TITLE, pruneKindFields, titleOf } from './util/insight-fields.js'
 
 export const INSIGHT_KINDS = ['lesson', 'decision', 'procedure', 'experience']
@@ -666,26 +667,14 @@ export class GlobalStore {
     }
     try {
       const rawDisk = readJsonFile(this.file, null)
-      const disk = isRecord(rawDisk) && Array.isArray(rawDisk.items) ? rawDisk : null
-      if (disk) {
-        const byId = new Map()
-        for (const it of disk.items) if (it?.id) byId.set(it.id, it)
-        for (const it of this.doc.items) {
-          if (!it?.id) continue
-          if (this._deletedIds.has(it.id)) {
-            byId.delete(it.id)
-            continue
-          }
-          const prev = byId.get(it.id)
-          if (!prev) {
-            // 磁盘没有：本进程新建的才补写；否则是对方删了，丢掉内存里的旧副本。
-            if (this._createdIds.has(it.id)) byId.set(it.id, it)
-            continue
-          }
-          if (newerIso(it.updatedAt, prev.updatedAt) >= 0) byId.set(it.id, it)
-        }
-        for (const id of this._deletedIds) byId.delete(id)
-        this.doc.items = [...byId.values()]
+      const merged = mergeById({
+        diskItems: isRecord(rawDisk) && Array.isArray(rawDisk.items) ? rawDisk.items : null,
+        localItems: this.doc.items,
+        deletedIds: this._deletedIds,
+        createdIds: this._createdIds,
+      })
+      if (merged) {
+        this.doc.items = merged
       } else {
         // 文件缺失/不可读/损坏（readJsonFile 已把损坏件备份）时，不能把"空 doc"当成
         // "对端把所有条目都删了"：那会把整库旧条目静默清掉。保留内存里的完整副本重写。
